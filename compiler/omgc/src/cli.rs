@@ -1,5 +1,5 @@
 use omega_analyzer::Target;
-use omega_codegen::{BackendKind, EmitKind, OptLevel};
+use omega_codegen::{EmitKind, OptLevel};
 use omega_diagnostics::{BOLD, CYAN, paint};
 use omega_driver::{ExternRoot, basename};
 use omega_parser::prelude::Ident;
@@ -19,7 +19,6 @@ pub(crate) struct Args {
     pub(crate) opt_level: OptLevel,
     pub(crate) target: Target,
     pub(crate) emit: EmitKind,
-    pub(crate) backend: BackendKind,
     pub(crate) verbose: bool,
 }
 
@@ -39,7 +38,6 @@ fn parse_compile(args: &[String]) -> Result<Args, String> {
     let mut opt_level = OptLevel::default();
     let mut target = Target::DEFAULT;
     let mut emit = EmitKind::default();
-    let mut backend = BackendKind::default();
     let mut verbose = false;
 
     let mut iter = args.iter();
@@ -62,8 +60,6 @@ fn parse_compile(args: &[String]) -> Result<Args, String> {
             target = Target::parse(value).map_err(|error| error.to_string())?;
         } else if let Some(value) = arg.strip_prefix("--emit=") {
             emit = value.parse()?;
-        } else if let Some(value) = arg.strip_prefix("--backend=") {
-            backend = value.parse()?;
         } else if arg == "-v" || arg == "--verbose" {
             verbose = true;
         } else if arg.starts_with('-') {
@@ -90,7 +86,6 @@ fn parse_compile(args: &[String]) -> Result<Args, String> {
         opt_level,
         target,
         emit,
-        backend,
         verbose,
     })
 }
@@ -190,19 +185,6 @@ pub(crate) fn print_help() {
     );
     help_option(
         colors,
-        "--backend=<name>",
-        &format!(
-            "Codegen backend to use (default: {}; available: {})",
-            BackendKind::default(),
-            BackendKind::ALL
-                .iter()
-                .map(BackendKind::to_string)
-                .collect::<Vec<_>>()
-                .join(", "),
-        ),
-    );
-    help_option(
-        colors,
         "--extern=[<name>:]<dir>",
         "Register an external module root (repeatable; name defaults to the directory basename)",
     );
@@ -247,7 +229,6 @@ mod tests {
             "out.s",
             "-O3",
             "--emit=asm",
-            "--backend=cranelift",
             "--extern=core:deps/core",
             "--verbose",
         ])) else {
@@ -255,7 +236,6 @@ mod tests {
         };
         assert_eq!(parsed.opt_level, OptLevel::O3);
         assert_eq!(parsed.emit, EmitKind::Asm);
-        assert_eq!(parsed.backend, BackendKind::Cranelift);
         assert!(parsed.verbose);
         assert_eq!(parsed.externs.len(), 1);
         assert_eq!(parsed.externs[0].name.as_ref(), "core");
@@ -264,7 +244,14 @@ mod tests {
 
     #[test]
     fn rejects_invalid_codegen_options() {
-        for invalid in ["-Ofast", "--emit=wat", "--backend=missing"] {
+        for invalid in ["-Ofast", "--emit=wat"] {
+            assert!(parse(&args(&["src", "-o", "out.o", invalid])).is_err());
+        }
+    }
+
+    #[test]
+    fn rejects_backend_flag_as_unknown() {
+        for invalid in ["--backend=llvm", "--backend=cranelift"] {
             assert!(parse(&args(&["src", "-o", "out.o", invalid])).is_err());
         }
     }

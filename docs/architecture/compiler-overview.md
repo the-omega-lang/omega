@@ -28,9 +28,9 @@ CompiledProgram
   v
 Vec<MirModule>
   |
-  | omega_codegen::generate(backend, CodegenRequest)
+  | omega_codegen::generate(CodegenRequest)
   v
-object bytes / backend IR / assembly
+object bytes / LLVM IR / assembly
 ```
 
 The **driver** is therefore the semantic/package compiler orchestrator. `omgc` is the outer toolchain orchestrator that connects the driver to MIR/codegen and owns CLI/output handling.
@@ -64,7 +64,7 @@ checked tree / ResolvedType graph
    v
 MIR CFG + tree-shaped computations
    |
-   | shared preflight/ABI + selected backend
+   | shared preflight/ABI + LLVM emission
    v
 native object / IR / assembly
 ```
@@ -106,7 +106,7 @@ The important architectural boundaries are:
 - `omega-analyzer` knows semantic rules but not filesystems or package caches.
 - `omega-driver` owns filesystem/module/query lifetime and implements the analyzer's external resolver interface.
 - `omega-mir` owns backend-independent control-flow lowering and final symbol/linkage decisions.
-- `omega-codegen` owns native emission; both backends consume shared semantic/layout/ABI/symbol decisions.
+- `omega-codegen` owns native emission through LLVM; it consumes shared semantic/layout/ABI/symbol decisions rather than deriving them.
 - `omega-mangle` is intentionally standalone from compiler representations.
 
 ## Major representations
@@ -134,16 +134,13 @@ Generic templates are not emitted as erased bodies. Concrete instantiations are 
 
 Owned by `omega-mir`. Item structure remains close to the checked representation, but each function body becomes an explicit basic-block CFG. Source-level control-flow constructs disappear into blocks and terminators; ordinary computations remain expression trees.
 
-Final function symbols and strong/weak linkage are attached here so every backend receives the same decisions.
+Final function symbols and strong/weak linkage are attached here so codegen always receives the same decisions.
 
-### Backend state
+### Codegen state
 
-`omega-codegen` does not define another public IR. Each backend maps MIR into its native library's representation:
+`omega-codegen` does not define another public IR. It maps MIR into LLVM's native representation: LLVM values/blocks/functions/module/target machine.
 
-- Cranelift: CLIF values/blocks/functions/object module.
-- LLVM: LLVM values/blocks/functions/module/target machine.
-
-Backend-local caches map Omega/MIR identities to backend objects, but the backend is not allowed to redefine language semantics, aggregate layout, linker identity, or the shared Omega calling convention.
+Codegen-local caches map Omega/MIR identities to LLVM objects, but codegen is not allowed to redefine language semantics, aggregate layout, linker identity, or the shared Omega calling convention.
 
 ## Where compilation-wide state lives
 
@@ -176,26 +173,26 @@ By that point:
 - relevant primitive/conformance/gap/glue relationships have been settled;
 - semantic errors have been accumulated and rejected.
 
-MIR lowering and backend codegen must not re-run semantic resolution.
+MIR lowering and codegen must not re-run semantic resolution.
 
 ## Rejectable-input boundary
 
-Most program-invalidity belongs before codegen. `omega-codegen::generate` runs a shared `preflight` pass for the small set of currently unsupported constructs that must be rejected identically for every backend, then checks backend/target support.
+Most program-invalidity belongs before codegen. `omega-codegen::generate` runs a shared `preflight` pass for the small set of currently unsupported constructs, then checks LLVM target support.
 
-After that point, a backend failure should normally mean one of:
+After that point, a codegen failure should normally mean one of:
 
-- unsupported target/ISA for that backend;
+- unsupported target/ISA for this LLVM build;
 - explicit symbol collision caused by mangling controls;
 - object/IR construction failure;
 - an internal compiler bug (for example LLVM verifier failure).
 
-A new language validity rule should not be implemented independently inside each backend.
+A new language validity rule should not be implemented independently inside codegen.
 
 ## Target propagation
 
 `omega_analyzer::Target` is the compiler-wide target vocabulary. The same target is supplied to semantic compilation and codegen so pointer-width-dependent semantic/layout questions agree with emission.
 
-Backend-specific target triples/settings are derived only inside each backend.
+LLVM-specific target triples/settings are derived only inside `omega-codegen::llvm`.
 
 ## Separate compilation
 
@@ -209,7 +206,7 @@ This makes several facts cross-process contracts:
 - shared Omega ABI;
 - externally visible aggregate representation where part of the ABI.
 
-The repository's integration recipes deliberately link objects produced by different compiler invocations and, in some cases, different backends to exercise these contracts.
+The repository's integration recipes deliberately link objects produced by different compiler invocations to exercise these contracts.
 
 ## Runtime/library position
 
@@ -223,19 +220,15 @@ See [`runtime-and-platform.md`](runtime-and-platform.md).
 
 ### Add syntax without new semantics
 
-Parser AST -> HIR lowering only. Keep analyzer/backends closed unless the syntax changes the semantic representation.
+Parser AST -> HIR lowering only. Keep analyzer/codegen closed unless the syntax changes the semantic representation.
 
 ### Add a semantic feature
 
 Usually HIR (if a new source shape is needed) -> analyzer/driver -> checked representation. MIR/codegen only need changes if the feature changes runtime control flow or representation.
 
-### Add a backend
-
-A backend should consume `CodegenRequest`/MIR and the shared layout/ABI/symbol decisions. It should not add a third independent implementation of semantic acceptance.
-
 ### Add a target
 
-Extend the shared `Target`, then deliberately audit pointer width/layout, shared ABI assumptions, and backend support. A target being expressible in the shared vocabulary does not imply every backend supports it.
+Extend the shared `Target`, then deliberately audit pointer width/layout, shared ABI assumptions, and LLVM target support. A target being expressible in the shared vocabulary does not imply LLVM supports it.
 
 ### Add a package/runtime capability
 

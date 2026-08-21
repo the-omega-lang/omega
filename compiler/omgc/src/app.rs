@@ -36,7 +36,6 @@ fn compile(args: Args) -> Result<(), AppError> {
         opt_level,
         target,
         emit,
-        backend,
         verbose,
     } = args;
     let start = Instant::now();
@@ -109,7 +108,7 @@ fn compile(args: Args) -> Result<(), AppError> {
         verbose_step(
             colors,
             "Generating",
-            &format!("target {target}, backend {backend}, -O{opt_level}, emit {emit}"),
+            &format!("target {target}, LLVM, -O{opt_level}, emit {emit}"),
         );
     }
 
@@ -122,7 +121,7 @@ fn compile(args: Args) -> Result<(), AppError> {
         entry: program.entry.clone(),
         extern_functions: program.extern_functions,
     };
-    let output = omega_codegen::generate(backend, request)?;
+    let output = omega_codegen::generate(request)?;
 
     if verbose {
         verbose_step(

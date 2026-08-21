@@ -49,7 +49,7 @@ For large tasks, prefer fresh contexts between thinking, planning, implementatio
 - **Semantic analysis:** `compiler/omega-analyzer` + HIR types it consumes + relevant `docs/language/` + `docs/architecture/semantic-analysis.md` when implementation mechanics matter. Parser/MIR/codegen stay closed unless their contracts change.
 - **Module/package orchestration:** `compiler/omega-driver` + analyzer resolver interfaces + `docs/language/modules-and-imports.md` + `docs/architecture/module-driver-and-linkage.md` as needed.
 - **MIR:** `compiler/omega-mir` + checked representation it consumes + `docs/architecture/mir-and-codegen.md`.
-- **Backend emission:** relevant backend in `compiler/omega-codegen` + MIR interfaces + `docs/architecture/mir-and-codegen.md`; add `docs/architecture/abi-and-representation.md` only for shared representation/calling-convention work. Do not automatically inspect both backends unless behavior must remain synchronized.
+- **Backend emission:** `compiler/omega-codegen` (LLVM) + MIR interfaces + `docs/architecture/mir-and-codegen.md`; add `docs/architecture/abi-and-representation.md` only for shared representation/calling-convention work.
 - **Diagnostics infrastructure:** `compiler/omega-diagnostics` + `docs/architecture/diagnostics.md`; feature-specific diagnostic construction stays with the owning frontend/semantic crate.
 - **Runtime/library:** relevant tree under `runtime/` + `docs/architecture/runtime-and-platform.md` + relevant guide/language docs. Compiler internals remain closed unless language/compiler support changes.
 
@@ -63,7 +63,7 @@ Use [`docs/architecture/testing-and-validation.md`](docs/architecture/testing-an
 - **Language conformance / executable semantics:** use the root [`tests/`](tests/) suite. Each direct child `tests/<case>/` is an Omega package consumed by [`bin/test-runner`](bin/test-runner); optional `expected.stdout` / `expected.stderr` files define exact expected output. Observable language behavior should be tested here against the rule in `docs/language/`, not only through a compiler-internal unit test.
 - **Focused conformance run:** after `omgc` and the runtime objects are already built, run `./bin/test-runner <case> [...]`. The runner uses `target/` by default; set `OMEGA_ARTIFACTS_DIR` when the built runtime objects live elsewhere.
 - **Normal full gate:** `just test-all` builds the required compiler/runtime artifacts and runs the conformance runner.
-- **Verification scope:** start with the smallest focused test that crosses the changed boundary, then expand only when the change affects wider contracts such as runtime/linking, separate compilation, or backend parity.
+- **Verification scope:** start with the smallest focused test that crosses the changed boundary, then expand only when the change affects wider contracts such as runtime/linking or separate compilation.
 - **Negative tests:** a compile failure only proves the intended behavior when the expected diagnostic output is checked; never accept "it failed" as sufficient.
 
 Do not infer language semantics from an existing test when it conflicts with `docs/language/`; the specification remains normative and the mismatch must be resolved as a compiler/test/docs issue.

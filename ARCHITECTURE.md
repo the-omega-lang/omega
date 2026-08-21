@@ -10,7 +10,7 @@ For exact language semantics, use [`docs/language/`](docs/language/). For deeper
 2. Open at most the relevant deep architecture document(s) from [`docs/architecture/README.md`](docs/architecture/README.md).
 3. Search for the concrete symbols involved before opening large source files.
 4. Treat crate boundaries as context boundaries; cross them only when the contract actually changes.
-5. Do not read both backends, all callers/callees, or historical plans “for completeness”.
+5. Do not read all callers/callees or historical plans “for completeness”.
 6. Stop once ownership, affected interfaces, invariants, and verification boundaries are clear.
 
 `docs/issues/` records known deviations/debt. `docs/plan/` is historical cold storage.
@@ -41,7 +41,7 @@ MIR modules
   |
   | omega_codegen::generate
   v
-object / backend IR / assembly
+object / LLVM IR / assembly
 ```
 
 `omega-driver::Driver::compile` is the main semantic-compilation entry point. `omgc` owns the outer toolchain handoff from semantic compilation to MIR/codegen and output files.
@@ -65,7 +65,7 @@ omega-analyzer     checked tree + resolved semantic types
 omega-mir          explicit CFG + tree-shaped computations
    |
    v
-omega-codegen      Cranelift or LLVM
+omega-codegen      LLVM
    |
    v
 native output
@@ -147,18 +147,13 @@ The core named-item query identity is conceptually `(module, name, type_args)`, 
 
 Lowers checked functions into backend-independent basic-block CFGs while keeping ordinary computations tree-shaped. Parameters and locals share a `LocalId` space; terminators make control transfer explicit.
 
-MIR lowering also assigns final linker symbols and strong/weak linkage so both backends receive identical linkage decisions.
+MIR lowering also assigns final linker symbols and strong/weak linkage, so codegen consumes fully decided linkage rather than deriving it.
 
 ### `compiler/omega-codegen`
 
-Consumes MIR through a shared `CodegenRequest`. Shared preflight, layout/ABI inputs, symbols, and linkage must agree before backend-specific emission.
+Consumes MIR through a shared `CodegenRequest`. Shared preflight, layout/ABI inputs, symbols, and linkage must agree before LLVM emission (`llvm/`).
 
-Backends:
-
-- `cranelift/`
-- `llvm/`
-
-**Boundary:** backends translate already-decided semantics. They should not independently implement overload resolution, language validity, aggregate layout policy, or symbol identity.
+**Boundary:** LLVM translates already-decided semantics. It should not independently implement overload resolution, language validity, aggregate layout policy, or symbol identity.
 
 ### `compiler/omega-mangle`
 
@@ -166,7 +161,7 @@ Standalone symbol encoder/decoder/demangler. It intentionally does not depend on
 
 ### `compiler/omgc`
 
-CLI/toolchain frontend. Parses options, constructs the driver, calls semantic compilation, lowers the returned program to MIR, chooses a backend, invokes codegen, and writes output.
+CLI/toolchain frontend. Parses options, constructs the driver, calls semantic compilation, lowers the returned program to MIR, invokes codegen, and writes output.
 
 ## Cross-cutting owners
 
@@ -180,7 +175,7 @@ Some concepts span multiple phases but must still have one decision owner:
 - **Shared Omega parameter/result ABI:** `omega-codegen::abi`.
 - **Mangled symbol grammar:** `omega-mangle`.
 - **Concrete final symbol + strong/weak linkage:** MIR lowering.
-- **Backend-native values/blocks/objects:** the selected codegen backend.
+- **Backend-native values/blocks/objects:** `omega-codegen::llvm`.
 - **Source diagnostic rendering:** `omega-diagnostics` + CLI source lookup/highlighting.
 
 Later phases should consume these decisions rather than re-derive them.
@@ -207,7 +202,7 @@ Omega separates compiler-component testing from language conformance:
 - `bin/test-runner` discovers those root cases, compiles them with the registered runtime packages, links against the prebuilt runtime objects, executes successful compilations, and compares optional `expected.stdout` / `expected.stderr` files exactly;
 - `just test-all` is the normal top-level gate that prepares the required artifacts before invoking the runner; direct `bin/test-runner` invocation is the focused path when artifacts are already built.
 
-The language suite is conformance evidence for [`docs/language/`](docs/language/): tests should encode what the specification promises, not normalize accidental compiler behavior. See [`testing-and-validation.md`](docs/architecture/testing-and-validation.md) for test selection, negative-test rules, backend/separate-compilation coverage, and artifact conventions.
+The language suite is conformance evidence for [`docs/language/`](docs/language/): tests should encode what the specification promises, not normalize accidental compiler behavior. See [`testing-and-validation.md`](docs/architecture/testing-and-validation.md) for test selection, negative-test rules, separate-compilation coverage, and artifact conventions.
 
 ## Architectural invariants
 
@@ -215,7 +210,7 @@ When changing the compiler, preserve these unless the change intentionally redes
 
 1. **One fact, one owner.** Do not duplicate semantic/layout/ABI/symbol decisions across phases.
 2. **Resolve once, read back later.** Store decided facts and consume them downstream.
-3. **Backend parity above backends.** Shared validity, layout, ABI, symbols, and linkage cannot silently diverge between LLVM and Cranelift.
+3. **Shared decisions stay shared.** Validity, layout, ABI, symbols, and linkage are decided once upstream of LLVM emission and must not be re-derived or duplicated inside `omega-codegen`.
 4. **Crate boundaries are contracts.** Cross them through public data/interfaces rather than duplicating another crate's logic.
 5. **Determinism is observable.** IDs, diagnostics, declarations, symbols, and output order must not accidentally depend on randomized map/set iteration.
 6. **Separate compilation is real.** Package identity, mangling, ABI, and duplicate weak monomorphization behavior are cross-process contracts.
@@ -245,11 +240,11 @@ Start with `omega-mir` + [`mir-and-codegen.md`](docs/architecture/mir-and-codege
 
 ### Representation / ABI change
 
-Start with semantic type + [`types-layout-and-const-eval.md`](docs/architecture/types-layout-and-const-eval.md) and [`abi-and-representation.md`](docs/architecture/abi-and-representation.md). Audit MIR, both backends, mangling, and mixed-backend/separate-compilation tests only if their contracts are affected.
+Start with semantic type + [`types-layout-and-const-eval.md`](docs/architecture/types-layout-and-const-eval.md) and [`abi-and-representation.md`](docs/architecture/abi-and-representation.md). Audit MIR, `omega-codegen::llvm`, mangling, and separate-compilation tests only if their contracts are affected.
 
 ### Backend-only emission issue
 
-Start with the selected backend. Inspect both backends only when the behavior belongs to a shared contract or parity requirement.
+Start with `omega-codegen::llvm`.
 
 ### Symbols / linkage / duplicate monomorphizations
 

@@ -58,6 +58,23 @@ impl<'ctx> Codegen<'ctx> {
         }
     }
 
+    /// A gap declaration and its matching glue definition intentionally mangle to the same
+    /// linker symbol (see `docs/architecture/symbol-mangling.md`, "Gap/glue identity"), so two
+    /// distinct `HirId`s can request the same LLVM function. `Module::add_function` does not
+    /// check for an existing global of that name -- it always creates a new one and lets LLVM's
+    /// symbol table silently rename the second to `<symbol>.1`, leaving whichever declaration
+    /// callers actually reference without a body. Reuse the existing global instead.
+    fn declare_or_reuse_function(
+        &mut self,
+        symbol: &str,
+        fn_type: inkwell::types::FunctionType<'ctx>,
+    ) -> (inkwell::values::FunctionValue<'ctx>, bool) {
+        match self.module.get_function(symbol) {
+            Some(existing) => (existing, false),
+            None => (self.module.add_function(symbol, fn_type, None), true),
+        }
+    }
+
     pub(super) fn declare_function_def(
         &mut self,
         function_def: &MirFunctionDef,
@@ -65,7 +82,9 @@ impl<'ctx> Codegen<'ctx> {
         let symbol = &function_def.symbol;
         self.symbols.register_function(symbol, function_def.id)?;
         let fn_type = self.llvm_function_type(&function_def.fn_type());
-        let function = self.module.add_function(symbol, fn_type, None);
+        let (function, _) = self.declare_or_reuse_function(symbol, fn_type);
+        // This item owns the body about to be attached, so its linkage always wins over
+        // whatever a same-symbol extern/gap declaration set.
         function.set_linkage(match function_def.linkage {
             omega_mir::MirLinkage::Export => Linkage::External,
             omega_mir::MirLinkage::Weak => Linkage::WeakODR,
@@ -80,8 +99,10 @@ impl<'ctx> Codegen<'ctx> {
     pub(super) fn declare_extern_function(&mut self, extern_fn: &ExternFunctionRef) {
         let symbol = omega_mir::mangle::extern_function_ref_symbol(extern_fn);
         let fn_type = self.llvm_function_type(&extern_fn.fn_type);
-        let function = self.module.add_function(&symbol, fn_type, None);
-        function.set_linkage(Linkage::External);
+        let (function, created) = self.declare_or_reuse_function(&symbol, fn_type);
+        if created {
+            function.set_linkage(Linkage::External);
+        }
         self.functions.insert(extern_fn.decl_id, function);
     }
 
@@ -92,8 +113,10 @@ impl<'ctx> Codegen<'ctx> {
             );
         };
         let fn_type = self.llvm_function_type(resolved_fntype);
-        let function = self.module.add_function(&extern_decl.symbol, fn_type, None);
-        function.set_linkage(Linkage::External);
+        let (function, created) = self.declare_or_reuse_function(&extern_decl.symbol, fn_type);
+        if created {
+            function.set_linkage(Linkage::External);
+        }
         self.functions.insert(extern_decl.id, function);
     }
 
@@ -137,17 +160,14 @@ impl<'ctx> Codegen<'ctx> {
         self.entry_block = Some(blocks[0]);
         self.builder.position_at_end(blocks[0]);
 
-        // Pack non-parameter locals into one shared frame so zero-sized offsets match shared layout.
-        let frame_slot = if frame.packed_end == 0 {
-            None
-        } else {
-            Some(self.entry_alloca(
-                frame.packed_end,
-                1u32 << layout::stack_align_shift(max_align),
-                "locals",
-            ))
-        };
-        self.frame_slot = frame_slot;
+        // Pack non-parameter locals into one shared frame so zero-sized offsets match shared
+        // layout. Always allocate, even for a zero-size frame: a zero-sized local still needs a
+        // stable address (`entry_alloca` rounds the byte count up to at least 1).
+        self.frame_slot = Some(self.entry_alloca(
+            frame.packed_end,
+            1u32 << layout::stack_align_shift(max_align),
+            "locals",
+        ));
         let mut local_offsets = vec![0u32; body.locals.len()];
         local_offsets[body.arg_count..].copy_from_slice(&frame.byte_offsets);
         self.local_offsets = local_offsets;

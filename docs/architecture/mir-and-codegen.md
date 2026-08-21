@@ -1,6 +1,6 @@
 # MIR and code generation
 
-`omega-mir` is the backend-independent control-flow boundary between the fully checked semantic tree and native emission. `omega-codegen` consumes MIR through either Cranelift or LLVM.
+`omega-mir` is the backend-independent control-flow boundary between the fully checked semantic tree and native emission. `omega-codegen` consumes MIR and emits through LLVM.
 
 ```text
 CheckedModule
@@ -13,16 +13,15 @@ MirModule / MirBody CFG
    v
 shared preflight + ABI
    |
-   +--> Cranelift
-   |
-   +--> LLVM
+   v
+LLVM
 ```
 
 ## Why MIR exists
 
 The checked tree is excellent for semantic analysis but still represents source control flow recursively. A backend wants explicit blocks and branch/return edges.
 
-Without MIR, each backend would independently have to rediscover how `if`, `match`, loops, `break`, `continue`, `return`, and `defer` form a CFG. That would duplicate semantics at the worst possible boundary.
+Without MIR, codegen would have to rediscover how `if`, `match`, loops, `break`, `continue`, `return`, and `defer` form a CFG directly from the checked tree, entangling control-flow reconstruction with native emission.
 
 MIR builds the CFG once.
 
@@ -63,7 +62,7 @@ Most item shapes mechanically mirror checked items:
 
 Only function bodies fundamentally change shape.
 
-`MirFunctionDef` also adds two facts computed once for all backends:
+`MirFunctionDef` also adds two facts computed once, upstream of codegen:
 
 - final linker `symbol`;
 - `MirLinkage`.
@@ -177,14 +176,13 @@ symbol: String
 linkage: Export | Weak
 ```
 
-This guarantees Cranelift and LLVM cannot disagree about names/duplicate-folding policy.
+This guarantees codegen never has to decide names/duplicate-folding policy itself.
 
 ## Codegen shared layer
 
 `omega-codegen` exposes:
 
 ```text
-BackendKind
 CodegenRequest
 OptLevel
 EmitKind
@@ -192,21 +190,21 @@ EmitOutput
 generate(...)
 ```
 
-`CodegenRequest` contains the translation-unit name, target, MIR modules, entry path, extern-function references, optimization level, and requested output kind. Entry-point identity is consumed while lowering checked modules to MIR; the field remains in the public request shape for compatibility but is not interpreted by either native backend.
+`CodegenRequest` contains the translation-unit name, target, MIR modules, entry path, extern-function references, optimization level, and requested output kind. Entry-point identity is consumed while lowering checked modules to MIR; the field remains in the public request shape for compatibility but is not interpreted by LLVM emission.
 
 ### Shared preflight
 
-`preflight.rs` rejects constructs that are currently unsupported and must fail identically regardless of backend. Today that shared codegen-only gap is extern data; parameter mutation/addressability is handled by the shared function-storage plan before either backend emits a body.
+`preflight.rs` rejects constructs that are currently unsupported and must fail before LLVM emission runs. Today that gap is extern data; parameter mutation/addressability is handled by the shared function-storage plan before a body is emitted.
 
-If a new unsupported construct is common to all backends, put the rejection here or earlier in semantic analysis—not in two backend-specific `todo!()` branches.
+If a new unsupported construct belongs above codegen, put the rejection here or earlier in semantic analysis—not inline in LLVM emission code.
 
-### Backend support check
+### Target support check
 
-`BackendKind::supports(target)` is checked before emission. The shared compiler target vocabulary can be broader than one backend's supported set.
+`llvm::supports(target)` is checked before emission. The shared compiler target vocabulary can be broader than what a given LLVM build actually supports.
 
 ## Shared ABI and layout
 
-Before backend-native call construction, both backends consume:
+Before native call construction, codegen consumes:
 
 - `omega_analyzer::layout` for leaves/offsets/size/alignment;
 - `omega_codegen::abi` for parameter/result calling convention;
@@ -214,37 +212,19 @@ Before backend-native call construction, both backends consume:
 
 See [`abi-and-representation.md`](abi-and-representation.md).
 
-## Cranelift backend
+## LLVM backend
 
-`src/cranelift/` is split by concern:
+`src/llvm/` is split by concern:
 
-- `mod.rs` — ISA/module setup, shared backend state, final output;
+- `mod.rs` — target machine/triple/data layout setup, shared codegen state, final output;
 - `item.rs` — declarations/definitions/globals/externs;
 - `function.rs` — function CFG/block emission;
 - `expr.rs` — computation/calls/casts/aggregate construction;
 - `place.rs` — address/storage/projection loads and stores;
-- `leaf.rs` — abstract leaf -> Cranelift types;
+- `leaf.rs` — abstract leaf -> LLVM types;
 - `vtable.rs` — dynamic-spec table materialization.
 
 `Codegen` keeps caches for functions, data blobs, globals, vtables, and symbol-collision detection plus per-function local/stack state.
-
-Cranelift validates block/function structure while building; target ISA/triple and optimization settings remain backend-local.
-
-Cranelift does not expose a native variadic-function call shape suitable for Omega's current path, so a variadic call is emitted with a fixed signature synthesized for that concrete call site after shared C default-argument promotion. This is a backend translation detail; promotion policy remains in the shared ABI layer.
-
-## LLVM backend
-
-`src/llvm/` intentionally mirrors the same conceptual split:
-
-- `mod.rs`;
-- `item.rs`;
-- `function.rs`;
-- `expr.rs`;
-- `place.rs`;
-- `leaf.rs`;
-- `vtable.rs`.
-
-LLVM-specific target machine/triple/data layout/optimization configuration stays in this backend.
 
 LLVM `alloca` placement is deliberately centralized in the function entry block because allocating in a loop block would allocate on each execution. The backend temporarily repositions its builder to the entry before emitting scratch/local allocations.
 
@@ -252,16 +232,16 @@ The completed LLVM module is always verified before output. A verifier failure i
 
 ## Declare before define
 
-Both backends use a declare/update pattern so references do not depend on source definition order:
+LLVM emission uses a declare/update pattern so references do not depend on source definition order:
 
 1. declare externally visible/local functions/globals needed by symbols;
 2. define function bodies/data after identities exist.
 
 This mirrors the compiler-wide rule that declaration order must not determine semantic availability.
 
-## Backend-local caches
+## Codegen-local caches
 
-Backends may cache native objects keyed by already stable compiler identities, for example:
+Codegen may cache native objects keyed by already stable compiler identities, for example:
 
 - `HirId -> native function/global`;
 - content hash -> anonymous byte/const blob;
@@ -272,31 +252,17 @@ These caches optimize/organize emission; they must not become new semantic resol
 
 ## Output modes
 
-The same backend pipeline can produce:
+The same codegen pipeline can produce:
 
 - object bytes;
-- textual backend IR;
+- textual LLVM IR;
 - assembly.
 
-Textual IR is inherently backend-specific; object-level external identity/ABI must not be.
-
-## Backend parity rule
-
-When a change affects a shared contract, inspect/test both backends. When a bug is truly backend-local, do not read/edit the other backend merely for symmetry.
-
-Shared-contract examples:
-
-- new MIR variant;
-- new `ResolvedType` representation;
-- layout/ABI change;
-- vtable shape;
-- constant representation;
-- final symbol/linkage change;
-- new target-width behavior.
+Textual IR is inherently LLVM-specific; object-level external identity/ABI must not be.
 
 ## Codegen should not do
 
-Do not place these in backend code:
+Do not place these in codegen:
 
 - overload/name resolution;
 - generic inference/instantiation;

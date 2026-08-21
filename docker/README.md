@@ -54,8 +54,8 @@ Built from `alpine:3.23`:
 - **build-base / binutils / gdb** — `cc`, `as` and `ld`, which the `justfile`
   invokes directly to assemble `shims` and link the object files `omgc`
   emits.
-- **LLVM 21** (`llvm21-dev`, `llvm21-static`, `clang21`, `lld21`) — for the
-  second `omega-codegen` backend beside Cranelift. `llvm-config` and the rest
+- **LLVM 21** (`llvm21-dev`, `llvm21-static`, `clang21`, `lld21`) — the
+  `omega-codegen` backend. `llvm-config` and the rest
   of the LLVM tools live under `/usr/lib/llvm21/bin`, which is on `PATH`, so
   `llvm-sys` finds them without an `LLVM_SYS_<ver>_PREFIX` variable. The
   static archives are not optional here: this toolchain is

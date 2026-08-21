@@ -61,7 +61,7 @@ impl<'ctx> Codegen<'ctx> {
                     .build_indirect_call(call_type, fnaddr, &metadata_args, "")
                     .expect("call always succeeds");
 
-                if *fn_type.return_type == ResolvedType::Void {
+                if matches!(*fn_type.return_type, ResolvedType::Void | ResolvedType::Never) {
                     return vec![];
                 }
                 match sret_slot {
@@ -158,7 +158,7 @@ impl<'ctx> Codegen<'ctx> {
                     .build_indirect_call(call_type, fnaddr, &metadata_args, "")
                     .expect("call always succeeds");
 
-                if *fn_type.return_type == ResolvedType::Void {
+                if matches!(*fn_type.return_type, ResolvedType::Void | ResolvedType::Never) {
                     return vec![];
                 }
                 match sret_slot {
@@ -795,7 +795,7 @@ impl<'ctx> Codegen<'ctx> {
                                 .as_basic_value_enum(),
                         ]
                     }
-                    // Use saturating float-to-int conversion to match Cranelift semantics.
+                    // Omega's float-to-int cast is saturating, not trapping (docs/language/strings-casts-arrays-and-slices.md).
                     CastKind::FloatToInt { signed } => {
                         let from = base_leaves[0].into_float_value().get_type();
                         let to = if target_ir.is_pointer_type() {

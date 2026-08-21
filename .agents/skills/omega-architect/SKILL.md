@@ -48,7 +48,7 @@ Start closed:
 - relevant normative/architecture docs selected by the routing rules above;
 - tests located by search when needed.
 
-Do not automatically include adjacent crates, both backends, historical plans, git history, all callers/callees, or all tests.
+Do not automatically include adjacent crates, historical plans, git history, all callers/callees, or all tests.
 
 ### 3. Explore progressively
 

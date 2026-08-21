@@ -15,7 +15,7 @@ final linker string
    |
    + MirLinkage decided during MIR lowering
    v
-all backends consume same symbol + linkage
+codegen consumes the finished symbol + linkage
 ```
 
 ## `omega-mangle` is standalone
@@ -26,7 +26,7 @@ path/type substitutions in already-emitted mangled text. The decoder resolves
 only completed substitutions and rejects forward, self, cyclic, or otherwise
 unresolved references.
 
-The `omega-mangle` crate intentionally does not depend on `omega-analyzer`, HIR, MIR, or a backend.
+The `omega-mangle` crate intentionally does not depend on `omega-analyzer`, HIR, MIR, or codegen.
 
 It owns:
 
@@ -83,7 +83,7 @@ It owns construction helpers for:
 - extern references;
 - content-addressed data symbols.
 
-Because this happens during checked -> MIR lowering, both backends receive only the finished name.
+Because this happens during checked -> MIR lowering, codegen receives only the finished name.
 
 ## Package/module identity
 
@@ -120,13 +120,13 @@ A gap function and its matching glue function intentionally map to the same fina
 
 The allowed root entry `main` receives a fixed internal symbol, `_omg_main`, instead of ordinary mangling -- forced rather than derived because ordinary mangling encodes the return type, and `main`'s two allowed return types (`void`, `never`) would otherwise mangle to different strings for what must be one stable linkage contract. It is deliberately not the platform's native entry-point symbol (e.g. C's `main`); a `plat` implementation that wants to produce a runnable native program supplies its own adapter under the real native entry symbol and calls `_omg_main` (see `docs/language/foreign-function-interface.md`, "Program entry point"). A child-module function also named `main` remains normally mangled.
 
-This exception is decided before backend emission so both backends agree.
+This exception is decided before codegen emission so it never needs re-deriving there.
 
 ## Mangling controls
 
 Resolved `@mangling(...)` metadata travels from semantic analysis to checked/MIR items. The MIR adapter applies the final enabled/disabled/forced symbol policy.
 
-A forced/disabled policy can create a real duplicate linker name. Codegen maintains a symbol-collision guard and reports such collisions rather than allowing backend/library behavior to choose a winner silently.
+A forced/disabled policy can create a real duplicate linker name. Codegen maintains a symbol-collision guard and reports such collisions rather than allowing linker behavior to choose a winner silently.
 
 ## Linkage
 
@@ -151,13 +151,13 @@ A concrete instantiation of a generic template declared in an extern package is 
 
 ## Vtables
 
-Dynamic spec coercion produces a resolved ordered method-slot list. Backends may deduplicate vtable data by the resolved slot list within one compilation unit.
+Dynamic spec coercion produces a resolved ordered method-slot list. Codegen may deduplicate vtable data by the resolved slot list within one compilation unit.
 
 External symbol identity for a vtable cannot rely on local `HirId`s, because IDs have no cross-process meaning. `mangle::vtable_symbol` derives a deterministic symbol from semantic type/spec identity instead.
 
 ## Anonymous data symbols
 
-Compiler-generated constant blobs use content-addressed symbols so identical data receives the same weak identity across modules, separate compilations, and backends. The hash is deliberately non-cryptographic; the threat model is accidental collision among compiler-produced constants, not adversarial input.
+Compiler-generated constant blobs use content-addressed symbols so identical data receives the same weak identity across modules and separate compilations. The hash is deliberately non-cryptographic; the threat model is accidental collision among compiler-produced constants, not adversarial input.
 
 The hash input is the constant's **logical canonical content**, not merely the raw bytes of the eventual object buffer. Pointer-bearing constants can contain zero placeholders in the physical bytes while their actual targets live in relocations; hashing only those bytes could collapse distinct constants onto one weak symbol and silently select the wrong data. Canonical serialization therefore includes the pointed-to logical content (with explicit length where needed) before deriving the symbol.
 
@@ -173,6 +173,6 @@ A mangling change is an ABI/separate-compilation change. Audit:
 4. overload uniqueness;
 5. package `--name`/extern identities;
 6. weak/strong duplicate behavior;
-7. cross-process and mixed-backend linking tests.
+7. cross-process/separate-compilation linking tests.
 
-Do not update one backend's symbol naming as the implementation of a mangling change.
+Do not update symbol naming inside codegen as the implementation of a mangling change; the adapter in `omega-mir::mangle` owns it.

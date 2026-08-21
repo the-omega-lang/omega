@@ -99,7 +99,7 @@ Compare the diff with `PLAN.md`:
 - negative tests fail for the intended reason/diagnostic and their expected compiler output is actually checked;
 - a test actually exercises the feature rather than passing when the feature is removed/stubbed.
 
-Use `./bin/test-runner <case>` for focused language cases when artifacts are already built and `just test-all` when the full prepared gate is warranted. Run hosted/freestanding or multiple-backend coverage only when the plan/change affects those contracts. When backend parity matters, confirm the compiler actually selected the backend under review rather than merely being built with support for it.
+Use `./bin/test-runner <case>` for focused language cases when artifacts are already built and `just test-all` when the full prepared gate is warranted. Run hosted/freestanding coverage only when the plan/change affects those contracts.
 
 ## Fix or defer
 

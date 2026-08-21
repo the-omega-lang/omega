@@ -127,29 +127,11 @@ confusion unrepresentable and cut the cloning. Breaking across crates: the
 
 `omega-mir::lower_program` consumes the checked program's entry path when it
 constructs MIR, but the public `omega_codegen::CodegenRequest` still carries the
-same path into native emission even though neither backend reads it. Removing the
+same path into native emission even though codegen never reads it. Removing the
 field would make the phase boundary more honest and shrink the request to facts
 codegen actually consumes, but it is a public struct-shape change for callers that
 construct requests directly. Remove it in a deliberate API-breaking cleanup rather
 than silently as part of a refactor.
-
-### Constant aggregate serialization is still implemented twice across native backends
-
-Cranelift and LLVM now isolate constant/blob materialization from ordinary
-expression lowering, but both modules still independently walk `ConstValue`,
-compute aggregate offsets, hash nested constants, write scalar bytes, and model
-relocations. The layout facts come from shared `omega_analyzer::layout`, so the
-two implementations are intended to be equivalent, but equivalence is enforced
-by convention rather than by construction. A new constant shape can therefore
-be implemented correctly in one backend and subtly differently in the other.
-
-The durable fix is a backend-neutral relocation-bearing constant image in the
-shared `omega-codegen` layer: one encoder should turn `(ConstValue,
-ResolvedType, Target)` into bytes plus symbolic relocation records, while each
-backend only maps those records to its native data/global API. That is a
-substantial ownership change touching global initialization, nested constant
-deduplication, string data, and reference constants, so it should be designed
-and tested as its own change rather than hidden inside a structural refactor.
 
 ### `Driver::compile(&mut self)` presents a reusable object even though compilation state is one-shot
 

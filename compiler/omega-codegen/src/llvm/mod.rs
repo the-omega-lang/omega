@@ -99,7 +99,7 @@ impl<'ctx> Codegen<'ctx> {
                 "generic",
                 "",
                 llvm_opt_level(opt_level),
-                // Use PIC so independently emitted objects link consistently with Cranelift output.
+                // Use PIC so independently emitted objects link consistently across separate compilation.
                 RelocMode::PIC,
                 inkwell::targets::CodeModel::Default,
             )

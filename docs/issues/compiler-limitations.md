@@ -35,7 +35,7 @@ Implementation caveats migrated out of architecture chapters. These are non-norm
   renderer.
 
 
-## The MIR, and how it reaches Cranelift
+## The MIR, and how it reaches codegen
 
 - **No three-address form yet.** `MirExpr` stays tree-shaped on purpose
   (see "What's still a tree" above); this is the natural next step for

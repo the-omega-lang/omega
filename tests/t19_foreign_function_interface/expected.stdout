@@ -1,4 +1,5 @@
 malloc-deref: 77
 fixed text, no variadic arguments
 sum = 5
+pi = 3.14
 helper-main: 999

@@ -30,6 +30,12 @@ main() => void {
 	printf(<*u8>b"sum = %d\n\0", raw_add(2, 3));
 	fflush(<*mut u8>0usize);
 
+	# A floating-point variadic argument exercises the SysV `%al` vector-count
+	# convention that a C variadic call depends on; see docs/issues history
+	# for why this specifically needed a real LLVM-emitted regression.
+	printf(<*u8>b"pi = %.2f\n\0", 3.14159f64);
+	fflush(<*mut u8>0usize);
+
 	# --- program entry point: only root-module `main` is the C entry ---------
 	println$("helper-main: ", helper::main());
 }

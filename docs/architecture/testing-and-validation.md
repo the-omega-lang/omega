@@ -114,13 +114,11 @@ When adding or changing a language rule:
 
 A component test may localize a bug, but it is not a substitute for an end-to-end conformance case when the user-visible language behavior changed.
 
-## Backend validation
+## Codegen validation
 
-Shared language semantics, ABI, layout, symbols, and linkage are intended to agree across Cranelift and LLVM. When a change affects one of those shared contracts, verify the relevant conformance case through every affected backend configuration rather than assuming success in one backend proves parity.
+Shared language semantics, ABI, layout, symbols, and linkage are decided upstream of LLVM emission. When a change affects one of those shared contracts, verify the relevant conformance case through the real compile/link/run path rather than trusting a Rust unit test alone.
 
-A backend-local instruction-selection/emission bug normally needs focused coverage for that backend plus the shared MIR contract. Do not run an unrelated backend matrix for every local change.
-
-Backend feature availability and backend selection are separate concerns: when performing backend-specific verification, confirm that the invoked compiler is actually selecting the intended backend rather than merely having support for it compiled in.
+An LLVM-local instruction-selection/emission bug normally needs focused coverage for that emission path plus the shared MIR contract.
 
 ## Separate-compilation and linking validation
 
@@ -130,8 +128,7 @@ Package identity, mangling, ABI, and weak-linkage bugs can require more than a s
 - extern references;
 - generic-instantiation ownership;
 - duplicate weak folding;
-- concrete strong-definition uniqueness;
-- mixed objects produced by different backend configurations.
+- concrete strong-definition uniqueness.
 
 The root language runner is intentionally simple; workflows that need several independently compiled packages, custom linker assertions, `nm`/`readelf`, or deliberately different runtime subsets may justify a focused compiler/workflow test or a small dedicated recipe rather than complicating every language case.
 
@@ -146,11 +143,11 @@ When a change concerns `core`, `std`, platform glue, freestanding behavior, or s
 
 Link success/failure itself may be the primary assertion; symbol inspection can provide secondary structural evidence.
 
-## Backend-native verification
+## LLVM-native verification
 
-LLVM modules are explicitly verified before output. Cranelift's construction APIs perform structural checks while building functions.
+LLVM modules are explicitly verified before output.
 
-Backend-native verification proves that emitted IR is structurally valid. It does **not** prove language semantics, ABI intent, or runtime behavior, so it does not replace conformance tests.
+This proves that emitted IR is structurally valid. It does **not** prove language semantics, ABI intent, or runtime behavior, so it does not replace conformance tests.
 
 ## Documentation consistency
 
@@ -174,7 +171,7 @@ focused implementation/component test
     -> owning crate integration tests
     -> focused root language-conformance case
     -> full `just test-all` gate
-    -> backend/separate-compilation/runtime matrix only when the changed contract requires it
+    -> separate-compilation/runtime matrix only when the changed contract requires it
 ```
 
 The goal is not to run the maximum number of commands. It is to use the smallest validation set that actually crosses every changed boundary.

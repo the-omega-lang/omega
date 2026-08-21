@@ -101,10 +101,10 @@ RUN apk add --no-cache \
         rustup \
         ruby
 
-# LLVM, for the second `omega-codegen` backend beside Cranelift (see that
-# crate's `BackendKind`, and docs/architecture/mir-and-codegen.md's "Multiple
-# backends"). Deliberately its own layer and its own apk invocation rather
-# than joining the block above, for two reasons: it is by far the largest
+# LLVM, the compiler's required codegen toolchain (see `omega-codegen` and
+# docs/architecture/mir-and-codegen.md). Deliberately its own layer and its
+# own apk invocation rather than joining the block above, for two reasons:
+# it is by far the largest
 # thing in this image (~700 MB installed -- /usr/lib/llvm<N> alone measures
 # 674 MB, several times everything else put together), and it is the only
 # system dependency whose major version the
@@ -134,7 +134,7 @@ RUN apk add --no-cache \
 #   * clang        -- LLVM's integrated assembler. It cross-assembles for
 #                     any target through `-target`, where binutils' `as` is
 #                     one binary per target; that is what lets one image
-#                     assemble for every target the backend can emit.
+#                     assemble for every target LLVM can emit.
 #   * lld          -- the same argument, for linking.
 #
 # Alpine keeps each LLVM major self-contained under /usr/lib/llvm<N> and

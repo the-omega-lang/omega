@@ -14,23 +14,13 @@ Concrete current compiler/library bugs and unsupported cases. Resolved issues ar
   is a `next()` call returning `Option<T>`, plus a match, per iteration.
   Recovering the old shape needs two MIR passes that do not exist yet:
   inlining, and scalar replacement of aggregates to dissolve the cursor
-  struct into registers. **Cranelift will not do this for us** — its
-  optimizer is far weaker than LLVM's here, and LLVM is what makes the
-  equivalent Rust code collapse. This is a deliberate, accepted trade of
-  generated-code quality for uniformity and a much smaller compiler; it is
-  the single strongest motivating case for starting the MIR optimizer.
-
-- **A float argument to a variadic (`printf`-style) call reads garbage
-  from whatever's left in `%al`.** Not this compiler's bug — Cranelift
-  itself has no support for the x86-64 SysV vararg calling convention
-  (`%al` must hold the caller's XMM-register count; confirmed nothing in
-  `cranelift-codegen` handles this at all, and `rustc_codegen_cranelift`
-  hit the same wall and just forbids the shape). Surfaces differently
-  depending on register allocation: a function parameter forwarded
-  straight into a variadic call (any `-O` level), an enum body-field
-  projection (`-O1`+ only), or even a plain local in a large enough
-  function (previously believed safe; it isn't, it was just small
-  enough to not show it). [primitives.md](../language/types-and-primitives.md)
+  struct into registers. LLVM's own optimizer does not do this for us
+  without that MIR-level work first — it collapses the equivalent
+  hand-written Rust because that code never had a cursor struct routed
+  through an `Option<T>` match in the first place. This is a deliberate,
+  accepted trade of generated-code quality for uniformity and a much
+  smaller compiler; it is the single strongest motivating case for
+  starting the MIR optimizer.
 
 - **No real C-ABI aggregate-passing convention** — structs/enums pass as
   flattened positional scalars, fine Omega-to-Omega, not safely callable
@@ -48,7 +38,7 @@ Concrete current compiler/library bugs and unsupported cases. Resolved issues ar
 
 - **A function-local `extern` declaration is accepted by parsing and semantic
   analysis but is not representable in MIR yet.** Top-level `extern` declarations
-  lower to `MirExternDeclaration` and are declared by both backends before body
+  lower to `MirExternDeclaration` and are declared by codegen before body
   emission. The statement form currently reaches `omega-mir` as
   `CheckedStmt::ExternDeclaration` and hits the explicit unimplemented path in
   function lowering instead. Fixing this cleanly means deciding whether local
@@ -77,12 +67,12 @@ Concrete current compiler/library bugs and unsupported cases. Resolved issues ar
 - **Ordinary indexing does not validate the index expression type during semantic
   analysis.** `project_index` analyzes `container[index]` with no expected type
   and records the resulting expression directly in `CheckedProjection::Index`.
-  Both native backends later assume that expression is an integer scalar
-  (Cranelift zero-extends it; LLVM converts it with `into_int_value()`), so a
-  non-integer index can survive checking and fail inside codegen instead of
-  producing a source diagnostic. The index domain/coercion policy belongs in
-  `omega-analyzer` and should be made explicit there before MIR; this refactor
-  intentionally does not add a backend-side type workaround.
+  Codegen later assumes that expression is an integer scalar (LLVM converts it
+  with `into_int_value()`), so a non-integer index can survive checking and
+  fail inside codegen instead of producing a source diagnostic. The index
+  domain/coercion policy belongs in `omega-analyzer` and should be made
+  explicit there before MIR; this refactor intentionally does not add a
+  codegen-side type workaround.
   [strings-casts-arrays-and-slices.md](../language/strings-casts-arrays-and-slices.md)
 
 - **`Type` equality compares parameter *names*.** Inside `FunctionType`,
@@ -141,8 +131,8 @@ Remaining known conformance/spec issues:
   This is deliberately not patched as a local refactor: adding the missing path
   changes emitted linker names and is therefore an ABI/separate-compilation
   migration. The fix must thread full spec identity through checked extern
-  references, conformance definitions, vtable construction, both backends, and
-  cross-package/mixed-backend linkage tests in one change.
+  references, conformance definitions, vtable construction, codegen, and
+  cross-package separate-compilation linkage tests in one change.
   [symbol-mangling.md](../architecture/symbol-mangling.md)
 
 - **Blanket conform bodies are checked lazily**, and a blanket emits a body
@@ -292,8 +282,8 @@ Shape problems in `omega-driver` and `omega-analyzer` that still need a delibera
 - **Omega's calling convention is not the platform C ABI.** The largest
   piece of deliberate debt in the compiler, and it was *deliberately
   preserved unchanged* when the LLVM backend landed — mirrored rather than
-  fixed, so that both backends agree with each other. Two facts, both in
-  `omega-codegen/src/abi.rs`:
+  fixed, so separately compiled packages keep agreeing with each other. Two
+  facts, both in `omega-codegen/src/abi.rs`:
 
   1. **Aggregates are flattened into their scalar leaves**, each leaf
      becoming its own parameter. C's SysV instead classifies a struct into
@@ -309,12 +299,11 @@ Shape problems in `omega-driver` and `omega-analyzer` that still need a delibera
   (`abi::variadic_promotion`), so variadic C interop is unaffected.
 
   What this does and does not break: Omega-to-Omega calls are correct on
-  every backend and target, because both backends read the same
-  `AbiSignature` and therefore agree exactly — that is what lets a
-  Cranelift `core.o` link against an LLVM `main.o` (`just test-mixed`).
-  Only the **C boundary** is wrong, and only for aggregates passed or
-  returned **by value**. Scalars and pointers — all Omega's C interop uses
-  today — are correct.
+  every target, because every separately compiled `omgc` invocation reads
+  the same `AbiSignature` and therefore agrees exactly. Only the **C
+  boundary** is wrong, and only for aggregates passed or returned **by
+  value**. Scalars and pointers — all Omega's C interop uses today — are
+  correct.
 
   To keep it that way rather than waiting for someone to discover it,
   aggregate-by-value across an `extern` boundary is a **hard error**
@@ -327,13 +316,6 @@ Shape problems in `omega-driver` and `omega-analyzer` that still need a delibera
   decision on whether Omega's *own* convention should follow the
   platform's or stay deliberately its own with `extern` as the sole
   translation point. That decision has not been made.
-
-- **`target/debug/omgc` is one path for two different builds.** `cargo
-  build` and `cargo build --features llvm` write the same binary, so
-  whichever ran last wins — a plain `cargo test` leaves an `omgc` that
-  rejects `--backend=llvm`. Every `just` recipe needing LLVM depends on
-  `build-llvm` first, so the gates are unaffected; it only bites when
-  running `omgc` by hand.
 
 - **`@layout(align = n)` is not yet a real address guarantee.**
   `layout::type_alignment` reports a type's *declared* `@layout(align)` and
@@ -352,18 +334,16 @@ Shape problems in `omega-driver` and `omega-analyzer` that still need a delibera
   1. `MirExpr::StructLiteral` concatenates only the *fields'* leaves, while
      `layout::leaves_of` includes the interior padding leaves an
      `@layout(align)` field forces. The whole-value write path and the
-     byte-offset read path therefore disagree about where `inner` is, and
-     the two backends give two *different* wrong answers. This predates the
-     LLVM backend (Cranelift is equally wrong) and is a layout-model bug,
-     not a codegen one.
-  2. `MirPlace::align` is derived from `type_alignment`, and the LLVM
-     backend turns it into a real `align` on every load and store.
-     `llvm::place::offset_align` weakens the claim by the access's own byte
-     offset, so nothing is over-claimed *relative to the place's base* —
-     but the base itself can still be over-claimed when reached through a
-     pointer (`p: *Inner` deref claims 16), because of the propagation gap
-     above. Cranelift never claimed anything, so it cannot be miscompiled
-     by this; the LLVM backend can, at `-O2`/`-O3`.
+     byte-offset read path therefore disagree about where `inner` is. This
+     is a layout-model bug, not a codegen one.
+  2. `MirPlace::align` is derived from `type_alignment`, and codegen turns
+     it into a real `align` on every load and store. `llvm::place::offset_align`
+     weakens the claim by the access's own byte offset, so nothing is
+     over-claimed *relative to the place's base* — but the base itself can
+     still be over-claimed when reached through a pointer (`p: *Inner`
+     deref claims 16), because of the propagation gap above. This can be
+     miscompiled at `-O2`/`-O3`, where LLVM actually acts on the
+     over-claimed alignment.
 
   Resolving it means deciding what `@layout(align = n)` actually promises:
   making `type_alignment` the max of a type's own declared alignment and

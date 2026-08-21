@@ -4,7 +4,7 @@ Typical shape:
 
 ```text
 omgc <entry-dir> -o <output> [--name=<name>] [--extern=[<name>:]<dir>]...
-     [-O<0-3>] [--target=<triplet>] [--backend=<name>]
+     [-O<0-3>] [--target=<triplet>]
      [--emit=<obj|ir|asm>] [-v]
 ```
 
@@ -20,22 +20,15 @@ Source-level meaning is specified in [`../language/modules-and-imports.md`](../l
 
 A target is written as `<arch>-<os>` or `<arch>-<vendor>-<os>`; the vendor segment is accepted but is not currently semantically significant.
 
-The compiler recognizes the target architectures/OS combinations supported by its target layer and selected backend. The default target is `x86_64-unknown-linux`.
+The compiler recognizes the target architectures/OS combinations supported by its target layer and LLVM. The default target is `x86_64-unknown-linux`.
 
-Not every backend supports every recognized target. An unsupported backend/target pair is reported as a compiler error before backend emission.
-
-## Backends
-
-- `cranelift` — default, optimized for compiler speed.
-- `llvm` — available when the compiler is built with LLVM support; broader target/optimization capability.
-
-Objects produced by different backends are intended to interoperate because symbol naming, linkage and Omega's shared ABI decisions live above the backend seam. See [`../architecture/mir-and-codegen.md`](../architecture/mir-and-codegen.md).
+An unsupported target is reported as a compiler error before emission.
 
 ## Emit modes
 
 ```text
 --emit=obj     object file (default)
---emit=ir      backend IR
+--emit=ir      LLVM IR
 --emit=asm     assembly
 ```
 

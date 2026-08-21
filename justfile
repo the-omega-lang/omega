@@ -1,11 +1,3 @@
-backend := "cranelift"
-
-omgc-features := if backend == "llvm" {
-    "--features llvm"
-} else {
-    ""
-}
-
 test-all: build-omgc build-runtime
     @echo "[*] Starting test-runner..."
     ./bin/test-runner
@@ -14,8 +6,8 @@ build-runtime: build-core build-plat build-std
     @echo "[*] Runtime built successfully"
 
 build-omgc:
-    @echo "[*] Building omgc ({{backend}})..."
-    cargo build {{omgc-features}}
+    @echo "[*] Building omgc..."
+    cargo build
 
 build-core: build-omgc
     @echo "[*] Building 'core'..."

@@ -1,6 +1,6 @@
 # Semantic types, layout, target width, and compile-time values
 
-Several cross-cutting compiler facts live in `omega-analyzer` because they are semantic/representation decisions that both MIR and all backends must consume identically.
+Several cross-cutting compiler facts live in `omega-analyzer` because they are semantic/representation decisions that MIR and codegen must consume identically.
 
 The two most important are:
 
@@ -18,9 +18,9 @@ Compile-time values (`ConstValue`, `comp_eval.rs`) are built against the same ty
 - checked tree;
 - MIR;
 - shared ABI construction;
-- both backends.
+- codegen.
 
-This is intentional: later stages should not translate semantic types into backend-private competing definitions before common layout/ABI facts are decided.
+This is intentional: later stages should not translate semantic types into codegen-private competing definitions before common layout/ABI facts are decided.
 
 ### Nominal aggregate cells
 
@@ -44,7 +44,7 @@ Aggregate members use a dedicated `ResolvedField { name, type, visibility }` rep
 
 `ResolvedFunctionType` contains resolved parameter types, return type, variadic flag, and self-mode information. It is the input to shared ABI construction.
 
-Method receiver shape is semantically explicit by this point; backends should not re-infer source receiver modes.
+Method receiver shape is semantically explicit by this point; codegen should not re-infer source receiver modes.
 
 ## Target vocabulary
 
@@ -60,11 +60,11 @@ Examples include:
 - compile-time arithmetic that depends on pointer width;
 - ABI leaf sizing.
 
-Backend target triples are derived later from the shared target.
+LLVM target triples are derived later from the shared target.
 
 ## Layout ownership
 
-`omega-analyzer::layout` is the **one source of truth** for byte/leaf layout used by both backends.
+`omega-analyzer::layout` is the **one source of truth** for byte/leaf layout used by codegen.
 
 It provides:
 
@@ -78,7 +78,7 @@ It provides:
 - function local-frame layout;
 - stack alignment requirements.
 
-A backend may map a `Leaf` to its native scalar type, but it must not invent different aggregate offsets.
+Codegen may map a `Leaf` to its native scalar type, but it must not invent different aggregate offsets.
 
 ## Abstract leaves
 
@@ -104,15 +104,15 @@ For a struct, field types are passed through `layout_fields` using the resolved 
 3. field size from its leaf representation;
 4. explicit padding leaves where needed.
 
-The struct's resolved alignment/packing annotation data lives on the resolved struct cell, not in either backend.
+The struct's resolved alignment/packing annotation data lives on the resolved struct cell, not in codegen.
 
 ## Local stack-frame layout
 
 Non-parameter MIR locals are laid out through `locals_layout`, using the same field-layout machinery as an unannotated aggregate.
 
-Both backends consume this one result. This ensures local offsets and zero-sized local address behavior do not vary by backend.
+Codegen consumes this one result rather than re-deriving offsets.
 
-Parameters are a distinct storage source at function entry and occupy `MirBody.locals[0..arg_count]`; backend code may materialize/spill them to memory when an address is required.
+Parameters are a distinct storage source at function entry and occupy `MirBody.locals[0..arg_count]`; codegen may materialize/spill them to memory when an address is required.
 
 ## Enum layout
 
@@ -180,12 +180,12 @@ A checked subtree replaced by a `ConstValue` is no longer visible to later check
 
 ## Constant emission
 
-Codegen owns conversion of `ConstValue` into backend values/memory/data objects. Shared architecture rules include:
+Codegen owns conversion of `ConstValue` into native LLVM values/memory/data objects. Shared architecture rules include:
 
-- scalar constants become ordinary backend constants;
+- scalar constants become ordinary LLVM constants;
 - aggregate constants follow the same shared field/leaf/byte layout as runtime-built values;
 - addressable byte blobs are emitted as anonymous data;
-- repeated content-addressed const blobs may be deduplicated within a backend compilation unit;
+- repeated content-addressed const blobs may be deduplicated within a compilation unit;
 - codegen does not re-run compile-time semantic evaluation.
 
 ## Representation changes checklist
@@ -198,11 +198,11 @@ Changing a type's runtime representation is cross-cutting. Audit, in order:
 4. `ConstValue` if constants can contain the type;
 5. shared ABI;
 6. MIR place/expression shape only if needed;
-7. both backends' leaf/place/constant handling;
+7. codegen's leaf/place/constant handling;
 8. mangling if the type's external identity changes;
-9. mixed-backend/separate-compilation tests.
+9. separate-compilation tests.
 
-Do not patch one backend's offset arithmetic as the primary implementation of a new layout rule.
+Do not patch codegen's offset arithmetic as the primary implementation of a new layout rule.
 
 ## Representation couplings worth preserving
 

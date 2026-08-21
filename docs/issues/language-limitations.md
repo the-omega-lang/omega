@@ -7,10 +7,6 @@ These notes were migrated out of normative language chapters. They describe curr
 
 Normative chapter: [`../language/functions.md`](../language/functions.md)
 
-- The two confirmed variadic-argument `f64` codegen bugs (a forwarded
-  `f64` parameter, and an `f64` read from an enum body field) both
-  specifically manifest through this `SystemV`-call-convention path — see
-  [primitives](../language/types-and-primitives.md).
 - A deeper `module::Type::function(...)` static-call path (through more
   than one level of module qualification) resolves without overload
   disambiguation at all — a documented, narrow gap distinct from the
@@ -28,37 +24,6 @@ Normative chapter: [`../language/types-and-primitives.md`](../language/types-and
   agree by construction) but means an Omega function taking a struct
   by value is not safely callable from, say, hand-written C expecting the
   System V ABI's actual struct-passing rules.
-- **A floating-point argument passed to a variadic call
-  (`printf`-style) is unreliable — not an Omega bug, a genuine Cranelift
-  gap.** The x86-64 System V ABI requires the *caller* of a variadic
-  function to set `%al` to the number of vector (XMM) registers used for
-  floating-point arguments, before the call — that's how `printf` itself
-  knows whether to read a `%f` argument from a register or the stack.
-  `cranelift-codegen` (confirmed directly against its own source, version
-  0.131.1) has no code anywhere handling this — no `ArgumentPurpose`
-  variant, nothing matching `vararg`; it's not a partial or buggy
-  implementation, there simply isn't one. This isn't unique to this
-  compiler: `rustc_codegen_cranelift` hit the identical wall and
-  resolved it by forbidding float arguments in variadic calls outright
-  rather than working around it — see [its own tracking
-  issue](https://github.com/rust-lang/rustc_codegen_cranelift/issues/1451).
-
-  Since nothing ever sets `%al`, a variadic call with a float argument
-  reads whatever garbage happens to be sitting in `%rax`'s low byte at
-  that program point — inherently undefined, not tied to any one
-  language-level shape. Confirmed (via `--emit=asm`, reading the actual
-  generated instructions) on: an `f64` function parameter forwarded
-  directly into a variadic call; an `f64` read via an enum body-field
-  projection; and a plain local `f64`/`f32` inside a large enough
-  function — the last of these previously believed safe "at any
-  optimization level," which turned out to only have been true for
-  small functions, where whatever's left in `%al` happens to still work
-  out. All are almost certainly the same single root cause (garbage in
-  `%al`) surfacing under different register-allocation outcomes, not
-  several independent bugs. Not fixed — no clean fix is available until
-  Cranelift itself grows real vararg support, or this compiler grows its
-  own workaround (rejecting the shape at compile time, or routing such
-  calls through a small correctly-ABI'd shim, both still open).
 - **`isize`/`usize` width is target-dependent by design** — nothing in
   `core` bakes in a `min_value`/`max_value` bound for them, since any
   literal bound would silently be wrong on a target this toolchain wasn't
