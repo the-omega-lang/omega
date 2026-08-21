@@ -38,10 +38,10 @@ impl AnalysisErrorKind {
             Self::NoSuchField { base, .. } => d.with_label(span, format!("`{base}` has no field by that name")),
             Self::FieldNotVisible { field, base } => d
                 .with_label(span, format!("`{field}` is not visible from this module"))
-                .with_help(format!("mark the field `exposed`/`internal` on `{base}`, or bypass with `reveal`")),
+                .with_help(format!("mark the field `exposed`/`shared` on `{base}`, or bypass with `reveal`")),
             Self::MethodNotVisible { method, base } => d
                 .with_label(span, format!("`{method}` is not visible from this module"))
-                .with_help(format!("mark the method `exposed`/`internal` on `{base}`, or bypass with `reveal`")),
+                .with_help(format!("mark the method `exposed`/`shared` on `{base}`, or bypass with `reveal`")),
             Self::NotAnArray { found } => d
                 .with_label(span, format!("this has type `{found}`, which cannot be indexed"))
                 .with_note("only sized arrays (`[N]T`), unsized arrays (`*[]T`), and slices (`*[?]T`) support indexing"),

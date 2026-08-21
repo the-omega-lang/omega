@@ -2,7 +2,7 @@ exposed struct Public {
 	exposed data: i32;
 }
 
-internal struct PackageWide {
+shared struct PackageWide {
 	exposed data: i32;
 }
 
@@ -44,7 +44,7 @@ exposed struct Box {
 	}
 }
 
-internal spec Mammal {
+shared spec Mammal {
 	breathe(*self) => i32;
 }
 

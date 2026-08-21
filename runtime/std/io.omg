@@ -49,8 +49,8 @@ conform Stdin to Read {
 # A bounded in-memory writer.  It deliberately has no failure latch: when
 # storage is exhausted, a subsequent non-empty write simply returns `None`.
 exposed struct SliceWriter {
-    internal storage: *mut []u8;
-    internal len: usize;
+    shared storage: *mut []u8;
+    shared len: usize;
 
     exposed new(storage: *mut []u8) => Self {
         Self { storage = storage; len = 0; }
@@ -92,7 +92,7 @@ conform SliceWriter to Write {
 # mode bit on one broad Writer type.  It preserves the longstanding public
 # `string_writer` and `to_string` conveniences.
 exposed struct StringWriter {
-    internal value: *mut String;
+    shared value: *mut String;
 
     exposed new(value: *mut String) => Self {
         Self { value = value; }
@@ -114,9 +114,9 @@ exposed string_writer(value: *mut String) => StringWriter {
 # special case.  Its storage is borrowed from the caller and a failed flush
 # retains unwritten bytes for a later retry.
 exposed struct BufWriter<W: Write> {
-    internal inner: *mut W;
-    internal buf: *mut []u8;
-    internal len: usize;
+    shared inner: *mut W;
+    shared buf: *mut []u8;
+    shared len: usize;
 
     exposed new(inner: *mut W, buffer: *mut []u8) => Self {
         Self { inner = inner; buf = buffer; len = 0; }
@@ -219,10 +219,10 @@ conform<W: Write> BufWriter<W> to Write {
 # One `read` call makes at most one inner read, so a short read remains visible
 # to its caller just like it is on a concrete source.
 exposed struct BufReader<R: Read> {
-    internal inner: *mut R;
-    internal buf: *mut []u8;
-    internal start: usize;
-    internal len: usize;
+    shared inner: *mut R;
+    shared buf: *mut []u8;
+    shared start: usize;
+    shared len: usize;
 
     exposed new(inner: *mut R, buffer: *mut []u8) => Self {
         Self { inner = inner; buf = buffer; start = 0; len = 0; }

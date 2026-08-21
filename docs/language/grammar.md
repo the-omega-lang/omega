@@ -46,7 +46,7 @@ Top-level source may contain imports, extern declarations, aggregate/spec/gap/gl
 ## Visibility
 
 ```ebnf
-visibility = "exposed" | "internal" ;
+visibility = "exposed" | "shared" ;
 ```
 
 Omitted visibility means hidden. Visibility legality varies by item/member; see [`visibility.md`](visibility.md).

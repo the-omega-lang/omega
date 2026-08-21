@@ -50,7 +50,7 @@ impl<'r> Analyzer<'r> {
     ) -> bool {
         match visibility {
             Visibility::Exposed => true,
-            Visibility::Internal => declaring_module.first() == accessor_module.first(),
+            Visibility::Shared => declaring_module.first() == accessor_module.first(),
             Visibility::Hidden => declaring_module == accessor_module,
         }
     }

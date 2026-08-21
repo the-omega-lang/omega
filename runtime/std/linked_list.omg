@@ -9,20 +9,20 @@
 import alloc::alloc;
 import alloc::free;
 
-# `Node<T>` is hidden (module-scoped); its fields are `internal` rather than
+# `Node<T>` is hidden (module-scoped); its fields are `shared` rather than
 # hidden since `LinkedList<T>`/`LinkedListIterator<T>` (both in this file)
 # need to read/write them directly, and a hidden field is visible only
 # within its own type's methods.
 struct Node<T> {
-    internal value: T;
-    internal prev: *mut Node<T>;
-    internal next: *mut Node<T>;
+    shared value: T;
+    shared prev: *mut Node<T>;
+    shared next: *mut Node<T>;
 }
 
 exposed struct LinkedList<T> {
-    internal head: *mut Node<T>;
-    internal tail: *mut Node<T>;
-    internal count: usize;
+    shared head: *mut Node<T>;
+    shared tail: *mut Node<T>;
+    shared count: usize;
 
     exposed new() => Self {
         Self { head = <*mut Node<T>>0; tail = <*mut Node<T>>0; count = 0; }
@@ -118,7 +118,7 @@ conform<T> LinkedList<T> to ToIterator<T> {
 }
 
 exposed struct LinkedListIterator<T> {
-    internal current: *mut Node<T>;
+    shared current: *mut Node<T>;
 
 }
 

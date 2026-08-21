@@ -4,7 +4,7 @@ import child::Mammal;
 import child::Dog;
 
 main() => void {
-	# `exposed` and `internal` are both reachable across modules within the
+	# `exposed` and `shared` are both reachable across modules within the
 	# same top-level package.
 	p := child::Public { data = 1; };
 	pw := child::PackageWide { data = 2; };
@@ -25,11 +25,11 @@ main() => void {
 	println$("reveal-after-mutate: ", reveal box.hidden_field);
 
 	# A spec requirement's effective visibility is the declaring spec's
-	# visibility; `internal` here is still package-wide.
+	# visibility; `shared` here is still package-wide.
 	dog := Dog { id = 1; };
 	println$("spec-req-visibility: ", Mammal::breathe(&dog));
 
-	# Dynamic dispatch does not widen visibility: `Mammal` stays internal
+	# Dynamic dispatch does not widen visibility: `Mammal` stays shared
 	# whether `breathe` is reached through static or dynamic dispatch.
 	obj := <spec *Mammal>&dog;
 	println$("dynamic-dispatch-visibility: ", obj.breathe());

@@ -34,7 +34,7 @@ macro
 The following are lexed as ordinary identifiers and acquire special meaning only in grammar-defined positions:
 
 ```text
-mut comp self reveal sizeof in exposed internal
+mut comp self reveal sizeof in exposed shared
 marker gap glue conform to primitive root
 expr type ident
 ```

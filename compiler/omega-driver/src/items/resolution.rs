@@ -8,7 +8,7 @@ impl Driver {
     ) -> bool {
         match visibility {
             Visibility::Exposed => true,
-            Visibility::Internal => declaring.first() == accessor.first(),
+            Visibility::Shared => declaring.first() == accessor.first(),
             Visibility::Hidden => declaring == accessor,
         }
     }

@@ -958,28 +958,28 @@ fn formatting_is_not_available_from_core() {
 }
 
 #[test]
-fn internal_items_are_visible_across_executable_modules() {
+fn shared_items_are_visible_across_executable_modules() {
     let package = TestPackage::new(
         r#"
-        import helper::shared;
-        entry_fn() => i32 { shared() }
+        import helper::fortytwo;
+        entry_fn() => i32 { fortytwo() }
         "#,
     );
-    package.write_child("helper", "internal shared() => i32 { 42 }");
+    package.write_child("helper", "shared fortytwo() => i32 { 42 }");
     package
         .compile()
-        .expect("an executable's root and child modules share internal visibility");
+        .expect("an executable's root and child modules share package-wide visibility");
 }
 
 #[test]
 fn root_imports_are_anchored_to_the_package_root_module() {
     let package = TestPackage::new(
         r#"
-        import root::helper::shared;
-        entry_fn() => i32 { shared() }
+        import root::helper::fortytwo;
+        entry_fn() => i32 { fortytwo() }
         "#,
     );
-    package.write_child("helper", "internal shared() => i32 { 42 }");
+    package.write_child("helper", "shared fortytwo() => i32 { 42 }");
     package
         .compile()
         .expect("root imports from a child should remain inside the package");

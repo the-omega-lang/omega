@@ -107,7 +107,7 @@ hand-writing twelve near-identical groups. See [core library](../guide/core-libr
 
 ## Cross-file visibility
 
-`macro` accepts the same hidden/default, `internal`, and `exposed`
+`macro` accepts the same hidden/default, `shared`, and `exposed`
 visibility modifiers as ordinary items. Invocation resolution is local
 definitions first, explicitly imported macros second, then exposed `core`
 macros as an ambient fallback. Visibility is not transitive: an imported

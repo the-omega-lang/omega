@@ -3,12 +3,12 @@ import helper;
 
 # An extern declaration gives a name a function type with no Omega body;
 # calls use ordinary Omega call syntax.
-internal extern malloc : (size: usize) => *mut u8;
-internal extern free : (ptr: *u8) => void;
+shared extern malloc : (size: usize) => *mut u8;
+shared extern free : (ptr: *u8) => void;
 
 # `...` exists only for foreign/C-style variadic function types.
-internal extern printf : (format: *u8, ...) => i32;
-internal extern fflush : (stream: *mut u8) => i32;
+shared extern printf : (format: *u8, ...) => i32;
+shared extern fflush : (stream: *mut u8) => i32;
 
 @mangling(disabled)
 raw_add(a: i32, b: i32) => i32 { a + b }

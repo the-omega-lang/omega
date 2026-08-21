@@ -1,8 +1,8 @@
 # Package-wide visibility, but not imported by name anywhere else; only
 # reachable here through the macro below.
-internal secret := 7;
+shared secret := 7;
 
-internal macro read_secret() => {
+shared macro read_secret() => {
 	secret
 }
 

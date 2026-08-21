@@ -304,7 +304,7 @@ impl Driver {
                 continue;
             };
             let visible = definition.visibility == Visibility::Exposed
-                || (definition.visibility == Visibility::Internal
+                || (definition.visibility == Visibility::Shared
                     && path.first() == module.first());
             if visible {
                 environment

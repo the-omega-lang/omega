@@ -136,7 +136,7 @@ Normative chapter: [`../language/visibility.md`](../language/visibility.md)
   [modules & linkage](../language/modules-and-imports.md).
 
 Macros are ordinary visibility-bearing items: an unmodified macro is
-file-local, `internal macro` is package-visible, and `exposed macro` is
+file-local, `shared macro` is package-visible, and `exposed macro` is
 visible to importers and the ambient `core` prelude.
 
 

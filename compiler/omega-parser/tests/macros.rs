@@ -68,9 +68,9 @@ fn macro_visibility_and_definition_expansion_are_reported() {
     use omega_parser::prelude::Visibility;
 
     let exposed = macro_definition("exposed macro make() => {}");
-    let internal = macro_definition("internal macro make() => {}");
+    let shared = macro_definition("shared macro make() => {}");
     assert_eq!(exposed.visibility, Visibility::Exposed);
-    assert_eq!(internal.visibility, Visibility::Internal);
+    assert_eq!(shared.visibility, Visibility::Shared);
     assert!(SourceModule::parse("exposed make$();").is_err());
 
     let error = macros::expand(

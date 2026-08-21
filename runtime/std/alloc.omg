@@ -6,14 +6,14 @@
 # reachability worse, not better (more distinct symbol references baked
 # into `std.o`). Do not inline this back into the generic methods.
 
-internal alloc(size: usize) => *mut u8 {
+shared alloc(size: usize) => *mut u8 {
     GlobalAllocator::alloc(size)
 }
 
-internal free(ptr: *u8) => void {
+shared free(ptr: *u8) => void {
     GlobalAllocator::free(ptr);
 }
 
-internal realloc(ptr: *u8, size: usize) => *mut u8 {
+shared realloc(ptr: *u8, size: usize) => *mut u8 {
     GlobalAllocator::realloc(ptr, size)
 }

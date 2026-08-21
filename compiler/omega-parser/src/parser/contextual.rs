@@ -5,7 +5,7 @@ pub const REVEAL: &str = "reveal";
 pub const SIZEOF: &str = "sizeof";
 pub const IN: &str = "in";
 pub const EXPOSED: &str = "exposed";
-pub const INTERNAL: &str = "internal";
+pub const SHARED: &str = "shared";
 pub const MARKER: &str = "marker";
 pub const GAP: &str = "gap";
 pub const GLUE: &str = "glue";
@@ -18,6 +18,6 @@ pub const TYPE: &str = "type";
 pub const IDENT: &str = "ident";
 
 pub const ALL: &[&str] = &[
-    MUT, COMP, SELF, REVEAL, SIZEOF, IN, EXPOSED, INTERNAL, MARKER, GAP, GLUE, CONFORM, TO,
+    MUT, COMP, SELF, REVEAL, SIZEOF, IN, EXPOSED, SHARED, MARKER, GAP, GLUE, CONFORM, TO,
     PRIMITIVE, ROOT, EXPR, TYPE, IDENT,
 ];

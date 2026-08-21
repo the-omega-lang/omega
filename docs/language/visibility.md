@@ -4,7 +4,7 @@ This chapter is normative for current Omega language behavior. Known implementat
 
 ```omega
 exposed struct Public { ... }
-internal struct PackageWide { ... }
+shared struct PackageWide { ... }
 struct HiddenByDefault { ... }
 
 reveal some_module::hidden_thing();
@@ -14,11 +14,11 @@ import reveal extern::some_package;
 Omega has three declaration visibility levels plus a use-site bypass:
 
 - `exposed`: visible from any package.
-- `internal`: visible anywhere in the same top-level package.
+- `shared`: visible anywhere in the same top-level package.
 - no modifier (`hidden`): narrowest visibility; the exact scope depends on whether the declaration is a top-level item or a member.
 - `reveal`: explicitly bypasses an otherwise-applicable visibility restriction at a particular use site.
 
-`exposed`, `internal`, and `reveal` are contextual syntax rather than globally reserved words.
+`exposed`, `shared`, and `reveal` are contextual syntax rather than globally reserved words.
 
 ## Hidden items and hidden members
 
@@ -26,9 +26,9 @@ A hidden top-level item is visible throughout its exact declaring module.
 
 A hidden field or method is narrower: it is visible only from methods of the exact declaring struct/union/enum/marker owner. An unrelated free function in the same module cannot access that hidden member without `reveal`.
 
-## `internal`
+## `shared`
 
-`internal` is package-wide, not descendant-module-only. Any module within the same top-level package may access an internal item/member subject to the normal kind-specific lookup rules.
+`shared` is package-wide, not descendant-module-only. Any module within the same top-level package may access a shared item/member subject to the normal kind-specific lookup rules.
 
 ## `reveal`
 
@@ -52,7 +52,7 @@ An implementation may warn when a `reveal` was unnecessary. Known current edge c
 
 ## Macros
 
-A macro body may not use declarations less visible than the macro itself in a way that would expose them to callers. In particular, an `exposed` macro cannot smuggle an `internal` or hidden dependency across package boundaries. Caller-side `reveal` does not retroactively weaken the macro definition's own visibility obligations.
+A macro body may not use declarations less visible than the macro itself in a way that would expose them to callers. In particular, an `exposed` macro cannot smuggle a `shared` or hidden dependency across package boundaries. Caller-side `reveal` does not retroactively weaken the macro definition's own visibility obligations.
 
 ## Specs and conformance
 
@@ -61,7 +61,7 @@ A function requirement declared inside a spec has no independent visibility modi
 A function body written in a `conform` block likewise has no visibility modifier and inherits the matched requirement's effective visibility.
 
 ```omega
-internal spec Mammal {
+shared spec Mammal {
     breathe(*self) => i32;
 }
 

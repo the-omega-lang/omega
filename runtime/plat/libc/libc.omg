@@ -9,11 +9,11 @@
 # renaming the file. The two `free`s below (raw extern and glue function)
 # are an intentional, confirmed-safe name collision.
 
-internal extern malloc : (size: usize) => *mut u8;
-internal extern free : (ptr: *u8) => void;
-internal extern realloc : (ptr: *u8, size: usize) => *mut u8;
-internal extern write : (fd: i32, buf: *u8, count: usize) => isize;
-internal extern read : (fd: i32, buf: *mut u8, count: usize) => isize;
+shared extern malloc : (size: usize) => *mut u8;
+shared extern free : (ptr: *u8) => void;
+shared extern realloc : (ptr: *u8, size: usize) => *mut u8;
+shared extern write : (fd: i32, buf: *u8, count: usize) => isize;
+shared extern read : (fd: i32, buf: *mut u8, count: usize) => isize;
 
 # Omega's root `main` is never itself the platform's native entry-point
 # symbol (see docs/language/foreign-function-interface.md, "Program entry

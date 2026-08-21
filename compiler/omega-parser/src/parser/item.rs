@@ -202,10 +202,10 @@ fn parse_optional_visibility(p: &mut Parser) -> ParsedVisibility {
                 span,
             }
         }
-        TokenKind::Ident(name) if name == contextual::INTERNAL => {
+        TokenKind::Ident(name) if name == contextual::SHARED => {
             p.advance();
             ParsedVisibility::Explicit {
-                visibility: Visibility::Internal,
+                visibility: Visibility::Shared,
                 span,
             }
         }

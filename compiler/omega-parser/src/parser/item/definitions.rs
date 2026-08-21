@@ -118,11 +118,11 @@ fn parse_member_functions(
 }
 
 fn field_follows(p: &Parser) -> bool {
-    // A field named `exposed`/`internal` (`exposed: i32;`) is a field, not a
+    // A field named `exposed`/`shared` (`exposed: i32;`) is a field, not a
     // modifier with a missing name -- so the no-modifier reading is tried
     // too, matching `parse_optional_visibility`'s own commit rule.
     let modifier_offset = match p.peek() {
-        TokenKind::Ident(name) if name == contextual::EXPOSED || name == contextual::INTERNAL => 1,
+        TokenKind::Ident(name) if name == contextual::EXPOSED || name == contextual::SHARED => 1,
         _ => 0,
     };
     [modifier_offset, 0].into_iter().any(|offset| {

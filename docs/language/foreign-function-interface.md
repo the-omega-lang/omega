@@ -7,7 +7,7 @@ Omega supports explicit references to externally defined functions and explicit 
 An external function declaration gives a name a function type without an Omega body:
 
 ```omega
-internal extern malloc : (size: usize) => *mut u8;
+shared extern malloc : (size: usize) => *mut u8;
 ```
 
 Grammar:
@@ -25,7 +25,7 @@ Current Omega does not define storage semantics for non-function extern data dec
 `...` exists only for foreign/C-style variadic function types. Pure Omega function definitions are not variadic.
 
 ```omega
-internal extern printf : (format: *u8, ...) => i32;
+shared extern printf : (format: *u8, ...) => i32;
 ```
 
 Arguments before `...` are checked against their declared parameter types. Trailing variadic arguments use the FFI promotion/ABI behavior implemented for the target. A current float-varargs bug is tracked in [`../issues/known-issues.md`](../issues/known-issues.md).

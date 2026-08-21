@@ -22,10 +22,10 @@ exposed struct Range<T> {
 }
 
 exposed struct RangeIterator<T> {
-    internal current: T;
-    internal end: T;
-    internal inclusive: bool;
-    internal done: bool;
+    shared current: T;
+    shared end: T;
+    shared inclusive: bool;
+    shared done: bool;
 }
 
 # Stepping, and nothing else. `successor` returns `None` at the type's upper

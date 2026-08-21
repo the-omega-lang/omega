@@ -394,7 +394,7 @@ Variadic macro parameters appear in runtime source as `$args: expr...`; see [`..
 
 ```omega
 exposed public_api() => void { }
-internal package_api() => void { }
+shared package_api() => void { }
 hidden_by_default() => void { }
 ```
 

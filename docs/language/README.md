@@ -21,7 +21,7 @@ The word `spec` in Omega source means the interface-like language construct. “
 1. [`lexical-structure.md`](lexical-structure.md) — source characters, identifiers, keywords, comments, literals, punctuation.
 2. [`grammar.md`](grammar.md) — program/item/statement/expression/type grammar and syntactic restrictions.
 3. [`modules-and-imports.md`](modules-and-imports.md) — package/module identity, source layout, imports, roots, ambient `core` names.
-4. [`visibility.md`](visibility.md) — hidden/exposed/internal items and members, `reveal`.
+4. [`visibility.md`](visibility.md) — hidden/exposed/shared items and members, `reveal`.
 
 ### Types and declarations
 

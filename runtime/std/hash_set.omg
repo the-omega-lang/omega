@@ -17,7 +17,7 @@ import hash::Hash;
 marker Unit {}
 
 exposed struct HashSet<T: Hash> {
-    internal inner: HashMap<T, Unit>;
+    shared inner: HashMap<T, Unit>;
 
     exposed new() => Self {
         Self { inner = HashMap<T, Unit>::new(); }
@@ -71,7 +71,7 @@ conform<T: Hash> HashSet<T> to ToIterator<T> {
 }
 
 exposed struct HashSetIterator<T> {
-    internal inner: HashMapIterator<T, Unit>;
+    shared inner: HashMapIterator<T, Unit>;
 
 }
 

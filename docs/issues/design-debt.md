@@ -195,7 +195,7 @@ project.
 
 Reveal activation is now centralized substantially more than it used to be:
 `RevealState` owns nested frame bookkeeping and common operand positions go
-through `with_reveal_operand` / `with_reveal_bypass`. A hidden/internal access
+through `with_reveal_operand` / `with_reveal_bypass`. A hidden/shared access
 marks every active frame used, so a nested reveal chain no longer produces the
 old guaranteed false warning.
 

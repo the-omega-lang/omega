@@ -87,7 +87,7 @@ impl ParseError {
                 .with_help("add an item after the annotation or remove it"),
             ParseErrorKind::VisibilityNotAllowedHere => Diagnostic::error("a visibility modifier is not allowed here")
                 .with_label(self.span, "this item can't carry a visibility modifier")
-                .with_help("'exposed'/'internal' are only allowed on structs, enums, unions, specs, macros, functions, globals, and externs"),
+                .with_help("'exposed'/'shared' are only allowed on structs, enums, unions, specs, macros, functions, globals, and externs"),
             ParseErrorKind::GapOrGlueVisibility => Diagnostic::error("gaps and glues take no visibility modifier")
                 .with_label(self.span, "gaps and glues are global by nature")
                 .with_help("remove this visibility modifier"),

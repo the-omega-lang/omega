@@ -19,11 +19,11 @@ import alloc::free;
 import alloc::realloc;
 
 exposed struct List<T> {
-    internal data: *mut T;
+    shared data: *mut T;
     # Named `count`, not `len` -- a field and method can't share a name,
     # and the public accessor (`list.len()`) gets the idiomatic one.
-    internal count: usize;
-    internal cap: usize;
+    shared count: usize;
+    shared cap: usize;
 
     exposed new() => Self {
         Self { data = <*mut T>0; count = 0; cap = 0; }
@@ -132,13 +132,13 @@ conform<T> List<T> to ToIterator<T> {
     }
 }
 
-# `internal`, not hidden: `List<T>::to_iterator` builds one by struct
+# `shared`, not hidden: `List<T>::to_iterator` builds one by struct
 # literal from a different type's method, and hidden fields are settable
 # only within their own type's methods.
 exposed struct ListIterator<T> {
-    internal data: *mut T;
-    internal index: usize;
-    internal remaining: usize;
+    shared data: *mut T;
+    shared index: usize;
+    shared remaining: usize;
 
 }
 

@@ -39,9 +39,9 @@ fn gap_rejects_a_body_and_self_parameter() {
 fn gap_and_glue_reject_a_visibility_modifier() {
     for source in [
         "exposed gap Foo { f() => void; }",
-        "internal gap Foo { f() => void; }",
+        "shared gap Foo { f() => void; }",
         "exposed glue Foo { f() => void { } }",
-        "internal glue Foo { f() => void { } }",
+        "shared glue Foo { f() => void { } }",
     ] {
         assert!(
             matches!(

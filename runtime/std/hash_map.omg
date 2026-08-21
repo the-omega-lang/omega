@@ -17,11 +17,11 @@ import alloc::free;
 import extern::core::cmp::Eq;
 import hash::Hash;
 
-# Hidden (module-scoped), `internal` fields -- see `std::linked_list::Node<T>`.
+# Hidden (module-scoped), `shared` fields -- see `std::linked_list::Node<T>`.
 struct Entry<K, V> {
-    internal key: K;
-    internal value: V;
-    internal next: *mut Entry<K, V>;
+    shared key: K;
+    shared value: V;
+    shared next: *mut Entry<K, V>;
 }
 
 # The iteration output shape -- decoupled from `Entry<K, V>`'s own
@@ -33,9 +33,9 @@ exposed struct KeyValue<K, V> {
 }
 
 exposed struct HashMap<K: Hash, V> {
-    internal buckets: *mut *mut Entry<K, V>;
-    internal bucket_count: usize;
-    internal count: usize;
+    shared buckets: *mut *mut Entry<K, V>;
+    shared bucket_count: usize;
+    shared count: usize;
 
     # `idx`'s slot address within an arbitrary bucket array (not necessarily
     # `self.buckets` -- `resize` needs this for both old and new arrays at
@@ -198,10 +198,10 @@ conform<K: Hash, V> HashMap<K, V> to ToIterator<KeyValue<K, V>> {
 }
 
 exposed struct HashMapIterator<K, V> {
-    internal buckets: *mut *mut Entry<K, V>;
-    internal bucket_count: usize;
-    internal bucket_index: usize;
-    internal current: *mut Entry<K, V>;
+    shared buckets: *mut *mut Entry<K, V>;
+    shared bucket_count: usize;
+    shared bucket_index: usize;
+    shared current: *mut Entry<K, V>;
 
 }
 

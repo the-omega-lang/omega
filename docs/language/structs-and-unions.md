@@ -28,7 +28,7 @@ p := Point<i32> { x = 10; y = 20; };
 
 A struct literal must initialize every field exactly once. There is no partial-initialization or spread syntax.
 
-Fields and methods may be hidden, `internal`, or `exposed`; see [`visibility.md`](visibility.md). Generic parameters follow the struct name and obey [`generics.md`](generics.md).
+Fields and methods may be hidden, `shared`, or `exposed`; see [`visibility.md`](visibility.md). Generic parameters follow the struct name and obey [`generics.md`](generics.md).
 
 A method with a receiver is an instance method. A method without a receiver is static and is called with `Type::method(...)`.
 

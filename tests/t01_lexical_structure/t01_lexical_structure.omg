@@ -23,14 +23,14 @@ main() => void {
 	marker := 11;
 	conform := 12;
 	primitive := 13;
-	internal := 14;
+	shared := 14;
 	exposed := 15;
 	comp := 16;
 	expr := 17;
 	in := 18;
 
 	sum := describe(1, 2, 3) + type + root + glue + gap + marker
-		+ conform + primitive + internal + exposed + comp + expr + in;
+		+ conform + primitive + shared + exposed + comp + expr + in;
 	println$("sum: ", sum);
 
 	# String escapes.

@@ -114,7 +114,7 @@ Synthetic semantic artifacts use fresh IDs minted by the driver under `SYNTHETIC
 - `patterns.rs` — match pattern analysis, narrowing, exhaustiveness entry points;
 - `specs.rs` — specs, bounds, conformances, dynamic dispatch facts;
 - `consts.rs` — compile-time expression integration;
-- `visibility.rs` — exposed/internal/hidden/reveal checks.
+- `visibility.rs` — exposed/shared/hidden/reveal checks.
 
 Each module contributes `impl Analyzer` methods; they share the common state and resolver seam rather than constructing parallel analyzers. The splits follow reasoning domains, not arbitrary file-size thresholds.
 
@@ -291,7 +291,7 @@ Several analyzer behaviors depend on local implementation structure rather than 
 
 - Expected-type propagation is deliberately directional in several constructs. Where one operand/branch becomes the inference anchor, later operands are checked against that anchor rather than participating in a global "best type" search. Keep the corresponding language rules in `docs/language/` aligned with any change to this mechanism.
 - A writable alias invalidates flow-sensitive narrowing for the aliased place. Mutable borrow/call paths therefore de-assume refinements before later reads can reuse them.
-- Visibility `reveal` is implemented as a scoped bypass owned by `RevealState`. Operand handlers use shared `with_reveal_operand` / `with_reveal_bypass` helpers rather than manipulating raw frame booleans. A successful hidden/internal access marks every active reveal frame used, so nested `reveal` chains do not generate a false redundant-reveal warning. The remaining architectural limitation—place resolution itself does not structurally own reveal activation—is tracked in `docs/issues/`.
+- Visibility `reveal` is implemented as a scoped bypass owned by `RevealState`. Operand handlers use shared `with_reveal_operand` / `with_reveal_bypass` helpers rather than manipulating raw frame booleans. A successful hidden/shared access marks every active reveal frame used, so nested `reveal` chains do not generate a false redundant-reveal warning. The remaining architectural limitation—place resolution itself does not structurally own reveal activation—is tracked in `docs/issues/`.
 - Overload scoring may fully analyze user-written arguments before a winner is chosen. The winning path must reuse that checked work rather than analyze the same expression again and risk duplicate diagnostics or side effects in analyzer bookkeeping.
 - Import aliases are re-resolved through the resolver with the actual lookup context when indirection/generic arguments matter. Eager alias snapshots are navigation aids, not a substitute for a context-sensitive item query.
 - Reads/writes of projected compile-time values operate on immutable `ConstValue` trees: a projected write rebuilds the root value with the changed leaf rather than mutating real storage.
