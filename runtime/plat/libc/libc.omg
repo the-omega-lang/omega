@@ -19,7 +19,7 @@ internal extern read : (fd: i32, buf: *mut u8, count: usize) => isize;
 # symbol (see docs/language/foreign-function-interface.md, "Program entry
 # point"); it is emitted as the fixed internal symbol `_omg_main`. This
 # adapter owns the real libc-facing `main` and hands off to it.
-internal extern _omg_main : () => void;
+extern _omg_main : () => void;
 
 @mangling(force = "main")
 platform_main() => i32 {
