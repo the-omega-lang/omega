@@ -396,6 +396,7 @@ Variadic macro parameters appear in runtime source as `$args: expr...`; see [`..
 exposed public_api() => void { }
 shared package_api() => void { }
 hidden_by_default() => void { }
+hidden also_hidden_by_default() => void { }
 ```
 
-See [`../language/visibility.md`](../language/visibility.md) for the distinction between item/member visibility and `reveal`.
+`hidden` is spelled out explicitly only where it changes something -- e.g. narrowing a spec member below its spec's own visibility; writing it anywhere it merely restates the default is a suppressible warning. See [`../language/visibility.md`](../language/visibility.md) for the distinction between item/member visibility and `reveal`.

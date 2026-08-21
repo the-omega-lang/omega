@@ -6,6 +6,7 @@ This chapter is normative for current Omega language behavior. Known implementat
 exposed struct Public { ... }
 shared struct PackageWide { ... }
 struct HiddenByDefault { ... }
+hidden struct AlsoHiddenByDefault { ... }
 
 reveal some_module::hidden_thing();
 import reveal extern::some_package;
@@ -15,10 +16,12 @@ Omega has three declaration visibility levels plus a use-site bypass:
 
 - `exposed`: visible from any package.
 - `shared`: visible anywhere in the same top-level package.
-- no modifier (`hidden`): narrowest visibility; the exact scope depends on whether the declaration is a top-level item or a member.
+- `hidden`, or no modifier: narrowest visibility; the exact scope depends on whether the declaration is a top-level item or a member.
 - `reveal`: explicitly bypasses an otherwise-applicable visibility restriction at a particular use site.
 
-`exposed`, `shared`, and `reveal` are contextual syntax rather than globally reserved words.
+`exposed`, `shared`, `hidden`, and `reveal` are contextual syntax rather than globally reserved words.
+
+`hidden` is written out only where it changes something -- most declarations already default to hidden, so writing it there is redundant and an implementation may warn (see "Spec member visibility" below for the one case where it is not redundant).
 
 ## Hidden items and hidden members
 
@@ -56,9 +59,30 @@ A macro body may not use declarations less visible than the macro itself in a wa
 
 ## Specs and conformance
 
-A function requirement declared inside a spec has no independent visibility modifier; its effective visibility is the declaring spec's visibility.
+A function requirement declared inside a spec may carry an explicit visibility modifier (`hidden`, `shared`, or `exposed`); when omitted, it defaults to the declaring spec's own visibility -- unlike every other declaration kind, whose default is always `hidden`. An explicit modifier must not exceed the spec's own visibility.
 
-A function body written in a `conform` block likewise has no visibility modifier and inherits the matched requirement's effective visibility.
+```omega
+shared spec Greeter {
+    name(*self) => i32;
+
+    # No modifier: inherits the spec's own visibility (`shared`).
+    greet(*self) => i32 {
+        self.double_name() + 1
+    }
+
+    # Narrower than the spec: only reachable from other methods of this
+    # same spec, e.g. `greet`'s default body above. This is the one case
+    # where writing `hidden` is not redundant, since the spec's own
+    # default here is `shared`, not `hidden`.
+    hidden double_name(*self) => i32 {
+        self.name() * 2
+    }
+}
+```
+
+Writing a modifier greater than the spec's own visibility (e.g. `exposed` on a member of a `shared spec`) is a compile error: a spec member can never be more visible than the spec that declares it.
+
+A function body written in a `conform` block has no visibility modifier of its own and inherits the matched requirement's effective visibility.
 
 ```omega
 shared spec Mammal {
@@ -71,6 +95,6 @@ conform Dog to Mammal {
 }
 ```
 
-Each requirement keeps the visibility of the spec that declared it, including when reached through a spec alias/conjunction.
+Each requirement keeps the visibility of the spec that declared it (or its own explicit modifier, capped at the spec's visibility), including when reached through a spec alias/conjunction.
 
 Dynamic dispatch must not widen visibility. A method that is inaccessible to a source location through direct dispatch must not become callable there merely by coercing the value to `spec *S`; forming/using the dynamic object remains subject to the requirement's effective visibility.

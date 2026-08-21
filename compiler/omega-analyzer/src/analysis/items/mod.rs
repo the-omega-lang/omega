@@ -283,6 +283,7 @@ impl<'r> Analyzer<'r> {
         &mut self,
         extern_decl: &HirExternDeclaration,
     ) -> Option<CheckedExternDeclaration> {
+        self.check_redundant_hidden(extern_decl.id, extern_decl.explicit_hidden_span);
         let resolved_type = self.resolve_type_or_error(
             extern_decl.id,
             extern_decl.span,
@@ -422,6 +423,7 @@ impl<'r> Analyzer<'r> {
         ResolvedFunctionType,
         crate::annotations::ResolvedAnnotations,
     )> {
+        self.check_redundant_hidden(f.id, f.explicit_hidden_span);
         let params = self.analyze_all(&f.params, |this, p| {
             this.resolve_type_or_error(p.id, p.span, &p.r#type, true)
                 .map(|t| (p.ident.clone(), t))
@@ -565,6 +567,7 @@ impl<'r> Analyzer<'r> {
         cell: &Rc<RefCell<ResolvedStructType>>,
         method_ids: &[HirId],
     ) -> Option<()> {
+        self.check_redundant_hidden(s.id, s.explicit_hidden_span);
         let annotations =
             self.item_annotations(s.id, &s.annotations, crate::annotations::ItemKind::Struct);
         cell.borrow_mut().layout = annotations.layout;
@@ -596,6 +599,7 @@ impl<'r> Analyzer<'r> {
         cell: &Rc<RefCell<ResolvedUnionType>>,
         method_ids: &[HirId],
     ) -> Option<()> {
+        self.check_redundant_hidden(u.id, u.explicit_hidden_span);
         let annotations =
             self.item_annotations(u.id, &u.annotations, crate::annotations::ItemKind::Union);
         cell.borrow_mut().suppress = annotations.suppress;
@@ -620,6 +624,9 @@ impl<'r> Analyzer<'r> {
     }
 
     fn resolve_declared_fields(&mut self, fields: &[HirField]) -> Option<Vec<ResolvedField>> {
+        for field in fields {
+            self.check_redundant_hidden(field.id, field.explicit_hidden_span);
+        }
         let checked = self.analyze_struct_fields(fields)?;
         Some(
             fields
@@ -639,6 +646,7 @@ impl<'r> Analyzer<'r> {
         let mut seen: HashMap<Ident, Span> = HashMap::new();
 
         for (position, field) in e.header.iter().enumerate() {
+            self.check_redundant_hidden(field.id, field.explicit_hidden_span);
             if field.ident.as_ref() == "tag" {
                 match self.resolve_tag_type(field, position) {
                     Some(tag_type) => explicit_tag = Some(tag_type),
@@ -720,6 +728,7 @@ impl<'r> Analyzer<'r> {
         let mut seen: HashMap<Ident, Span> = HashMap::new();
 
         for field in &e.dynamic_fields {
+            self.check_redundant_hidden(field.id, field.explicit_hidden_span);
             if header.claims(&field.ident) || seen.contains_key(&field.ident) {
                 self.error(
                     field.id,
@@ -887,6 +896,7 @@ impl<'r> Analyzer<'r> {
         let mut seen: HashMap<Ident, Span> = HashMap::new();
 
         for field in &variant.fields {
+            self.check_redundant_hidden(field.id, field.explicit_hidden_span);
             let shadows_shared = header.claims(&field.ident)
                 || dynamic_fields
                     .iter()
@@ -960,6 +970,7 @@ impl<'r> Analyzer<'r> {
         cell: &Rc<RefCell<ResolvedEnumType>>,
         method_ids: &[HirId],
     ) -> Option<()> {
+        self.check_redundant_hidden(e.id, e.explicit_hidden_span);
         let annotations =
             self.item_annotations(e.id, &e.annotations, crate::annotations::ItemKind::Enum);
         cell.borrow_mut().layout = annotations.layout;

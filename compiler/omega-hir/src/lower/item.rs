@@ -147,6 +147,7 @@ impl Lowerer {
             ident: decl.ident.clone(),
             r#type: decl.r#type.clone(),
             visibility: decl.visibility,
+            explicit_hidden_span: decl.explicit_hidden_span,
         }
     }
 
@@ -171,6 +172,7 @@ impl Lowerer {
             return_type_span: f.return_type_span,
             annotations: Self::lower_annotations(&f.annotations),
             visibility: f.visibility,
+            explicit_hidden_span: f.explicit_hidden_span,
             name: f.ident.clone(),
             generics,
             self_mode: f.self_mode,
@@ -350,6 +352,7 @@ impl Lowerer {
             id,
             span,
             visibility: sp.visibility,
+            explicit_hidden_span: sp.explicit_hidden_span,
             name: sp.ident.clone(),
             generics,
             dependencies,
@@ -376,6 +379,8 @@ impl Lowerer {
             name_span: f.name_span,
             signature_span: f.signature_span,
             return_type_span: f.return_type_span,
+            visibility: f.visibility,
+            explicit_hidden_span: f.explicit_hidden_span,
             name: f.ident.clone(),
             self_mode: f.self_mode,
             params,
@@ -405,6 +410,7 @@ impl Lowerer {
             origin: field.origin,
             r#type: field.r#type.clone(),
             visibility: field.visibility,
+            explicit_hidden_span: field.explicit_hidden_span,
         }
     }
 
@@ -422,6 +428,7 @@ impl Lowerer {
             span,
             annotations: Self::lower_annotations(&s.annotations),
             visibility: s.visibility,
+            explicit_hidden_span: s.explicit_hidden_span,
             name: s.ident.clone(),
             generics: Self::lower_generics(&s.generics),
             fields,
@@ -444,6 +451,7 @@ impl Lowerer {
             span,
             annotations: Self::lower_annotations(&u.annotations),
             visibility: u.visibility,
+            explicit_hidden_span: u.explicit_hidden_span,
             name: u.ident.clone(),
             generics: Self::lower_generics(&u.generics),
             fields,
@@ -464,6 +472,7 @@ impl Lowerer {
                 origin: omega_parser::prelude::Origin::default(),
                 r#type: h.r#type.clone(),
                 visibility: h.visibility,
+                explicit_hidden_span: h.explicit_hidden_span,
             })
             .collect();
         let dynamic_fields = e
@@ -493,6 +502,7 @@ impl Lowerer {
             span,
             annotations: Self::lower_annotations(&e.annotations),
             visibility: e.visibility,
+            explicit_hidden_span: e.explicit_hidden_span,
             name: e.ident.clone(),
             generics: Self::lower_generics(&e.generics),
             header,

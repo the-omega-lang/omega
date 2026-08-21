@@ -8,7 +8,7 @@ use crate::ast::item::{
 };
 use crate::ast::statement::{DeclarationStmt, FunctionDefinitionStmt};
 use crate::ast::visibility::Visibility;
-use crate::diagnostics::ParseErrorKind;
+use crate::diagnostics::{ParseErrorKind, Span};
 use crate::lexer::TokenKind;
 use crate::parser::expression::parse_codeblock;
 use crate::parser::statement::parse_declaration;
@@ -18,18 +18,32 @@ pub fn parse_struct_def(
     p: &mut Parser,
     annotations: Vec<AnnotationNode>,
     visibility: Visibility,
+    explicit_hidden_span: Option<Span>,
 ) -> Option<StructStmt> {
     p.expect(&TokenKind::Struct, "'struct'");
-    parse_struct_or_marker_body(p, annotations, visibility, StructKind::Ordinary)
+    parse_struct_or_marker_body(
+        p,
+        annotations,
+        visibility,
+        explicit_hidden_span,
+        StructKind::Ordinary,
+    )
 }
 
 pub fn parse_marker_def(
     p: &mut Parser,
     annotations: Vec<AnnotationNode>,
     visibility: Visibility,
+    explicit_hidden_span: Option<Span>,
 ) -> Option<StructStmt> {
     p.advance(); // 'marker' -- contextual keyword, already confirmed by the caller's lookahead
-    parse_struct_or_marker_body(p, annotations, visibility, StructKind::Marker)
+    parse_struct_or_marker_body(
+        p,
+        annotations,
+        visibility,
+        explicit_hidden_span,
+        StructKind::Marker,
+    )
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -42,6 +56,7 @@ fn parse_struct_or_marker_body(
     p: &mut Parser,
     annotations: Vec<AnnotationNode>,
     visibility: Visibility,
+    explicit_hidden_span: Option<Span>,
     kind: StructKind,
 ) -> Option<StructStmt> {
     let ident = p.expect_ident()?;
@@ -58,6 +73,7 @@ fn parse_struct_or_marker_body(
     Some(StructStmt {
         annotations,
         visibility,
+        explicit_hidden_span,
         ident,
         generics,
         fields,
@@ -75,10 +91,11 @@ enum MemberVisibility {
 fn parse_aggregate_fields(p: &mut Parser) -> Vec<DeclarationStmt> {
     let mut fields = Vec::new();
     while field_follows(p) {
-        let visibility = parse_optional_visibility(p).value();
+        let parsed_visibility = parse_optional_visibility(p);
         match parse_declaration(p) {
             Some(mut decl) => {
-                decl.visibility = visibility;
+                decl.visibility = parsed_visibility.value();
+                decl.explicit_hidden_span = parsed_visibility.explicit_hidden_span();
                 fields.push(decl);
                 p.expect_terminator(&TokenKind::Semi, "';'");
             }
@@ -100,16 +117,19 @@ fn parse_member_functions(
             break;
         }
         let parsed_visibility = parse_optional_visibility(p);
-        let visibility = match visibility_policy {
-            MemberVisibility::Allowed => parsed_visibility.value(),
+        let (visibility, explicit_hidden_span) = match visibility_policy {
+            MemberVisibility::Allowed => (
+                parsed_visibility.value(),
+                parsed_visibility.explicit_hidden_span(),
+            ),
             MemberVisibility::InheritedFromSpec => {
                 if let ParsedVisibility::Explicit { span, .. } = parsed_visibility {
                     p.error_at(span, ParseErrorKind::ConformMethodVisibility);
                 }
-                Visibility::Hidden
+                (Visibility::Hidden, None)
             }
         };
-        match parse_function_definition(p, annotations, visibility) {
+        match parse_function_definition(p, annotations, visibility, explicit_hidden_span) {
             Some(f) => functions.push(f),
             None => recovery::synchronize_to_statement_boundary(p),
         }
@@ -122,7 +142,13 @@ fn field_follows(p: &Parser) -> bool {
     // modifier with a missing name -- so the no-modifier reading is tried
     // too, matching `parse_optional_visibility`'s own commit rule.
     let modifier_offset = match p.peek() {
-        TokenKind::Ident(name) if name == contextual::EXPOSED || name == contextual::SHARED => 1,
+        TokenKind::Ident(name)
+            if name == contextual::EXPOSED
+                || name == contextual::SHARED
+                || name == contextual::HIDDEN =>
+        {
+            1
+        }
         _ => 0,
     };
     [modifier_offset, 0].into_iter().any(|offset| {
@@ -135,6 +161,7 @@ pub fn parse_union_def(
     p: &mut Parser,
     annotations: Vec<AnnotationNode>,
     visibility: Visibility,
+    explicit_hidden_span: Option<Span>,
 ) -> Option<UnionStmt> {
     p.expect(&TokenKind::Union, "'union'");
     let ident = p.expect_ident()?;
@@ -148,6 +175,7 @@ pub fn parse_union_def(
     Some(UnionStmt {
         annotations,
         visibility,
+        explicit_hidden_span,
         ident,
         generics,
         fields,
@@ -159,6 +187,7 @@ pub fn parse_spec_def(
     p: &mut Parser,
     annotations: Vec<AnnotationNode>,
     visibility: Visibility,
+    explicit_hidden_span: Option<Span>,
 ) -> Option<SpecStmt> {
     p.expect(&TokenKind::Spec, "'spec'");
     let ident = p.expect_ident()?;
@@ -178,6 +207,7 @@ pub fn parse_spec_def(
         return Some(SpecStmt {
             ident,
             visibility,
+            explicit_hidden_span,
             generics,
             dependencies,
             functions: Vec::new(),
@@ -202,7 +232,12 @@ pub fn parse_spec_def(
     p.expect(&TokenKind::LBrace, "'{'");
     let mut functions = Vec::new();
     while matches!(p.peek(), TokenKind::Ident(_)) {
-        match parse_spec_function(p) {
+        match parse_spec_function(
+            p,
+            SpecMemberVisibility::Allowed {
+                spec_visibility: visibility,
+            },
+        ) {
             Some(f) => functions.push(f),
             None => recovery::synchronize_to_statement_boundary(p),
         }
@@ -211,6 +246,7 @@ pub fn parse_spec_def(
     Some(SpecStmt {
         ident,
         visibility,
+        explicit_hidden_span,
         generics,
         dependencies: Vec::new(),
         functions,
@@ -219,7 +255,41 @@ pub fn parse_spec_def(
     })
 }
 
-fn parse_spec_function(p: &mut Parser) -> Option<SpecFunctionStmt> {
+#[derive(Clone, Copy)]
+enum SpecMemberVisibility {
+    Allowed { spec_visibility: Visibility },
+    Rejected,
+}
+
+fn parse_spec_function(p: &mut Parser, policy: SpecMemberVisibility) -> Option<SpecFunctionStmt> {
+    let parsed_visibility = parse_optional_visibility(p);
+    let visibility = match policy {
+        SpecMemberVisibility::Allowed { spec_visibility } => match parsed_visibility {
+            ParsedVisibility::Explicit { visibility, span } => {
+                if visibility > spec_visibility {
+                    p.error_at(
+                        span,
+                        ParseErrorKind::SpecMethodVisibilityExceedsSpec {
+                            member_visibility: visibility,
+                            spec_visibility,
+                        },
+                    );
+                }
+                visibility
+            }
+            // No modifier written -- a spec member inherits its spec's own
+            // visibility by default, unlike every other declaration kind
+            // (which defaults to `hidden`).
+            ParsedVisibility::Hidden => spec_visibility,
+        },
+        SpecMemberVisibility::Rejected => {
+            if let ParsedVisibility::Explicit { span, .. } = parsed_visibility {
+                p.error_at(span, ParseErrorKind::GapOrGlueVisibility);
+            }
+            Visibility::Hidden
+        }
+    };
+    let explicit_hidden_span = parsed_visibility.explicit_hidden_span();
     let ident = p.expect_ident()?;
     let name_span = p.last_span();
     p.expect(&TokenKind::LParen, "'('");
@@ -252,6 +322,8 @@ fn parse_spec_function(p: &mut Parser) -> Option<SpecFunctionStmt> {
         name_span,
         signature_span,
         return_type_span,
+        visibility,
+        explicit_hidden_span,
         self_mode,
         params,
         is_variadic,
@@ -281,7 +353,7 @@ pub(super) fn parse_gap_def(p: &mut Parser) -> Option<GapStmt> {
         // error and the rest of the gap still parses. The loop always
         // consumes at least the leading identifier `parse_spec_function`
         // starts on, so recovery can never stall here.
-        let Some(function) = parse_spec_function(p) else {
+        let Some(function) = parse_spec_function(p, SpecMemberVisibility::Rejected) else {
             recovery::synchronize_to_statement_boundary(p);
             continue;
         };
@@ -315,7 +387,8 @@ pub(super) fn parse_glue_def(p: &mut Parser) -> Option<GlueStmt> {
     let mut functions = Vec::new();
     while matches!(p.peek(), TokenKind::Ident(_)) {
         // Per-member recovery, same rule as `parse_gap_def` above.
-        let Some(function) = parse_function_definition(p, Vec::new(), Visibility::Hidden) else {
+        let Some(function) = parse_function_definition(p, Vec::new(), Visibility::Hidden, None)
+        else {
             recovery::synchronize_to_statement_boundary(p);
             continue;
         };
@@ -369,6 +442,7 @@ pub fn parse_enum_def(
     p: &mut Parser,
     annotations: Vec<AnnotationNode>,
     visibility: Visibility,
+    explicit_hidden_span: Option<Span>,
 ) -> Option<EnumStmt> {
     p.expect(&TokenKind::Enum, "'enum'");
     let ident = p.expect_ident()?;
@@ -436,6 +510,7 @@ pub fn parse_enum_def(
     Some(EnumStmt {
         annotations,
         visibility,
+        explicit_hidden_span,
         ident,
         generics,
         header,
@@ -453,14 +528,15 @@ fn parse_enum_header(p: &mut Parser) -> Option<Vec<EnumHeaderField>> {
     if !p.check(&TokenKind::RParen) {
         loop {
             let start = p.peek_span();
-            let visibility = parse_optional_visibility(p).value();
+            let parsed_visibility = parse_optional_visibility(p);
             let decl = parse_declaration(p)?;
             let span = start.to(p.last_span());
             header.push(EnumHeaderField {
                 ident: decl.ident,
                 name_span: decl.name_span,
                 r#type: decl.r#type,
-                visibility,
+                visibility: parsed_visibility.value(),
+                explicit_hidden_span: parsed_visibility.explicit_hidden_span(),
                 span,
             });
             if !p.eat(&TokenKind::Comma) {

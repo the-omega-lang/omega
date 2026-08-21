@@ -1,6 +1,7 @@
 import extern::std::io::println;
 import child;
 import child::Mammal;
+import child::Greeter;
 import child::Dog;
 
 main() => void {
@@ -33,4 +34,17 @@ main() => void {
 	# whether `breathe` is reached through static or dynamic dispatch.
 	obj := <spec *Mammal>&dog;
 	println$("dynamic-dispatch-visibility: ", obj.breathe());
+
+	# `greet` has no modifier, so it inherits `Greeter`'s own visibility
+	# (shared) and is callable directly. `double_name` is explicitly
+	# `hidden`, narrower than the spec -- it is reachable from `greet`'s
+	# own default body (proven by `greet`'s result), but from here, an
+	# unrelated location outside the spec, it needs `reveal` just like an
+	# ordinary hidden struct member would.
+	println$(
+		"spec-hidden-member-visibility: ",
+		Greeter::greet(&dog),
+		" ",
+		reveal Greeter::double_name(&dog)
+	);
 }

@@ -74,8 +74,8 @@ fn an_exposed_macro_cannot_name_a_hidden_item() {
     package.child(
         "helper",
         r#"
-        hidden(value: i32) => i32 { value }
-        exposed macro apply($value: expr) => { hidden($value) }
+        secret(value: i32) => i32 { value }
+        exposed macro apply($value: expr) => { secret($value) }
         "#,
     );
     let result = Driver::new(package.0.clone(), None, vec![], Target::DEFAULT)

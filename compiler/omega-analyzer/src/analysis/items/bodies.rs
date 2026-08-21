@@ -68,7 +68,8 @@ impl<'r> Analyzer<'r> {
             signature_span: pending.raw.signature_span,
             return_type_span: pending.raw.return_type_span,
             annotations: Vec::new(),
-            visibility: Visibility::default(),
+            visibility: pending.raw.visibility,
+            explicit_hidden_span: None,
             name: pending.raw.name.clone(),
             generics: vec![],
             self_mode: pending.raw.self_mode,
@@ -76,12 +77,29 @@ impl<'r> Analyzer<'r> {
             return_type: pending.raw.return_type.clone(),
             body,
         };
-        self.check_function_body(
-            &synthetic,
-            &pending.fn_type,
-            pending.id,
-            &crate::annotations::ResolvedAnnotations::default(),
-        )
+        // Mirrors `with_owner` in `check_struct_body`/`check_union_body`/
+        // `check_enum_body`: a default body calling a hidden sibling
+        // requirement (`self.other()`) is checked against the conforming
+        // type's owner, not the spec's -- `require_method_visible` resolves
+        // a method's owner from the receiver type (`Self`, substituted to
+        // the conforming type here), never from the declaring spec.
+        let owner = pending
+            .substitution
+            .first()
+            .and_then(|(_, self_type)| self_type.declaring_owner())
+            .map(|(_, owner_id)| owner_id);
+        let check = |this: &mut Self| {
+            this.check_function_body(
+                &synthetic,
+                &pending.fn_type,
+                pending.id,
+                &crate::annotations::ResolvedAnnotations::default(),
+            )
+        };
+        match owner {
+            Some(owner) => self.with_owner(owner, check),
+            None => check(self),
+        }
     }
     fn check_method_bodies(
         &mut self,

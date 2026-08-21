@@ -93,6 +93,7 @@ pub struct HirExternDeclaration {
     pub ident: Ident,
     pub r#type: Type,
     pub visibility: Visibility,
+    pub explicit_hidden_span: Option<Span>,
 }
 
 #[derive(Debug, Clone)]
@@ -114,6 +115,7 @@ pub struct HirField {
     pub origin: Origin,
     pub r#type: Type,
     pub visibility: Visibility,
+    pub explicit_hidden_span: Option<Span>,
 }
 
 #[derive(Debug, Clone)]
@@ -125,6 +127,7 @@ pub struct HirFunctionDef {
     pub return_type_span: Span,
     pub annotations: Vec<HirAnnotation>,
     pub visibility: Visibility,
+    pub explicit_hidden_span: Option<Span>,
     pub name: Ident,
     pub generics: Vec<HirGenericParam>,
     pub self_mode: Option<SelfMode>,
@@ -162,6 +165,7 @@ pub struct HirStructDef {
     pub span: Span,
     pub annotations: Vec<HirAnnotation>,
     pub visibility: Visibility,
+    pub explicit_hidden_span: Option<Span>,
     pub name: Ident,
     pub generics: Vec<HirGenericParam>,
     pub fields: Vec<HirField>,
@@ -175,6 +179,7 @@ pub struct HirUnionDef {
     pub span: Span,
     pub annotations: Vec<HirAnnotation>,
     pub visibility: Visibility,
+    pub explicit_hidden_span: Option<Span>,
     pub name: Ident,
     pub generics: Vec<HirGenericParam>,
     pub fields: Vec<HirField>,
@@ -187,6 +192,7 @@ pub struct HirEnumDef {
     pub span: Span,
     pub annotations: Vec<HirAnnotation>,
     pub visibility: Visibility,
+    pub explicit_hidden_span: Option<Span>,
     pub name: Ident,
     pub generics: Vec<HirGenericParam>,
     pub header: Vec<HirField>,
@@ -209,6 +215,7 @@ pub struct HirSpecDef {
     pub id: HirId,
     pub span: Span,
     pub visibility: Visibility,
+    pub explicit_hidden_span: Option<Span>,
     pub name: Ident,
     pub generics: Vec<HirGenericParam>,
     pub dependencies: Vec<Type>,
@@ -224,6 +231,8 @@ pub struct HirSpecFunction {
     pub name_span: Span,
     pub signature_span: Span,
     pub return_type_span: Span,
+    pub visibility: Visibility,
+    pub explicit_hidden_span: Option<Span>,
     pub name: Ident,
     pub self_mode: Option<SelfMode>,
     pub params: Vec<HirParam>,

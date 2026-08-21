@@ -41,6 +41,7 @@ pub struct ItemNode {
 pub struct StructStmt {
     pub annotations: Vec<AnnotationNode>,
     pub visibility: Visibility,
+    pub explicit_hidden_span: Option<Span>,
     pub ident: Ident,
     pub generics: Vec<GenericParam>,
     pub fields: Vec<DeclarationStmt>,
@@ -52,6 +53,7 @@ pub struct StructStmt {
 pub struct UnionStmt {
     pub annotations: Vec<AnnotationNode>,
     pub visibility: Visibility,
+    pub explicit_hidden_span: Option<Span>,
     pub ident: Ident,
     pub generics: Vec<GenericParam>,
     pub fields: Vec<DeclarationStmt>,
@@ -62,6 +64,7 @@ pub struct UnionStmt {
 pub struct EnumStmt {
     pub annotations: Vec<AnnotationNode>,
     pub visibility: Visibility,
+    pub explicit_hidden_span: Option<Span>,
     pub ident: Ident,
     pub generics: Vec<GenericParam>,
     pub header: Vec<EnumHeaderField>,
@@ -76,6 +79,7 @@ pub struct EnumHeaderField {
     pub name_span: Span,
     pub r#type: Type,
     pub visibility: Visibility,
+    pub explicit_hidden_span: Option<Span>,
     pub span: Span,
 }
 
@@ -91,6 +95,7 @@ pub struct EnumVariantStmt {
 pub struct SpecStmt {
     pub ident: Ident,
     pub visibility: Visibility,
+    pub explicit_hidden_span: Option<Span>,
     pub generics: Vec<GenericParam>,
     pub dependencies: Vec<Type>,
     pub functions: Vec<SpecFunctionStmt>,
@@ -104,6 +109,8 @@ pub struct SpecFunctionStmt {
     pub name_span: Span,
     pub signature_span: Span,
     pub return_type_span: Span,
+    pub visibility: Visibility,
+    pub explicit_hidden_span: Option<Span>,
     pub self_mode: Option<SelfMode>,
     pub params: Vec<Param>,
     pub is_variadic: bool,

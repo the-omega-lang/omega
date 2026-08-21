@@ -270,6 +270,7 @@ impl<'r> Analyzer<'r> {
         Vec<(Ident, RawSpecFunctionSig)>,
         crate::annotations::ResolvedAnnotations,
     ) {
+        self.check_redundant_hidden(sp.id, sp.explicit_hidden_span);
         let annotations = crate::annotations::resolve(
             self,
             sp.id,
@@ -282,6 +283,12 @@ impl<'r> Analyzer<'r> {
         let mut functions = Vec::new();
         let mut seen: HashSet<Ident> = HashSet::new();
         for f in &sp.functions {
+            // Unlike every other node kind, a spec member's implicit default
+            // is the spec's own visibility, not `hidden` -- so an explicit
+            // `hidden` here is only redundant when the spec itself is hidden.
+            if sp.visibility == Visibility::Hidden {
+                self.check_redundant_hidden(f.id, f.explicit_hidden_span);
+            }
             if !seen.insert(f.name.clone()) {
                 self.error(
                     f.id,
@@ -324,6 +331,7 @@ impl<'r> Analyzer<'r> {
                     name_span: f.name_span,
                     signature_span: f.signature_span,
                     return_type_span: f.return_type_span,
+                    visibility: f.visibility,
                     self_mode: f.self_mode,
                     is_variadic: f.is_variadic,
                     params: f.params.clone(),
@@ -553,12 +561,11 @@ impl<'r> Analyzer<'r> {
         self_type: &ResolvedType,
         out: &mut Vec<FlattenedSpecFn>,
     ) -> Option<()> {
-        let (spec_id, spec_name, spec_visibility, spec_module, generics, dependencies, functions) = {
+        let (spec_id, spec_name, spec_module, generics, dependencies, functions) = {
             let s = spec.borrow();
             (
                 s.id,
                 s.name.clone(),
-                s.visibility,
                 s.module_path.clone(),
                 s.generics.clone(),
                 s.dependencies.clone(),
@@ -601,7 +608,7 @@ impl<'r> Analyzer<'r> {
                 raw: raw.clone(),
                 spec_id,
                 spec_name: spec_name.clone(),
-                visibility: spec_visibility,
+                visibility: raw.visibility,
                 substitution: substitution.clone(),
             });
         }

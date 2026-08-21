@@ -70,6 +70,9 @@ impl AnalysisWarning {
             AnalysisWarningKind::RedundantLayoutAnnotation => d
                 .with_label(self.span, "these values are already the default")
                 .with_help("remove the explicit arguments, or bare `@layout`, to mean the same thing"),
+            AnalysisWarningKind::RedundantHiddenModifier => d
+                .with_label(self.span, "this is already the default here")
+                .with_help("remove the explicit 'hidden' -- it changes nothing"),
             AnalysisWarningKind::LargeStructByValue { r#type, size } => d
                 .with_label(self.span, format!("`{type}` is at least {size} bytes, passed by value"))
                 .with_note("this backend passes structs as flattened scalars, not by reference -- consider a pointer instead"),
@@ -115,6 +118,7 @@ pub enum AnalysisWarningKind {
     SelfAssignment,
     AlwaysTrueFalseComparison { result: bool },
     RedundantLayoutAnnotation,
+    RedundantHiddenModifier,
     LargeStructByValue { r#type: ResolvedType, size: u32 },
     UnfilledGap { gap: Ident, functions: Vec<Ident> },
 }
@@ -141,6 +145,7 @@ impl AnalysisWarningKind {
             Self::SelfAssignment => "self_assignment",
             Self::AlwaysTrueFalseComparison { .. } => "always_true_false_comparison",
             Self::RedundantLayoutAnnotation => "redundant_layout_annotation",
+            Self::RedundantHiddenModifier => "redundant_hidden_modifier",
             Self::LargeStructByValue { .. } => "large_struct_by_value",
             Self::UnfilledGap { .. } => "unfilled_gap",
         }
@@ -181,6 +186,7 @@ impl fmt::Display for AnalysisWarningKind {
                 write!(f, "comparison is always {result}")
             }
             Self::RedundantLayoutAnnotation => write!(f, "redundant '@layout' arguments"),
+            Self::RedundantHiddenModifier => write!(f, "redundant 'hidden' modifier"),
             Self::LargeStructByValue { r#type, .. } => {
                 write!(f, "large type '{type}' passed by value")
             }

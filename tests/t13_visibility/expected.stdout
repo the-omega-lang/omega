@@ -5,3 +5,4 @@ reveal-hidden-field: 6
 reveal-after-mutate: 99
 spec-req-visibility: 1
 dynamic-dispatch-visibility: 1
+spec-hidden-member-visibility: 3 2

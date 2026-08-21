@@ -27,6 +27,16 @@ impl ParsedVisibility {
             Self::Explicit { span, .. } => Some(span),
         }
     }
+
+    fn explicit_hidden_span(self) -> Option<Span> {
+        match self {
+            Self::Explicit {
+                visibility: Visibility::Hidden,
+                span,
+            } => Some(span),
+            _ => None,
+        }
+    }
 }
 
 mod annotations;
@@ -74,6 +84,7 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
             reject_annotations(p, &annotations);
             let mut decl = parse_extern_declaration(p)?;
             decl.visibility = visibility;
+            decl.explicit_hidden_span = parsed_visibility.explicit_hidden_span();
             p.expect_terminator(&TokenKind::Semi, "';'");
             Item::ExternDeclaration(decl)
         }
@@ -81,16 +92,41 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
             reject_visibility(p, parsed_visibility);
             Item::Import(parse_import(p, annotations)?)
         }
-        TokenKind::Struct => Item::Struct(parse_struct_def(p, annotations, visibility)?),
-        TokenKind::Enum => Item::Enum(parse_enum_def(p, annotations, visibility)?),
-        TokenKind::Union => Item::Union(parse_union_def(p, annotations, visibility)?),
+        TokenKind::Struct => Item::Struct(parse_struct_def(
+            p,
+            annotations,
+            visibility,
+            parsed_visibility.explicit_hidden_span(),
+        )?),
+        TokenKind::Enum => Item::Enum(parse_enum_def(
+            p,
+            annotations,
+            visibility,
+            parsed_visibility.explicit_hidden_span(),
+        )?),
+        TokenKind::Union => Item::Union(parse_union_def(
+            p,
+            annotations,
+            visibility,
+            parsed_visibility.explicit_hidden_span(),
+        )?),
         // Commit contextual `marker` only once the following identifier proves the item shape.
         TokenKind::Ident(name)
             if name == contextual::MARKER && matches!(p.peek_at(1), TokenKind::Ident(_)) =>
         {
-            Item::Struct(parse_marker_def(p, annotations, visibility)?)
+            Item::Struct(parse_marker_def(
+                p,
+                annotations,
+                visibility,
+                parsed_visibility.explicit_hidden_span(),
+            )?)
         }
-        TokenKind::Spec => Item::Spec(parse_spec_def(p, annotations, visibility)?),
+        TokenKind::Spec => Item::Spec(parse_spec_def(
+            p,
+            annotations,
+            visibility,
+            parsed_visibility.explicit_hidden_span(),
+        )?),
         TokenKind::Ident(name)
             if name == contextual::GAP && matches!(p.peek_at(1), TokenKind::Ident(_)) =>
         {
@@ -148,9 +184,12 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
             p.expect_terminator(&TokenKind::Semi, "';'");
             Item::MacroInvocation(inv)
         }
-        TokenKind::Ident(_) => {
-            parse_declaration_or_function_definition(p, annotations, visibility)?
-        }
+        TokenKind::Ident(_) => parse_declaration_or_function_definition(
+            p,
+            annotations,
+            visibility,
+            parsed_visibility.explicit_hidden_span(),
+        )?,
         _ => {
             reject_visibility(p, parsed_visibility);
             p.error(ParseErrorKind::Expected {
@@ -206,6 +245,13 @@ fn parse_optional_visibility(p: &mut Parser) -> ParsedVisibility {
             p.advance();
             ParsedVisibility::Explicit {
                 visibility: Visibility::Shared,
+                span,
+            }
+        }
+        TokenKind::Ident(name) if name == contextual::HIDDEN => {
+            p.advance();
+            ParsedVisibility::Explicit {
+                visibility: Visibility::Hidden,
                 span,
             }
         }

@@ -46,10 +46,10 @@ Top-level source may contain imports, extern declarations, aggregate/spec/gap/gl
 ## Visibility
 
 ```ebnf
-visibility = "exposed" | "shared" ;
+visibility = "exposed" | "shared" | "hidden" ;
 ```
 
-Omitted visibility means hidden. Visibility legality varies by item/member; see [`visibility.md`](visibility.md).
+Omitted visibility means hidden, except on a spec member, where it means the declaring spec's own visibility. Visibility legality varies by item/member; see [`visibility.md`](visibility.md).
 
 ## Paths
 
@@ -209,7 +209,7 @@ spec-alias = [ visibility ], "spec", identifier,
              [ generic-parameters ],
              "=", type, { "+", type }, ";" ;
 
-spec-member = identifier,
+spec-member = [ visibility ], identifier,
               "(", [ spec-parameters ], ")",
               "=>", type,
               ( ";" | code-block ) ;
@@ -220,6 +220,8 @@ spec-parameters = function-parameters, [ ",", "..." ]
 ```
 
 A spec member does not introduce its own generic-parameter list. A body supplies a default implementation. `spec X : A, B { ... }` is not valid Omega syntax; express requirements as generic bounds and/or blanket conformances.
+
+A spec member's visibility modifier, when given, must not exceed the declaring spec's own visibility; when omitted, it defaults to the spec's own visibility rather than to hidden (see [`visibility.md`](visibility.md)).
 
 ## Conformance
 

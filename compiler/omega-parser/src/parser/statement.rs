@@ -157,6 +157,7 @@ pub fn parse_declaration(p: &mut Parser) -> Option<DeclarationStmt> {
         r#type,
         mutable: false,
         visibility: Visibility::default(),
+        explicit_hidden_span: None,
     })
 }
 
@@ -167,6 +168,7 @@ pub fn parse_extern_declaration(p: &mut Parser) -> Option<ExternDeclarationStmt>
         ident: decl.ident,
         r#type: decl.r#type,
         visibility: Visibility::default(),
+        explicit_hidden_span: None,
     })
 }
 

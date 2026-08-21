@@ -40,6 +40,7 @@ pub struct DeclarationStmt {
     pub r#type: Type,
     pub mutable: bool,
     pub visibility: Visibility,
+    pub explicit_hidden_span: Option<Span>,
 }
 
 #[derive(Debug, Clone)]
@@ -47,6 +48,7 @@ pub struct ExternDeclarationStmt {
     pub ident: Ident,
     pub r#type: Type,
     pub visibility: Visibility,
+    pub explicit_hidden_span: Option<Span>,
 }
 
 #[derive(Debug, Clone)]
@@ -101,6 +103,7 @@ pub struct DeferStmt {
 pub struct FunctionDefinitionStmt {
     pub annotations: Vec<AnnotationNode>,
     pub visibility: Visibility,
+    pub explicit_hidden_span: Option<Span>,
     pub ident: Ident,
     pub name_span: Span,
     pub signature_span: Span,

@@ -1,4 +1,5 @@
 use crate::ast::identifier::Ident;
+use crate::ast::visibility::Visibility;
 use omega_diagnostics::Diagnostic;
 pub use omega_diagnostics::Span;
 use std::fmt;
@@ -94,6 +95,10 @@ impl ParseError {
             ParseErrorKind::ConformMethodVisibility => Diagnostic::error("a conforming method inherits its spec's visibility")
                 .with_label(self.span, "a conforming method inherits its spec's visibility")
                 .with_help("remove the method visibility modifier"),
+            ParseErrorKind::SpecMethodVisibilityExceedsSpec { member_visibility, spec_visibility } =>
+                Diagnostic::error(format!("spec member visibility ('{member_visibility}') exceeds the spec's own visibility ('{spec_visibility}')"))
+                .with_label(self.span, format!("'{member_visibility}' is more visible than the enclosing spec"))
+                .with_help(format!("a spec member can only be as visible as its spec at most -- use '{spec_visibility}' or lower")),
             ParseErrorKind::PrimitiveVisibility => Diagnostic::error("a primitive block takes no visibility modifier")
                 .with_label(self.span, "a primitive block does not declare the built-in type")
                 .with_help("remove the block visibility modifier; put visibility on its functions"),
@@ -177,6 +182,10 @@ pub enum ParseErrorKind {
     VisibilityNotAllowedHere,
     GapOrGlueVisibility,
     ConformMethodVisibility,
+    SpecMethodVisibilityExceedsSpec {
+        member_visibility: Visibility,
+        spec_visibility: Visibility,
+    },
     PrimitiveVisibility,
     GapOrGlueGeneric,
     GapFunctionBody {

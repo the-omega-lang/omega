@@ -4,7 +4,7 @@ use crate::ast::generics::GenericParam;
 use crate::ast::item::Item;
 use crate::ast::statement::{FunctionDefinitionStmt, WalrusStmt};
 use crate::ast::visibility::Visibility;
-use crate::diagnostics::ParseErrorKind;
+use crate::diagnostics::{ParseErrorKind, Span};
 use crate::lexer::TokenKind;
 use crate::parser::Parser;
 use crate::parser::expression::{parse_codeblock, parse_expression};
@@ -14,10 +14,11 @@ pub(super) fn parse_declaration_or_function_definition(
     p: &mut Parser,
     annotations: Vec<AnnotationNode>,
     visibility: Visibility,
+    explicit_hidden_span: Option<Span>,
 ) -> Option<Item> {
     match p.peek_at(1) {
         TokenKind::Lt | TokenKind::LParen => Some(Item::FunctionDefinition(
-            parse_function_definition(p, annotations, visibility)?,
+            parse_function_definition(p, annotations, visibility, explicit_hidden_span)?,
         )),
         _ => {
             reject_annotations(p, &annotations);
@@ -92,6 +93,7 @@ pub fn parse_function_definition(
     p: &mut Parser,
     annotations: Vec<AnnotationNode>,
     visibility: Visibility,
+    explicit_hidden_span: Option<Span>,
 ) -> Option<FunctionDefinitionStmt> {
     let ident = p.expect_ident()?;
     let name_span = p.last_span();
@@ -110,6 +112,7 @@ pub fn parse_function_definition(
     Some(FunctionDefinitionStmt {
         annotations,
         visibility,
+        explicit_hidden_span,
         ident,
         name_span,
         signature_span,

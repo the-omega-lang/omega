@@ -204,6 +204,7 @@ pub struct RawSpecFunctionSig {
     pub name_span: Span,
     pub signature_span: Span,
     pub return_type_span: Span,
+    pub visibility: Visibility,
     pub self_mode: Option<SelfMode>,
     pub params: Vec<HirParam>,
     pub is_variadic: bool,

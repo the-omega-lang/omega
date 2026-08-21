@@ -291,6 +291,16 @@ impl<'r> Analyzer<'r> {
         }
     }
 
+    /// `hidden` is the implicit default everywhere except spec members
+    /// (which default to their spec's own visibility) -- callers checking a
+    /// spec member must gate this on the member's default separately rather
+    /// than calling it unconditionally.
+    pub(crate) fn check_redundant_hidden(&mut self, node_id: HirId, explicit_hidden_span: Option<Span>) {
+        if let Some(span) = explicit_hidden_span {
+            self.warn(node_id, span, AnalysisWarningKind::RedundantHiddenModifier);
+        }
+    }
+
     pub fn without_diagnostics<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
         let errors = self.errors.len();
         let warnings = self.warnings.len();

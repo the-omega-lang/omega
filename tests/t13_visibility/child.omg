@@ -55,3 +55,24 @@ exposed struct Dog {
 conform Dog to Mammal {
 	breathe(*self) => i32 { 1 }
 }
+
+shared spec Greeter {
+	# No modifier: inherits the spec's own visibility (shared).
+	name(*self) => i32;
+
+	# Explicitly hidden: narrower than the spec itself, reachable only
+	# from other methods of this same spec -- here, `greet`'s default
+	# body below. This is the one place writing `hidden` is not
+	# redundant, since the spec's own default here is `shared`.
+	hidden double_name(*self) => i32 {
+		self.name() * 2
+	}
+
+	greet(*self) => i32 {
+		self.double_name() + 1
+	}
+}
+
+conform Dog to Greeter {
+	name(*self) => i32 { self.id }
+}
