@@ -1,0 +1,8 @@
+import extern::std::io::println;
+
+internal extern exit : (code: i32) => never;
+
+main() => never {
+	println$("never-main: ran");
+	exit(0);
+}

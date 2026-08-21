@@ -52,7 +52,11 @@ See [`annotations-and-sizeof.md`](annotations-and-sizeof.md) for annotation synt
 
 ## Program entry point
 
-A function named `main` in the **root module** is emitted as the platform-facing bare `main` symbol. A function named `main` in another module is an ordinary mangled Omega function.
+A function named `main` in the **root module** is Omega's program entry point. A function named `main` in another module is an ordinary mangled Omega function.
+
+A root-module `main` must have the signature `main() => void` or `main() => never`: no parameters and no generics. This is enforced as a compile error. Command-line arguments and a return value doubling as a process exit code are both platform-dependent notions that do not hold on every target Omega runs on (embedded/freestanding targets in particular), so `main` stays a fixed, portable entry point. Reaching the end of a `void` `main` exits the program; a `never` `main` must diverge (for example by calling a platform-provided exit primitive).
+
+The root-module `main` is **not** itself emitted under the platform's native entry-point symbol (for example the C `main` a hosted linker expects). It is emitted under a fixed internal symbol instead. Producing a runnable native program is the responsibility of the `plat` implementation being linked: a `plat` that wants to support runnable programs provides its own adapter under the platform's real entry-point symbol (a libc-hosted `plat` forces an ordinary function to the `main` symbol via `@mangling(force = "main")`; a freestanding target's `_start` calls the internal entry symbol directly) and calls into Omega's entry point from there. A `plat` that supplies no such adapter still links fine as a library-mode dependency.
 
 There is no language-level library/program mode. A separately compiled package with no root-module `main` simply exports/references whatever its declarations require; the final linker decides how the object is used.
 

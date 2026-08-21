@@ -170,7 +170,9 @@ fn free_function_symbol(function: &CheckedFunctionDef, path: &[Ident], entry: &[
             &function.fn_type(),
         ),
         (ManglingMode::Disabled, _, _) => function.name.as_ref().to_owned(),
-        (ManglingMode::Enabled, _, _) if is_root_main(function, path, entry) => "main".to_owned(),
+        (ManglingMode::Enabled, _, _) if is_root_main(function, path, entry) => {
+            "_omg_main".to_owned()
+        }
         (ManglingMode::Enabled, Some(owner), _) => {
             mangle::encode(&mangle::conformance_method_symbol(
                 &owner.target,

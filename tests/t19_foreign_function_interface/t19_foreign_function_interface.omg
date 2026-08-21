@@ -13,7 +13,7 @@ internal extern fflush : (stream: *mut u8) => i32;
 @mangling(disabled)
 raw_add(a: i32, b: i32) => i32 { a + b }
 
-main() => i32 {
+main() => void {
 	# --- extern function declarations: scalars/pointers are the practical
 	# interop boundary --------------------------------------------------------
 	block := malloc(4usize);
@@ -32,6 +32,4 @@ main() => i32 {
 
 	# --- program entry point: only root-module `main` is the C entry ---------
 	println$("helper-main: ", helper::main());
-
-	return 0;
 }

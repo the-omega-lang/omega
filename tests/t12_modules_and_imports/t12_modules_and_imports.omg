@@ -3,7 +3,7 @@ import helper;
 import mymodule;
 import mymodule::thing::something;
 
-main() => i32 {
+main() => void {
 	# `import helper;` -- an unrooted import of a sibling root-level module.
 	println$("helper-greeting: ", helper::greeting());
 
@@ -18,6 +18,4 @@ main() => i32 {
 	match value {
 		Option::Some => { println$("ambient-option: ", value.value); },
 	} else {}
-
-	return 0;
 }

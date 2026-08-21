@@ -26,7 +26,7 @@ union Value {
 	exposed as_f32: f32;
 }
 
-main() => i32 {
+main() => void {
 	# A struct literal initializes every field exactly once.
 	p := Point<i32> { x = 10; y = 20; };
 	println$("struct-literal: ", p.x, " ", p.y);
@@ -44,6 +44,4 @@ main() => i32 {
 
 	v := Value { as_i32 = 42; };
 	println$("union-basic: ", v.as_i32);
-
-	return 0;
 }

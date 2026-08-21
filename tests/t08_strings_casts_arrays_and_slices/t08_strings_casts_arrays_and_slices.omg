@@ -1,6 +1,6 @@
 import extern::std::io::println;
 
-main() => i32 {
+main() => void {
 	# --- strings and byte strings: distinct fat/thin pointer types --------
 	s: *str = "hello";
 	bytes: *[]u8 = b"world!";
@@ -58,6 +58,4 @@ main() => i32 {
 	tail := &data[2..];
 	head := &data[..<3];
 	println$("range-slice-bounds: ", mid.length, " ", mid[0], " ", mid[2], " ", tail.length, " ", tail[0], " ", head.length, " ", head[2]);
-
-	return 0;
 }

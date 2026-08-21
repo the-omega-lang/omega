@@ -118,7 +118,7 @@ A gap function and its matching glue function intentionally map to the same fina
 
 ## `main`
 
-Only the allowed root entry `main` receives the bare C entry symbol. A child-module function also named `main` remains normally mangled.
+The allowed root entry `main` receives a fixed internal symbol, `_omg_main`, instead of ordinary mangling -- forced rather than derived because ordinary mangling encodes the return type, and `main`'s two allowed return types (`void`, `never`) would otherwise mangle to different strings for what must be one stable linkage contract. It is deliberately not the platform's native entry-point symbol (e.g. C's `main`); a `plat` implementation that wants to produce a runnable native program supplies its own adapter under the real native entry symbol and calls `_omg_main` (see `docs/language/foreign-function-interface.md`, "Program entry point"). A child-module function also named `main` remains normally mangled.
 
 This exception is decided before backend emission so both backends agree.
 

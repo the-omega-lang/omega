@@ -50,7 +50,7 @@ fn macro_body_items_resolve_in_its_definition_module() {
         # This caller-local declaration deliberately shadows the helper's
         # name. The macro body must still select helper::add_one.
         add_one(value: i32) => i32 { value + 100 }
-        main() => i32 { apply$(1) }
+        entry_fn() => i32 { apply$(1) }
         "#,
     );
     package.child(
@@ -68,7 +68,7 @@ fn an_exposed_macro_cannot_name_a_hidden_item() {
     let package = TestPackage::new(
         r#"
         import helper::apply;
-        main() => i32 { apply$(1) }
+        entry_fn() => i32 { apply$(1) }
         "#,
     );
     package.child(
@@ -97,7 +97,7 @@ fn macro_locals_do_not_capture_substituted_arguments() {
     let package = TestPackage::new(
         r#"
         import helper::keep;
-        main() => i32 { out := 7; keep$(out); out }
+        entry_fn() => i32 { out := 7; keep$(out); out }
         "#,
     );
     package.child(
@@ -116,7 +116,7 @@ fn nested_macro_calls_use_the_definition_environment() {
     let package = TestPackage::new(
         r#"
         import helper::outer;
-        main() => i32 { outer$(41) }
+        entry_fn() => i32 { outer$(41) }
         "#,
     );
     package.child(
@@ -135,7 +135,7 @@ fn a_macro_invocation_passed_as_an_argument_resolves_at_the_call_site() {
         r#"
         import helper::takes_expr;
         macro caller_macro($a: expr) => { ($a) * 2 }
-        main() => i32 { takes_expr$(caller_macro$(20)) }
+        entry_fn() => i32 { takes_expr$(caller_macro$(20)) }
         "#,
     );
     package.child(

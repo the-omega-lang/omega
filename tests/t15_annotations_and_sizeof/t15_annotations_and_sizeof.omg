@@ -57,7 +57,7 @@ struct Adder {
 	exposed bump(*self, delta: i32) => i32 { self.base + delta }
 }
 
-main() => i32 {
+main() => void {
 	# Explicit `@layout` changes the observable size relative to the
 	# packed-by-default struct/enum layout.
 	println$("layout-struct-size: ", sizeof<Packed>, " ", sizeof<Aligned>);
@@ -73,6 +73,4 @@ main() => i32 {
 
 	adder := Adder { base = 10; };
 	println$("mangling-force-symbol: ", adder.bump(5));
-
-	return 0;
 }

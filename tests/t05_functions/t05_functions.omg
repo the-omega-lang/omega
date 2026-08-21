@@ -39,7 +39,7 @@ struct Box {
 	}
 }
 
-main() => i32 {
+main() => void {
 	println$("fibo-recursion: ", fibo(10));
 
 	announce("void functions carry no value");
@@ -55,6 +55,4 @@ main() => i32 {
 
 	box := Box::make(9);
 	println$("static-vs-method: ", box.get());
-
-	return 0;
 }

@@ -15,7 +15,7 @@ describe(to: i32, reveal: i32, ident: i32) => i32 {
 	to + reveal + ident
 }
 
-main() => i32 {
+main() => void {
 	type := 7;
 	root := 8;
 	glue := 9;
@@ -96,6 +96,4 @@ second line
 	signed_size := 3isize;
 	ratio := 3.5f32;
 	println$("numeric-suffixes: ", byte_lit, " ", wide, " ", size_lit, " ", signed_size, " ", ratio);
-
-	return 0;
 }

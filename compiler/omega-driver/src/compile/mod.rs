@@ -90,7 +90,7 @@ impl Driver {
         let relationship_surface = compilation.relationship_surface();
         self.collect_primitive_signatures(&relationship_surface);
         self.collect_conformance_signatures(&relationship_surface);
-        self.collect_signatures(compilation.emitted())?;
+        self.collect_signatures(compilation.emitted(), entry)?;
         self.collect_glue_signatures(&relationship_surface);
         let (mut modules, mut warnings) = self.check_bodies(compilation.emitted())?;
 

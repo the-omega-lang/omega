@@ -127,6 +127,7 @@ pub enum AnalysisErrorKind {
         expected: ResolvedType,
         found: ResolvedType,
     },
+    InvalidMainSignature,
     IncrementTargetNotAPlace,
     InvalidIncrementOperand {
         r#type: ResolvedType,
@@ -660,6 +661,7 @@ impl fmt::Display for AnalysisErrorKind {
                 f,
                 "mismatched types: expected return type '{expected}', found '{found}'"
             ),
+            Self::InvalidMainSignature => write!(f, "invalid 'main' signature"),
             Self::IncrementTargetNotAPlace => {
                 write!(f, "invalid '++'/'--' operand")
             }

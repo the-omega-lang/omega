@@ -7,12 +7,10 @@ glue capability::Multiplier {
 	multiply(a: i32, b: i32) => i32 { a * b }
 }
 
-main() => i32 {
+main() => void {
 	# A gap is a first-class item in the function namespace, called through
 	# a qualified path -- either the imported unqualified name or the full
 	# module-qualified path.
 	println$("gap-unqualified: ", Multiplier::multiply(6, 7));
 	println$("gap-qualified: ", capability::Multiplier::multiply(3, 4));
-
-	return 0;
 }

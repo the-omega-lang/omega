@@ -75,7 +75,7 @@ fn bound_and_spec_qualified_dispatch_compile() {
         conform Dog to Speak { speak(*self) => i32 { self.value } }
 
         call_bound<T: Speak>(value: *T) => i32 { value.speak() }
-        main() => i32 {
+        entry_fn() => i32 {
             dog := Dog { value = 7; };
             call_bound(&dog) + Speak::speak(&dog)
         }
@@ -96,7 +96,7 @@ fn a_conjunction_bound_requires_every_member() {
         conform Half to A { a(*self) => i32 { self.value } }
 
         use_both<T: A + B>(value: *T) => i32 { value.a() + value.b() }
-        main() => i32 {
+        entry_fn() => i32 {
             half := Half { value = 1; };
             use_both(&half)
         }
@@ -124,7 +124,7 @@ fn a_three_way_conjunction_bound_requires_all_members() {
         conform Full to C { c(*self) => i32 { self.value } }
 
         use_all<T: A + B + C>(value: *T) => i32 { value.a() + value.b() + value.c() }
-        main() => i32 {
+        entry_fn() => i32 {
             full := Full { value = 1; };
             use_all(&full)
         }
@@ -147,7 +147,7 @@ fn an_alias_bound_and_an_inline_conjunction_behave_identically() {
 
         use_alias<T: AB>(value: *T) => i32 { value.a() + value.b() }
         use_inline<T: A + B>(value: *T) => i32 { value.a() + value.b() }
-        main() => i32 {
+        entry_fn() => i32 {
             full := Full { value = 1; };
             use_alias(&full) + use_inline(&full)
         }
@@ -166,7 +166,7 @@ fn an_alias_bound_and_an_inline_conjunction_behave_identically() {
         conform Half to A { a(*self) => i32 { self.value } }
 
         use_alias<T: AB>(value: *T) => i32 { value.a() }
-        main() => i32 {
+        entry_fn() => i32 {
             half := Half { value = 1; };
             use_alias(&half)
         }
@@ -201,7 +201,7 @@ fn a_blanket_bounded_on_a_conjunction_applies_conditionally() {
         conform Full to B { b(*self) => i32 { self.value } }
 
         use_sum<T: Sum>(value: *T) => i32 { value.sum() }
-        main() => i32 {
+        entry_fn() => i32 {
             full := Full { value = 2; };
             use_sum(&full)
         }
@@ -224,7 +224,7 @@ fn a_spec_alias_is_not_conformable() {
             a(*self) => i32 { self.value }
             b(*self) => i32 { self.value }
         }
-        main() => i32 { 0 }
+        entry_fn() => i32 { 0 }
         "#,
     );
     let errors = compile_errors(&package, "conforming to an alias must fail");
@@ -242,7 +242,7 @@ fn a_spec_alias_is_not_conformable() {
         conform Full to A { a(*self) => i32 { self.value } }
         conform Full to B { b(*self) => i32 { self.value } }
         use_ab<T: AB>(value: *T) => i32 { value.a() + value.b() }
-        main() => i32 {
+        entry_fn() => i32 {
             full := Full { value = 2; };
             use_ab(&full)
         }
@@ -265,7 +265,7 @@ fn same_named_spec_functions_keep_their_own_spec_identity() {
 
         via_a<T: A>(x: *T) => i32 { x.tag() }
         via_b<T: B>(x: *T) => i32 { x.tag() }
-        main() => i32 {
+        entry_fn() => i32 {
             t := Thing { a = 1; b = 2; };
             via_a(&t) + via_b(&t)
         }
@@ -288,7 +288,7 @@ fn a_colliding_method_on_a_conjunction_object_is_ambiguous() {
         conform Thing to B { tag(*self) => i32 { self.b } }
 
         via_ab(x: spec *AB) => i32 { x.tag() }
-        main() => i32 {
+        entry_fn() => i32 {
             t := Thing { a = 1; b = 2; };
             via_ab(&t)
         }
@@ -318,7 +318,7 @@ fn a_narrowing_cast_disambiguates_a_conjunction_object() {
 
         via_a(x: spec *AB) => i32 { (<spec *A>x).tag() }
         via_b(x: spec *AB) => i32 { (<spec *B>x).tag() }
-        main() => i32 {
+        entry_fn() => i32 {
             t := Thing { a = 1; b = 2; };
             via_a(&t) + via_b(&t)
         }
@@ -343,7 +343,7 @@ fn widening_and_unrelated_spec_object_casts_are_rejected() {
         conform Thing to C { tag(*self) => i32 { self.a } }
 
         widen(x: spec *A) => spec *AB { <spec *AB>x }
-        main() => i32 {
+        entry_fn() => i32 {
             t := Thing { a = 1; };
             widen(&t).tag()
         }
@@ -374,7 +374,7 @@ fn a_fully_qualified_spec_call_resolves_an_ambiguous_static() {
         via_p() => i32 { (<S : P>::make()).v }
         via_q() => i32 { (<S : Q>::make()).v }
         label_p(s: *S) => i32 { <S : P>::label(s) }
-        main() => i32 {
+        entry_fn() => i32 {
             s := S { v = 3; };
             via_p() + via_q() + label_p(&s)
         }
@@ -394,7 +394,7 @@ fn an_ambiguous_conforming_static_names_the_candidates_and_their_spelling() {
         struct S { exposed v: i32; }
         conform S to P { make() => Self { S { v = 1; } } }
         conform S to Q { make() => Self { S { v = 2; } } }
-        main() => i32 { (S::make()).v }
+        entry_fn() => i32 { (S::make()).v }
         "#,
     );
     let errors = compile_errors(&package, "an ambiguous conforming static must be diagnosed");
@@ -413,7 +413,7 @@ fn fully_qualified_spec_call_negatives_name_their_cause() {
         struct S { exposed v: i32; }
         struct NotASpec { exposed v: i32; }
         conform S to P { make() => Self { S { v = 1; } } }
-        main() => i32 { (<S : NotASpec>::make()).v }
+        entry_fn() => i32 { (<S : NotASpec>::make()).v }
         "#,
     );
     let errors = compile_errors(
@@ -430,7 +430,7 @@ fn fully_qualified_spec_call_negatives_name_their_cause() {
         r#"
         exposed spec P { make() => Self; }
         struct S { exposed v: i32; }
-        main() => i32 { (<S : P>::make()).v }
+        entry_fn() => i32 { (<S : P>::make()).v }
         "#,
     );
     let errors = compile_errors(
@@ -451,7 +451,7 @@ fn fully_qualified_spec_call_negatives_name_their_cause() {
         exposed spec P { make() => Self; }
         struct S { exposed v: i32; }
         conform S to P { make() => Self { S { v = 1; } } }
-        main() => i32 { (<S : P>::nonexistent()).v }
+        entry_fn() => i32 { (<S : P>::nonexistent()).v }
         "#,
     );
     let errors = compile_errors(
@@ -475,7 +475,7 @@ fn a_receiverless_spec_call_without_an_expected_type_says_self_is_undetermined()
             min() => Self { S { v = 0; } }
             max() => Self { S { v = 1; } }
         }
-        main() => i32 { x := Bounded::min(); x.v }
+        entry_fn() => i32 { x := Bounded::min(); x.v }
         "#,
     );
     let errors = compile_errors(
@@ -500,7 +500,7 @@ fn a_receiverless_spec_call_with_a_non_self_return_is_uninferable() {
         exposed spec F { n() => usize; }
         struct S { exposed v: i32; }
         conform S to F { n() => usize { 7usize } }
-        main() => i32 { x : usize = F::n(); <i32>x }
+        entry_fn() => i32 { x : usize = F::n(); <i32>x }
         "#,
     );
     let errors = compile_errors(
@@ -525,7 +525,7 @@ fn a_receiverless_spec_call_takes_self_from_the_expected_type() {
             max() => Self { S { v = 1; } }
         }
         takes(s: S) => i32 { s.v }
-        main() => i32 {
+        entry_fn() => i32 {
             lo : S = Bounded::min();
             hi := takes(Bounded::max());
             lo.v + hi
@@ -544,7 +544,7 @@ fn conforming_instance_method_is_not_in_concrete_scope() {
         exposed spec Speak { speak(*self) => i32; }
         struct Dog { exposed value: i32; }
         conform Dog to Speak { speak(*self) => i32 { self.value } }
-        main() => i32 { dog := Dog { value = 7; }; dog.speak() }
+        entry_fn() => i32 { dog := Dog { value = 7; }; dog.speak() }
         "#,
     );
     let errors = compile_errors(&package, "concrete instance syntax must be rejected");
@@ -562,7 +562,7 @@ fn duplicate_and_extra_conformances_are_rejected() {
         struct Dog { exposed value: i32; }
         conform Dog to Speak { speak(*self) => i32 { self.value } }
         conform Dog to Speak { speak(*self) => i32 { self.value } }
-        main() => i32 { 0 }
+        entry_fn() => i32 { 0 }
         "#,
     );
     let errors = compile_errors(&duplicate, "duplicate conformance must fail");
@@ -579,7 +579,7 @@ fn duplicate_and_extra_conformances_are_rejected() {
             speak(*self) => i32 { self.value }
             extra(*self) => i32 { 0 }
         }
-        main() => i32 { 0 }
+        entry_fn() => i32 { 0 }
         "#,
     );
     let errors = compile_errors(&extra, "extra conform functions must fail");
@@ -599,7 +599,7 @@ fn a_conform_cannot_borrow_an_inherent_requirement() {
             exposed speak(*self) => i32 { self.value }
         }
         conform Dog to Speak {}
-        main() => i32 { 0 }
+        entry_fn() => i32 { 0 }
         "#,
     );
     let errors = compile_errors(&package, "an inherent method must not satisfy conform");
@@ -615,7 +615,7 @@ fn slice_conformances_and_invalid_structural_targets_are_diagnosed_semantically(
         r#"
         exposed spec Empty { empty(*self) => bool; }
         conform []u8 to Empty { empty(*self) => bool { self.length == 0 } }
-        main() => i32 { 0 }
+        entry_fn() => i32 { 0 }
         "#,
     );
     slice
@@ -627,7 +627,7 @@ fn slice_conformances_and_invalid_structural_targets_are_diagnosed_semantically(
         exposed spec Empty { empty(*self) => bool; }
         struct Dog { exposed value: i32; }
         conform *Dog to Empty { empty(*self) => bool { false } }
-        main() => i32 { 0 }
+        entry_fn() => i32 { 0 }
         "#,
     );
     let errors = compile_errors(
@@ -650,7 +650,7 @@ fn dependency_conformances_satisfy_the_dependency_bound() {
         conform Dog to Animal { sound(*self) => i32 { self.value } }
         conform Dog to Mammal { fur(*self) => i32 { 1 } }
         call<T: Animal>(value: *T) => i32 { value.sound() }
-        main() => i32 { dog := Dog { value = 4; }; call(&dog) }
+        entry_fn() => i32 { dog := Dog { value = 4; }; call(&dog) }
         "#,
     );
     package
@@ -663,7 +663,7 @@ fn primitive_blocks_are_core_only() {
     let package = TestPackage::new(
         r#"
         primitive i32 { exposed identity(*self) => i32 { *self } }
-        main() => i32 { 0 }
+        entry_fn() => i32 { 0 }
         "#,
     );
     let errors = compile_errors(&package, "non-core primitive block must fail");
@@ -676,7 +676,7 @@ fn primitive_blocks_are_core_only() {
 #[test]
 fn external_non_generic_primitive_is_imported_not_redefined() {
     let core = TestPackage::new("primitive i32 { exposed identity(*self) => i32 { *self } }");
-    let local = TestPackage::new("main() => i32 { 7i32.identity() }");
+    let local = TestPackage::new("entry_fn() => i32 { 7i32.identity() }");
     let mut driver = Driver::new(
         local.0.clone(),
         None,
@@ -716,7 +716,7 @@ fn extern_generic_instantiation_keeps_its_declaring_module() {
     let consumer = TestPackage::new(
         r#"
         import extern::lib::identity;
-        main() => i32 { identity(7) }
+        entry_fn() => i32 { identity(7) }
         "#,
     );
     let program = Driver::new(
@@ -760,7 +760,7 @@ fn extern_owned_concrete_conform_is_imported_not_reemitted() {
         import extern::lib::Show;
         import extern::lib::Value;
 
-        main() => i32 {
+        entry_fn() => i32 {
             value := Value { n = 7; };
             Show::show(&value)
         }
@@ -801,7 +801,7 @@ fn blanket_conforms_require_a_package_local_spec() {
         r#"
         import extern::lib::Foreign;
         conform<T> T to Foreign { show(*self) => i32 { 1 } }
-        main() => i32 { 0 }
+        entry_fn() => i32 { 0 }
         "#,
     );
     let result = Driver::new(
@@ -849,7 +849,7 @@ fn externally_owned_stdout_cannot_conform_to_externally_owned_write() {
                 Option<usize>::Some { value = <usize>bytes.length; }
             }
         }
-        main() => i32 { 0 }
+        entry_fn() => i32 { 0 }
         "#,
     );
     let mut driver = Driver::new(
@@ -890,7 +890,7 @@ fn old_boolean_console_glue_signature_is_rejected() {
         glue StandardOutput {
             write(bytes: *[?]u8) => bool { true }
         }
-        main() => i32 { 0 }
+        entry_fn() => i32 { 0 }
         "#,
     );
     let mut driver = Driver::new(
@@ -918,7 +918,7 @@ fn old_boolean_console_glue_signature_is_rejected() {
 
 #[test]
 fn print_macro_requires_an_explicit_import() {
-    let package = TestPackage::new("main() => i32 { println$(\"missing\"); 0 }");
+    let package = TestPackage::new("entry_fn() => i32 { println$(\"missing\"); 0 }");
     let errors = compile_errors(&package, "an unimported print macro must fail");
     assert!(errors.iter().any(|error| matches!(
         error,
@@ -932,7 +932,7 @@ fn print_macro_requires_an_explicit_import() {
 #[test]
 fn formatting_is_not_available_from_core() {
     let core = TestPackage::new("marker CoreOnly {}");
-    let consumer = TestPackage::new("main() => i32 { core::fmt::missing() }");
+    let consumer = TestPackage::new("entry_fn() => i32 { core::fmt::missing() }");
     let mut driver = Driver::new(
         consumer.0.clone(),
         None,
@@ -962,7 +962,7 @@ fn internal_items_are_visible_across_executable_modules() {
     let package = TestPackage::new(
         r#"
         import helper::shared;
-        main() => i32 { shared() }
+        entry_fn() => i32 { shared() }
         "#,
     );
     package.write_child("helper", "internal shared() => i32 { 42 }");
@@ -976,7 +976,7 @@ fn root_imports_are_anchored_to_the_package_root_module() {
     let package = TestPackage::new(
         r#"
         import root::helper::shared;
-        main() => i32 { shared() }
+        entry_fn() => i32 { shared() }
         "#,
     );
     package.write_child("helper", "internal shared() => i32 { 42 }");
@@ -987,7 +987,7 @@ fn root_imports_are_anchored_to_the_package_root_module() {
 
 #[test]
 fn local_and_extern_root_identities_cannot_collide() {
-    let local = TestPackage::new("main() => i32 { 0 }");
+    let local = TestPackage::new("entry_fn() => i32 { 0 }");
     let dependency = TestPackage::new("exposed value() => i32 { 42 }");
     let errors = match Driver::new(
         local.0.clone(),
@@ -1015,7 +1015,7 @@ fn spec_qualified_calls_adapt_a_non_place_receiver() {
         struct Dog { exposed value: i32; }
         conform Dog to Speak { speak(*self) => i32 { self.value } }
         make() => Dog { Dog { value = 3; } }
-        main() => i32 {
+        entry_fn() => i32 {
             dog := Dog { value = 7; };
             Speak::speak(dog)
                 + Speak::speak(&dog)
@@ -1037,7 +1037,7 @@ fn unconstrained_conformance_parameters_are_rejected() {
         exposed spec Sum { sum(*self) => i32; }
         struct Box<T> { exposed value: T; }
         conform<T, U: Bound> Box<T> to Sum { sum(*self) => i32 { 0 } }
-        main() => i32 { 0 }
+        entry_fn() => i32 { 0 }
         "#,
     );
     let errors = compile_errors(
@@ -1055,7 +1055,7 @@ fn unconstrained_conformance_parameters_are_rejected() {
         struct Box<T> { exposed value: T; }
         conform<T> Box<T> to Sum { sum(*self) => i32 { 1 } }
         use_sum<X: Sum>(value: *X) => i32 { value.sum() }
-        main() => i32 { boxed := Box<i32> { value = 1; }; use_sum(&boxed) }
+        entry_fn() => i32 { boxed := Box<i32> { value = 1; }; use_sum(&boxed) }
         "#,
     );
     generic_target
@@ -1074,7 +1074,7 @@ fn blanket_conformances_materialize_and_explicit_blocks_win() {
         conform<T: Numeric> T to Sum { sum(*self) => i32 { 1 } }
         conform Number to Sum { sum(*self) => i32 { 99 } }
         call<T: Sum>(value: *T) => i32 { value.sum() }
-        main() => i32 { number := Number { value = 7; }; call(&number) + Sum::sum(&number) }
+        entry_fn() => i32 { number := Number { value = 7; }; call(&number) + Sum::sum(&number) }
         "#,
     );
     package
@@ -1095,7 +1095,7 @@ fn a_superseded_blanket_body_is_not_type_checked() {
             sum(*self) => i32 { self.this_member_does_not_exist }
         }
         call<T: Sum>(value: *T) => i32 { value.sum() }
-        main() => i32 { number := Number { value = 1; }; call(&number) }
+        entry_fn() => i32 { number := Number { value = 1; }; call(&number) }
         "#,
     );
     package
@@ -1116,7 +1116,7 @@ fn a_more_specific_blanket_bound_wins() {
         conform<T: A> T to Show { show(*self) => i32 { 1 } }
         conform<T: A + B> T to Show { show(*self) => i32 { 2 } }
         call<T: Show>(value: *T) => i32 { value.show() }
-        main() => i32 { value := Number { value = 7; }; call(&value) }
+        entry_fn() => i32 { value := Number { value = 7; }; call(&value) }
         "#,
     );
     let program = package
@@ -1142,7 +1142,7 @@ fn a_bounded_blanket_wins_over_an_unbounded_one() {
         conform<T> T to Show { show(*self) => i32 { 1 } }
         conform<T: Numeric> T to Show { show(*self) => i32 { 2 } }
         call<T: Show>(value: *T) => i32 { value.show() }
-        main() => i32 { value := Number { value = 7; }; call(&value) }
+        entry_fn() => i32 { value := Number { value = 7; }; call(&value) }
         "#,
     );
     let program = package
@@ -1172,7 +1172,7 @@ fn incomparable_blanket_bound_sets_are_ambiguous() {
         conform<T: A + B> T to Show { show(*self) => i32 { 1 } }
         conform<T: A + C> T to Show { show(*self) => i32 { 2 } }
         call<T: Show>(value: *T) => i32 { value.show() }
-        main() => i32 { value := Number { value = 7; }; call(&value) }
+        entry_fn() => i32 { value := Number { value = 7; }; call(&value) }
         "#,
     );
     let errors = compile_errors(
@@ -1198,7 +1198,7 @@ fn an_explicit_conform_displaces_a_blanket_registered_before_it() {
         conform<T: Marker> T to Base { b(*self) => i32 { 111 } }
         conform Gen to Producer { make(*self) => Foo { Foo { value = 1; } } }
         conform Foo to Base { b(*self) => i32 { 222 } }
-        main() => i32 { value := Foo { value = 1; }; Base::b(&value) }
+        entry_fn() => i32 { value := Foo { value = 1; }; Base::b(&value) }
         "#,
     );
     let program = package
@@ -1235,7 +1235,7 @@ fn unrelated_matching_blankets_are_ambiguous() {
         conform<T: A> T to Show { show(*self) => i32 { 1 } }
         conform<T: B> T to Show { show(*self) => i32 { 2 } }
         call<T: Show>(value: *T) => i32 { value.show() }
-        main() => i32 { value := Number { value = 7; }; call(&value) }
+        entry_fn() => i32 { value := Number { value = 7; }; call(&value) }
         "#,
     );
     let errors = compile_errors(
@@ -1258,7 +1258,7 @@ fn cyclic_blanket_bounds_report_an_error_without_recursing() {
         conform<T: A> T to B { b(*self) => i32 { 1 } }
         conform<T: B> T to A { a(*self) => i32 { 2 } }
         call<T: A>(value: *T) => i32 { value.a() }
-        main() => i32 { value := Number { value = 7; }; call(&value) }
+        entry_fn() => i32 { value := Number { value = 7; }; call(&value) }
         "#,
     );
     let errors = compile_errors(&package, "cyclic blanket bounds must terminate");
@@ -1291,7 +1291,7 @@ fn generic_conform_bounds_seed_the_body_context() {
 
         use_sum<T: Sum>(value: *T) => i32 { value.sum() }
         use_qualified_sum<T: QualifiedSum>(value: *T) => i32 { value.qualified_sum() }
-        main() => i32 {
+        entry_fn() => i32 {
             one := One { value = 1; };
             two := Two { value = 2; };
             first := Buf<One> { inner = &one; };
@@ -1314,7 +1314,7 @@ fn generic_conform_bounds_reject_unsatisfied_conformance_at_the_declaration() {
         struct Buf<T> { exposed inner: *T; }
         conform<T: W> Buf<T> to Show { show(*self) => i32 { 1 } }
 
-        main() => i32 {
+        entry_fn() => i32 {
             value := NotW { value = 0; };
             buf := Buf<NotW> { inner = &value; };
             Show::show(&buf)
@@ -1356,7 +1356,7 @@ fn an_unrelated_spec_query_does_not_report_a_foreign_template_bound() {
         struct Buf<T> { exposed inner: *T; }
         conform<T: W> Buf<T> to Show { show(*self) => i32 { 1 } }
         as_w(value: *Buf<NotW>) => spec *W { value }
-        main() => i32 {
+        entry_fn() => i32 {
             value := NotW { value = 0; };
             buf := Buf<NotW> { inner = &value; };
             as_w(&buf).w()
@@ -1392,7 +1392,7 @@ fn generic_conform_bounds_expand_spec_aliases() {
             sum(*self) => i32 { self.inner.a() + self.inner.b() }
         }
         use_sum<T: Sum>(value: *T) => i32 { value.sum() }
-        main() => i32 {
+        entry_fn() => i32 {
             value := Value { value = 1; };
             buf := Buf<Value> { inner = &value; };
             use_sum(&buf)
@@ -1418,7 +1418,7 @@ fn an_unbounded_generic_conform_gains_no_bound_context() {
             show(*self) => i32 { self.inner.secret() }
         }
         use_show<T: Show>(value: *T) => i32 { value.show() }
-        main() => i32 {
+        entry_fn() => i32 {
             value := Value { value = 1; };
             boxed := Box<Value> { inner = &value; };
             use_show(&boxed)
@@ -1445,7 +1445,7 @@ fn an_inherent_method_body_cannot_reach_a_conformance_method() {
             exposed leak(*self) => i32 { self.secret() }
         }
         conform Dog to Secret { secret(*self) => i32 { 99 } }
-        main() => i32 { dog := Dog { value = 1; }; dog.leak() }
+        entry_fn() => i32 { dog := Dog { value = 1; }; dog.leak() }
         "#,
     );
     let errors = compile_errors(
@@ -1470,7 +1470,7 @@ fn distinct_generic_spec_conformances_emit_distinct_bodies() {
         conform Multi to Consume<u8> {
             consume(*self, value: u8) => i32 { self.base + <i32>value }
         }
-        main() => i32 {
+        entry_fn() => i32 {
             value := Multi { base = 1; };
             Consume<i32>::consume(&value, 2) + Consume<u8>::consume(&value, 3u8)
         }
@@ -1503,7 +1503,7 @@ fn a_bound_on_a_spec_alias_reaches_its_members_conformances() {
         conform Foo to B { }
 
         use_alias<T: AB>(x: *T) => i32 { x.a() + x.b() }
-        main() => i32 { f := Foo { v = 0; }; use_alias(&f) }
+        entry_fn() => i32 { f := Foo { v = 0; }; use_alias(&f) }
         "#,
     );
     package
@@ -1522,7 +1522,7 @@ fn an_unbounded_spec_is_still_out_of_scope_under_another_bound() {
         conform Dog to Secret { secret(*self) => i32 { 999 } }
 
         leak<T: Speak>(x: *T) => i32 { x.secret() }
-        main() => i32 { d := Dog { id = 7; }; leak(&d) }
+        entry_fn() => i32 { d := Dog { id = 7; }; leak(&d) }
         "#,
     );
     let errors = compile_errors(&package, "an unbounded spec's method must not be in scope");
@@ -1539,7 +1539,7 @@ fn slice_conformances_are_callable_not_merely_declarable() {
             r#"
             exposed spec Show {{ show(*self) => i32; }}
             conform{target} to Show {{ show(*self) => i32 {{ self.length }} }}
-            main() => i32 {{
+            entry_fn() => i32 {{
                 mut a: [2]u8;
                 s := &a[0..];
                 Show::show(s)
@@ -1563,7 +1563,7 @@ fn inferred_arrays_slices_and_unsized_array_pointers_have_distinct_spellings() {
         r#"
         takes_slice(value: *[]i32) => i32 { value.length }
         takes_unsized(value: *[?]i32) => i32 { value[1] }
-        main() => i32 {
+        entry_fn() => i32 {
             inferred: []i32 = [10, 20, 30];
             unsized := <*[?]i32>&inferred;
             slice := &inferred[0..];
@@ -1582,7 +1582,7 @@ fn an_unmatchable_generic_conform_target_is_rejected_at_its_declaration() {
         r#"
         exposed spec Show { show(*self) => i32; }
         conform<T> *T to Show { show(*self) => i32 { 1 } }
-        main() => i32 { 0 }
+        entry_fn() => i32 { 0 }
         "#,
     );
     let errors = compile_errors(&package, "a pointer conform target must be rejected");
@@ -1597,7 +1597,7 @@ fn a_variadic_spec_function_is_rejected_at_its_declaration() {
     let package = TestPackage::new(
         r#"
         exposed spec Fmt { emit(*self, ...) => i32; }
-        main() => i32 { 0 }
+        entry_fn() => i32 { 0 }
         "#,
     );
     let errors = compile_errors(&package, "a variadic spec function must be rejected");
@@ -1619,7 +1619,7 @@ fn a_spec_return_type_on_a_method_is_rejected_not_inferred() {
             exposed helper(*self) => i32 { 5 }
             exposed make(*self) => spec Countable { Wrap { n = self.helper(); } }
         }
-        main() => i32 { z := Zoo { n = 1; }; Countable::count(&z.make()) }
+        entry_fn() => i32 { z := Zoo { n = 1; }; Countable::count(&z.make()) }
         "#,
     );
     let errors = compile_errors(&package, "a `spec T`-returning method must be rejected");
@@ -1640,7 +1640,7 @@ fn a_spec_return_type_on_a_free_function_is_rejected_not_inferred() {
         struct Dog { exposed v: i32; }
         conform Dog to Animal { speak(*self) => i32 { self.v } }
         make() => spec Animal { Dog { v = 1; } }
-        main() => i32 { Animal::speak(&make()) }
+        entry_fn() => i32 { Animal::speak(&make()) }
         "#,
     );
     let errors = compile_errors(
@@ -1664,7 +1664,7 @@ fn a_mismatched_for_loop_element_annotation_reports_what_is_available() {
         conform BagIter to Iterator<u8> { next(*mut self) => Option<u8> { Option<u8>::None } }
         exposed struct Bag { exposed n: i32; }
         conform Bag to ToIterator<u8> { to_iterator(*self) => BagIter { BagIter { i = 0; } } }
-        main() => i32 { b := Bag { n = 0; }; for x : u64 in b { } 0 }
+        entry_fn() => i32 { b := Bag { n = 0; }; for x : u64 in b { } 0 }
         "#,
     );
     let core = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../runtime/core");
@@ -1694,7 +1694,7 @@ fn primitive_method_symbols_stay_within_the_mangling_charset() {
     let package = TestPackage::new(
         r#"
         primitive str { exposed width(*self) => i32 { self.size } }
-        main() => i32 { 0 }
+        entry_fn() => i32 { 0 }
         "#,
     );
     let root = package.0.clone();
@@ -1753,7 +1753,7 @@ fn a_package_root_with_no_modules_is_a_reportable_error() {
 
 fn compile_as_core(core_source: &str) -> Result<omega_driver::CompiledProgram, Vec<CompileError>> {
     let core = TestPackage::new(core_source);
-    let local = TestPackage::new("main() => i32 { 0 }");
+    let local = TestPackage::new("entry_fn() => i32 { 0 }");
     let result = Driver::new(
         local.0.clone(),
         None,
@@ -1815,7 +1815,7 @@ fn a_genuine_conformance_cycle_is_rejected() {
         conform<T: B> T to A { a(*self) => i32 { 1 } }
         conform<T: A> T to B { b(*self) => i32 { 2 } }
         use_a<T: A>(t: T) => i32 { t.a() }
-        main() => i32 { use_a(S { v = 0; }) }
+        entry_fn() => i32 { use_a(S { v = 0; }) }
         "#,
     );
     let errors = compile_errors(&package, "a genuine cycle must be rejected");
@@ -1838,7 +1838,7 @@ fn a_blanket_chain_compiles_in_either_declaration_order() {
             {}
             {}
             use_c<T: C>(t: T) => i32 {{ t.c() }}
-            main() => i32 {{ use_c(S {{ v = 0; }}) }}
+            entry_fn() => i32 {{ use_c(S {{ v = 0; }}) }}
             "#,
             if swap {
                 "conform<T: B> T to C { c(*self) => i32 { self.b() + 1 } }"
@@ -1869,7 +1869,7 @@ fn a_blanket_chain_with_a_concrete_middle_link_still_works() {
         conform S to B { b(*self) => i32 { self.v + 1 } }
         conform<T: B> T to C { c(*self) => i32 { self.b() + 1 } }
         use_c<T: C>(t: T) => i32 { t.c() }
-        main() => i32 { use_c(S { v = 0; }) }
+        entry_fn() => i32 { use_c(S { v = 0; }) }
         "#,
     );
     package
@@ -1892,7 +1892,7 @@ fn a_fourth_blanket_bounded_on_the_middle_spec_compiles() {
         conform<T: B> T to X { x(*self) => i32 { self.b() + 10 } }
         use_c<T: C>(t: T) => i32 { t.c() }
         use_x<T: X>(t: T) => i32 { t.x() }
-        main() => i32 { use_c(S { v = 0; }) + use_x(S { v = 0; }) }
+        entry_fn() => i32 { use_c(S { v = 0; }) + use_x(S { v = 0; }) }
         "#,
     );
     package
@@ -1907,7 +1907,7 @@ fn a_template_whose_spec_does_not_resolve_still_reports_not_a_spec() {
         struct Plain { exposed v: i32; }
         struct Wrapper<T> { exposed v: T; }
         conform<T> Wrapper<T> to Plain { }
-        main() => i32 { w := Wrapper { v = 1; }; w.nothing_here() }
+        entry_fn() => i32 { w := Wrapper { v = 1; }; w.nothing_here() }
         "#,
     );
     let errors = compile_errors(&package, "the non-spec conform target must be reported");
@@ -1935,7 +1935,7 @@ fn an_alias_bound_and_its_inline_spelling_do_not_compare_as_equal() {
         conform<T: AB> T to X { x(*self) => i32 { 1 } }
         conform<T: A + B> T to X { x(*self) => i32 { 2 } }
         use_x<T: X>(t: T) => i32 { t.x() }
-        main() => i32 { use_x(S { v = 0; }) }
+        entry_fn() => i32 { use_x(S { v = 0; }) }
         "#,
     );
     let errors = compile_errors(&package, "alias vs inline must compare as equal");
@@ -1959,7 +1959,7 @@ fn an_alias_bound_and_its_inline_spelling_are_interchangeable_in_bound_contexts(
         conform<T: AB> T to X { x(*self) => i32 { 10 } }
         use_inline<T: A + B>(t: T) => i32 { t.x() }
         use_alias<T: AB>(t: T) => i32 { t.x() }
-        main() => i32 { use_inline(S { v = 0; }) + use_alias(S { v = 0; }) }
+        entry_fn() => i32 { use_inline(S { v = 0; }) + use_alias(S { v = 0; }) }
         "#,
     );
     package
@@ -1980,7 +1980,7 @@ fn an_inline_blanket_is_reachable_under_an_alias_bound() {
         conform S to B { b(*self) => i32 { 2 } }
         conform<T: A + B> T to X { x(*self) => i32 { 10 } }
         use_alias<T: AB>(t: T) => i32 { t.x() }
-        main() => i32 { use_alias(S { v = 0; }) }
+        entry_fn() => i32 { use_alias(S { v = 0; }) }
         "#,
     );
     package
@@ -2002,7 +2002,7 @@ fn a_generic_alias_bound_expands_with_its_arguments_substituted() {
         conform<T: Both<i32>> T to X { x(*self) => i32 { 1 } }
         conform<T: Iter<i32> + Eq> T to X { x(*self) => i32 { 2 } }
         use_x<T: X>(t: T) => i32 { t.x() }
-        main() => i32 { use_x(S { v = 0; }) }
+        entry_fn() => i32 { use_x(S { v = 0; }) }
         "#,
     );
     let errors = compile_errors(&package, "the generic alias expands with its arguments");
@@ -2029,7 +2029,7 @@ fn a_return_type_only_generic_is_inferred_from_the_expected_type() {
         explicit_return() => Small { return lowest(); }
         branch(cond: bool) => Small { if cond { lowest() } else { Small { v = 9; } } }
 
-        main() => i64 {
+        entry_fn() => i64 {
             a : Small = lowest();
             b : Big = lowest();
             c := take_small(tail_return());
@@ -2051,7 +2051,7 @@ fn a_generic_static_infers_owner_generics_from_the_expected_type() {
         r#"
         struct BoxSelf<T> { exposed v: T; exposed empty() => Self { BoxSelf { v = 0; } } }
         struct BoxOut<T> { exposed v: T; exposed empty() => BoxOut<T> { BoxOut { v = 0; } } }
-        main() => i32 {
+        entry_fn() => i32 {
             a : BoxSelf<i32> = BoxSelf::empty();
             b : BoxOut<i64> = BoxOut::empty();
             a.v + <i32>b.v
@@ -2068,7 +2068,7 @@ fn the_expected_type_seed_adapts_untyped_literal_arguments() {
     let package = TestPackage::new(
         r#"
         identity<T>(x: T) => T { x }
-        main() => i64 { y : i64 = identity(5); y }
+        entry_fn() => i64 { y : i64 = identity(5); y }
         "#,
     );
     package
@@ -2082,7 +2082,7 @@ fn an_argument_conflicting_with_the_expected_seed_is_rejected() {
         r#"
         struct Small { exposed v: i32; }
         identity<T>(x: T) => T { x }
-        main() => i64 { y : i64 = identity(Small { v = 1; }); y }
+        entry_fn() => i64 { y : i64 = identity(Small { v = 1; }); y }
         "#,
     );
     let errors = compile_errors(&package, "the seed/argument conflict must be rejected");
@@ -2100,7 +2100,7 @@ fn a_mut_self_call_on_a_temporary_reports_mutate_temporary() {
         struct Bump { exposed n: i32; }
         conform Bump to Bumpable { bump(*mut self) => void { self.n = self.n + 1; } }
         make() => Bump { Bump { n = 0; } }
-        main() => i32 { Bumpable::bump(make()); 0 }
+        entry_fn() => i32 { Bumpable::bump(make()); 0 }
         "#,
     );
     let errors = compile_errors(&package, "an rvalue receiver must be rejected");
@@ -2119,7 +2119,7 @@ fn a_projected_write_through_a_temporary_reports_mutate_temporary() {
         r#"
         struct Bump { exposed n: i32; }
         make() => Bump { Bump { n = 0; } }
-        main() => i32 { make().n = 5; 0 }
+        entry_fn() => i32 { make().n = 5; 0 }
         "#,
     );
     let errors = compile_errors(&package, "a write into an rvalue must be rejected");
@@ -2138,7 +2138,7 @@ fn a_thin_pointer_generic_against_a_fat_pointer_teaches_the_rule() {
         r#"
         exposed spec Show { show(*self) => i32; }
         use_it<T: Show>(x: *T) => i32 { 1 }
-        main() => i32 {
+        entry_fn() => i32 {
             arr := [1, 2, 3];
             slice := &arr[0..<3];
             use_it(slice)
@@ -2165,7 +2165,7 @@ fn a_by_value_generic_still_binds_a_slice() {
         exposed spec Show { show(*self) => i32; }
         conform<T> []T to Show { show(*self) => i32 { 1 } }
         use_it<T: Show>(s: T) => i32 { 1 }
-        main() => i32 {
+        entry_fn() => i32 {
             arr := [1, 2, 3];
             slice := &arr[0..<3];
             use_it(slice)
@@ -2188,7 +2188,7 @@ fn a_32_bit_target_sizes_usize_at_four_bytes() {
         width := comp sizeof<usize>;
         width_isize := comp sizeof<isize>;
         ptr_width := comp sizeof<*u8>;
-        main() => i32 { 0 }
+        entry_fn() => i32 { 0 }
         "#,
     );
     let program = Driver::new(package.0.clone(), None, Vec::new(), target)
@@ -2226,7 +2226,7 @@ fn a_32_bit_target_sizes_usize_at_four_bytes() {
 fn a_usize_literal_above_u32_max_is_rejected_on_a_32_bit_target() {
     let source = r#"
         n : usize = 5000000000;
-        main() => i32 { 0 }
+        entry_fn() => i32 { 0 }
         "#;
     let target32 = Target {
         arch: omega_analyzer::Arch::Riscv32,
@@ -2259,7 +2259,7 @@ fn lowered_mir_carries_symbols_and_linkage() {
     let package = TestPackage::new(
         r#"
         add<T>(a: T, b: T) => T { a }
-        main() => i32 { add(1, 2) }
+        main() => void { add(1, 2); }
         "#,
     );
     let program = Driver::new(package.0.clone(), None, Vec::new(), Target::DEFAULT)
@@ -2280,7 +2280,7 @@ fn lowered_mir_carries_symbols_and_linkage() {
         .iter()
         .find(|f| f.name.as_ref() == "main")
         .expect("the entry function is present");
-    assert_eq!(main.symbol, "main");
+    assert_eq!(main.symbol, "_omg_main");
     assert_eq!(main.linkage, omega_mir::MirLinkage::Export);
 
     let add = functions
@@ -2315,11 +2315,11 @@ fn error_texts(
 fn a_duplicate_member_underlines_only_its_name() {
     for (source, name) in [
         (
-            "struct Holder {\n    field: i32;\n    field: i32;\n}\nmain() => i32 { 0 }\n",
+            "struct Holder {\n    field: i32;\n    field: i32;\n}\nentry_fn() => i32 { 0 }\n",
             "field",
         ),
         (
-            "struct Holder {\n    v: i32;\n\n    method(*self) => i32 { 1 }\n    method(*self) => i32 { 2 }\n}\nmain() => i32 { 0 }\n",
+            "struct Holder {\n    v: i32;\n\n    method(*self) => i32 { 1 }\n    method(*self) => i32 { 2 }\n}\nentry_fn() => i32 { 0 }\n",
             "method",
         ),
     ] {
@@ -2366,7 +2366,7 @@ struct Holder {
         self.v;
     }
 }
-main() => i32 { 0 }
+entry_fn() => i32 { 0 }
 ";
     let package = TestPackage::new(source);
     let errors = compile_errors(&package, "both return-type mismatches must be rejected");
@@ -2387,7 +2387,7 @@ spec Sp {
     m(*self) => i32;
     m(*self) => i32;
 }
-main() => i32 { 0 }
+entry_fn() => i32 { 0 }
 ";
     let package = TestPackage::new(source);
     let errors = compile_errors(&package, "a duplicate spec function must be rejected");

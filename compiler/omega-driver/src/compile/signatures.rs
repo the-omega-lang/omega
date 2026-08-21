@@ -204,6 +204,7 @@ impl Driver {
     pub(super) fn collect_signatures(
         &mut self,
         local: &[ModulePath],
+        entry: &[Ident],
     ) -> Result<(), Vec<CompileError>> {
         for path in local {
             self.ensure_module_indexed(path).map_err(fatal)?;
@@ -248,11 +249,68 @@ impl Driver {
             }
         }
 
+        self.check_main_signature(entry);
+
         let errors = self.diagnostics.drain_errors(local);
         if errors.is_empty() {
             Ok(())
         } else {
             Err(errors)
+        }
+    }
+
+    // A root-module `main` is enforced to be exactly `main() => void` or
+    // `main() => never` -- command-line arguments and process exit codes
+    // are platform-dependent, so `main` stays a portable, argument-less
+    // entry point. See `docs/language/foreign-function-interface.md`.
+    fn check_main_signature(&mut self, entry: &[Ident]) {
+        // A namespace-only root directory (a library package with no root
+        // `.omg` file of its own) was never parsed/indexed and cannot
+        // declare a `main` at all.
+        let Some(index) = self.modules.get(entry).and_then(|m| m.index.as_ref()) else {
+            return;
+        };
+        let name = Ident("main".to_owned());
+        let indices: Vec<usize> = match index.overloads.get(&name) {
+            Some(indices) => indices.clone(),
+            None => match index.items.get(&name) {
+                Some(&i) => vec![i],
+                None => return,
+            },
+        };
+        let is_overloaded = index.overloads.contains_key(&name);
+
+        for index in indices {
+            let hir = self.modules.hir(entry);
+            let HirItem::FunctionDefinition(f) = &hir.items[index] else {
+                continue;
+            };
+            if !f.generics.is_empty() {
+                continue;
+            }
+            let (id, span) = (f.id, f.signature_span);
+
+            let fn_type = if is_overloaded {
+                self.ensure_overload_signature(entry, index).ok()
+            } else {
+                match self.ensure_item(entry, entry, &name, &[], ResolveItemOptions::INDIRECT) {
+                    Ok(ResolvedItem::Value {
+                        r#type: ResolvedType::Function(fn_type),
+                        ..
+                    }) => Some(fn_type),
+                    _ => None,
+                }
+            };
+
+            let Some(fn_type) = fn_type else { continue };
+            let valid = fn_type.params.is_empty()
+                && matches!(*fn_type.return_type, ResolvedType::Void | ResolvedType::Never);
+            if !valid {
+                self.diagnostics.error(
+                    entry,
+                    AnalysisError::new(id, span, AnalysisErrorKind::InvalidMainSignature),
+                );
+            }
         }
     }
 }

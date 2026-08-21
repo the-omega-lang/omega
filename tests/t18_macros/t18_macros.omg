@@ -27,7 +27,7 @@ macro call_with_args($f: ident, $args: expr...) => {
 	$f($...(,){ $args })
 }
 
-main() => i32 {
+main() => void {
 	println$("double-i32: ", double_i32(21));
 
 	log_two$("first", "second");
@@ -44,6 +44,4 @@ main() => i32 {
 	# reaches it: names written in a macro body resolve in the macro's own
 	# definition environment, not the caller's.
 	println$("read-secret: ", read_secret$());
-
-	return 0;
 }

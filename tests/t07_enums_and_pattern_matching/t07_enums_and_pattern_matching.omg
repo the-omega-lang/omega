@@ -65,7 +65,7 @@ classify_char(c: char) => i32 {
 	}
 }
 
-main() => i32 {
+main() => void {
 	# --- basic enum: implicit tag, path construction, exhaustive match ----
 	less := Ordering::Less;
 	println$("enum-basic-match: ", order_label(less), " ", order_label(compare(2, 5)), " ", order_label(compare(5, 2)));
@@ -102,6 +102,4 @@ main() => i32 {
 		.. => "not equal",
 	};
 	println$("catch-all-match: ", tag_of);
-
-	return 0;
 }

@@ -77,7 +77,7 @@ fn has_analysis_error(
 
 fn with_two_pointers(body: &str) -> String {
     format!(
-        "main() => i32 {{ values : [2]u8 = [1u8, 2u8]; a := &values[0]; b := &values[1]; {body} }}"
+        "entry_fn() => i32 {{ values : [2]u8 = [1u8, 2u8]; a := &values[0]; b := &values[1]; {body} }}"
     )
 }
 
@@ -119,7 +119,7 @@ fn offsetting_a_pointer_by_an_integer_is_still_allowed() {
 
 #[test]
 fn taking_a_binding_s_address_counts_as_using_it() {
-    let program = TestPackage::new("main() => i32 { a := 5; p := &a; *p }")
+    let program = TestPackage::new("entry_fn() => i32 { a := 5; p := &a; *p }")
         .result()
         .expect("must compile");
     assert!(

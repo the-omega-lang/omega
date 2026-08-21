@@ -21,7 +21,7 @@ defer_demo() => i32 {
 	result
 }
 
-main() => i32 {
+main() => void {
 	# --- if as an expression, with else-if chaining ------------------------
 	label := if 0 > 0 { "positive" } else if 0 < 0 { "negative" } else { "zero" };
 	println$("if-expr: ", label);
@@ -72,6 +72,4 @@ main() => i32 {
 	# --- defer: FILO order, return value fixed before defers run --------------
 	returned := defer_demo();
 	println$("defer-return: ", returned);
-
-	return 0;
 }

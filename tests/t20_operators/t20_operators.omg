@@ -22,7 +22,7 @@ next_index() => i32 {
 	1
 }
 
-main() => i32 {
+main() => void {
 	# --- arithmetic: +, -, *, /, %, unary - -----------------------------------
 	a := 17;
 	b := 5;
@@ -135,6 +135,4 @@ main() => i32 {
 	mut counter: u32 = 0;
 	counter = counter + 1;
 	println$("literal-inference: ", counter);
-
-	return 0;
 }

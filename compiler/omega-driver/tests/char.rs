@@ -79,7 +79,7 @@ fn has_analysis_error(
 fn u8_casts_into_char_and_char_casts_out_to_any_integer() {
     TestPackage::new(
         r#"
-        main() => i32 {
+        entry_fn() => i32 {
             c := <char>65u8;
             if c == 'A' { <i32>c } else { <i32><u32>c }
         }
@@ -90,7 +90,7 @@ fn u8_casts_into_char_and_char_casts_out_to_any_integer() {
 
 #[test]
 fn an_arbitrary_integer_does_not_cast_into_char() {
-    let package = TestPackage::new("main() => i32 { c := <char>65; <i32>c }");
+    let package = TestPackage::new("entry_fn() => i32 { c := <char>65; <i32>c }");
     assert!(!package.expect_errors().is_empty());
 }
 
@@ -99,7 +99,7 @@ fn from_u32_is_available_and_returns_an_option() {
     TestPackage::new(
         r#"
         import extern::core::option::Option;
-        main() => i32 {
+        entry_fn() => i32 {
             checked := char::from_u32(0x41u32);
             match checked {
                 Option::Some => { <i32>checked.value },
@@ -114,7 +114,7 @@ fn from_u32_is_available_and_returns_an_option() {
 fn every_char_classifier_is_callable() {
     TestPackage::new(
         r#"
-        main() => i32 {
+        entry_fn() => i32 {
             c := 'a';
             if c.is_ascii() { } else { return 1; }
             if c.is_digit() { return 2; }
@@ -136,7 +136,7 @@ fn char_satisfies_an_ord_bound() {
         r#"
         import extern::core::cmp::Ord;
         biggest<T: Ord>(a: T, b: T) => bool { a.greater_than(b) }
-        main() => i32 { if biggest('b', 'a') { 0 } else { 1 } }
+        entry_fn() => i32 { if biggest('b', 'a') { 0 } else { 1 } }
         "#,
     )
     .expect_ok();
@@ -149,7 +149,7 @@ fn char_conforms_to_bounded_and_successor() {
         import extern::core::range::Successor;
         import extern::core::option::Option;
         step<T: Successor>(value: T) => Option<T> { value.successor() }
-        main() => i32 {
+        entry_fn() => i32 {
             first : char = char::min();
             next := step('a');
             match next {
@@ -164,12 +164,12 @@ fn char_conforms_to_bounded_and_successor() {
 #[test]
 fn every_arithmetic_spelling_on_char_is_rejected() {
     for source in [
-        "main() => i32 { a := 'a'; b := 'b'; x := a + b; 0 }",
-        "main() => i32 { a := 'a'; x := a + 1; 0 }",
-        "main() => i32 { a := 'a'; b := 'b'; x := a - b; 0 }",
-        "main() => i32 { a := 'a'; b := 'b'; x := a & b; 0 }",
-        "main() => i32 { a := 'a'; x := ~a; 0 }",
-        "main() => i32 { a := 'a'; x := -a; 0 }",
+        "entry_fn() => i32 { a := 'a'; b := 'b'; x := a + b; 0 }",
+        "entry_fn() => i32 { a := 'a'; x := a + 1; 0 }",
+        "entry_fn() => i32 { a := 'a'; b := 'b'; x := a - b; 0 }",
+        "entry_fn() => i32 { a := 'a'; b := 'b'; x := a & b; 0 }",
+        "entry_fn() => i32 { a := 'a'; x := ~a; 0 }",
+        "entry_fn() => i32 { a := 'a'; x := -a; 0 }",
     ] {
         let package = TestPackage::new(source);
         assert!(
@@ -193,7 +193,7 @@ fn char_comparison_and_match_ranges_still_work() {
                 '0'..='9' => { 3 },
             } else { 0 }
         }
-        main() => i32 {
+        entry_fn() => i32 {
             if 'a' < 'b' { } else { return 1; }
             if 'a' == 'a' { } else { return 2; }
             if 'b' >= 'a' { } else { return 3; }

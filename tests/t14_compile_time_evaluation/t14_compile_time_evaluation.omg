@@ -40,7 +40,7 @@ literal_global := 10;
 mut counter: i32 = 0;
 state: i32;
 
-main() => i32 {
+main() => void {
 	println$("comp-globals: ", SIZE, " ", FACT6, " ", value, " ", literal_global, " ", state);
 
 	counter += 5;
@@ -61,6 +61,4 @@ main() => i32 {
 	# Nested `comp` evaluation.
 	nested := comp add(comp add(1, 2), comp add(3, 4));
 	println$("nested-comp: ", nested);
-
-	return 0;
 }

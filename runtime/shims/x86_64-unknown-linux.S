@@ -42,6 +42,6 @@ puts:
 
 .global _start
 _start:
-        call main
-        mov %rax, %rdi
+        call _omg_main
+        xor %edi, %edi
         call exit

@@ -22,7 +22,7 @@ conform CountUp to Iterator<i32> {
 	}
 }
 
-main() => i32 {
+main() => void {
 	# --- range expressions: exclusive end, inclusive end -------------------
 	mut a_sum := 0;
 	for v in 1..<5 { a_sum += v; }
@@ -78,6 +78,4 @@ main() => i32 {
 	mut total := 0;
 	for x in counter { total += x; }
 	println$("iterator-conform-cursor: ", total);
-
-	return 0;
 }

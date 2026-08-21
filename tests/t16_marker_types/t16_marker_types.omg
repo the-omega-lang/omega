@@ -29,7 +29,7 @@ take_marker(sink: NullSink) => i32 {
 	sink.write(21)
 }
 
-main() => i32 {
+main() => void {
 	# A marker's value size is exactly zero.
 	println$("marker-zero-size: ", sizeof<NullSink>);
 
@@ -53,6 +53,4 @@ main() => i32 {
 	hv := HasMarkerField { m = NullSink {}; x = 5; };
 	same_address := <usize>&hv.m == <usize>&hv.x;
 	println$("zero-sized-offset: ", same_address, " ", hv.x);
-
-	return 0;
 }

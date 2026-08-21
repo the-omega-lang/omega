@@ -3,7 +3,7 @@ import child;
 import child::Mammal;
 import child::Dog;
 
-main() => i32 {
+main() => void {
 	# `exposed` and `internal` are both reachable across modules within the
 	# same top-level package.
 	p := child::Public { data = 1; };
@@ -33,6 +33,4 @@ main() => i32 {
 	# whether `breathe` is reached through static or dynamic dispatch.
 	obj := <spec *Mammal>&dog;
 	println$("dynamic-dispatch-visibility: ", obj.breathe());
-
-	return 0;
 }

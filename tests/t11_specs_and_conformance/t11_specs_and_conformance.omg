@@ -85,7 +85,7 @@ conform Multi to Consumer<*u8> {
 	consume(*self, value: *u8) => i32 { self.tally + <i32>*value }
 }
 
-main() => i32 {
+main() => void {
 	dog := Dog { id = 1; };
 	cat := Cat { id = 2; };
 
@@ -120,8 +120,6 @@ main() => i32 {
 	raw := obj.ptr;
 	vt := obj.vtable;
 	println$("dispatch-pseudo-fields: ", <usize>raw != 0usize, " ", <usize>vt != 0usize);
-
-	return 0;
 }
 
 speak(animal: spec *Animal) => void {

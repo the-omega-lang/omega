@@ -188,6 +188,9 @@ impl AnalysisErrorKind {
             Self::ReturnTypeMismatch { expected, found } => {
                 d.with_label(span, format!("expected `{expected}` because of the declared return type, found `{found}`"))
             }
+            Self::InvalidMainSignature => d
+                .with_label(span, "`main` must have no parameters, no generics, and return `void` or `never`")
+                .with_note("command-line arguments and process exit codes are platform-dependent; `main` is only a portable entry point"),
             Self::IncrementTargetNotAPlace => d
                 .with_label(span, "cannot increment/decrement this expression")
                 .with_note("`++`/`--` need somewhere to store the result: a variable, field, index, or dereference"),

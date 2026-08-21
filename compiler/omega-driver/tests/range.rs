@@ -86,7 +86,7 @@ fn has_parse_error(errors: &[CompileError], kind: &ParseErrorKind) -> bool {
 fn a_range_can_be_bound_to_a_name_and_iterated() {
     TestPackage::new(
         r#"
-        main() => i32 {
+        entry_fn() => i32 {
             r := 1..<10;
             mut total := 0;
             for value in r { total = total + value; }
@@ -101,7 +101,7 @@ fn a_range_can_be_bound_to_a_name_and_iterated() {
 fn ranges_are_inert_data_with_readable_fields() {
     TestPackage::new(
         r#"
-        main() => i32 {
+        entry_fn() => i32 {
             r := 2..=8;
             if r.start == 2 { r.end } else { 0 }
         }
@@ -114,7 +114,7 @@ fn ranges_are_inert_data_with_readable_fields() {
 fn the_same_range_value_can_be_iterated_twice() {
     TestPackage::new(
         r#"
-        main() => i32 {
+        entry_fn() => i32 {
             r := 1..<4;
             mut first := 0;
             for value in r { first = first + 1; }
@@ -133,7 +133,7 @@ fn a_range_passes_through_a_function_boundary() {
         r#"
         import extern::core::range::Range;
         widen(r: Range<i32>) => Range<i32> { r.start..<20 }
-        main() => i32 {
+        entry_fn() => i32 {
             mut total := 0;
             for value in widen(1..<10) { total = total + value; }
             total
@@ -147,7 +147,7 @@ fn a_range_passes_through_a_function_boundary() {
 fn an_open_ended_range_drives_a_for_loop() {
     TestPackage::new(
         r#"
-        main() => i32 {
+        entry_fn() => i32 {
             mut n := 0;
             for value in 1.. {
                 n = n + 1;
@@ -164,7 +164,7 @@ fn an_open_ended_range_drives_a_for_loop() {
 fn a_named_end_bound_is_not_read_as_a_struct_literal() {
     TestPackage::new(
         r#"
-        main() => i32 {
+        entry_fn() => i32 {
             start := 3;
             stop := 7;
             mut n := 0;
@@ -178,7 +178,7 @@ fn a_named_end_bound_is_not_read_as_a_struct_literal() {
 
 #[test]
 fn a_dotdot_range_with_an_end_is_rejected_in_expression_position() {
-    let package = TestPackage::new("main() => i32 { r := 1..10; 0 }");
+    let package = TestPackage::new("entry_fn() => i32 { r := 1..10; 0 }");
     assert!(has_parse_error(
         &package.expect_errors(),
         &ParseErrorKind::OpenRangeHasEnd
@@ -188,7 +188,7 @@ fn a_dotdot_range_with_an_end_is_rejected_in_expression_position() {
 #[test]
 fn a_dotdot_range_with_an_end_is_rejected_in_slice_position() {
     let package =
-        TestPackage::new("main() => i32 { arr : [4]i32 = [1,2,3,4]; s := &arr[1..3]; 0 }");
+        TestPackage::new("entry_fn() => i32 { arr : [4]i32 = [1,2,3,4]; s := &arr[1..3]; 0 }");
     assert!(has_parse_error(
         &package.expect_errors(),
         &ParseErrorKind::OpenRangeHasEnd
@@ -198,7 +198,7 @@ fn a_dotdot_range_with_an_end_is_rejected_in_slice_position() {
 #[test]
 fn a_dotdot_range_with_an_end_is_rejected_in_pattern_position() {
     let package =
-        TestPackage::new("main() => i32 { x := 5; match x { 1..3 => { 1 } } else { 0 } }");
+        TestPackage::new("entry_fn() => i32 { x := 5; match x { 1..3 => { 1 } } else { 0 } }");
     assert!(has_parse_error(
         &package.expect_errors(),
         &ParseErrorKind::OpenRangeHasEnd
@@ -209,7 +209,7 @@ fn a_dotdot_range_with_an_end_is_rejected_in_pattern_position() {
 fn an_open_end_infers_the_element_types_domain_maximum() {
     TestPackage::new(
         r#"
-        main() => i32 {
+        entry_fn() => i32 {
             r := 1..;
             if r.end == 2147483647 { 0 } else { 1 }
         }
@@ -222,7 +222,7 @@ fn an_open_end_infers_the_element_types_domain_maximum() {
 fn an_open_start_infers_the_element_types_domain_minimum() {
     TestPackage::new(
         r#"
-        main() => i32 {
+        entry_fn() => i32 {
             r := ..<10;
             if r.start == r.start { 0 } else { 1 }
         }
@@ -235,7 +235,7 @@ fn an_open_start_infers_the_element_types_domain_minimum() {
 fn a_slice_still_infers_its_end_from_the_container() {
     TestPackage::new(
         r#"
-        main() => i32 {
+        entry_fn() => i32 {
             arr : [4]i32 = [1,2,3,4];
             s := &arr[2..];
             <i32>s.length
@@ -253,7 +253,7 @@ fn an_open_slice_end_needs_a_base_that_has_a_length() {
             s := &p[2..];
             0
         }
-        main() => i32 { 0 }
+        entry_fn() => i32 { 0 }
         "#,
     );
     assert!(has_analysis_error(
@@ -264,7 +264,7 @@ fn an_open_slice_end_needs_a_base_that_has_a_length() {
 
 #[test]
 fn a_bare_dotdot_is_rejected_with_no_context() {
-    let package = TestPackage::new("main() => i32 { r := ..; 0 }");
+    let package = TestPackage::new("entry_fn() => i32 { r := ..; 0 }");
     assert!(has_analysis_error(
         &package.expect_errors(),
         |kind| matches!(kind, AnalysisErrorKind::RangeNotAllowedHere)
@@ -276,7 +276,7 @@ fn a_bare_dotdot_resolves_against_an_expected_range_type() {
     TestPackage::new(
         r#"
         import extern::core::range::Range;
-        main() => i32 { r : Range<i32> = ..; if r.inclusive { 0 } else { 1 } }
+        entry_fn() => i32 { r : Range<i32> = ..; if r.inclusive { 0 } else { 1 } }
         "#,
     )
     .expect_ok();
@@ -312,7 +312,7 @@ fn a_user_type_conforming_to_successor_is_range_iterable() {
             max() => Self { PageIndex { value = 2147483647; } }
         }
 
-        main() => i32 {
+        entry_fn() => i32 {
             a := PageIndex { value = 2; };
             b := PageIndex { value = 5; };
             mut n := 0;
@@ -345,7 +345,7 @@ fn an_open_bound_without_bounded_names_the_missing_spec() {
             successor(*self) => Option<P> { Option<P>::Some { value = P { v = self.v + 1; }; } }
         }
 
-        main() => i32 { a := P { v = 1; }; r := a..; 0 }
+        entry_fn() => i32 { a := P { v = 1; }; r := a..; 0 }
         "#,
     );
     assert!(has_analysis_error(
@@ -356,12 +356,12 @@ fn an_open_bound_without_bounded_names_the_missing_spec() {
 
 #[test]
 fn char_is_range_iterable() {
-    TestPackage::new("main() => i32 { for c in 'a'..<'z' { } 0 }").expect_ok();
+    TestPackage::new("entry_fn() => i32 { for c in 'a'..<'z' { } 0 }").expect_ok();
 }
 
 #[test]
 fn floats_are_not_range_iterable() {
-    let package = TestPackage::new("main() => i32 { for f in 1.0..<2.0 { } 0 }");
+    let package = TestPackage::new("entry_fn() => i32 { for f in 1.0..<2.0 { } 0 }");
     assert!(!package.expect_errors().is_empty());
 }
 
@@ -369,7 +369,7 @@ fn floats_are_not_range_iterable() {
 fn isize_keeps_its_inherent_primitive_methods() {
     TestPackage::new(
         r#"
-        main() => i32 {
+        entry_fn() => i32 {
             x : isize = -5isize;
             y := x.abs();
             z := x.clamp(-1isize, 1isize);
@@ -384,7 +384,7 @@ fn isize_keeps_its_inherent_primitive_methods() {
 fn usize_ranges_iterate_and_keep_their_methods() {
     TestPackage::new(
         r#"
-        main() => i32 {
+        entry_fn() => i32 {
             lo : usize = 1usize;
             hi : usize = 4usize;
             mut n := 0;
@@ -400,7 +400,7 @@ fn usize_ranges_iterate_and_keep_their_methods() {
 fn an_inclusive_range_reaching_the_domain_maximum_compiles() {
     TestPackage::new(
         r#"
-        main() => i32 {
+        entry_fn() => i32 {
             lo : u8 = 253u8;
             mut n := 0;
             for v in lo..=255u8 { n = n + 1; }
@@ -415,7 +415,7 @@ fn an_inclusive_range_reaching_the_domain_maximum_compiles() {
 fn a_leading_open_range_is_valid_with_an_explicit_operator() {
     TestPackage::new(
         r#"
-        main() => i32 {
+        entry_fn() => i32 {
             arr : [4]i32 = [1,2,3,4];
             s := &arr[..<2];
             x := 5;
@@ -431,7 +431,7 @@ fn a_leading_open_range_is_valid_with_an_explicit_operator() {
 
 #[test]
 fn an_end_may_not_follow_bare_dotdot_in_a_pattern() {
-    let package = TestPackage::new("main() => i32 { x := 5; match x { ..5 => { 1 } } else { 0 } }");
+    let package = TestPackage::new("entry_fn() => i32 { x := 5; match x { ..5 => { 1 } } else { 0 } }");
     assert!(has_parse_error(
         &package.expect_errors(),
         &ParseErrorKind::OpenRangeHasEnd
@@ -440,7 +440,7 @@ fn an_end_may_not_follow_bare_dotdot_in_a_pattern() {
 
 #[test]
 fn an_end_may_not_follow_bare_dotdot_in_a_slice() {
-    let package = TestPackage::new("main() => i32 { arr : [4]i32 = [1,2,3,4]; s := &arr[..2]; 0 }");
+    let package = TestPackage::new("entry_fn() => i32 { arr : [4]i32 = [1,2,3,4]; s := &arr[..2]; 0 }");
     assert!(has_parse_error(
         &package.expect_errors(),
         &ParseErrorKind::OpenRangeHasEnd
@@ -454,7 +454,7 @@ fn char_ranges_compile_through_the_ordinary_successor_protocol() {
         import extern::core::cmp::Ord;
         import extern::core::option::Option;
         needs_ord<T: Ord>(value: T) => T { value }
-        main() => i32 {
+        entry_fn() => i32 {
             mut count := 0;
             for c in 'a'..='z' {
                 needs_ord(c);
