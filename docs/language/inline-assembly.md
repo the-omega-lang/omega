@@ -75,7 +75,13 @@ Each architecture uses exactly one assembler dialect; Omega exposes no per-state
 
 ## Function contract
 
-An `asm` statement must fall through to the next Omega statement normally: it must not return, unwind, or jump into surrounding Omega control flow, and it must leave the stack pointer as it found it. Internal target-local branches/labels confined to the body are ordinary backend text and are allowed. Naked functions and `asm goto`-style control transfer out of the block are separate, unimplemented features.
+An `asm` statement must fall through to the next Omega statement normally: it must not return, unwind, or jump into surrounding Omega control flow, and it must leave the stack pointer as it found it. Internal target-local branches/labels confined to the body are ordinary backend text and are allowed.
+
+### Naked functions
+
+The sole `asm` statement inside a successfully validated `@naked` function (see [`functions.md`](functions.md#naked-functions)) is the one exception to the function contract above: it *is* the entire function implementation, so it owns control flow completely and may return from, tail-jump out of, or otherwise not fall through the surrounding Omega function. A naked function's `asm` is additionally restricted to `const(...)` and `clobber(...)` descriptors -- `reg(...)` is rejected there because materializing a runtime register operand would give the backend permission/need to emit setup/teardown instructions around the body, contradicting nakedness. Every other asm rule (opaque instruction text, target dialect, `$` binding, constant substitution, no optimization/rewrite of the body) still applies unchanged.
+
+`asm goto`-style control transfer out of an ordinary (non-naked) asm block remains a separate, unimplemented feature.
 
 ## Compile-time evaluation
 

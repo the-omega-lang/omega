@@ -720,6 +720,15 @@ impl AnalysisErrorKind {
             Self::AsmAmbiguousBinding { .. } => {
                 d.with_label(span, "more than one descriptor infers this name")
             }
+            Self::NakedInlineConflict => d
+                .with_label(span, "cannot be combined with '@inline'")
+                .with_help("'@naked' bodies are never inlined; drop '@inline' or '@naked'"),
+            Self::InvalidNakedBody => d
+                .with_label(span, "expected exactly one 'asm' statement here")
+                .with_help("a '@naked' function's body must contain nothing but a single 'asm(...) => { ... }' statement"),
+            Self::AsmRegInNakedFunction => d
+                .with_label(span, "'reg' materializes a runtime value, which is not allowed here")
+                .with_help("use 'const(...)' for compile-time text or 'clobber(...)' for register metadata instead"),
         }
     }
 }

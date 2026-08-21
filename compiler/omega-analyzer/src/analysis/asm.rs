@@ -98,6 +98,14 @@ impl<'r> Analyzer<'r> {
     ) -> Option<CheckedAsmDescriptor> {
         match &descriptor.kind {
             HirAsmDescriptorKind::Reg { expr, physical } => {
+                if self.in_naked_asm {
+                    self.error(
+                        descriptor.id,
+                        descriptor.span,
+                        AnalysisErrorKind::AsmRegInNakedFunction,
+                    );
+                    return None;
+                }
                 let checked_expr = self.analyze_expr(expr, None)?;
                 if !Self::is_one_register_type(&checked_expr.r#type) {
                     self.error(

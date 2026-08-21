@@ -24,7 +24,7 @@ value      = decimal-integer | "sizeof", "<", type, ">" | string-literal ;
 
 Bare `@name` and `@name()` both carry zero arguments.
 
-Recognized annotations are `layout`, `inline`, `mangling`, and `suppress`. Duplicate use of the same annotation on one declaration is an error. Unknown annotation names are errors.
+Recognized annotations are `layout`, `inline`, `mangling`, `naked`, and `suppress`. Duplicate use of the same annotation on one declaration is an error. Unknown annotation names are errors.
 
 ## Applicability
 
@@ -33,6 +33,7 @@ Recognized annotations are `layout`, `inline`, `mangling`, and `suppress`. Dupli
 | `@layout` | `struct`, `enum` |
 | `@inline` | functions/methods |
 | `@mangling` | functions/methods, subject to restrictions below |
+| `@naked` | functions/methods, subject to restrictions below |
 | `@suppress` | `struct`, `enum`, `union`, function/method, `import`, `spec` |
 
 Other item kinds do not acquire an annotation meaning merely because the generic `@...` syntax exists.
@@ -95,6 +96,19 @@ Accepted forms:
 - `force = "..."` uses the exact non-empty linker symbol. It is allowed on methods, but rejected on generic functions because all instantiations would otherwise collide.
 
 A compilation must diagnose duplicate final linker symbols rather than relying on linker/backend failure.
+
+## `@naked`
+
+Accepted forms:
+
+```omega
+@naked
+@naked()
+```
+
+`@naked` takes no arguments; `@naked(...)` with any argument is an error. It marks a function/method as having a raw, self-owned body and machine-level control flow instead of an ordinary Omega body -- full contract in [`functions.md`](functions.md#naked-functions).
+
+`@naked` is rejected together with any `@inline` mode on the same declaration, regardless of which annotation is written first.
 
 ## `@suppress(warning_name, ...)`
 

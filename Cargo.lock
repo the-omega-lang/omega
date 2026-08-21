@@ -134,6 +134,7 @@ version = "0.1.0"
 dependencies = [
  "indexmap",
  "omega-analyzer",
+ "omega-codegen",
  "omega-diagnostics",
  "omega-hir",
  "omega-mir",

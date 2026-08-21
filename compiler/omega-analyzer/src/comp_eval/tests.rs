@@ -345,6 +345,7 @@ fn calling_another_function_interprets_its_own_body() {
         mangling: crate::annotations::ManglingMode::Enabled,
         conformance_owner: None,
         primitive_target: None,
+        naked: false,
     };
 
     struct OneFunction(CheckedFunctionDef);

@@ -3,13 +3,14 @@ use super::leaf;
 use crate::abi::{AbiReturn, AbiSignature};
 use crate::storage::{ParameterHome, parameter_storage_plan};
 
+use inkwell::attributes::{Attribute, AttributeLoc};
 use inkwell::module::Linkage;
 use inkwell::types::{BasicType, BasicTypeEnum};
 use inkwell::values::{BasicValueEnum, PointerValue};
 use omega_analyzer::checked::ExternFunctionRef;
 use omega_analyzer::layout;
 use omega_analyzer::resolved_type::{ResolvedFunctionType, ResolvedType};
-use omega_mir::{MirExternDeclaration, MirFunctionDef, MirTerminator};
+use omega_mir::{MirExternDeclaration, MirFunctionBody, MirFunctionDef, MirInlineAsm, MirTerminator};
 
 impl<'ctx> Codegen<'ctx> {
     pub(super) fn needs_sret(&self, return_type: &ResolvedType) -> bool {
@@ -92,8 +93,26 @@ impl<'ctx> Codegen<'ctx> {
         if self.target.os != omega_analyzer::Os::MacOs {
             function.set_section(Some(&format!(".text.{symbol}")));
         }
+        if matches!(function_def.body, MirFunctionBody::Naked(_)) {
+            // `naked` disables prologue/epilogue emission and forbids IR
+            // references to function arguments; `noinline` is implied because
+            // an inliner has no legal way to splice a naked body into a
+            // caller. Both are semantic requirements of `@naked`, not hints.
+            self.add_function_enum_attribute(function, "naked");
+            self.add_function_enum_attribute(function, "noinline");
+        }
         self.functions.insert(function_def.id, function);
         Ok(())
+    }
+
+    fn add_function_enum_attribute(
+        &self,
+        function: inkwell::values::FunctionValue<'ctx>,
+        name: &str,
+    ) {
+        let kind_id = Attribute::get_named_enum_kind_id(name);
+        let attribute = self.context.create_enum_attribute(kind_id, 0);
+        function.add_attribute(AttributeLoc::Function, attribute);
     }
 
     pub(super) fn declare_extern_function(&mut self, extern_fn: &ExternFunctionRef) {
@@ -128,6 +147,10 @@ impl<'ctx> Codegen<'ctx> {
         let MirFunctionDef {
             return_type, body, ..
         } = function_def;
+        let body = match body {
+            MirFunctionBody::Normal(body) => body,
+            MirFunctionBody::Naked(asm) => return self.define_naked_function(function, &asm),
+        };
         let parameter_storage = parameter_storage_plan(&body);
 
         self.arg_count = body.arg_count;
@@ -224,6 +247,24 @@ impl<'ctx> Codegen<'ctx> {
         }
 
         self.clear_local();
+    }
+
+    /// A naked function's body is exactly the side-effecting inline-asm call
+    /// followed by `unreachable` -- LLVM requires a terminator even though
+    /// the target asm itself owns control flow, and `naked` guarantees
+    /// `unreachable` never becomes a real machine instruction. No parameter
+    /// storage, locals, frame, or ordinary return terminator is created.
+    fn define_naked_function(
+        &mut self,
+        function: inkwell::values::FunctionValue<'ctx>,
+        asm: &MirInlineAsm,
+    ) {
+        let block = self.context.append_basic_block(function, "entry");
+        self.builder.position_at_end(block);
+        self.process_inline_asm(asm);
+        self.builder
+            .build_unreachable()
+            .expect("builder positioned");
     }
 
     fn emit_terminator(

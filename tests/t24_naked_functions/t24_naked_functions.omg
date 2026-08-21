@@ -1,0 +1,28 @@
+import extern::std::io::println;
+
+# The whole function body is the raw asm; there is no Omega return statement
+# and no Omega-generated prologue/epilogue around it.
+@naked
+get_magic() => i32 {
+	asm() => {
+		mov eax, 123
+		ret
+	}
+}
+
+# Parameters are ABI-only: Omega creates no locals/places for `a`/`b`, so the
+# body reads them directly from the target's own parameter registers
+# (System V x86-64: first two i32 arguments in edi/esi).
+@naked
+add_two(a: i32, b: i32) => i32 {
+	asm() => {
+		mov eax, edi
+		add eax, esi
+		ret
+	}
+}
+
+main() => void {
+	println$("magic: ", get_magic());
+	println$("sum: ", add_two(19, 23));
+}

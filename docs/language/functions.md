@@ -81,3 +81,25 @@ An Omega function definition cannot itself be variadic. Calls to a variadic exte
 ## `defer`
 
 `defer statement` schedules the statement to execute when the enclosing function exits. It is function-scoped rather than block-scoped. See [`control-flow-and-operators.md`](control-flow-and-operators.md).
+
+## Naked functions
+
+`@naked` marks a function/method whose implementation is entirely a single `asm` statement, with no Omega-generated prologue, epilogue, parameter materialization, local frame, implicit return, or other runtime body instruction. See [`annotations-and-sizeof.md`](annotations-and-sizeof.md#naked) for the annotation form and [`inline-assembly.md`](inline-assembly.md#naked-functions) for the asm-side exception.
+
+```omega
+@naked
+get_magic() => i32 {
+    asm() => {
+        mov eax, 123
+        ret
+    }
+}
+```
+
+- The signature (parameters, receiver, return type) is unchanged: it is lowered through the same ABI as an ordinary function and remains the caller-facing contract for type checking and calls. `@naked` does not add calling-convention syntax and does not change Omega's ABI.
+- After macro expansion, a naked function's body must contain exactly one `asm(...) => { ... }` statement and no other statement and no tail expression. Any other shape is rejected as an invalid naked body.
+- Parameters (including a receiver) are ABI-only inside a naked function: Omega creates no parameter locals/places for them, does not warn that they are unused, and provides no operand-binding shortcut for them. A `$param` in the naked asm body is valid only if some descriptor in that same `asm` actually binds that name.
+- `reg(...)` descriptors are forbidden inside a naked function's `asm`; only `const(...)` and `clobber(...)` are allowed, matching the ordinary asm descriptor rules otherwise.
+- The naked asm owns control flow: it may contain the target return instruction, loop forever, tail-jump, or otherwise alter/restore the stack, unlike ordinary inline asm. Omega does not parse the body to prove it returns or returns the declared value; a naked function's `=> T` or `=> never` contract is enforced by the programmer, not the compiler.
+- `@naked` is enforced (unlike the advisory `@inline`) and is rejected together with any `@inline` mode on the same declaration.
+- `@naked` functions with Omega statements/locals/`defer`/`return` in the body, or with `reg(...)` in the naked asm, are rejected.

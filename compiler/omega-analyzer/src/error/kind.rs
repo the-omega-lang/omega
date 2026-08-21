@@ -510,6 +510,9 @@ pub enum AnalysisErrorKind {
     AsmAmbiguousBinding {
         text: String,
     },
+    NakedInlineConflict,
+    InvalidNakedBody,
+    AsmRegInNakedFunction,
 }
 
 impl fmt::Display for AnalysisErrorKind {
@@ -1297,6 +1300,16 @@ impl fmt::Display for AnalysisErrorKind {
                 f,
                 "'{text}' is ambiguous: more than one descriptor infers this name"
             ),
+            Self::NakedInlineConflict => {
+                write!(f, "'@naked' cannot be combined with '@inline'")
+            }
+            Self::InvalidNakedBody => write!(
+                f,
+                "a '@naked' function's body must be exactly one 'asm' statement and nothing else"
+            ),
+            Self::AsmRegInNakedFunction => {
+                write!(f, "'reg' is not allowed in a '@naked' function's 'asm'")
+            }
         }
     }
 }

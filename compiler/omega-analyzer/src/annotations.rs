@@ -93,6 +93,7 @@ pub struct ResolvedAnnotations {
     pub inline: Option<InlineMode>,
     pub mangling: ManglingMode,
     pub suppress: Vec<Ident>,
+    pub naked: bool,
 }
 
 pub fn resolve(
@@ -105,6 +106,8 @@ pub fn resolve(
 ) -> ResolvedAnnotations {
     let mut result = ResolvedAnnotations::default();
     let mut seen: Vec<&str> = Vec::new();
+    let mut inline_span: Option<Span> = None;
+    let mut naked_span: Option<Span> = None;
 
     for annotation in annotations {
         let name = annotation.name.as_ref();
@@ -150,7 +153,10 @@ pub fn resolve(
                     continue;
                 }
                 match resolve_inline(annotation) {
-                    Ok(mode) => result.inline = Some(mode),
+                    Ok(mode) => {
+                        result.inline = Some(mode);
+                        inline_span = Some(annotation.span);
+                    }
                     Err(reason) => analyzer.error(
                         node_id,
                         annotation.span,
@@ -160,6 +166,33 @@ pub fn resolve(
                         },
                     ),
                 }
+            }
+            "naked" => {
+                if kind != ItemKind::Function {
+                    analyzer.error(
+                        node_id,
+                        annotation.span,
+                        AnalysisErrorKind::AnnotationNotApplicable {
+                            name: annotation.name.clone(),
+                            found: kind,
+                            allowed: vec![ItemKind::Function],
+                        },
+                    );
+                    continue;
+                }
+                if !annotation.args.is_empty() {
+                    analyzer.error(
+                        node_id,
+                        annotation.span,
+                        AnalysisErrorKind::InvalidAnnotationArgs {
+                            name: annotation.name.clone(),
+                            reason: "'@naked' takes no arguments".to_string(),
+                        },
+                    );
+                    continue;
+                }
+                result.naked = true;
+                naked_span = Some(annotation.span);
             }
             "mangling" => {
                 if kind != ItemKind::Function {
@@ -232,6 +265,10 @@ pub fn resolve(
                 },
             ),
         }
+    }
+
+    if let (Some(_), Some(naked_span)) = (inline_span, naked_span) {
+        analyzer.error(node_id, naked_span, AnalysisErrorKind::NakedInlineConflict);
     }
 
     result

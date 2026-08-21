@@ -105,6 +105,7 @@ pub struct CheckedFunctionDef {
     pub mangling: crate::annotations::ManglingMode,
     pub conformance_owner: Option<ConformanceOwner>,
     pub primitive_target: Option<ResolvedType>,
+    pub naked: bool,
 }
 
 #[derive(Debug, Clone)]

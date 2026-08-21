@@ -8,6 +8,10 @@ impl<'r> Analyzer<'r> {
         id: HirId,
         annotations: &crate::annotations::ResolvedAnnotations,
     ) -> Option<CheckedFunctionDef> {
+        if annotations.naked {
+            return self.check_naked_function_body(f, fn_type, id, annotations);
+        }
+
         let (params, body) = self.with_suppressed(&annotations.suppress, |this| {
             if annotations.inline.is_some() {
                 this.warn(f.id, f.span, AnalysisWarningKind::InlineNotEnforced);
@@ -49,7 +53,75 @@ impl<'r> Analyzer<'r> {
             mangling: annotations.mangling.clone(),
             conformance_owner: None,
             primitive_target: None,
+            naked: annotations.naked,
         })
+    }
+
+    /// A `@naked` body skips ordinary block/return analysis: parameters are
+    /// ABI-only (no locals, no unused-parameter warnings), and the body must
+    /// be exactly the user's single `asm` statement, which is validated with
+    /// a policy that forbids `reg(...)` since it would force LLVM to
+    /// materialize a runtime register operand around a body that is supposed
+    /// to own the entire function.
+    fn check_naked_function_body(
+        &mut self,
+        f: &HirFunctionDef,
+        fn_type: &ResolvedFunctionType,
+        id: HirId,
+        annotations: &crate::annotations::ResolvedAnnotations,
+    ) -> Option<CheckedFunctionDef> {
+        let (params, asm) = self.with_suppressed(&annotations.suppress, |this| {
+            let ((params, asm), _scope) = this.with_scope(|this| {
+                let params = this.analyze_all(&f.params, Self::analyze_param);
+                this.current_return_type = (*fn_type.return_type).clone();
+                let asm = this.analyze_naked_body(f);
+                (params, asm)
+            });
+            (params, asm)
+        });
+
+        let params = params?;
+        let asm = asm?;
+
+        Some(CheckedFunctionDef {
+            id,
+            span: f.span,
+            name: f.name.clone(),
+            type_args: vec![],
+            self_mode: f.self_mode,
+            is_variadic: fn_type.is_variadic,
+            params,
+            return_type: (*fn_type.return_type).clone(),
+            body: CheckedBlock {
+                stmts: vec![CheckedStmt::InlineAsm(asm)],
+                tail: None,
+            },
+            inline: annotations.inline,
+            mangling: annotations.mangling.clone(),
+            conformance_owner: None,
+            primitive_target: None,
+            naked: true,
+        })
+    }
+
+    fn analyze_naked_body(&mut self, f: &HirFunctionDef) -> Option<CheckedInlineAsm> {
+        let [HirStmt::InlineAsm(asm)] = f.body.stmts.as_slice() else {
+            self.error(f.id, f.span, AnalysisErrorKind::InvalidNakedBody);
+            return None;
+        };
+        if f.body.tail.is_some() {
+            self.error(f.id, f.span, AnalysisErrorKind::InvalidNakedBody);
+            return None;
+        }
+
+        let previous = std::mem::replace(&mut self.in_naked_asm, true);
+        let stmts = self.analyze_inline_asm(asm);
+        self.in_naked_asm = previous;
+
+        match stmts?.into_iter().next() {
+            Some(CheckedStmt::InlineAsm(checked)) => Some(checked),
+            _ => unreachable!("analyze_inline_asm always yields exactly one InlineAsm statement"),
+        }
     }
 
     pub fn check_pending_spec_method(

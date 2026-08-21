@@ -1,13 +1,15 @@
+use crate::body::{MirAsmOperand, MirAsmOperandKind, MirInlineAsm};
 use crate::lower::function::FunctionLowerer;
 use crate::mangle;
 use crate::mir::{
-    MirDeclaration, MirEnumDef, MirExternDeclaration, MirFunctionDef, MirItem, MirLinkage,
-    MirModule, MirStructDef, MirUnionDef,
+    MirDeclaration, MirEnumDef, MirExternDeclaration, MirFunctionBody, MirFunctionDef, MirItem,
+    MirLinkage, MirModule, MirStructDef, MirUnionDef,
 };
 use omega_analyzer::annotations::ManglingMode;
 use omega_analyzer::checked::{
-    CheckedDeclaration, CheckedEnumDef, CheckedExternDeclaration, CheckedFunctionDef, CheckedItem,
-    CheckedModule, CheckedStructDef, CheckedUnionDef,
+    CheckedAsmDescriptorKind, CheckedBlock, CheckedDeclaration, CheckedEnumDef,
+    CheckedExternDeclaration, CheckedFunctionDef, CheckedItem, CheckedModule, CheckedStmt,
+    CheckedStructDef, CheckedUnionDef,
 };
 use omega_analyzer::resolved_type::ResolvedType;
 use omega_parser::prelude::Ident;
@@ -126,8 +128,13 @@ fn lower_function(
         mangling,
         conformance_owner,
         primitive_target,
+        naked,
     } = function;
-    let body = FunctionLowerer::lower(&params, body, &return_type, id, span);
+    let body = if naked {
+        MirFunctionBody::Naked(lower_naked_body(body))
+    } else {
+        MirFunctionBody::Normal(FunctionLowerer::lower(&params, body, &return_type, id, span))
+    };
 
     MirFunctionDef {
         id,
@@ -145,6 +152,43 @@ fn lower_function(
         symbol,
         linkage,
         body,
+    }
+}
+
+/// Converts the sole checked `asm` of a validated `@naked` body directly to
+/// `MirInlineAsm`, bypassing `FunctionLowerer` entirely: naked functions get
+/// no locals, no parameter homes, and no CFG. `reg` descriptors cannot reach
+/// this point -- the analyzer rejects them inside a naked function's `asm`.
+fn lower_naked_body(body: CheckedBlock) -> MirInlineAsm {
+    let mut stmts = body.stmts.into_iter();
+    let (Some(CheckedStmt::InlineAsm(asm)), None) = (stmts.next(), stmts.next()) else {
+        unreachable!(
+            "analyzer guarantees a naked function's body is exactly one InlineAsm statement"
+        )
+    };
+
+    let mut operands = Vec::with_capacity(asm.descriptors.len());
+    let mut clobbers = Vec::new();
+    for descriptor in asm.descriptors {
+        match descriptor.kind {
+            CheckedAsmDescriptorKind::Reg { .. } => {
+                unreachable!("analyzer rejects 'reg' descriptors inside a naked function's asm")
+            }
+            CheckedAsmDescriptorKind::Const { text } => {
+                operands.push(MirAsmOperand {
+                    binding_name: descriptor.binding_name,
+                    kind: MirAsmOperandKind::Const { text },
+                });
+            }
+            CheckedAsmDescriptorKind::Clobber { register } => clobbers.push(register),
+        }
+    }
+
+    MirInlineAsm {
+        operands,
+        clobbers,
+        template: asm.body,
+        template_span: asm.body_span,
     }
 }
 

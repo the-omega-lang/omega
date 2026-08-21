@@ -1,4 +1,4 @@
-use crate::body::MirBody;
+use crate::body::{MirBody, MirInlineAsm};
 use omega_analyzer::annotations::{InlineMode, ManglingMode};
 use omega_analyzer::checked::{CheckedField, CheckedParam, ConformanceOwner};
 use omega_analyzer::resolved_type::{ConstValue, ResolvedFunctionType, ResolvedType};
@@ -62,7 +62,19 @@ pub struct MirFunctionDef {
     pub primitive_target: Option<ResolvedType>,
     pub symbol: String,
     pub linkage: MirLinkage,
-    pub body: MirBody,
+    pub body: MirFunctionBody,
+}
+
+/// A naked function's body is structurally distinct from an ordinary
+/// `MirBody`: it carries no locals, parameter homes, or CFG, only the single
+/// checked `asm` that is the entire function implementation. Keeping this a
+/// separate variant (rather than a flag on `MirBody`) makes "no frame/return
+/// machinery" a property the type system enforces instead of one more
+/// runtime check every `MirBody` consumer would need to remember.
+#[derive(Debug, Clone)]
+pub enum MirFunctionBody {
+    Normal(MirBody),
+    Naked(MirInlineAsm),
 }
 
 impl MirFunctionDef {

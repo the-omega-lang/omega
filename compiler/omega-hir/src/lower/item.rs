@@ -159,7 +159,13 @@ impl Lowerer {
         let span = f.signature_span.to(f.codeblock.span);
         let mut params = self.lower_callable_params(&f.params, f.self_mode, span, kind);
         let mut body = self.lower_block(&f.codeblock);
-        self.prepend_mut_self_shadow(&mut body, f.self_mode, span);
+        // A naked function's body must stay exactly the user-authored `asm`
+        // statement for later naked-body validation; the synthetic `mut self`
+        // shadow is meaningless for an ABI-only receiver anyway.
+        let is_naked = f.annotations.iter().any(|a| a.name.as_ref() == "naked");
+        if !is_naked {
+            self.prepend_mut_self_shadow(&mut body, f.self_mode, span);
+        }
 
         let mut generics = Self::lower_generics(&f.generics);
         Self::desugar_spec_static_params(&mut params, &mut generics);
