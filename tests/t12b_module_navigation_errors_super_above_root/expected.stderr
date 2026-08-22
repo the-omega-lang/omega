@@ -1,5 +1,5 @@
 error: 'super' used 1 time(s) from 't12b_module_navigation_errors_super_above_root' would cross the package root
- --> /workspace/tests/t12b_module_navigation_errors_super_above_root/t12b_module_navigation_errors_super_above_root.omg:3:1
+ --> tests/t12b_module_navigation_errors_super_above_root/t12b_module_navigation_errors_super_above_root.omg:3:1
   |
 3 | import super::helper;
   | ^^^^^^^^^^^^^^^^^^^^^ crosses the package root

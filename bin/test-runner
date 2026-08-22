@@ -220,7 +220,7 @@ class TestRunner
 
     compile = capture(
       OMGC.to_s,
-      test.path.to_s,
+      test.path.relative_path_from(ROOT_DIR).to_s,
       *OMGC_IMPORTS,
       "-o", object.to_s
     )
