@@ -67,7 +67,7 @@ Indirect   caller provides hidden destination pointer
 
 Large/complex flattened results can use the hidden struct-return path. The current threshold/convention is an Omega compiler convention, not a claim that every target's platform C ABI uses the same rule.
 
-That distinction matters at `extern`/C boundaries and is tracked as design debt until a true per-platform C aggregate ABI is implemented.
+That distinction matters at `foreign`/C boundaries and is tracked as design debt until a true per-platform C aggregate ABI is implemented.
 
 ## Parameter flattening
 
@@ -77,9 +77,9 @@ This gives codegen a simple, identical internal convention and lets objects gene
 
 ## C variadics
 
-Variadic `extern` calls use shared promotion logic (`variadic_promotion`) before codegen emission.
+C default argument promotion (`variadic_promotion`) is a `foreign(c)` source-language interoperability rule, not a generic consequence of being variadic. Codegen applies it only to the variadic tail of a call whose callee type has `calling_convention == CallingConvention::C`; codegen only maps the resulting promoted semantic numeric type to its native call argument type.
 
-Typical C default argument promotions are decided in the shared layer rather than duplicated inside codegen. Codegen only maps the resulting promoted semantic numeric type to its native call argument type.
+A variadic `foreign(sysv64)` call gets no such promotion: its tail is passed using its actual lowered Omega types, and LLVM performs the target's own register/stack classification. Being variadic does not by itself select C promotion.
 
 ## External C boundary
 
@@ -118,7 +118,7 @@ The legality and resolved type of a place operation have already been decided by
 
 Top-level non-`comp` declarations become real object-file globals. A compile-time-known initializer can be emitted directly according to the shared type layout.
 
-Extern data declarations remain a separately tracked unsupported storage boundary; they are rejected by shared codegen preflight rather than left to fail during LLVM emission.
+A non-function `foreign name : Type;` binding becomes a real linker-visible external global with no initializer and no local-section storage (`llvm::item::declare_foreign_binding`); its storage lives in whatever other object/library defines the symbol. Shared codegen preflight has nothing left to reject for foreign items specifically.
 
 ## Dynamic spec representation
 

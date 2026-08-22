@@ -1,15 +1,16 @@
 use super::Lowerer;
 use crate::hir::{
     HirAnnotation, HirAnnotationArg, HirAnnotationValue, HirBlock, HirConformDef, HirDeclaration,
-    HirEnumDef, HirEnumVariant, HirExpr, HirExprNode, HirExternDeclaration, HirField,
-    HirFunctionDef, HirGapDef, HirGapFunction, HirGenericParam, HirGlueDef, HirImport, HirItem,
-    HirParam, HirPlace, HirPlaceRoot, HirPrimitiveDef, HirSpecDef, HirSpecFunction, HirStmt,
-    HirStructDef, HirUnionDef, HirWalrusDeclaration,
+    HirEnumDef, HirEnumVariant, HirExpr, HirExprNode, HirField, HirForeignBinding,
+    HirForeignFunction, HirFunctionDef, HirGapDef, HirGapFunction, HirGenericParam, HirGlueDef,
+    HirImport, HirItem, HirParam, HirPlace, HirPlaceRoot, HirPrimitiveDef, HirSpecDef,
+    HirSpecFunction, HirStmt, HirStructDef, HirUnionDef, HirWalrusDeclaration,
 };
 use omega_parser::prelude::{
-    AnnotationArg, AnnotationNode, AnnotationValue, DeclarationStmt, EnumStmt,
-    ExternDeclarationStmt, FunctionDefinitionStmt, GenericParam, Ident, Item, ItemNode, Param,
-    Path, SelfMode, Span, SpecFunctionStmt, SpecStmt, StructStmt, Type, UnionStmt,
+    AnnotationArg, AnnotationNode, AnnotationValue, DeclarationStmt, EnumStmt, ForeignBindingItem,
+    ForeignBlockEntry, ForeignBlockItem, ForeignFunctionItem, FunctionDefinitionStmt,
+    GenericParam, Ident, Item, ItemNode, Param, Path, SelfMode, Span, SpecFunctionStmt, SpecStmt,
+    StructStmt, Type, UnionStmt,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -25,8 +26,8 @@ impl FunctionKind {
 }
 
 impl Lowerer {
-    pub(super) fn lower_item(&mut self, node: &ItemNode) -> HirItem {
-        match &node.item {
+    pub(super) fn lower_item(&mut self, node: &ItemNode) -> Vec<HirItem> {
+        let item = match &node.item {
             Item::Declaration(decl) => HirItem::Declaration {
                 decl: self.lower_declaration(decl),
                 visibility: decl.visibility,
@@ -48,8 +49,17 @@ impl Lowerer {
                     comp: w.comp,
                 },
             },
-            Item::ExternDeclaration(decl) => {
-                HirItem::ExternDeclaration(self.lower_extern_declaration(decl, node.span))
+            Item::ForeignBinding(binding) => {
+                HirItem::ForeignBinding(self.lower_foreign_binding(binding, node.span))
+            }
+            Item::ForeignFunction(f) => {
+                HirItem::ForeignFunction(self.lower_foreign_function(f, node.span))
+            }
+            // Syntactic grouping only: the block's convention is applied to
+            // each direct function entry here, and the block itself has no
+            // HIR representation past this point.
+            Item::ForeignBlock(block) => {
+                return self.lower_foreign_block(block, node.span);
             }
             Item::FunctionDefinition(f) => {
                 HirItem::FunctionDefinition(self.lower_function_def(f, FunctionKind::Free))
@@ -122,7 +132,8 @@ impl Lowerer {
                      their expansion) by omega_parser::macros::expand before lower_module runs"
                 )
             }
-        }
+        };
+        vec![item]
     }
 
     pub(super) fn lower_declaration(&mut self, decl: &DeclarationStmt) -> HirDeclaration {
@@ -136,19 +147,62 @@ impl Lowerer {
         }
     }
 
-    pub(super) fn lower_extern_declaration(
+    fn lower_foreign_binding(
         &mut self,
-        decl: &ExternDeclarationStmt,
+        binding: &ForeignBindingItem,
         span: Span,
-    ) -> HirExternDeclaration {
-        HirExternDeclaration {
+    ) -> HirForeignBinding {
+        HirForeignBinding {
             id: self.ids.next(),
             span,
-            ident: decl.ident.clone(),
-            r#type: decl.r#type.clone(),
-            visibility: decl.visibility,
-            explicit_hidden_span: decl.explicit_hidden_span,
+            annotations: Self::lower_annotations(&binding.annotations),
+            ident: binding.ident.clone(),
+            name_span: binding.name_span,
+            r#type: binding.r#type.clone(),
+            visibility: binding.visibility,
+            explicit_hidden_span: binding.explicit_hidden_span,
         }
+    }
+
+    fn lower_foreign_function(
+        &mut self,
+        f: &ForeignFunctionItem,
+        span: Span,
+    ) -> HirForeignFunction {
+        let params = f.params.iter().map(|p| self.lower_param(p)).collect();
+        let body = f.body.as_ref().map(|block| self.lower_block(block));
+        HirForeignFunction {
+            id: self.ids.next(),
+            span,
+            name_span: f.name_span,
+            signature_span: f.signature_span,
+            return_type_span: f.return_type_span,
+            annotations: Self::lower_annotations(&f.annotations),
+            visibility: f.visibility,
+            explicit_hidden_span: f.explicit_hidden_span,
+            convention: f.convention.clone(),
+            name: f.ident.clone(),
+            generics: Self::lower_generics(&f.generics),
+            params,
+            is_variadic: f.is_variadic,
+            return_type: f.return_type.clone(),
+            body,
+        }
+    }
+
+    fn lower_foreign_block(&mut self, block: &ForeignBlockItem, span: Span) -> Vec<HirItem> {
+        block
+            .entries
+            .iter()
+            .map(|entry| match entry {
+                ForeignBlockEntry::Binding(binding) => {
+                    HirItem::ForeignBinding(self.lower_foreign_binding(binding, span))
+                }
+                ForeignBlockEntry::Function(f) => {
+                    HirItem::ForeignFunction(self.lower_foreign_function(f, span))
+                }
+            })
+            .collect()
     }
 
     fn lower_function_def(

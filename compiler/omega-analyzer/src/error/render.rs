@@ -520,16 +520,19 @@ impl AnalysisErrorKind {
                      dispatch erases the concrete type down to a bare data pointer, which can't carry a \
                      by-value copy",
                 ),
-            Self::ExternAggregateByValue { r#type } => d
-                .with_label(span, format!("`{type}` passes by value across an `extern` boundary"))
+            Self::ForeignAggregateByValue { r#type } => d
+                .with_label(span, format!("`{type}` passes by value across a `foreign` boundary"))
                 .with_note(
-                    "Omega's calling convention is internally consistent across its backends, but it is not the platform C ABI -- an aggregate passed by value would silently miscompile against a C caller or callee",
+                    "Omega's calling convention is internally consistent across its backends, but it is not the platform C ABI -- an aggregate passed by value would silently miscompile against a foreign caller or callee",
                 )
                 .with_help("pass or return a pointer to it instead (see the ABI entry in docs/issues/known-issues.md)"),
+            Self::GenericForeignFunctionUnsupported => d
+                .with_label(span, "generic 'foreign' functions are not yet supported")
+                .with_help("write a non-generic 'foreign' function per concrete signature instead"),
             Self::VariadicSpecFunctionUnsatisfiable { name } => d
                 .with_label(span, format!("`{}` is declared variadic", name.as_ref()))
                 .with_help(
-                    "Omega has no variadic function definitions -- only `extern` declarations may be \
+                    "Omega has no variadic function definitions -- only 'foreign' declarations may be \
                      variadic -- so no `conform` block or spec default could ever supply a matching body",
                 ),
             Self::AmbiguousSpecObjectMethod { function, specs } => {
@@ -782,13 +785,22 @@ fn type_resolution_diagnostic(error: &TypeResolutionError, span: Span) -> Diagno
             .with_help(format!("use `spec *{0}`/`spec *mut {0}` for dynamic dispatch, or a generic bound (`T: {0}`)", name.as_ref())),
         TypeResolutionError::NeverNotAllowedHere => d
             .with_label(span, "`never` used outside a function's own return type")
-            .with_help("there is no such thing as a `never`-typed value -- only a function/method/extern/gap may declare `=> never`"),
+            .with_help("there is no such thing as a `never`-typed value -- only a function/method/foreign/gap may declare `=> never`"),
         TypeResolutionError::BareUnsizedArray => d
             .with_label(span, "unsized array type used on its own")
             .with_help("write `*[]T` (a slice), or use `[]T` only as a declaration's type annotation with an array-literal initializer to infer its length"),
         TypeResolutionError::BareUnknownSizeArray => d
             .with_label(span, "unknown-size array type used on its own")
             .with_help("write `*[?]T` (a pointer to an unsized array) instead"),
+        TypeResolutionError::UnknownCallingConvention { .. } => d
+            .with_label(span, "not a recognized calling convention")
+            .with_help("known conventions are `c` and `sysv64`"),
+        TypeResolutionError::CallingConventionNotAvailable { .. } => {
+            d.with_label(span, "not available on this target")
+        }
+        TypeResolutionError::VariadicNotSupportedByConvention { .. } => d
+            .with_label(span, "'...' is not allowed here")
+            .with_help("only conventions that support variadic arguments on this target may declare a '...' tail"),
     }
 }
 

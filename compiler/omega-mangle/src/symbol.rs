@@ -4,6 +4,19 @@ pub enum Namespace {
     Value,
 }
 
+/// A function type/signature's calling convention, mirrored from
+/// `omega_analyzer::resolved_type::CallingConvention` so this standalone
+/// crate stays dependency-free. `Omega` is the implicit default and is never
+/// written to the wire; every other convention gets its own marker so
+/// existing ordinary-function encodings are unaffected byte-for-byte.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum MangleConvention {
+    #[default]
+    Omega,
+    C,
+    SysV64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ManglePath {
     Root(String),
@@ -36,13 +49,21 @@ pub enum MangleType {
     Array(Box<MangleType>, bool),
     SizedArray(Box<MangleType>, u64),
     SpecObject(Box<MangleType>, bool),
-    Function(Vec<MangleType>, Box<MangleType>, bool),
+    Function(Vec<MangleType>, Box<MangleType>, bool, MangleConvention),
     Named(ManglePath, Option<u32>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FunctionSignature {
+    pub params: Vec<MangleType>,
+    pub return_type: MangleType,
+    pub is_variadic: bool,
+    pub convention: MangleConvention,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Symbol {
     pub path: ManglePath,
-    pub signature: Option<(Vec<MangleType>, MangleType)>,
+    pub signature: Option<FunctionSignature>,
     pub vendor_suffix: Option<String>,
 }

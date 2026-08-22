@@ -13,7 +13,7 @@ impl Highlighter for OmegaHighlighter {
                 | TokenKind::False
                 | TokenKind::If
                 | TokenKind::Else
-                | TokenKind::Extern
+                | TokenKind::Foreign
                 | TokenKind::Import
                 | TokenKind::Return
                 | TokenKind::Struct

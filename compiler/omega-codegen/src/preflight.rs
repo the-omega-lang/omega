@@ -1,19 +1,9 @@
 use crate::CodegenRequest;
-use omega_analyzer::resolved_type::ResolvedType;
-use omega_mir::MirItem;
 
-pub(crate) fn preflight(request: &CodegenRequest) -> Result<(), String> {
-    for (_, module) in &request.modules {
-        for item in &module.items {
-            if let MirItem::ExternDeclaration(declaration) = item
-                && !matches!(&declaration.r#type, ResolvedType::Function(_))
-            {
-                return Err(format!(
-                    "extern data declarations (a non-function `extern`) are not implemented yet: '{}'",
-                    declaration.ident.as_ref()
-                ));
-            }
-        }
-    }
+/// Historically rejected non-function `extern` data declarations here; the
+/// backend now emits them as external-global declarations (see
+/// `llvm::item::declare_foreign_binding`), so there is nothing left to
+/// preflight-reject for foreign items specifically.
+pub(crate) fn preflight(_request: &CodegenRequest) -> Result<(), String> {
     Ok(())
 }

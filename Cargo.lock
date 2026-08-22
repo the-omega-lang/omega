@@ -119,6 +119,7 @@ dependencies = [
  "inkwell",
  "omega-analyzer",
  "omega-diagnostics",
+ "omega-driver",
  "omega-hir",
  "omega-mir",
  "omega-parser",

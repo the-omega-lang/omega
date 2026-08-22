@@ -493,6 +493,7 @@ impl Driver {
                         ItemKind::Import,
                         false,
                         false,
+                        annotations::ManglingMode::Enabled,
                     )
                     .suppress
                 },
@@ -556,11 +557,12 @@ impl Driver {
             HirItem::Enum(e) => e.generics.clone(),
             HirItem::Union(u) => u.generics.clone(),
             HirItem::FunctionDefinition(f) => f.generics.clone(),
+            HirItem::ForeignFunction(f) => f.generics.clone(),
             HirItem::Spec(sp) => sp.generics.clone(),
             HirItem::Gap(_) => vec![],
             HirItem::Declaration { .. }
             | HirItem::DeclarationWithInit { .. }
-            | HirItem::ExternDeclaration(_)
+            | HirItem::ForeignBinding(_)
             | HirItem::Walrus { .. } => vec![],
             HirItem::Glue(_) | HirItem::Conform(_) | HirItem::Primitive(_) | HirItem::Import(_) => {
                 unreachable!("unnamed items are never indexed into a module's items")

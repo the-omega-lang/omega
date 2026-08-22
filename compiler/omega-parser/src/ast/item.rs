@@ -3,10 +3,8 @@ use crate::ast::expression::{CodeblockExpr, ExpressionNode, MacroInvocationExpr}
 use crate::ast::generics::GenericParam;
 use crate::ast::identifier::{Ident, Path};
 use crate::ast::self_mode::SelfMode;
-use crate::ast::statement::{
-    DeclarationStmt, ExternDeclarationStmt, FunctionDefinitionStmt, WalrusStmt,
-};
-use crate::ast::r#type::{Param, Type};
+use crate::ast::statement::{DeclarationStmt, FunctionDefinitionStmt, WalrusStmt};
+use crate::ast::r#type::{FunctionType, Param, RawConvention, Type};
 use crate::ast::visibility::Visibility;
 use crate::diagnostics::Span;
 use crate::lexer::Token;
@@ -15,7 +13,9 @@ use crate::lexer::Token;
 pub enum Item {
     Declaration(DeclarationStmt),
     DeclarationWithInit(DeclarationStmt, ExpressionNode),
-    ExternDeclaration(ExternDeclarationStmt),
+    ForeignBinding(ForeignBindingItem),
+    ForeignFunction(ForeignFunctionItem),
+    ForeignBlock(ForeignBlockItem),
     FunctionDefinition(FunctionDefinitionStmt),
     Struct(StructStmt),
     Enum(EnumStmt),
@@ -35,6 +35,66 @@ pub enum Item {
 pub struct ItemNode {
     pub item: Item,
     pub span: Span,
+}
+
+/// `foreign name : Type;` -- binds an external symbol. Any function
+/// convention comes from `Type` itself; a block's convention never applies
+/// here (see `ForeignBlockItem`).
+#[derive(Debug, Clone)]
+pub struct ForeignBindingItem {
+    pub annotations: Vec<AnnotationNode>,
+    pub visibility: Visibility,
+    pub explicit_hidden_span: Option<Span>,
+    pub ident: Ident,
+    pub name_span: Span,
+    pub r#type: Type,
+}
+
+/// A direct foreign function declaration/definition:
+/// `foreign(cc) name(args) => T;` or `... { body }`. `convention` is `None`
+/// for the bare Omega-convention form (`foreign name(args) => T;`).
+#[derive(Debug, Clone)]
+pub struct ForeignFunctionItem {
+    pub annotations: Vec<AnnotationNode>,
+    pub visibility: Visibility,
+    pub explicit_hidden_span: Option<Span>,
+    pub convention: Option<RawConvention>,
+    pub ident: Ident,
+    pub name_span: Span,
+    pub signature_span: Span,
+    pub return_type_span: Span,
+    pub generics: Vec<GenericParam>,
+    pub params: Vec<Param>,
+    pub is_variadic: bool,
+    pub return_type: Type,
+    pub body: Option<CodeblockExpr>,
+}
+
+impl ForeignFunctionItem {
+    pub fn function_type(&self) -> FunctionType {
+        FunctionType {
+            params: self.params.clone(),
+            return_type: Box::new(self.return_type.clone()),
+            is_variadic: self.is_variadic,
+            self_mode: None,
+            convention: self.convention.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum ForeignBlockEntry {
+    Binding(ForeignBindingItem),
+    Function(ForeignFunctionItem),
+}
+
+/// `foreign(cc) { ... }` -- syntactic grouping only, flattened away before
+/// semantic analysis. `cc` applies to direct function-signature entries in
+/// `entries`; a `name : Type;` binding entry always ignores it.
+#[derive(Debug, Clone)]
+pub struct ForeignBlockItem {
+    pub convention: Option<RawConvention>,
+    pub entries: Vec<ForeignBlockEntry>,
 }
 
 #[derive(Debug, Clone)]

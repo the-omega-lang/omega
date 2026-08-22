@@ -2,14 +2,14 @@ use crate::body::{MirAsmOperand, MirAsmOperandKind, MirInlineAsm};
 use crate::lower::function::FunctionLowerer;
 use crate::mangle;
 use crate::mir::{
-    MirDeclaration, MirEnumDef, MirExternDeclaration, MirFunctionBody, MirFunctionDef, MirItem,
-    MirLinkage, MirModule, MirStructDef, MirUnionDef,
+    MirDeclaration, MirEnumDef, MirForeignBinding, MirForeignFunctionDef, MirFunctionBody,
+    MirFunctionDef, MirItem, MirLinkage, MirModule, MirStructDef, MirUnionDef,
 };
 use omega_analyzer::annotations::ManglingMode;
 use omega_analyzer::checked::{
     CheckedAsmDescriptorKind, CheckedBlock, CheckedDeclaration, CheckedEnumDef,
-    CheckedExternDeclaration, CheckedFunctionDef, CheckedItem, CheckedModule, CheckedStmt,
-    CheckedStructDef, CheckedUnionDef,
+    CheckedForeignBinding, CheckedForeignFunctionDef, CheckedFunctionDef, CheckedItem,
+    CheckedModule, CheckedStmt, CheckedStructDef, CheckedUnionDef,
 };
 use omega_analyzer::resolved_type::ResolvedType;
 use omega_parser::prelude::Ident;
@@ -30,8 +30,11 @@ fn lower_item(item: CheckedItem, path: &[Ident], entry: &[Ident]) -> MirItem {
         CheckedItem::Declaration(declaration) => {
             MirItem::Declaration(lower_declaration(declaration))
         }
-        CheckedItem::ExternDeclaration(declaration) => {
-            MirItem::ExternDeclaration(lower_extern_declaration(declaration))
+        CheckedItem::ForeignBinding(binding) => {
+            MirItem::ForeignBinding(lower_foreign_binding(binding, path))
+        }
+        CheckedItem::ForeignFunction(function) => {
+            MirItem::ForeignFunction(lower_foreign_function(function, path))
         }
         CheckedItem::FunctionDefinition(function) => {
             MirItem::FunctionDefinition(lower_free_function(function, path, entry))
@@ -52,9 +55,9 @@ fn lower_declaration(declaration: CheckedDeclaration) -> MirDeclaration {
     }
 }
 
-fn lower_extern_declaration(declaration: CheckedExternDeclaration) -> MirExternDeclaration {
-    let symbol = extern_declaration_symbol(&declaration);
-    MirExternDeclaration {
+fn lower_foreign_binding(declaration: CheckedForeignBinding, path: &[Ident]) -> MirForeignBinding {
+    let symbol = foreign_binding_symbol(&declaration, path);
+    MirForeignBinding {
         id: declaration.id,
         span: declaration.span,
         ident: declaration.ident,
@@ -64,9 +67,14 @@ fn lower_extern_declaration(declaration: CheckedExternDeclaration) -> MirExternD
     }
 }
 
-fn extern_declaration_symbol(declaration: &CheckedExternDeclaration) -> String {
+/// Mirrors `free_function_symbol`'s enabled/forced/disabled policy (see
+/// `docs/language/foreign-function-interface.md`): disabled uses the source
+/// name verbatim, forced/glued use their exact symbol, and enabled builds an
+/// ordinary Omega function/global symbol from module identity and type.
+fn foreign_binding_symbol(declaration: &CheckedForeignBinding, path: &[Ident]) -> String {
     match (&declaration.mangling, &declaration.r#type) {
         (ManglingMode::Disabled, _) => declaration.ident.as_ref().to_owned(),
+        (ManglingMode::Forced(name), _) => name.clone(),
         (
             ManglingMode::Glued {
                 spec_module_path,
@@ -78,9 +86,67 @@ fn extern_declaration_symbol(declaration: &CheckedExternDeclaration) -> String {
         (ManglingMode::Glued { .. }, _) => {
             unreachable!("only function-valued gap declarations use glued mangling")
         }
-        (ManglingMode::Enabled | ManglingMode::Forced(_), _) => {
-            unreachable!("'@mangling' is rejected on extern declarations during parsing")
-        }
+        (ManglingMode::Enabled, ResolvedType::Function(fn_type)) => mangle::encode(
+            &mangle::free_function_symbol(path, &declaration.ident, &[], fn_type),
+        ),
+        (ManglingMode::Enabled, _) => mangle::global_symbol_string(path, &declaration.ident),
+    }
+}
+
+fn lower_foreign_function(
+    function: CheckedForeignFunctionDef,
+    path: &[Ident],
+) -> MirForeignFunctionDef {
+    let symbol = foreign_function_symbol(&function, path);
+    let CheckedForeignFunctionDef {
+        id,
+        span,
+        name,
+        calling_convention,
+        is_variadic,
+        params,
+        return_type,
+        body,
+        mangling,
+    } = function;
+    let body = body.map(|body| {
+        MirFunctionBody::Normal(FunctionLowerer::lower(&params, body, &return_type, id, span))
+    });
+    MirForeignFunctionDef {
+        id,
+        span,
+        name,
+        calling_convention,
+        is_variadic,
+        params,
+        return_type,
+        mangling,
+        symbol,
+        linkage: MirLinkage::Export,
+        body,
+    }
+}
+
+fn foreign_function_symbol(function: &CheckedForeignFunctionDef, path: &[Ident]) -> String {
+    match &function.mangling {
+        ManglingMode::Disabled => function.name.as_ref().to_owned(),
+        ManglingMode::Forced(name) => name.clone(),
+        ManglingMode::Glued {
+            spec_module_path,
+            spec_name,
+            function_name,
+        } => mangle::glued_symbol(
+            spec_module_path,
+            spec_name,
+            function_name,
+            &function.fn_type(),
+        ),
+        ManglingMode::Enabled => mangle::encode(&mangle::free_function_symbol(
+            path,
+            &function.name,
+            &[],
+            &function.fn_type(),
+        )),
     }
 }
 

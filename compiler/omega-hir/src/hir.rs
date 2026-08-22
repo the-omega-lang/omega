@@ -1,8 +1,8 @@
 use crate::ids::HirId;
 pub use omega_parser::prelude::{BinaryOp, ImportRoot, LogicalOp};
 use omega_parser::prelude::{
-    ByteStringExpr, ExprPath, FunctionType, Ident, NumberExpr, Origin, Param, Path, SelfMode, Span,
-    StringExpr, Type, Visibility,
+    ByteStringExpr, ExprPath, FunctionType, Ident, NumberExpr, Origin, Param, Path, RawConvention,
+    SelfMode, Span, StringExpr, Type, Visibility,
 };
 
 #[derive(Debug, Clone)]
@@ -46,7 +46,8 @@ pub enum HirItem {
         walrus: HirWalrusDeclaration,
         visibility: Visibility,
     },
-    ExternDeclaration(HirExternDeclaration),
+    ForeignBinding(HirForeignBinding),
+    ForeignFunction(HirForeignFunction),
     FunctionDefinition(HirFunctionDef),
     Struct(HirStructDef),
     Enum(HirEnumDef),
@@ -87,13 +88,58 @@ pub struct HirDeclaration {
 }
 
 #[derive(Debug, Clone)]
-pub struct HirExternDeclaration {
+pub struct HirForeignBinding {
     pub id: HirId,
     pub span: Span,
+    pub annotations: Vec<HirAnnotation>,
     pub ident: Ident,
+    pub name_span: Span,
     pub r#type: Type,
     pub visibility: Visibility,
     pub explicit_hidden_span: Option<Span>,
+}
+
+#[derive(Debug, Clone)]
+pub struct HirForeignFunction {
+    pub id: HirId,
+    pub span: Span,
+    pub name_span: Span,
+    pub signature_span: Span,
+    pub return_type_span: Span,
+    pub annotations: Vec<HirAnnotation>,
+    pub visibility: Visibility,
+    pub explicit_hidden_span: Option<Span>,
+    pub convention: Option<RawConvention>,
+    pub name: Ident,
+    pub generics: Vec<HirGenericParam>,
+    pub params: Vec<HirParam>,
+    pub is_variadic: bool,
+    pub return_type: Type,
+    pub body: Option<HirBlock>,
+}
+
+impl HirForeignFunction {
+    pub fn function_type(&self) -> FunctionType {
+        let params = self
+            .params
+            .iter()
+            .map(|p| Param {
+                ident: p.ident.clone(),
+                name_span: p.name_span,
+                span: p.span,
+                origin: p.origin,
+                r#type: p.r#type.clone(),
+            })
+            .collect::<Vec<_>>();
+
+        FunctionType {
+            params,
+            return_type: Box::new(self.return_type.clone()),
+            is_variadic: self.is_variadic,
+            self_mode: None,
+            convention: self.convention.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -155,6 +201,7 @@ impl HirFunctionDef {
             return_type: Box::new(self.return_type.clone()),
             is_variadic: false,
             self_mode: self.self_mode,
+            convention: None,
         }
     }
 }
@@ -290,7 +337,6 @@ pub struct HirPrimitiveDef {
 pub enum HirStmt {
     Declaration(HirDeclaration),
     DeclarationWithInit(HirDeclaration, HirExprNode),
-    ExternDeclaration(HirExternDeclaration),
     Expression(HirExprNode),
     Return(HirExprNode),
     WalrusDeclaration(HirWalrusDeclaration),

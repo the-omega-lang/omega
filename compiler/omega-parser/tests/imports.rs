@@ -66,8 +66,14 @@ fn reveal_parses_with_every_anchor() {
 }
 
 #[test]
-fn legacy_extern_import_syntax_is_rejected() {
-    assert!(SourceModule::parse("import extern::std::io::println;").is_err());
+fn extern_is_an_ordinary_identifier_in_import_paths() {
+    // `extern` was removed as a keyword in favor of `foreign`; it now parses
+    // like any other identifier, including as an import path segment.
+    let module = import("import extern::std::io::println;");
+    assert_eq!(
+        path_segments(&module),
+        ["extern", "std", "io", "println"]
+    );
 }
 
 #[test]

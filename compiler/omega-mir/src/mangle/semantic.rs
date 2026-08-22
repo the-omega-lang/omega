@@ -1,6 +1,14 @@
-use omega_analyzer::resolved_type::{ResolvedFunctionType, ResolvedType};
-use omega_mangle::{ManglePath, MangleType, Namespace};
+use omega_analyzer::resolved_type::{CallingConvention, ResolvedFunctionType, ResolvedType};
+use omega_mangle::{FunctionSignature, ManglePath, MangleConvention, MangleType, Namespace};
 use omega_parser::prelude::Ident;
+
+fn mangle_convention(convention: CallingConvention) -> MangleConvention {
+    match convention {
+        CallingConvention::Omega => MangleConvention::Omega,
+        CallingConvention::C => MangleConvention::C,
+        CallingConvention::SysV64 => MangleConvention::SysV64,
+    }
+}
 
 pub(super) fn module_path(segments: &[Ident]) -> ManglePath {
     let (root, nested) = segments
@@ -71,8 +79,13 @@ pub(super) fn mangle_type(ty: &ResolvedType) -> MangleType {
             MangleType::SizedArray(Box::new(mangle_type(item)), u64::from(*len))
         }
         ResolvedType::Function(function) => {
-            let (params, return_type) = signature(function);
-            MangleType::Function(params, Box::new(return_type), function.is_variadic)
+            let sig = signature(function);
+            MangleType::Function(
+                sig.params,
+                Box::new(sig.return_type),
+                sig.is_variadic,
+                sig.convention,
+            )
         }
         ResolvedType::Struct(cell) => {
             let cell = cell.borrow();
@@ -106,15 +119,17 @@ pub(super) fn mangle_type(ty: &ResolvedType) -> MangleType {
     }
 }
 
-pub(super) fn signature(function: &ResolvedFunctionType) -> (Vec<MangleType>, MangleType) {
-    (
-        function
+pub(super) fn signature(function: &ResolvedFunctionType) -> FunctionSignature {
+    FunctionSignature {
+        params: function
             .params
             .iter()
             .map(|(_, r#type)| mangle_type(r#type))
             .collect(),
-        mangle_type(&function.return_type),
-    )
+        return_type: mangle_type(&function.return_type),
+        is_variadic: function.is_variadic,
+        convention: mangle_convention(function.calling_convention),
+    }
 }
 
 pub(super) fn owner_path(target: &ResolvedType) -> ManglePath {

@@ -18,7 +18,9 @@ Whitespace/comments are omitted.
 module = { [ annotation-list ], item } ;
 
 item = import
-     | extern-declaration
+     | foreign-binding
+     | foreign-function-item
+     | foreign-block
      | function-definition
      | struct-declaration
      | union-declaration
@@ -41,7 +43,7 @@ global-binding = [ visibility ], [ "mut" ], [ "comp" ], identifier, ":=", expres
 
 Annotations are syntactically accepted only before supported item kinds; semantic applicability is defined in [`annotations-and-sizeof.md`](annotations-and-sizeof.md).
 
-Top-level source may contain imports, extern declarations, aggregate/spec/gap/glue/conformance/primitive declarations, macro definitions/invocations, global bindings/declarations, and function definitions. Local aggregate/spec declarations are not permitted inside function bodies.
+Top-level source may contain imports, foreign bindings/functions/blocks, aggregate/spec/gap/glue/conformance/primitive declarations, macro definitions/invocations, global bindings/declarations, and function definitions. Local aggregate/spec declarations -- and local `foreign` items of any shape -- are not permitted inside function bodies.
 
 ## Visibility
 
@@ -71,13 +73,24 @@ import-anchor = [ "root", "::" | "self", "::" | { "super", "::" } ], path ;
 
 Module/import meaning is specified in [`modules-and-imports.md`](modules-and-imports.md).
 
-## Extern declarations
+## Foreign items
 
 ```ebnf
-extern-declaration = [ visibility ], "extern", identifier, ":", function-type, ";" ;
+foreign-binding = [ visibility ], "foreign", identifier, ":", type, ";" ;
+
+foreign-function-item = [ visibility ], "foreign", [ calling-convention ],
+                        identifier, [ generic-parameters ],
+                        "(", [ parameter-list-rest ], ")", "=>", type,
+                        ( ";" | code-block ) ;
+
+foreign-block = "foreign", calling-convention, "{", { foreign-block-entry }, "}" ;
+
+foreign-block-entry = [ visibility ], identifier,
+                      ( ":", type, ";"
+                      | "(", [ parameter-list-rest ], ")", "=>", type, ( ";" | code-block ) ) ;
 ```
 
-See [`foreign-function-interface.md`](foreign-function-interface.md).
+`foreign-binding`'s `identifier, ":"` and `foreign-function-item`'s `identifier, "("`/`"<"` are unambiguous on the token right after the name. `foreign(cc) name : Type;` (a `calling-convention` directly on a binding) is rejected -- see [`foreign-function-interface.md`](foreign-function-interface.md) for the exact rule and the equivalent unambiguous spelling. Inside a `foreign-block`, `calling-convention` is never written again; the block's own applies to each direct function-signature entry (not to a `":", type` entry), and blocks do not nest.
 
 ## Generic parameters and bounds
 
@@ -101,6 +114,7 @@ type = pointer-type
      | inferred-array-type
      | unknown-size-array-type
      | function-type
+     | foreign-function-type
      | spec-type
      | type-path ;
 
@@ -119,6 +133,10 @@ spec-type = "spec", [ "*", [ "mut" ] ], type-path ;
 ```ebnf
 function-type = "(", [ function-type-parameters ], ")", "=>", type ;
 
+foreign-function-type = "foreign", calling-convention, function-type ;
+
+calling-convention = "(", identifier, ")" ;
+
 function-type-parameters = [ receiver, [ "," ] ], parameter-list-rest
                          | receiver
                          | parameter-list-rest ;
@@ -133,7 +151,7 @@ receiver = "self"
          | "*", "mut", "self" ;
 ```
 
-Variadic `...` is restricted to C-interoperability function types/calls; pure Omega functions are not variadic. See [`functions.md`](functions.md) and [`foreign-function-interface.md`](foreign-function-interface.md).
+`function-type` always denotes the implicit Omega calling convention; `foreign-function-type` names an explicit non-Omega one (currently `c` or `sysv64`). Bare `"foreign", function-type` (no `calling-convention`) is not a valid type -- `calling-convention` is mandatory in `foreign-function-type` and immediately follows the keyword, which is also what keeps this production unambiguous with a plain `function-type`'s own leading `"("`. `...` is legal in `parameter-list-rest` only where the enclosing function type's convention supports variadics; an ordinary Omega-convention function is never variadic. See [`functions.md`](functions.md) and [`foreign-function-interface.md`](foreign-function-interface.md).
 
 ## Functions
 
@@ -299,7 +317,6 @@ statement = local-declaration, ";"
           | return-statement, ";"
           | break-statement, ";"
           | continue-statement, ";"
-          | extern-declaration
           | defer-statement
           | while-statement
           | loop-statement

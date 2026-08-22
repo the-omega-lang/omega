@@ -62,21 +62,23 @@ f : (u32) => void = print_any;
 
 Visibility also participates in candidate selection; see [`visibility.md`](visibility.md).
 
-## Function types and C variadics
+## Function types, calling conventions, and variadics
 
-Function types use the same parameter/return spelling:
+Function types use the same parameter/return spelling and always denote the implicit **Omega calling convention**:
 
 ```omega
 handler : (i32, *u8) => bool;
 ```
 
-A trailing `...` is permitted only in a function type and is used for C-compatible variadic declarations, most commonly `extern` declarations:
+`foreign(cc) (...) => T` is the same type shape with an explicit non-Omega calling convention (currently `c` or `sysv64`), used for function pointers/bindings that cross a foreign ABI boundary. See [`foreign-function-interface.md`](foreign-function-interface.md) for the full `foreign` syntax and semantics.
+
+A trailing `...` is permitted only in a function type whose convention supports variadics (`c`, and `sysv64` on its supported targets), most commonly a `foreign(c)` declaration:
 
 ```omega
-extern printf : (format: *u8, ...) => i32;
+shared foreign(c) printf(format: *u8, ...) => i32;
 ```
 
-An Omega function definition cannot itself be variadic. Calls to a variadic extern apply the C default argument promotions to arguments in the variadic tail. See [`foreign-function-interface.md`](foreign-function-interface.md).
+An ordinary Omega-convention function type can never be variadic -- neither a function definition nor a plain `(...) => T` type may declare `...`. See [`foreign-function-interface.md`](foreign-function-interface.md) for the C default argument promotions applied to a variadic `foreign(c)` call's trailing arguments.
 
 ## `defer`
 

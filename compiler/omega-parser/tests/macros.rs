@@ -40,11 +40,11 @@ fn imported_macro_definitions_merge_and_local_definitions_shadow() {
 
 #[test]
 fn imported_macro_expansions_are_attributed_to_the_call_site() {
-    let imported = macro_definition("exposed macro foreign() => { side_effect(); }");
+    let imported = macro_definition("exposed macro imported_macro() => { side_effect(); }");
     let mut definitions = HashMap::new();
     definitions.insert(imported.name.clone(), imported);
 
-    let source = "main() => void { foreign$(); }";
+    let source = "main() => void { imported_macro$(); }";
     let parsed = SourceModule::parse(source).unwrap();
     let Item::FunctionDefinition(function) = &parsed.nodes[0].item else {
         panic!("expected main function");

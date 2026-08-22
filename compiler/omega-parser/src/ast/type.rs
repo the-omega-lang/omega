@@ -2,6 +2,24 @@ use crate::ast::identifier::{Ident, Origin, Path};
 use crate::ast::self_mode::SelfMode;
 use crate::diagnostics::Span;
 
+/// A calling-convention name written at the source level, e.g. the `c` in
+/// `foreign(c)`. Kept raw (unresolved) through parsing/HIR; semantic
+/// resolution against the target happens in the analyzer. Equality ignores
+/// `span` so it does not perturb `FunctionType`/`Type` structural equality.
+#[derive(Debug, Clone)]
+pub struct RawConvention {
+    pub name: Ident,
+    pub span: Span,
+}
+
+impl PartialEq for RawConvention {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+    }
+}
+
+impl Eq for RawConvention {}
+
 #[derive(Debug, Clone)]
 pub struct Param {
     pub ident: Ident,
@@ -25,6 +43,9 @@ pub struct FunctionType {
     pub return_type: Box<Type>,
     pub is_variadic: bool,
     pub self_mode: Option<SelfMode>,
+    /// `None` denotes the ordinary Omega convention; explicit `foreign(cc)`
+    /// type syntax is the only source of `Some`.
+    pub convention: Option<RawConvention>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -3,7 +3,7 @@ use std::str;
 
 use crate::base62;
 use crate::grammar::*;
-use crate::symbol::{ManglePath, MangleType, Symbol};
+use crate::symbol::{FunctionSignature, ManglePath, MangleConvention, MangleType, Symbol};
 
 pub fn decode(mangled: &str) -> Option<Symbol> {
     let bytes = mangled.as_bytes();
@@ -47,10 +47,27 @@ impl Decoder<'_> {
         })
     }
 
-    fn parse_signature(&mut self) -> Option<(Vec<MangleType>, MangleType)> {
+    fn parse_signature(&mut self) -> Option<FunctionSignature> {
+        let convention = self.parse_convention();
+        let is_variadic = self.consume_if(TAG_VARIADIC);
         let params = self.parse_type_list()?;
         let return_type = self.parse_type()?;
-        Some((params, return_type))
+        Some(FunctionSignature {
+            params,
+            return_type,
+            is_variadic,
+            convention,
+        })
+    }
+
+    fn parse_convention(&mut self) -> MangleConvention {
+        match self.peek().and_then(convention_from_tag) {
+            Some(convention) => {
+                self.pos += 1;
+                convention
+            }
+            None => MangleConvention::Omega,
+        }
     }
 
     fn parse_ident(&mut self) -> Option<String> {
@@ -151,10 +168,11 @@ impl Decoder<'_> {
             TAG_SPEC_OBJECT_MUT => self.parse_wrapped_type(true, MangleType::SpecObject)?,
             TAG_FUNCTION => {
                 self.pos += 1;
+                let convention = self.parse_convention();
                 let variadic = self.consume_if(TAG_VARIADIC);
                 let params = self.parse_type_list()?;
                 let return_type = self.parse_type()?;
-                MangleType::Function(params, Box::new(return_type), variadic)
+                MangleType::Function(params, Box::new(return_type), variadic, convention)
             }
             TAG_REFINED => {
                 self.pos += 1;
@@ -252,13 +270,15 @@ mod tests {
     fn named_structural_path_round_trips_through_decoder() {
         let symbol = Symbol {
             path: ManglePath::Root("pkg".to_string()),
-            signature: Some((
-                vec![MangleType::Named(
+            signature: Some(FunctionSignature {
+                params: vec![MangleType::Named(
                     ManglePath::Type(Box::new(MangleType::I32)),
                     None,
                 )],
-                MangleType::Void,
-            )),
+                return_type: MangleType::Void,
+                is_variadic: false,
+                convention: MangleConvention::Omega,
+            }),
             vendor_suffix: None,
         };
         let mangled = crate::encode::encode(&symbol);

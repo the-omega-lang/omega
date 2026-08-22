@@ -6,7 +6,8 @@ pub use kind::AnalysisErrorKind;
 pub use render::resolve_error_diagnostic;
 pub use warning::{AnalysisWarning, AnalysisWarningKind};
 
-use crate::resolved_type::{NumericKind, ResolvedFunctionType, ResolvedType};
+use crate::resolved_type::{CallingConvention, NumericKind, ResolvedFunctionType, ResolvedType};
+use crate::target::Target;
 use crate::resolver::ResolveError;
 use omega_diagnostics::Diagnostic;
 use omega_hir::HirId;
@@ -98,6 +99,17 @@ pub enum TypeResolutionError {
     NeverNotAllowedHere,
     BareUnsizedArray,
     BareUnknownSizeArray,
+    UnknownCallingConvention {
+        name: Ident,
+    },
+    CallingConventionNotAvailable {
+        name: Ident,
+        convention: CallingConvention,
+        target: Target,
+    },
+    VariadicNotSupportedByConvention {
+        convention: CallingConvention,
+    },
 }
 
 impl fmt::Display for TypeResolutionError {
@@ -158,6 +170,18 @@ impl fmt::Display for TypeResolutionError {
             Self::BareUnknownSizeArray => {
                 write!(f, "'[?]T' is not valid on its own")
             }
+            Self::UnknownCallingConvention { name } => {
+                write!(f, "unknown calling convention '{}'", name.as_ref())
+            }
+            Self::CallingConventionNotAvailable { name, target, .. } => write!(
+                f,
+                "calling convention '{}' is not available on target '{target}'",
+                name.as_ref()
+            ),
+            Self::VariadicNotSupportedByConvention { convention } => write!(
+                f,
+                "the '{convention}' calling convention does not support variadic functions"
+            ),
         }
     }
 }

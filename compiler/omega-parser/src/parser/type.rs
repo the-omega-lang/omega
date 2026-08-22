@@ -1,5 +1,5 @@
 use crate::ast::expression::NumberBase;
-use crate::ast::r#type::{FunctionType, Type};
+use crate::ast::r#type::{FunctionType, RawConvention, Type};
 use crate::diagnostics::ParseErrorKind;
 use crate::lexer::TokenKind;
 use crate::parser::{Parser, contextual, parse_path};
@@ -10,6 +10,7 @@ pub fn parse_type(p: &mut Parser) -> Option<Type> {
         TokenKind::LBracket => parse_bracket_type(p),
         TokenKind::LParen => parse_function_type(p),
         TokenKind::Spec => parse_spec_object_type(p),
+        TokenKind::Foreign => parse_foreign_function_type(p),
         TokenKind::Ident(_) => parse_named_type(p),
         _ => {
             p.error(ParseErrorKind::Expected {
@@ -98,7 +99,38 @@ fn parse_function_type(p: &mut Parser) -> Option<Type> {
         return_type: Box::new(return_type),
         is_variadic,
         self_mode,
+        convention: None,
     }))
+}
+
+/// `foreign(cc) (...) => T` -- the parenthesized convention is mandatory and
+/// immediately follows the keyword, so this can never be confused with the
+/// function type's own parameter list. A bare `foreign (...) => T` therefore
+/// fails here (expects an identifier where the params would start), which is
+/// intentional: the ordinary type already denotes the Omega convention.
+fn parse_foreign_function_type(p: &mut Parser) -> Option<Type> {
+    p.advance(); // 'foreign'
+    let convention = parse_raw_convention(p)?;
+    if !p.check(&TokenKind::LParen) {
+        p.error(ParseErrorKind::Expected {
+            expected: "a function type '(...) => T' after 'foreign(cc)'",
+            found: p.peek().describe(),
+        });
+        return None;
+    }
+    let Some(Type::Function(mut function_type)) = parse_function_type(p) else {
+        return None;
+    };
+    function_type.convention = Some(convention);
+    Some(Type::Function(function_type))
+}
+
+pub(crate) fn parse_raw_convention(p: &mut Parser) -> Option<RawConvention> {
+    p.expect(&TokenKind::LParen, "'('");
+    let name = p.expect_ident()?;
+    let span = p.last_span();
+    p.expect(&TokenKind::RParen, "')'");
+    Some(RawConvention { name, span })
 }
 
 fn parse_named_type(p: &mut Parser) -> Option<Type> {

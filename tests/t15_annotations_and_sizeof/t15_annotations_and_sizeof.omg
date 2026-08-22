@@ -49,6 +49,14 @@ slow_triple(x: i32) => i32 { x * 3 }
 @mangling(disabled)
 raw_add(a: i32, b: i32) => i32 { a + b }
 
+# Foreign items default to `@mangling(disabled)` (their bare source symbol,
+# unlike an ordinary function's default `enabled`); `@mangling(enabled)`
+# opts back into normal Omega symbol construction.
+foreign(c) foreign_default_symbol(x: i32) => i32 { x + 1 }
+
+@mangling(enabled)
+foreign(c) foreign_enabled_mangling(x: i32) => i32 { x + 2 }
+
 struct Adder {
 	exposed base: i32;
 
@@ -73,4 +81,11 @@ main() => void {
 
 	adder := Adder { base = 10; };
 	println$("mangling-force-symbol: ", adder.bump(5));
+
+	println$(
+		"foreign-mangling: ",
+		foreign_default_symbol(1),
+		" ",
+		foreign_enabled_mangling(1)
+	);
 }

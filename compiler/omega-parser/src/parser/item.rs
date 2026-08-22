@@ -4,7 +4,6 @@ use crate::ast::visibility::Visibility;
 use crate::diagnostics::{ParseErrorKind, Span};
 use crate::lexer::TokenKind;
 use crate::parser::macro_syntax::{parse_macro_definition, parse_macro_invocation};
-use crate::parser::statement::parse_extern_declaration;
 use crate::parser::{Parser, contextual, parse_path, recovery};
 
 #[derive(Clone, Copy)]
@@ -41,6 +40,7 @@ impl ParsedVisibility {
 
 mod annotations;
 mod definitions;
+mod foreign;
 mod functions;
 
 use annotations::{parse_annotations, reject_annotations};
@@ -48,6 +48,7 @@ use definitions::{parse_conform_def, parse_gap_def, parse_glue_def, parse_primit
 pub use definitions::{
     parse_enum_def, parse_marker_def, parse_spec_def, parse_struct_def, parse_union_def,
 };
+use foreign::parse_foreign_item;
 pub use functions::parse_function_definition;
 use functions::{parse_declaration_or_function_definition, parse_item_declaration_or_walrus};
 pub fn parse_source_module(p: &mut Parser) -> Vec<ItemNode> {
@@ -80,14 +81,12 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
     }
 
     let item = match p.peek() {
-        TokenKind::Extern => {
-            reject_annotations(p, &annotations);
-            let mut decl = parse_extern_declaration(p)?;
-            decl.visibility = visibility;
-            decl.explicit_hidden_span = parsed_visibility.explicit_hidden_span();
-            p.expect_terminator(&TokenKind::Semi, "';'");
-            Item::ExternDeclaration(decl)
-        }
+        TokenKind::Foreign => parse_foreign_item(
+            p,
+            annotations,
+            visibility,
+            parsed_visibility.explicit_hidden_span(),
+        )?,
         TokenKind::Import => {
             reject_visibility(p, parsed_visibility);
             Item::Import(parse_import(p, annotations)?)

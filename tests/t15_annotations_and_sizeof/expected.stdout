@@ -4,3 +4,4 @@ sizeof-primitive: 8 8
 inline-hints: 42 21
 mangling-disabled: 5
 mangling-force-symbol: 15
+foreign-mangling: 2 3

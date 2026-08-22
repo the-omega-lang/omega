@@ -96,9 +96,24 @@ impl<'a> Expander<'a> {
                         span: node.span,
                     });
                 }
-                other @ (Item::Declaration(_) | Item::ExternDeclaration(_) | Item::Import(_)) => {
+                other @ (Item::Declaration(_) | Item::ForeignBinding(_) | Item::Import(_)) => {
                     result.push(ItemNode {
                         item: other,
+                        span: node.span,
+                    });
+                }
+                Item::ForeignFunction(f) => result.push(ItemNode {
+                    item: Item::ForeignFunction(self.expand_foreign_function(f)?),
+                    span: node.span,
+                }),
+                Item::ForeignBlock(mut block) => {
+                    block.entries = block
+                        .entries
+                        .into_iter()
+                        .map(|entry| self.expand_foreign_block_entry(entry))
+                        .collect::<Result<_, _>>()?;
+                    result.push(ItemNode {
+                        item: Item::ForeignBlock(block),
                         span: node.span,
                     });
                 }
@@ -281,6 +296,27 @@ impl<'a> Expander<'a> {
         })
     }
 
+    fn expand_foreign_function(
+        &mut self,
+        f: crate::ast::item::ForeignFunctionItem,
+    ) -> Result<crate::ast::item::ForeignFunctionItem, MacroError> {
+        let body = f.body.map(|b| self.expand_codeblock(b)).transpose()?;
+        Ok(crate::ast::item::ForeignFunctionItem { body, ..f })
+    }
+
+    fn expand_foreign_block_entry(
+        &mut self,
+        entry: crate::ast::item::ForeignBlockEntry,
+    ) -> Result<crate::ast::item::ForeignBlockEntry, MacroError> {
+        use crate::ast::item::ForeignBlockEntry;
+        Ok(match entry {
+            ForeignBlockEntry::Binding(b) => ForeignBlockEntry::Binding(b),
+            ForeignBlockEntry::Function(f) => {
+                ForeignBlockEntry::Function(self.expand_foreign_function(f)?)
+            }
+        })
+    }
+
     fn expand_member_functions(
         &mut self,
         functions: Vec<FunctionDefinitionStmt>,
@@ -397,7 +433,6 @@ impl<'a> Expander<'a> {
             Statement::DeclarationWithInit(decl, value) => {
                 Statement::DeclarationWithInit(decl, self.expand_expr(value)?)
             }
-            Statement::ExternDeclaration(decl) => Statement::ExternDeclaration(decl),
             Statement::Expression(expr) => Statement::Expression(self.expand_expr(expr)?),
             Statement::Return(ret) => Statement::Return(ReturnStmt {
                 return_value: self.expand_expr(ret.return_value)?,

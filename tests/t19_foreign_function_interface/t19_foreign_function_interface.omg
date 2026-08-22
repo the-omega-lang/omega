@@ -1,26 +1,52 @@
 import std::io::println;
 import self::helper;
 
-# An extern declaration gives a name a function type with no Omega body;
-# calls use ordinary Omega call syntax.
-shared extern malloc : (size: usize) => *mut u8;
-shared extern free : (ptr: *u8) => void;
+# A direct `foreign(c)` declaration gives a name a C-convention function type
+# with no Omega body; calls use ordinary Omega call syntax.
+shared foreign(c) malloc(size: usize) => *mut u8;
+shared foreign(c) free(ptr: *u8) => void;
 
-# `...` exists only for foreign/C-style variadic function types.
-shared extern printf : (format: *u8, ...) => i32;
-shared extern fflush : (stream: *mut u8) => i32;
+# `...` exists only for foreign conventions that support variadic arguments.
+shared foreign(c) printf(format: *u8, ...) => i32;
+shared foreign(c) fflush(stream: *mut u8) => i32;
+
+# A variadic `sysv64` declaration: unlike `foreign(c)`, the tail is passed
+# using its actual lowered Omega types with no C default-argument promotion.
+shared foreign(sysv64) snprintf(buf: *mut u8, size: usize, format: *u8, ...) => i32;
+
+# A `foreign(c)` block: direct entries inherit `c` without repeating it.
+foreign(c) {
+	shared abs(x: i32) => i32;
+}
 
 @mangling(disabled)
 raw_add(a: i32, b: i32) => i32 { a + b }
 
+# A mangled `foreign(c)` definition: a C-convention function Omega itself
+# defines and exports under its normal mangled symbol, callable both
+# directly and through a `foreign(c)` function-pointer type.
+@mangling(enabled)
+foreign(c) c_callback(a: i32, b: i32) => i32 {
+	a * b + 1
+}
+
+# A `sysv64` definition on the default x86-64 target: a distinct convention
+# from `c`, even though both currently lower to the same machine ABI there.
+@mangling(enabled)
+foreign(sysv64) sysv_add(a: i32, b: i32) => i32 {
+	a + b
+}
+
 main() => void {
-	# --- extern function declarations: scalars/pointers are the practical
+	# --- foreign(c) declarations: scalars/pointers are the practical
 	# interop boundary --------------------------------------------------------
 	block := malloc(4usize);
 	as_i32: *mut i32 = <*mut i32>block;
 	*as_i32 = 77;
 	println$("malloc-deref: ", *as_i32);
 	free(<*u8>block);
+
+	println$("abs(-5): ", abs(-5));
 
 	# --- C-style variadic call: trailing arguments use the FFI ABI ------------
 	# `fflush(NULL)` forces C stdio's own buffer out immediately, so this
@@ -35,6 +61,21 @@ main() => void {
 	# for why this specifically needed a real LLVM-emitted regression.
 	printf(<*u8>b"pi = %.2f\n\0", 3.14159f64);
 	fflush(<*mut u8>0usize);
+
+	# --- direct call and function-pointer call to a mangled foreign(c)
+	# definition, and a distinct sysv64 definition -----------------------------
+	println$("c_callback direct: ", c_callback(3, 4));
+	c_fp: foreign(c) (a: i32, b: i32) => i32 = c_callback;
+	println$("c_callback via pointer: ", c_fp(3, 4));
+	println$("sysv_add: ", sysv_add(10, 20));
+
+	# --- variadic sysv64 call: reuse the printf/fflush read-back pattern above
+	# to observe exactly what the sysv64 tail delivered ------------------------
+	mut sysv_buf: [32]u8;
+	sysv_n := snprintf(&mut sysv_buf[0], 32usize, <*u8>b"sysv64 sum = %d\n\0", raw_add(10, 15));
+	printf(<*u8>b"%s", <*u8>&mut sysv_buf[0]);
+	fflush(<*mut u8>0usize);
+	println$("sysv64 snprintf n: ", sysv_n);
 
 	# --- program entry point: only root-module `main` is the C entry ---------
 	println$("helper-main: ", helper::main());

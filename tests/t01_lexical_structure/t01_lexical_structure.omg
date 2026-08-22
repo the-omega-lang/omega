@@ -33,6 +33,11 @@ main() => void {
 		+ conform + primitive + shared + exposed + comp + expr + in;
 	println$("sum: ", sum);
 
+	# `extern` was removed as a keyword in favor of `foreign`; it now lexes
+	# as an ordinary identifier wherever identifiers are legal.
+	extern := 19;
+	println$("extern-is-an-identifier: ", extern);
+
 	# String escapes.
 	println$("line one\nline two\ttabbed\\backslash \"quoted\" it\'s");
 

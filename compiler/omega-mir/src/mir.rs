@@ -1,7 +1,9 @@
 use crate::body::{MirBody, MirInlineAsm};
 use omega_analyzer::annotations::{InlineMode, ManglingMode};
 use omega_analyzer::checked::{CheckedField, CheckedParam, ConformanceOwner};
-use omega_analyzer::resolved_type::{ConstValue, ResolvedFunctionType, ResolvedType};
+use omega_analyzer::resolved_type::{
+    CallingConvention, ConstValue, ResolvedFunctionType, ResolvedType,
+};
 use omega_hir::ModuleId;
 use omega_parser::prelude::{Ident, SelfMode, Span};
 
@@ -14,7 +16,8 @@ pub struct MirModule {
 #[derive(Debug, Clone)]
 pub enum MirItem {
     Declaration(MirDeclaration),
-    ExternDeclaration(MirExternDeclaration),
+    ForeignBinding(MirForeignBinding),
+    ForeignFunction(MirForeignFunctionDef),
     FunctionDefinition(MirFunctionDef),
     Struct(MirStructDef),
     Enum(MirEnumDef),
@@ -31,13 +34,44 @@ pub struct MirDeclaration {
 }
 
 #[derive(Debug, Clone)]
-pub struct MirExternDeclaration {
+pub struct MirForeignBinding {
     pub id: omega_hir::HirId,
     pub span: Span,
     pub ident: Ident,
     pub r#type: ResolvedType,
     pub mangling: ManglingMode,
     pub symbol: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct MirForeignFunctionDef {
+    pub id: omega_hir::HirId,
+    pub span: Span,
+    pub name: Ident,
+    pub calling_convention: CallingConvention,
+    pub is_variadic: bool,
+    pub params: Vec<CheckedParam>,
+    pub return_type: ResolvedType,
+    pub mangling: ManglingMode,
+    pub symbol: String,
+    pub linkage: MirLinkage,
+    pub body: Option<MirFunctionBody>,
+}
+
+impl MirForeignFunctionDef {
+    pub fn fn_type(&self) -> ResolvedFunctionType {
+        ResolvedFunctionType {
+            params: self
+                .params
+                .iter()
+                .map(|p| (p.ident.clone(), p.r#type.clone()))
+                .collect(),
+            return_type: Box::new(self.return_type.clone()),
+            is_variadic: self.is_variadic,
+            self_mode: None,
+            calling_convention: self.calling_convention,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,6 +122,7 @@ impl MirFunctionDef {
             return_type: Box::new(self.return_type.clone()),
             is_variadic: self.is_variadic,
             self_mode: self.self_mode,
+            calling_convention: CallingConvention::Omega,
         }
     }
 }

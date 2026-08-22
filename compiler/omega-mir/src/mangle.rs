@@ -218,6 +218,7 @@ mod tests {
             return_type: Box::new(return_type),
             is_variadic: false,
             self_mode: None,
+            calling_convention: omega_analyzer::resolved_type::CallingConvention::Omega,
         }
     }
 

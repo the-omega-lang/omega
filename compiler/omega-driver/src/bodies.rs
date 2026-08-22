@@ -2,8 +2,7 @@ use crate::Driver;
 use crate::items::{CheckedBody, ItemKey};
 use omega_analyzer::analysis::{AnalysisSite, Analyzer};
 use omega_analyzer::checked::{
-    CheckedDeclaration, CheckedEnumDef, CheckedExternDeclaration, CheckedItem, CheckedStructDef,
-    CheckedUnionDef,
+    CheckedDeclaration, CheckedEnumDef, CheckedItem, CheckedStructDef, CheckedUnionDef,
 };
 use omega_analyzer::error::{AnalysisError, AnalysisErrorKind};
 use omega_analyzer::resolved_type::{ResolvedFunctionType, ResolvedType};
@@ -114,18 +113,53 @@ impl Driver {
                 })
             }
 
-            HirItem::ExternDeclaration(decl) => {
+            HirItem::ForeignBinding(binding) => {
                 let r#type = self.resolved_value_type(key);
-                let checked = CheckedExternDeclaration {
-                    id: decl.id,
-                    span: decl.span,
-                    ident: decl.ident.clone(),
+                let mangling = self
+                    .items
+                    .function_annotations
+                    .get(&binding.id)
+                    .map(|a| a.mangling.clone())
+                    .unwrap_or(omega_analyzer::annotations::ManglingMode::Disabled);
+                let checked = omega_analyzer::checked::CheckedForeignBinding {
+                    id: binding.id,
+                    span: binding.span,
+                    ident: binding.ident.clone(),
                     r#type,
-                    mangling: omega_analyzer::annotations::ManglingMode::Disabled,
+                    mangling,
                 };
                 Some(CheckedBody {
-                    item: CheckedItem::ExternDeclaration(checked),
+                    item: CheckedItem::ForeignBinding(checked),
                     warnings: vec![],
+                })
+            }
+
+            HirItem::ForeignFunction(f) => {
+                let ResolvedItem::Value {
+                    r#type: ResolvedType::Function(fn_type),
+                    decl_id,
+                    ..
+                } = self.items.expect_resolved(key).clone()
+                else {
+                    unreachable!(
+                        "a foreign function's own resolved item is always ResolvedType::Function"
+                    );
+                };
+                let annotations = self
+                    .items
+                    .function_annotations
+                    .get(&decl_id)
+                    .cloned()
+                    .unwrap_or_default();
+                let run = self.with_analyzer(
+                    &key.module,
+                    &[],
+                    AnalysisSite::new(f.id, f.span),
+                    |analyzer| analyzer.check_foreign_function_body(f, &fn_type, &annotations),
+                );
+                run.result.map(|checked| CheckedBody {
+                    item: CheckedItem::ForeignFunction(checked),
+                    warnings: run.warnings,
                 })
             }
 

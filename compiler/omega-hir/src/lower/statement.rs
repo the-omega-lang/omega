@@ -18,9 +18,6 @@ impl Lowerer {
             Statement::DeclarationWithInit(decl, value) => {
                 HirStmt::DeclarationWithInit(self.lower_declaration(decl), self.lower_expr(value))
             }
-            Statement::ExternDeclaration(decl) => {
-                HirStmt::ExternDeclaration(self.lower_extern_declaration(decl, span))
-            }
             Statement::Expression(expr) => HirStmt::Expression(self.lower_expr(expr)),
             Statement::MacroInvocation(_) => unreachable!(
                 "statement macro invocations are replaced by their expansion by \

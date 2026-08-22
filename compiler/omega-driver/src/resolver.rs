@@ -456,7 +456,8 @@ impl ModuleResolver for Driver {
                 | HirItem::Declaration { .. }
                 | HirItem::DeclarationWithInit { .. }
                 | HirItem::Walrus { .. }
-                | HirItem::ExternDeclaration(_) => namespace == ItemNamespace::Value,
+                | HirItem::ForeignBinding(_)
+                | HirItem::ForeignFunction(_) => namespace == ItemNamespace::Value,
                 HirItem::Glue(_)
                 | HirItem::Conform(_)
                 | HirItem::Primitive(_)
@@ -549,7 +550,9 @@ impl ModuleResolver for Driver {
             CheckedItem::Struct(s) => s.functions.into_iter().find(|f| f.id == decl_id),
             CheckedItem::Enum(e) => e.functions.into_iter().find(|f| f.id == decl_id),
             CheckedItem::Union(u) => u.functions.into_iter().find(|f| f.id == decl_id),
-            CheckedItem::Declaration(_) | CheckedItem::ExternDeclaration(_) => None,
+            CheckedItem::Declaration(_)
+            | CheckedItem::ForeignBinding(_)
+            | CheckedItem::ForeignFunction(_) => None,
         })
     }
 
@@ -608,6 +611,7 @@ fn rewrite_self_return(ty: &Type, owner: &Ident, owner_generics: &[Ident]) -> Ty
             return_type: Box::new(rewrite_self_return(&f.return_type, owner, owner_generics)),
             is_variadic: f.is_variadic,
             self_mode: f.self_mode,
+            convention: f.convention.clone(),
         }),
         other => other.clone(),
     }

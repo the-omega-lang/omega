@@ -27,26 +27,16 @@ Concrete current compiler/library bugs and unsupported cases. Resolved issues ar
   from hand-written C expecting real struct-passing rules.
   [primitives.md](../language/types-and-primitives.md)
 
-- **Extern *data* declarations (a non-function `extern`) have no storage
-  story** — fully resolved and type-checked like everything else, but
-  codegen still has nothing sound to do with it and shared preflight rejects
-  it before backend selection, since its storage genuinely lives in another
-  translation unit. An ordinary top-level global (`ident: type;`, or a
-  non-`comp` `ident := comp value;`) is *not* this gap anymore — both
-  are fully implemented, including `mut`. [mir-and-codegen.md](../architecture/mir-and-codegen.md),
-  [compile-time-evaluation.md](../language/compile-time-evaluation.md)
-
-- **A function-local `extern` declaration is accepted by parsing and semantic
-  analysis but is not representable in MIR yet.** Top-level `extern` declarations
-  lower to `MirExternDeclaration` and are declared by codegen before body
-  emission. The statement form currently reaches `omega-mir` as
-  `CheckedStmt::ExternDeclaration` and hits the explicit unimplemented path in
-  function lowering instead. Fixing this cleanly means deciding whether local
-  externs are hoisted into module-level MIR declarations or whether `MirBody`
-  gains a declaration side table that codegen predeclares before compiling the
-  body; silently dropping the statement is not sound because calls still refer
-  to its `HirId`.
-  [mir-and-codegen.md](../architecture/mir-and-codegen.md)
+- **A generic direct `foreign` function is rejected rather than
+  monomorphized.** `foreign(cc) name<T>(...) => T;`/`{ ... }` parses and
+  carries its generics through HIR, but `collect_foreign_function_signature`
+  rejects any non-empty generics list outright
+  (`AnalysisErrorKind::GenericForeignFunctionUnsupported`) instead of
+  instantiating a signature/mangled symbol per type argument the way an
+  ordinary generic function does. Wiring real instantiation through
+  `ItemKey`/the driver's generic-instantiation cache for foreign items was
+  deliberately deferred rather than half-implemented.
+  [foreign-function-interface.md](../language/foreign-function-interface.md)
 
 - **`defer` can currently slip into a repeatedly-evaluated loop condition or
   C-style `for` post expression through a nested codeblock.** Analysis only
@@ -306,16 +296,18 @@ Shape problems in `omega-driver` and `omega-analyzer` that still need a delibera
   correct.
 
   To keep it that way rather than waiting for someone to discover it,
-  aggregate-by-value across an `extern` boundary is a **hard error**
-  (`AnalysisErrorKind::ExternAggregateByValue`) pointing back at this
-  entry. One `if` to delete once a real per-target C ABI exists; until
-  then it turns a silent miscompile into a compile error.
+  aggregate-by-value across a `foreign` boundary of any convention (`c`,
+  `sysv64`, ...) is a **hard error** (`AnalysisErrorKind::ForeignAggregateByValue`)
+  pointing back at this entry. One `if` to delete once a real per-target ABI
+  classifier exists; until then it turns a silent miscompile into a compile
+  error.
 
-  Fixing it properly means per-target ABI classification in `abi.rs`
-  (eightbyte classification for SysV, AAPCS for aarch64, ...) plus a
-  decision on whether Omega's *own* convention should follow the
-  platform's or stay deliberately its own with `extern` as the sole
-  translation point. That decision has not been made.
+  Fixing it properly means per-target, per-convention ABI classification in
+  `abi.rs` (eightbyte classification for SysV, AAPCS for aarch64, ...). The
+  translation point is now settled as `foreign(cc)` (see
+  [`foreign-function-interface.md`](../language/foreign-function-interface.md));
+  what remains open is only the aggregate classifier itself, not where the
+  boundary is spelled.
 
 - **`@layout(align = n)` is not yet a real address guarantee.**
   `layout::type_alignment` reports a type's *declared* `@layout(align)` and

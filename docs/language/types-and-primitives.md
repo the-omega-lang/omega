@@ -45,10 +45,10 @@ For C variadic calls, arguments in the variadic tail undergo the C default argum
 
 ## `never`
 
-`never` may be written only as the declared return type of a function, method, extern declaration, or gap function:
+`never` may be written only as the declared return type of a function, method, foreign declaration, or gap function:
 
 ```omega
-extern exit : (code: i32) => never;
+foreign(c) exit(code: i32) => never;
 
 spin_forever() => never {
     loop { }
@@ -59,7 +59,7 @@ A declaration returning `never` must not complete normally. A diverging expressi
 
 `never` is not a storable value type: it is invalid as a local/field/parameter type, generic argument, or aggregate member type.
 
-An extern declaration returning `never` is a contract with foreign code. If that foreign function returns, program behavior is invalid.
+A `foreign` declaration returning `never` is a contract with foreign code. If that foreign function returns, program behavior is invalid.
 
 ## Pointer, array, and slice type forms
 

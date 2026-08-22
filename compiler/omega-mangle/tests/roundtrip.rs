@@ -1,4 +1,16 @@
-use omega_mangle::{ManglePath, MangleType, Namespace, Symbol, decode, demangle, encode};
+use omega_mangle::{
+    FunctionSignature, ManglePath, MangleConvention, MangleType, Namespace, Symbol, decode,
+    demangle, encode,
+};
+
+fn sig(params: Vec<MangleType>, return_type: MangleType) -> FunctionSignature {
+    FunctionSignature {
+        params,
+        return_type,
+        is_variadic: false,
+        convention: MangleConvention::Omega,
+    }
+}
 
 fn root(name: &str) -> ManglePath {
     ManglePath::Root(name.to_string())
@@ -35,7 +47,7 @@ fn free_function() {
     let path = nested(root("mymod"), Namespace::Value, "foo");
     let sym = Symbol {
         path,
-        signature: Some((vec![MangleType::I32, MangleType::I32], MangleType::I32)),
+        signature: Some(sig(vec![MangleType::I32, MangleType::I32], MangleType::I32)),
         vendor_suffix: None,
     };
     let mangled = assert_round_trips(&sym);
@@ -48,12 +60,12 @@ fn overloaded_free_functions_differ() {
     let path = nested(root("mymod"), Namespace::Value, "do_thing");
     let a = Symbol {
         path: path.clone(),
-        signature: Some((vec![MangleType::I32], MangleType::Void)),
+        signature: Some(sig(vec![MangleType::I32], MangleType::Void)),
         vendor_suffix: None,
     };
     let b = Symbol {
         path,
-        signature: Some((
+        signature: Some(sig(
             vec![MangleType::Pointer(Box::new(MangleType::U8), false)],
             MangleType::Void,
         )),
@@ -79,7 +91,7 @@ fn all_four_self_modes() {
 
     let make = |self_ty: MangleType| Symbol {
         path: method_path.clone(),
-        signature: Some((vec![self_ty], MangleType::I32)),
+        signature: Some(sig(vec![self_ty], MangleType::I32)),
         vendor_suffix: None,
     };
 
@@ -108,7 +120,7 @@ fn generic_method_with_nested_generic_args_and_repeated_owner() {
 
     let sym = Symbol {
         path: method_path,
-        signature: Some((vec![self_ty, other_ty], MangleType::Void)),
+        signature: Some(sig(vec![self_ty, other_ty], MangleType::Void)),
         vendor_suffix: None,
     };
     let mangled = assert_round_trips(&sym);
@@ -122,7 +134,7 @@ fn generic_method_with_nested_generic_args_and_repeated_owner() {
     // Backreference compression should materially shorten repeated complex types.
     let baseline = Symbol {
         path: nested(root("mymod"), Namespace::Value, "baseline"),
-        signature: Some((
+        signature: Some(sig(
             vec![MangleType::Pointer(
                 Box::new(named(generic(
                     nested(root("mymod"), Namespace::Type, "GenericPair"),
@@ -164,14 +176,14 @@ fn wrapped_types() {
             Box::new(named(nested(root("mymod"), Namespace::Type, "Animal"))),
             true,
         ),
-        MangleType::Function(vec![MangleType::I32], Box::new(MangleType::Bool), false),
-        MangleType::Function(vec![MangleType::I32], Box::new(MangleType::Void), true),
+        MangleType::Function(vec![MangleType::I32], Box::new(MangleType::Bool), false, MangleConvention::Omega),
+        MangleType::Function(vec![MangleType::I32], Box::new(MangleType::Void), true, MangleConvention::Omega),
         named(nested(root("mymod"), Namespace::Type, "MyEnum")),
         MangleType::Named(nested(root("mymod"), Namespace::Type, "MyEnum"), Some(2)),
     ];
     let sym = Symbol {
         path,
-        signature: Some((params, MangleType::Void)),
+        signature: Some(sig(params, MangleType::Void)),
         vendor_suffix: None,
     };
     assert_round_trips(&sym);
@@ -183,12 +195,12 @@ fn str_never_collides_with_slice_u8() {
     let path = nested(root("mymod"), Namespace::Value, "do_thing");
     let str_sym = Symbol {
         path: path.clone(),
-        signature: Some((vec![MangleType::Str(false)], MangleType::Void)),
+        signature: Some(sig(vec![MangleType::Str(false)], MangleType::Void)),
         vendor_suffix: None,
     };
     let slice_sym = Symbol {
         path,
-        signature: Some((
+        signature: Some(sig(
             vec![MangleType::Slice(Box::new(MangleType::U8), false)],
             MangleType::Void,
         )),
@@ -209,7 +221,7 @@ fn mut_str_round_trips_and_demangles() {
     let path = nested(root("mymod"), Namespace::Value, "takes_mut_str");
     let sym = Symbol {
         path,
-        signature: Some((vec![MangleType::Str(true)], MangleType::Str(false))),
+        signature: Some(sig(vec![MangleType::Str(true)], MangleType::Str(false))),
         vendor_suffix: None,
     };
     let mangled = assert_round_trips(&sym);
@@ -268,6 +280,43 @@ fn identifier_edge_cases_round_trip() {
 }
 
 #[test]
+fn convention_and_variadic_identity_round_trip_and_differ() {
+    let path = nested(root("libc"), Namespace::Value, "printf");
+    let omega_sym = Symbol {
+        path: path.clone(),
+        signature: Some(sig(vec![MangleType::I32], MangleType::I32)),
+        vendor_suffix: None,
+    };
+    let c_sym = Symbol {
+        path: path.clone(),
+        signature: Some(FunctionSignature {
+            params: vec![MangleType::I32],
+            return_type: MangleType::I32,
+            is_variadic: true,
+            convention: MangleConvention::C,
+        }),
+        vendor_suffix: None,
+    };
+    let sysv64_sym = Symbol {
+        path,
+        signature: Some(FunctionSignature {
+            params: vec![MangleType::I32],
+            return_type: MangleType::I32,
+            is_variadic: true,
+            convention: MangleConvention::SysV64,
+        }),
+        vendor_suffix: None,
+    };
+    let m_omega = assert_round_trips(&omega_sym);
+    let m_c = assert_round_trips(&c_sym);
+    let m_sysv64 = assert_round_trips(&sysv64_sym);
+    assert_ne!(m_omega, m_c, "convention must participate in symbol identity");
+    assert_ne!(m_c, m_sysv64, "distinct foreign conventions must not collide");
+    assert!(demangle(&m_c).unwrap().contains("foreign(c)"));
+    assert!(demangle(&m_sysv64).unwrap().contains("foreign(sysv64)"));
+}
+
+#[test]
 fn malformed_backref_is_rejected_not_looped() {
     // Reject forward/self backreferences instead of looping or panicking.
     assert!(decode("_omg_BZ_").is_none());
@@ -295,7 +344,7 @@ fn structural_conformance_owner_paths_round_trip() {
         );
         let sym = Symbol {
             path: ManglePath::Nested(Box::new(spec), Namespace::Value, "equals".to_string()),
-            signature: Some((vec![owner.clone(), owner], MangleType::Bool)),
+            signature: Some(sig(vec![owner.clone(), owner], MangleType::Bool)),
             vendor_suffix: None,
         };
         assert_round_trips(&sym);
@@ -314,7 +363,7 @@ fn structural_owners_of_different_shape_never_collide() {
             Namespace::Value,
             "equals".to_string(),
         ),
-        signature: Some((vec![], MangleType::Bool)),
+        signature: Some(sig(vec![], MangleType::Bool)),
         vendor_suffix: None,
     };
     // Fat-pointer types and slice mutabilities remain distinct symbol identities.

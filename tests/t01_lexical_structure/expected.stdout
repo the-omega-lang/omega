@@ -1,4 +1,5 @@
 sum: 156
+extern-is-an-identifier: 19
 line one
 line two	tabbed\backslash "quoted" it's
 nul-string-size: 12

@@ -5,7 +5,7 @@ use inkwell::types::BasicTypeEnum;
 use inkwell::values::{BasicValue, BasicValueEnum, PointerValue, ValueKind};
 use omega_analyzer::checked::{CastKind, NumberValue};
 use omega_analyzer::layout;
-use omega_analyzer::resolved_type::{ConstValue, NumericKind, ResolvedType};
+use omega_analyzer::resolved_type::{CallingConvention, ConstValue, NumericKind, ResolvedType};
 use omega_hir::BinaryOp;
 use omega_mir::{
     MirAddressOf, MirArrayLiteral, MirAssignment, MirBinaryOp, MirCast, MirDynamicCall,
@@ -38,8 +38,14 @@ impl<'ctx> Codegen<'ctx> {
                 for (i, arg) in args.iter().enumerate() {
                     let arg_type = arg.r#type.clone();
                     let mut value = self.process_expr(arg);
-                    // Apply C default promotions only to the variadic tail.
-                    if fn_type.is_variadic && i >= fixed_count {
+                    // C default argument promotions are a `foreign(c)` source-language
+                    // interoperability rule, not generic variadic-tail behavior -- a variadic
+                    // `foreign(sysv64)` tail is passed using its actual lowered Omega types and
+                    // left to LLVM's own register/stack classification.
+                    if fn_type.is_variadic
+                        && fn_type.calling_convention == CallingConvention::C
+                        && i >= fixed_count
+                    {
                         for v in value.iter_mut() {
                             *v = self.promote_variadic_value(*v, &arg_type);
                         }
@@ -66,6 +72,9 @@ impl<'ctx> Codegen<'ctx> {
                     .builder
                     .build_indirect_call(call_type, fnaddr, &metadata_args, "")
                     .expect("call always succeeds");
+                call.set_call_convention(crate::abi::llvm_calling_convention(
+                    fn_type.calling_convention,
+                ));
 
                 if matches!(*fn_type.return_type, ResolvedType::Void | ResolvedType::Never) {
                     return vec![];

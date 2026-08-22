@@ -21,7 +21,7 @@ bytes : *[]u8 = b"hello";
 Byte strings are also not implicitly null-terminated. C APIs expecting a NUL-terminated `*u8` therefore commonly use an explicit terminator and cast:
 
 ```omega
-extern puts : (s: *u8) => i32;
+foreign(c) puts(s: *u8) => i32;
 puts(<*u8>b"hello\0");
 ```
 

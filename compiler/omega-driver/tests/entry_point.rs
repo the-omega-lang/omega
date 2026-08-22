@@ -68,7 +68,7 @@ fn void_main_is_accepted() {
 fn never_main_is_accepted() {
     let package = TestPackage::new(
         r#"
-        shared extern exit : (code: i32) => never;
+        shared foreign(c) exit(code: i32) => never;
         main() => never { exit(0); }
         "#,
     );

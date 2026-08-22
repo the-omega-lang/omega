@@ -12,3 +12,10 @@ omega-diagnostics = { path = "../omega-diagnostics" }
 # `llvm21-1` matches the container's LLVM 21.1.2 (`/usr/lib/llvm21`,
 # discovered via `llvm-config` on PATH), statically linked.
 inkwell = { version = "0.10", features = ["llvm21-1"] }
+
+[dev-dependencies]
+# Dev-dependency cycle with `omega-driver` (which dev-depends on `omega-codegen`
+# for its own codegen-shape tests): fine in Cargo since dev-deps are not part
+# of the library build graph. Used only to compile tiny `.omg` snippets down
+# to textual LLVM IR for `tests/convention.rs`.
+omega-driver = { path = "../omega-driver" }

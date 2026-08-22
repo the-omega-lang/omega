@@ -24,7 +24,7 @@ use crate::{
         CheckedBlock, CheckedBreak, CheckedCast, CheckedCompoundAssign, CheckedContinue,
         CheckedAsmDescriptor, CheckedAsmDescriptorKind, CheckedDeclaration, CheckedDefer,
         CheckedDynamicCall, CheckedEnumConstruct, CheckedEnumDef, CheckedExpr, CheckedExprNode,
-        CheckedExternDeclaration, CheckedField, CheckedFor, CheckedFunctionCall,
+        CheckedField, CheckedFor, CheckedForeignFunctionDef, CheckedFunctionCall,
         CheckedFunctionDef, CheckedIf, CheckedInlineAsm, CheckedLoop, CheckedMatch,
         CheckedMatchArm, CheckedParam, CheckedPlace, CheckedPlaceRoot, CheckedProjection,
         CheckedRangeEnd, CheckedSlice, CheckedSpecCoerce, CheckedStmt, CheckedStructDef,
@@ -50,11 +50,12 @@ use crate::{
 };
 use omega_hir::{
     BinaryOp, HirAddressOf, HirAsmDescriptor, HirAsmDescriptorKind, HirBlock, HirCast,
-    HirCompoundAssign, HirDeclaration, HirEnumDef, HirExpr, HirExprNode, HirExternDeclaration,
-    HirField, HirFor, HirForIn, HirFunctionCall, HirFunctionDef, HirId, HirIf, HirInlineAsm,
-    HirItem, HirMatch, HirMatchArm, HirParam, HirPattern, HirPlace, HirPlaceRoot, HirProjection,
-    HirRange, HirRangeEnd, HirSlice, HirSpecDef, HirStmt, HirStructDef, HirStructLiteral,
-    HirStructLiteralField, HirUnionDef, HirWalrusDeclaration, LogicalOp,
+    HirCompoundAssign, HirDeclaration, HirEnumDef, HirExpr, HirExprNode, HirField, HirFor,
+    HirForIn, HirFunctionCall, HirFunctionDef, HirId,
+    HirIf, HirInlineAsm, HirItem, HirMatch, HirMatchArm, HirParam, HirPattern, HirPlace,
+    HirPlaceRoot, HirProjection, HirRange, HirRangeEnd, HirSlice, HirSpecDef, HirStmt,
+    HirStructDef, HirStructLiteral, HirStructLiteralField, HirUnionDef, HirWalrusDeclaration,
+    LogicalOp,
 };
 use omega_parser::prelude::{
     ExprPath, Ident, NumberBase, NumberExpr, Origin, Path, QualifiedSpecPath, SelfMode, Span, Type,
@@ -88,7 +89,8 @@ pub fn item_name(item: &HirItem) -> Option<Ident> {
         HirItem::Declaration { decl, .. } => Some(decl.ident.clone()),
         HirItem::DeclarationWithInit { decl, .. } => Some(decl.ident.clone()),
         HirItem::Walrus { walrus, .. } => Some(walrus.ident.clone()),
-        HirItem::ExternDeclaration(d) => Some(d.ident.clone()),
+        HirItem::ForeignBinding(d) => Some(d.ident.clone()),
+        HirItem::ForeignFunction(f) => Some(f.name.clone()),
         HirItem::FunctionDefinition(f) => Some(f.name.clone()),
         HirItem::Struct(s) => Some(s.name.clone()),
         HirItem::Enum(e) => Some(e.name.clone()),
@@ -105,7 +107,8 @@ pub fn item_visibility(item: &HirItem) -> Visibility {
         HirItem::Declaration { visibility, .. } => *visibility,
         HirItem::DeclarationWithInit { visibility, .. } => *visibility,
         HirItem::Walrus { visibility, .. } => *visibility,
-        HirItem::ExternDeclaration(d) => d.visibility,
+        HirItem::ForeignBinding(d) => d.visibility,
+        HirItem::ForeignFunction(f) => f.visibility,
         HirItem::FunctionDefinition(f) => f.visibility,
         HirItem::Struct(s) => s.visibility,
         HirItem::Enum(e) => e.visibility,
@@ -149,7 +152,8 @@ pub fn item_id_span(item: &HirItem) -> (HirId, Span) {
         HirItem::Declaration { decl, .. } => (decl.id, decl.span),
         HirItem::DeclarationWithInit { decl, .. } => (decl.id, decl.span),
         HirItem::Walrus { walrus, .. } => (walrus.id, walrus.span),
-        HirItem::ExternDeclaration(d) => (d.id, d.span),
+        HirItem::ForeignBinding(d) => (d.id, d.span),
+        HirItem::ForeignFunction(f) => (f.id, f.span),
         HirItem::FunctionDefinition(f) => (f.id, f.span),
         HirItem::Struct(s) => (s.id, s.span),
         HirItem::Enum(e) => (e.id, e.span),
@@ -219,7 +223,7 @@ impl<'r> Analyzer<'r> {
         owner: AnalysisSite,
         target: Target,
     ) -> Self {
-        let mut context = Context::new();
+        let mut context = Context::new(target);
         let mut errors = Vec::new();
 
         let mut seen_generics = HashSet::new();

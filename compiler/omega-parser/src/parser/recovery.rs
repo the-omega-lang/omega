@@ -55,7 +55,7 @@ pub(crate) fn skip_balanced_group(p: &mut Parser) {
 fn starts_item(kind: &TokenKind) -> bool {
     matches!(
         kind,
-        TokenKind::Extern
+        TokenKind::Foreign
             | TokenKind::Import
             | TokenKind::Struct
             | TokenKind::Union

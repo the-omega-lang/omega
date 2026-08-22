@@ -34,7 +34,12 @@ pub fn collect_module(module: &CheckedModule, usage: &mut FieldUsage) {
 
 fn collect_item(item: &CheckedItem, usage: &mut FieldUsage) {
     match item {
-        CheckedItem::Declaration(_) | CheckedItem::ExternDeclaration(_) => {}
+        CheckedItem::Declaration(_) | CheckedItem::ForeignBinding(_) => {}
+        CheckedItem::ForeignFunction(f) => {
+            if let Some(body) = &f.body {
+                collect_block(body, usage);
+            }
+        }
         CheckedItem::FunctionDefinition(f) => collect_block(&f.body, usage),
         CheckedItem::Struct(s) => {
             for f in &s.functions {
@@ -66,7 +71,6 @@ fn collect_block(block: &CheckedBlock, usage: &mut FieldUsage) {
 fn collect_stmt(stmt: &CheckedStmt, usage: &mut FieldUsage) {
     match stmt {
         CheckedStmt::Declaration(_)
-        | CheckedStmt::ExternDeclaration(_)
         | CheckedStmt::Break(_)
         | CheckedStmt::Continue(_) => {}
         CheckedStmt::Expression(e) | CheckedStmt::Return(e) => collect_expr(e, usage),

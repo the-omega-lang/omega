@@ -381,9 +381,10 @@ pub enum AnalysisErrorKind {
     VariadicSpecFunctionUnsatisfiable {
         name: Ident,
     },
-    ExternAggregateByValue {
+    ForeignAggregateByValue {
         r#type: ResolvedType,
     },
+    GenericForeignFunctionUnsupported,
     AmbiguousSpecObjectMethod {
         function: Ident,
         specs: Vec<Ident>,
@@ -1081,8 +1082,11 @@ impl fmt::Display for AnalysisErrorKind {
                     name.as_ref()
                 )
             }
-            Self::ExternAggregateByValue { r#type } => {
-                write!(f, "'{type}' cannot cross an `extern` boundary by value")
+            Self::ForeignAggregateByValue { r#type } => {
+                write!(f, "'{type}' cannot cross a 'foreign' boundary by value")
+            }
+            Self::GenericForeignFunctionUnsupported => {
+                write!(f, "a generic 'foreign' function is not yet supported")
             }
             Self::VariadicSpecFunctionUnsatisfiable { name } => {
                 write!(

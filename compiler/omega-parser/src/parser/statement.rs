@@ -1,9 +1,8 @@
 use crate::ast::expression::Expression;
 use crate::ast::identifier::Ident;
 use crate::ast::statement::{
-    AsmDescriptorKind, AsmDescriptorNode, DeclarationStmt, DeferStmt, ExternDeclarationStmt,
-    ForInStmt, ForStmt, InlineAsmStmt, LoopStmt, ReturnStmt, Statement, StatementNode, WalrusStmt,
-    WhileStmt,
+    AsmDescriptorKind, AsmDescriptorNode, DeclarationStmt, DeferStmt, ForInStmt, ForStmt,
+    InlineAsmStmt, LoopStmt, ReturnStmt, Statement, StatementNode, WalrusStmt, WhileStmt,
 };
 use crate::ast::visibility::Visibility;
 use crate::diagnostics::ParseErrorKind;
@@ -65,10 +64,6 @@ fn parse_statement_content(p: &mut Parser) -> Option<(Statement, bool)> {
                 block_shaped,
             ))
         }
-        TokenKind::Extern => Some((
-            Statement::ExternDeclaration(parse_extern_declaration(p)?),
-            false,
-        )),
         TokenKind::Return => Some((Statement::Return(parse_return(p)?), false)),
         TokenKind::Break => {
             p.advance();
@@ -160,17 +155,6 @@ pub fn parse_declaration(p: &mut Parser) -> Option<DeclarationStmt> {
         origin,
         r#type,
         mutable: false,
-        visibility: Visibility::default(),
-        explicit_hidden_span: None,
-    })
-}
-
-pub fn parse_extern_declaration(p: &mut Parser) -> Option<ExternDeclarationStmt> {
-    p.expect(&TokenKind::Extern, "'extern'");
-    let decl = parse_declaration(p)?;
-    Some(ExternDeclarationStmt {
-        ident: decl.ident,
-        r#type: decl.r#type,
         visibility: Visibility::default(),
         explicit_hidden_span: None,
     })
@@ -459,7 +443,7 @@ fn recover_for_header(p: &mut Parser) -> Option<ForStmt> {
                 depth = depth.saturating_sub(1);
                 p.advance();
             }
-            TokenKind::Extern | TokenKind::Import | TokenKind::Macro if depth == 0 => return None,
+            TokenKind::Foreign | TokenKind::Import | TokenKind::Macro if depth == 0 => return None,
             _ => {
                 p.advance();
             }

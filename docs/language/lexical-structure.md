@@ -23,7 +23,7 @@ Identifiers are case-sensitive.
 These words are always tokenized as keywords:
 
 ```text
-true false if else match extern import return
+true false if else match foreign import return
 struct enum union spec
 while loop for break continue defer
 macro

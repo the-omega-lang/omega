@@ -38,7 +38,6 @@ impl<'r> Analyzer<'r> {
     fn checked_stmt_id_span(stmt: &CheckedStmt) -> (HirId, Span) {
         match stmt {
             CheckedStmt::Declaration(d) => (d.id, d.span),
-            CheckedStmt::ExternDeclaration(d) => (d.id, d.span),
             CheckedStmt::Expression(e) => (e.id, e.span),
             CheckedStmt::Return(e) => (e.id, e.span),
             CheckedStmt::While(w) => (w.id, w.span),
@@ -232,9 +231,6 @@ impl<'r> Analyzer<'r> {
             HirStmt::DeclarationWithInit(decl, value) => self
                 .analyze_declaration_with_init(decl, value)
                 .map(Vec::from),
-            HirStmt::ExternDeclaration(decl) => self
-                .analyze_extern_decl(decl)
-                .map(|d| vec![CheckedStmt::ExternDeclaration(d)]),
             HirStmt::Expression(expr) => self.analyze_expr(expr, None).map(|e| {
                 if matches!(e.kind, CheckedExpr::FunctionCall(_))
                     && e.r#type != ResolvedType::Void

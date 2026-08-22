@@ -26,7 +26,7 @@ Mutability is expressed independently for:
 
 Ordinary function parameters and aggregate fields are immutable bindings; a field's value can still be mutated through an appropriately mutable place/pointer.
 
-An `extern` declaration is an immutable symbol binding.
+A `foreign` binding is an immutable symbol binding.
 
 ## Receiver forms
 

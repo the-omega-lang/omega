@@ -334,25 +334,45 @@ impl Driver {
                     }
                 }),
 
-            HirItem::ExternDeclaration(decl) => self
+            HirItem::ForeignBinding(binding) => self
                 .analyze(
                     module,
                     &substitution,
-                    AnalysisSite::new(decl.id, decl.span),
-                    |a| a.analyze_extern_decl(decl),
+                    AnalysisSite::new(binding.id, binding.span),
+                    |a| a.analyze_foreign_binding(binding),
                 )
-                .map(|c| {
-                    let storage = match c.r#type {
+                .map(|(r#type, annotations)| {
+                    self.items.function_annotations.insert(binding.id, annotations);
+                    let storage = match r#type {
                         ResolvedType::Function(_) => Storage::Function,
                         _ => Storage::Global,
                     };
                     ResolvedItem::Value {
-                        r#type: c.r#type,
+                        r#type,
                         storage,
-                        decl_id: c.id,
+                        decl_id: binding.id,
                         mutable: false,
                     }
                 }),
+
+            HirItem::ForeignFunction(f) => {
+                let id = self.items.identity_for(key, f.id);
+                self.analyze(
+                    module,
+                    &substitution,
+                    AnalysisSite::new(f.id, f.span),
+                    |a| a.collect_foreign_function_signature(f),
+                )
+                .map(|(fn_type, annotations)| {
+                    self.items.function_annotations.insert(id, annotations);
+                    ResolvedItem::Value {
+                        r#type: ResolvedType::Function(fn_type),
+                        storage: Storage::Function,
+                        decl_id: id,
+                        mutable: false,
+                    }
+                })
+            }
 
             HirItem::FunctionDefinition(f) => {
                 let id = self.items.identity_for(key, f.id);

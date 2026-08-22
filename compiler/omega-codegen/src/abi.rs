@@ -1,6 +1,26 @@
 use omega_analyzer::Target;
 use omega_analyzer::layout::{self, Leaf};
-use omega_analyzer::resolved_type::{NumericKind, ResolvedFunctionType, ResolvedType};
+use omega_analyzer::resolved_type::{
+    CallingConvention, NumericKind, ResolvedFunctionType, ResolvedType,
+};
+
+/// LLVM's numeric calling-convention IDs (`llvm/IR/CallingConv.h`), centralized
+/// here so no other module hardcodes a raw convention number. Both `Omega`
+/// and `C` use LLVM's default `C` convention (0): Omega's own ABI is
+/// expressed entirely through leaf flattening/sret over that base, not a
+/// distinct LLVM calling convention. `SysV64` forces LLVM's explicit
+/// `X86_64_SysV` convention (78) so the AMD64 System V ABI applies even if
+/// the host/target's native "C" convention would otherwise differ (e.g.
+/// Windows' `Win64`), matching `CallingConvention::is_available_on`'s
+/// x86-64-only gating.
+pub fn llvm_calling_convention(convention: CallingConvention) -> u32 {
+    const LLVM_CCC: u32 = 0;
+    const LLVM_X86_64_SYSV: u32 = 78;
+    match convention {
+        CallingConvention::Omega | CallingConvention::C => LLVM_CCC,
+        CallingConvention::SysV64 => LLVM_X86_64_SYSV,
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AbiReturn {
@@ -68,6 +88,7 @@ mod tests {
             return_type: Box::new(ret),
             is_variadic: false,
             self_mode: None,
+            calling_convention: CallingConvention::Omega,
         }
     }
 

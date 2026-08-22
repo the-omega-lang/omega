@@ -1,4 +1,4 @@
-use crate::symbol::{MangleType, Namespace};
+use crate::symbol::{MangleConvention, MangleType, Namespace};
 
 pub const PREFIX: &str = "_omg_";
 
@@ -22,6 +22,8 @@ pub const TAG_SPEC_OBJECT: u8 = b'D';
 pub const TAG_SPEC_OBJECT_MUT: u8 = b'K';
 pub const TAG_FUNCTION: u8 = b'F';
 pub const TAG_VARIADIC: u8 = b'V';
+pub const TAG_CONVENTION_C: u8 = b'J';
+pub const TAG_CONVENTION_SYSV64: u8 = b'L';
 pub const TAG_REFINED: u8 = b'R';
 pub const TAG_STR: u8 = b'T';
 pub const TAG_STR_MUT: u8 = b'U';
@@ -40,6 +42,25 @@ pub fn namespace_from_tag(tag: u8) -> Option<Namespace> {
     match tag {
         TAG_NAMESPACE_TYPE => Some(Namespace::Type),
         TAG_NAMESPACE_VALUE => Some(Namespace::Value),
+        _ => None,
+    }
+}
+
+/// The convention tag emitted right after `TAG_FUNCTION`/a signature's start
+/// (before the variadic marker), or `None` for the default `Omega`
+/// convention, which is left unmarked to preserve existing encodings.
+pub fn convention_tag(convention: MangleConvention) -> Option<u8> {
+    match convention {
+        MangleConvention::Omega => None,
+        MangleConvention::C => Some(TAG_CONVENTION_C),
+        MangleConvention::SysV64 => Some(TAG_CONVENTION_SYSV64),
+    }
+}
+
+pub fn convention_from_tag(tag: u8) -> Option<MangleConvention> {
+    match tag {
+        TAG_CONVENTION_C => Some(MangleConvention::C),
+        TAG_CONVENTION_SYSV64 => Some(MangleConvention::SysV64),
         _ => None,
     }
 }

@@ -11,17 +11,18 @@ pub use crate::ast::expression::{
 pub use crate::ast::generics::GenericParam;
 pub use crate::ast::identifier::{ExpansionId, ExprPath, Ident, Origin, Path, QualifiedSpecPath};
 pub use crate::ast::item::{
-    ConformStmt, EnumHeaderField, EnumStmt, EnumVariantStmt, FragmentKind, ImportRoot, ImportStmt,
-    Item, ItemNode, MacroBodyPiece, MacroDefinitionStmt, MacroParam, MacroRepetition,
+    ConformStmt, EnumHeaderField, EnumStmt, EnumVariantStmt, ForeignBindingItem,
+    ForeignBlockEntry, ForeignBlockItem, ForeignFunctionItem, FragmentKind, ImportRoot,
+    ImportStmt, Item, ItemNode, MacroBodyPiece, MacroDefinitionStmt, MacroParam, MacroRepetition,
     MacroSignature, PrimitiveStmt, SpecFunctionStmt, SpecStmt, StructStmt, UnionStmt,
 };
 pub use crate::ast::range::{RangeEnd, RangeExpr};
 pub use crate::ast::self_mode::SelfMode;
 pub use crate::ast::statement::{
-    AsmDescriptorKind, AsmDescriptorNode, DeclarationStmt, DeferStmt, ExternDeclarationStmt,
-    ForInStmt, ForStmt, FunctionDefinitionStmt, InlineAsmStmt, LoopStmt, ReturnStmt, Statement,
-    StatementNode, WhileStmt,
+    AsmDescriptorKind, AsmDescriptorNode, DeclarationStmt, DeferStmt, ForInStmt, ForStmt,
+    FunctionDefinitionStmt, InlineAsmStmt, LoopStmt, ReturnStmt, Statement, StatementNode,
+    WhileStmt,
 };
-pub use crate::ast::r#type::{FunctionType, Param, Type};
+pub use crate::ast::r#type::{FunctionType, Param, RawConvention, Type};
 pub use crate::ast::visibility::Visibility;
 pub use crate::diagnostics::{ParseError, ParseErrorKind, Span};

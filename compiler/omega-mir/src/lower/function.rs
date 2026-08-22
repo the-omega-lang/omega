@@ -350,9 +350,6 @@ impl FunctionLowerer {
             CheckedStmt::Declaration(decl) => {
                 self.declare_local(Some(decl.id), decl.r#type);
             }
-            CheckedStmt::ExternDeclaration(_) => {
-                todo!("extern declarations inside a function body are not yet implemented");
-            }
             CheckedStmt::Expression(expr) => self.lower_expr_stmt(expr),
             CheckedStmt::Return(expr) => self.lower_return(expr),
             CheckedStmt::While(CheckedWhile {
@@ -649,6 +646,7 @@ mod tests {
             return_type: Box::new(ResolvedType::Void),
             is_variadic: false,
             self_mode: None,
+            calling_convention: omega_analyzer::resolved_type::CallingConvention::Omega,
         }
     }
 

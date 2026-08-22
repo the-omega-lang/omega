@@ -32,7 +32,7 @@ Recognized annotations are `layout`, `inline`, `mangling`, `naked`, and `suppres
 |---|---|
 | `@layout` | `struct`, `enum` |
 | `@inline` | functions/methods |
-| `@mangling` | functions/methods, subject to restrictions below |
+| `@mangling` | functions/methods, `foreign` bindings/functions, subject to restrictions below |
 | `@naked` | functions/methods, subject to restrictions below |
 | `@suppress` | `struct`, `enum`, `union`, function/method, `import`, `spec` |
 
@@ -92,8 +92,10 @@ Accepted forms:
 ```
 
 - `enabled` uses normal Omega mangling.
-- `disabled` uses the bare function name. It is rejected on methods and generic functions.
+- `disabled` uses the bare function/binding name. It is rejected on methods and generic functions.
 - `force = "..."` uses the exact non-empty linker symbol. It is allowed on methods, but rejected on generic functions because all instantiations would otherwise collide.
+
+`@mangling` also applies to `foreign` bindings and direct foreign functions (see [`foreign-function-interface.md`](foreign-function-interface.md)), where the *default* -- with no explicit `@mangling(...)` written -- is `disabled` rather than the ordinary-function default of `enabled`. Writing `@mangling(enabled)` on a foreign item is how it opts back into normal Omega symbol construction; this is required for a generic foreign definition, since a bare disabled name cannot distinguish instantiations.
 
 A compilation must diagnose duplicate final linker symbols rather than relying on linker/backend failure.
 

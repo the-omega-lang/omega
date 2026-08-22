@@ -15,7 +15,7 @@ pub fn lower_module(module: ModuleId, ast: &SourceModule) -> HirModule {
     let items = ast
         .nodes
         .iter()
-        .map(|node| lowerer.lower_item(node))
+        .flat_map(|node| lowerer.lower_item(node))
         .collect();
     HirModule { id: module, items }
 }

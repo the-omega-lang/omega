@@ -1,5 +1,11 @@
 malloc-deref: 77
+abs(-5): 5
 fixed text, no variadic arguments
 sum = 5
 pi = 3.14
+c_callback direct: 13
+c_callback via pointer: 13
+sysv_add: 30
+sysv64 sum = 25
+sysv64 snprintf n: 16
 helper-main: 999

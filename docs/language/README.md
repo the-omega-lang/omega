@@ -34,7 +34,7 @@ The word `spec` in Omega source means the interface-like language construct. “
 11. [`generics.md`](generics.md) — generic declarations, bounds, inference, defaults, monomorphization semantics.
 12. [`specs-and-conformance.md`](specs-and-conformance.md) — `spec`, aliases, `conform`, blanket conformance, static/dynamic dispatch.
 13. [`gaps-and-glue.md`](gaps-and-glue.md) — platform/runtime capability declarations and implementations.
-14. [`foreign-function-interface.md`](foreign-function-interface.md) — `extern`, variadics, symbol control, C-facing entry/linkage contracts.
+14. [`foreign-function-interface.md`](foreign-function-interface.md) — `foreign` bindings/functions/blocks, calling conventions, variadics, symbol control, C-facing entry/linkage contracts.
 
 ### Expressions and execution
 

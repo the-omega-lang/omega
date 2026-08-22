@@ -6,23 +6,25 @@
 #
 # This directory is named `libc` but registers as package `plat` via
 # `--name=plat`/`--import=plat:...` (see docs/guide/platform-glue.md), not by
-# renaming the file. The two `free`s below (raw extern and glue function)
-# are an intentional, confirmed-safe name collision.
+# renaming the file. The two `free`s below (raw foreign declaration and glue
+# function) are an intentional, confirmed-safe name collision.
 
-shared extern malloc : (size: usize) => *mut u8;
-shared extern free : (ptr: *u8) => void;
-shared extern realloc : (ptr: *u8, size: usize) => *mut u8;
-shared extern write : (fd: i32, buf: *u8, count: usize) => isize;
-shared extern read : (fd: i32, buf: *mut u8, count: usize) => isize;
+shared foreign(c) malloc(size: usize) => *mut u8;
+shared foreign(c) free(ptr: *u8) => void;
+shared foreign(c) realloc(ptr: *u8, size: usize) => *mut u8;
+shared foreign(c) write(fd: i32, buf: *u8, count: usize) => isize;
+shared foreign(c) read(fd: i32, buf: *mut u8, count: usize) => isize;
 
 # Omega's root `main` is never itself the platform's native entry-point
 # symbol (see docs/language/foreign-function-interface.md, "Program entry
-# point"); it is emitted as the fixed internal symbol `_omg_main`. This
-# adapter owns the real libc-facing `main` and hands off to it.
-extern _omg_main : () => void;
+# point"); it is emitted as the fixed internal symbol `_omg_main`, always
+# Omega-convention. This adapter owns the real libc-facing `main` -- a
+# `foreign(c)` definition with its forced C-facing symbol -- and hands off to
+# it.
+foreign _omg_main : () => void;
 
 @mangling(force = "main")
-platform_main() => i32 {
+foreign(c) platform_main() => i32 {
 	_omg_main();
 	return 0;
 }

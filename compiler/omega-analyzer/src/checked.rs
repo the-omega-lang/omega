@@ -1,4 +1,4 @@
-use crate::resolved_type::{ConstValue, ResolvedFunctionType, ResolvedType};
+use crate::resolved_type::{CallingConvention, ConstValue, ResolvedFunctionType, ResolvedType};
 use omega_hir::{HirId, ModuleId};
 use omega_parser::prelude::{BinaryOp, Ident, SelfMode, Span};
 
@@ -11,7 +11,8 @@ pub struct CheckedModule {
 #[derive(Debug, Clone)]
 pub enum CheckedItem {
     Declaration(CheckedDeclaration),
-    ExternDeclaration(CheckedExternDeclaration),
+    ForeignBinding(CheckedForeignBinding),
+    ForeignFunction(CheckedForeignFunctionDef),
     FunctionDefinition(CheckedFunctionDef),
     Struct(CheckedStructDef),
     Enum(CheckedEnumDef),
@@ -66,12 +67,45 @@ pub struct CheckedDeclaration {
 }
 
 #[derive(Debug, Clone)]
-pub struct CheckedExternDeclaration {
+pub struct CheckedForeignBinding {
     pub id: HirId,
     pub span: Span,
     pub ident: Ident,
     pub r#type: ResolvedType,
     pub mangling: crate::annotations::ManglingMode,
+}
+
+/// A direct `foreign(cc) name(...) => T;`/`{ ... }` item. Kept separate from
+/// `CheckedFunctionDef` because a declaration has no body, unlike every
+/// ordinary Omega function; `body: None` is a declaration, `Some` a
+/// definition (e.g. a mangled `foreign(c)` callback).
+#[derive(Debug, Clone)]
+pub struct CheckedForeignFunctionDef {
+    pub id: HirId,
+    pub span: Span,
+    pub name: Ident,
+    pub calling_convention: CallingConvention,
+    pub is_variadic: bool,
+    pub params: Vec<CheckedParam>,
+    pub return_type: ResolvedType,
+    pub body: Option<CheckedBlock>,
+    pub mangling: crate::annotations::ManglingMode,
+}
+
+impl CheckedForeignFunctionDef {
+    pub fn fn_type(&self) -> ResolvedFunctionType {
+        ResolvedFunctionType {
+            params: self
+                .params
+                .iter()
+                .map(|p| (p.ident.clone(), p.r#type.clone()))
+                .collect(),
+            return_type: Box::new(self.return_type.clone()),
+            is_variadic: self.is_variadic,
+            self_mode: None,
+            calling_convention: self.calling_convention,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -128,6 +162,7 @@ impl CheckedFunctionDef {
             return_type: Box::new(self.return_type.clone()),
             is_variadic: self.is_variadic,
             self_mode: self.self_mode,
+            calling_convention: CallingConvention::Omega,
         }
     }
 }
@@ -164,7 +199,6 @@ pub struct CheckedEnumDef {
 #[derive(Debug, Clone)]
 pub enum CheckedStmt {
     Declaration(CheckedDeclaration),
-    ExternDeclaration(CheckedExternDeclaration),
     Expression(CheckedExprNode),
     Return(CheckedExprNode),
     While(CheckedWhile),

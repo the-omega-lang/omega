@@ -1,10 +1,11 @@
 use crate::checked::Storage;
 use crate::error::TypeResolutionError;
-use crate::resolved_type::{ResolvedFunctionType, ResolvedType};
+use crate::resolved_type::{CallingConvention, ResolvedFunctionType, ResolvedType};
 use crate::resolver::{
     ImportTarget, ItemNamespace, ModuleResolver, ResolveError, ResolveItemOptions, ResolvedItem,
 };
 use crate::similarity::best_match;
+use crate::target::Target;
 use indexmap::IndexMap;
 use omega_hir::HirId;
 use omega_parser::prelude::*;
@@ -57,10 +58,11 @@ impl LexicalScope {
 pub struct Context {
     scopes: Vec<LexicalScope>,
     comp_values: std::collections::HashMap<HirId, crate::resolved_type::ConstValue>,
+    target: Target,
 }
 
 impl Context {
-    pub fn new() -> Self {
+    pub fn new(target: Target) -> Self {
         let mut global_scope = LexicalScope::new();
         global_scope.defined_types.extend([
             (Ident("void".into()), ResolvedType::Void),
@@ -83,7 +85,37 @@ impl Context {
         Self {
             scopes: vec![global_scope],
             comp_values: std::collections::HashMap::new(),
+            target,
         }
+    }
+
+    /// Resolves a source-level convention name against the target, or `None`
+    /// for the implicit Omega convention. Availability (e.g. `sysv64` only on
+    /// x86-64) is enforced here so every caller gets the same diagnostic.
+    pub fn resolve_convention(
+        &self,
+        convention: Option<&Ident>,
+    ) -> Result<CallingConvention, TypeResolutionError> {
+        let Some(name) = convention else {
+            return Ok(CallingConvention::Omega);
+        };
+        let resolved = match name.as_ref() {
+            "c" => CallingConvention::C,
+            "sysv64" => CallingConvention::SysV64,
+            _ => {
+                return Err(TypeResolutionError::UnknownCallingConvention {
+                    name: name.clone(),
+                });
+            }
+        };
+        if !resolved.is_available_on(self.target) {
+            return Err(TypeResolutionError::CallingConventionNotAvailable {
+                name: name.clone(),
+                convention: resolved,
+                target: self.target,
+            });
+        }
+        Ok(resolved)
     }
 
     pub fn set_comp_value(&mut self, decl_id: HirId, value: crate::resolved_type::ConstValue) {
@@ -199,6 +231,13 @@ impl Context {
                 .map(|resolved| (param.ident, resolved))
             })
             .collect::<Result<Vec<(Ident, ResolvedType)>, TypeResolutionError>>()?;
+        let calling_convention =
+            self.resolve_convention(fntype.convention.as_ref().map(|c| &c.name))?;
+        if fntype.is_variadic && !calling_convention.supports_variadic() {
+            return Err(TypeResolutionError::VariadicNotSupportedByConvention {
+                convention: calling_convention,
+            });
+        }
         Ok(ResolvedFunctionType {
             params,
             return_type: Box::new(self.resolve_type(
@@ -209,6 +248,7 @@ impl Context {
             )?),
             is_variadic: fntype.is_variadic,
             self_mode: fntype.self_mode,
+            calling_convention,
         })
     }
 
@@ -645,3 +685,6 @@ impl Context {
         self.scopes.pop().expect("scope count checked above")
     }
 }
+
+#[cfg(test)]
+mod tests;

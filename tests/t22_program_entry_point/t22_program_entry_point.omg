@@ -1,6 +1,6 @@
 import std::io::println;
 
-shared extern exit : (code: i32) => never;
+shared foreign(c) exit(code: i32) => never;
 
 main() => never {
 	println$("never-main: ran");

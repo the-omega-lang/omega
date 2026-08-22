@@ -14,6 +14,8 @@ pub enum ItemKind {
     Function,
     Import,
     Spec,
+    ForeignFunction,
+    ForeignBinding,
 }
 
 impl ItemKind {
@@ -25,6 +27,8 @@ impl ItemKind {
             Self::Function => "a function",
             Self::Import => "an import",
             Self::Spec => "a spec",
+            Self::ForeignFunction => "a foreign function",
+            Self::ForeignBinding => "a foreign binding",
         }
     }
 
@@ -36,6 +40,8 @@ impl ItemKind {
             Self::Function => "functions",
             Self::Import => "imports",
             Self::Spec => "specs",
+            Self::ForeignFunction => "foreign functions",
+            Self::ForeignBinding => "foreign bindings",
         }
     }
 }
@@ -96,6 +102,11 @@ pub struct ResolvedAnnotations {
     pub naked: bool,
 }
 
+/// Resolves an item's annotations. `default_mangling` supplies the mangling
+/// mode that applies when no `@mangling(...)` annotation is written --
+/// `Enabled` for ordinary functions, `Disabled` for foreign items -- so the
+/// caller decides the default deliberately instead of this function silently
+/// picking `ManglingMode`'s own `#[default]`.
 pub fn resolve(
     analyzer: &mut Analyzer,
     node_id: HirId,
@@ -103,8 +114,12 @@ pub fn resolve(
     kind: ItemKind,
     is_member_function: bool,
     is_generic: bool,
+    default_mangling: ManglingMode,
 ) -> ResolvedAnnotations {
-    let mut result = ResolvedAnnotations::default();
+    let mut result = ResolvedAnnotations {
+        mangling: default_mangling,
+        ..ResolvedAnnotations::default()
+    };
     let mut seen: Vec<&str> = Vec::new();
     let mut inline_span: Option<Span> = None;
     let mut naked_span: Option<Span> = None;
@@ -195,14 +210,21 @@ pub fn resolve(
                 naked_span = Some(annotation.span);
             }
             "mangling" => {
-                if kind != ItemKind::Function {
+                if !matches!(
+                    kind,
+                    ItemKind::Function | ItemKind::ForeignFunction | ItemKind::ForeignBinding
+                ) {
                     analyzer.error(
                         node_id,
                         annotation.span,
                         AnalysisErrorKind::AnnotationNotApplicable {
                             name: annotation.name.clone(),
                             found: kind,
-                            allowed: vec![ItemKind::Function],
+                            allowed: vec![
+                                ItemKind::Function,
+                                ItemKind::ForeignFunction,
+                                ItemKind::ForeignBinding,
+                            ],
                         },
                     );
                     continue;
@@ -469,3 +491,6 @@ pub fn estimate_type_size(r#type: &ResolvedType, pointer_bytes: u32) -> u32 {
         _ => 0,
     }
 }
+
+#[cfg(test)]
+mod tests;

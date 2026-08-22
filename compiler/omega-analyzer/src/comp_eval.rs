@@ -781,7 +781,6 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
     fn eval_stmt(&mut self, stmt: &CheckedStmt) -> CompResult<()> {
         match stmt {
             CheckedStmt::Declaration(_) => Ok(()),
-            CheckedStmt::ExternDeclaration(_) => Ok(()),
             CheckedStmt::Expression(expr) => {
                 self.eval_expr(expr)?;
                 Ok(())

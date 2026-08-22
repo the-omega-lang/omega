@@ -7,7 +7,7 @@ use omega_analyzer::Target;
 use omega_analyzer::analysis::AnalysisSite;
 use omega_analyzer::annotations::ManglingMode;
 use omega_analyzer::checked::{
-    CheckedExternDeclaration, CheckedItem, CheckedModule, ExternFunctionKind, ExternFunctionRef,
+    CheckedForeignBinding, CheckedItem, CheckedModule, ExternFunctionKind, ExternFunctionRef,
     Storage,
 };
 use omega_analyzer::dead_code::{self, FieldUsage};

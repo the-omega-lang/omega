@@ -262,6 +262,7 @@ fn calling_an_extern_is_rejected_with_a_precise_reason() {
                     return_type: Box::new(ResolvedType::Void),
                     is_variadic: false,
                     self_mode: None,
+                    calling_convention: crate::resolved_type::CallingConvention::Omega,
                 }),
             },
             projections: vec![],
@@ -270,6 +271,7 @@ fn calling_an_extern_is_rejected_with_a_precise_reason() {
                 return_type: Box::new(ResolvedType::Void),
                 is_variadic: false,
                 self_mode: None,
+                calling_convention: crate::resolved_type::CallingConvention::Omega,
             }),
         }),
         ResolvedType::Function(crate::resolved_type::ResolvedFunctionType {
@@ -277,6 +279,7 @@ fn calling_an_extern_is_rejected_with_a_precise_reason() {
             return_type: Box::new(ResolvedType::Void),
             is_variadic: false,
             self_mode: None,
+            calling_convention: crate::resolved_type::CallingConvention::Omega,
         }),
     );
     let call = node(
@@ -287,6 +290,7 @@ fn calling_an_extern_is_rejected_with_a_precise_reason() {
                 return_type: Box::new(ResolvedType::Void),
                 is_variadic: false,
                 self_mode: None,
+                calling_convention: crate::resolved_type::CallingConvention::Omega,
             },
             args: vec![],
         }),
@@ -370,6 +374,7 @@ fn calling_another_function_interprets_its_own_body() {
         return_type: Box::new(ResolvedType::I32),
         is_variadic: false,
         self_mode: None,
+        calling_convention: crate::resolved_type::CallingConvention::Omega,
     };
     let callee = node(
         CheckedExpr::Place(CheckedPlace {

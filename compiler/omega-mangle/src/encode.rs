@@ -15,10 +15,16 @@ pub fn encode(symbol: &Symbol) -> String {
     let mut encoder = Encoder::new();
     encoder.encode_path(&symbol.path);
 
-    if let Some((params, return_type)) = &symbol.signature {
-        encoder.encode_types(params);
+    if let Some(signature) = &symbol.signature {
+        if let Some(tag) = convention_tag(signature.convention) {
+            encoder.push_tag(tag);
+        }
+        if signature.is_variadic {
+            encoder.push_tag(TAG_VARIADIC);
+        }
+        encoder.encode_types(&signature.params);
         encoder.push_tag(TAG_LIST_END);
-        encoder.encode_type(return_type);
+        encoder.encode_type(&signature.return_type);
     }
 
     if let Some(suffix) = &symbol.vendor_suffix {
@@ -141,8 +147,11 @@ impl Encoder {
                 },
                 inner,
             ),
-            MangleType::Function(params, return_type, variadic) => {
+            MangleType::Function(params, return_type, variadic, convention) => {
                 self.push_tag(TAG_FUNCTION);
+                if let Some(tag) = convention_tag(*convention) {
+                    self.push_tag(tag);
+                }
                 if *variadic {
                     self.push_tag(TAG_VARIADIC);
                 }
@@ -185,7 +194,12 @@ mod tests {
         let path = nested(root("mymod"), Namespace::Value, "foo");
         let sym = Symbol {
             path,
-            signature: Some((vec![], MangleType::Void)),
+            signature: Some(crate::symbol::FunctionSignature {
+                params: vec![],
+                return_type: MangleType::Void,
+                is_variadic: false,
+                convention: crate::symbol::MangleConvention::Omega,
+            }),
             vendor_suffix: None,
         };
         let out = encode(&sym);

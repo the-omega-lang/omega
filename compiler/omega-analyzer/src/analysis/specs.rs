@@ -278,6 +278,7 @@ impl<'r> Analyzer<'r> {
             crate::annotations::ItemKind::Spec,
             false,
             false,
+            crate::annotations::ManglingMode::Enabled,
         );
 
         let mut functions = Vec::new();
@@ -533,6 +534,7 @@ impl<'r> Analyzer<'r> {
                     return_type: Box::new(return_type?),
                     is_variadic: raw.is_variadic,
                     self_mode: raw.self_mode,
+                    calling_convention: crate::resolved_type::CallingConvention::Omega,
                 },
                 return_type_bound,
             ))

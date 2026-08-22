@@ -1,17 +1,30 @@
 use crate::decode::decode;
-use crate::symbol::{ManglePath, MangleType, Symbol};
+use crate::symbol::{ManglePath, MangleConvention, MangleType, Symbol};
 
 pub fn demangle(mangled: &str) -> Option<String> {
     decode(mangled).map(|symbol| render(&symbol))
 }
 
+fn render_convention_prefix(convention: MangleConvention) -> &'static str {
+    match convention {
+        MangleConvention::Omega => "",
+        MangleConvention::C => "foreign(c) ",
+        MangleConvention::SysV64 => "foreign(sysv64) ",
+    }
+}
+
 fn render(symbol: &Symbol) -> String {
     let mut rendered = render_path(&symbol.path);
-    if let Some((params, return_type)) = &symbol.signature {
+    if let Some(signature) = &symbol.signature {
+        rendered.push_str(render_convention_prefix(signature.convention));
         rendered.push('(');
-        rendered.push_str(&render_types(params));
+        let mut params = signature.params.iter().map(render_type).collect::<Vec<_>>();
+        if signature.is_variadic {
+            params.push("...".to_string());
+        }
+        rendered.push_str(&params.join(", "));
         rendered.push_str(") -> ");
-        rendered.push_str(&render_type(return_type));
+        rendered.push_str(&render_type(&signature.return_type));
     }
     if let Some(suffix) = &symbol.vendor_suffix {
         rendered.push('.');
@@ -66,13 +79,14 @@ fn render_type(ty: &MangleType) -> String {
         MangleType::SizedArray(inner, len) => format!("[{len}]{}", render_type(inner)),
         MangleType::SpecObject(inner, false) => format!("spec *{}", render_type(inner)),
         MangleType::SpecObject(inner, true) => format!("spec *mut {}", render_type(inner)),
-        MangleType::Function(params, return_type, variadic) => {
+        MangleType::Function(params, return_type, variadic, convention) => {
             let mut rendered_params = params.iter().map(render_type).collect::<Vec<_>>();
             if *variadic {
                 rendered_params.push("...".to_string());
             }
             format!(
-                "({}) => {}",
+                "{}({}) => {}",
+                render_convention_prefix(*convention),
                 rendered_params.join(", "),
                 render_type(return_type)
             )

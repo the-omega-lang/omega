@@ -10,7 +10,9 @@ use inkwell::values::{BasicValueEnum, PointerValue};
 use omega_analyzer::checked::ExternFunctionRef;
 use omega_analyzer::layout;
 use omega_analyzer::resolved_type::{ResolvedFunctionType, ResolvedType};
-use omega_mir::{MirExternDeclaration, MirFunctionBody, MirFunctionDef, MirInlineAsm, MirTerminator};
+use omega_mir::{
+    MirForeignFunctionDef, MirFunctionBody, MirFunctionDef, MirInlineAsm, MirTerminator,
+};
 
 impl<'ctx> Codegen<'ctx> {
     pub(super) fn needs_sret(&self, return_type: &ResolvedType) -> bool {
@@ -122,21 +124,67 @@ impl<'ctx> Codegen<'ctx> {
         if created {
             function.set_linkage(Linkage::External);
         }
+        function.set_call_conventions(crate::abi::llvm_calling_convention(
+            extern_fn.fn_type.calling_convention,
+        ));
         self.functions.insert(extern_fn.decl_id, function);
     }
 
-    pub(super) fn declare_extern_decl(&mut self, extern_decl: &MirExternDeclaration) {
-        let ResolvedType::Function(resolved_fntype) = &extern_decl.r#type else {
-            unreachable!(
-                "extern data declarations are rejected by the shared preflight (crate::preflight) before any backend runs"
-            );
-        };
-        let fn_type = self.llvm_function_type(resolved_fntype);
-        let (function, created) = self.declare_or_reuse_function(&extern_decl.symbol, fn_type);
+    /// A foreign function-typed binding (`foreign name : (...) => T;`) or a
+    /// direct declaration (`foreign(cc) name(...) => T;`) with no body:
+    /// declares the LLVM function with the resolved convention, but attaches
+    /// no definition. Deliberately not registered in `SymbolRegistry`: a gap
+    /// declaration and its glue definition intentionally share this exact
+    /// path/symbol under two different `HirId`s (see `declare_or_reuse_function`).
+    pub(super) fn declare_foreign_function_decl(
+        &mut self,
+        id: omega_hir::HirId,
+        symbol: &str,
+        fn_type: &ResolvedFunctionType,
+    ) -> Result<(), String> {
+        let llvm_fn_type = self.llvm_function_type(fn_type);
+        let (function, created) = self.declare_or_reuse_function(symbol, llvm_fn_type);
         if created {
             function.set_linkage(Linkage::External);
         }
-        self.functions.insert(extern_decl.id, function);
+        function.set_call_conventions(crate::abi::llvm_calling_convention(
+            fn_type.calling_convention,
+        ));
+        self.functions.insert(id, function);
+        Ok(())
+    }
+
+    pub(super) fn declare_foreign_function_def(
+        &mut self,
+        function_def: &MirForeignFunctionDef,
+    ) -> Result<(), String> {
+        let symbol = &function_def.symbol;
+        self.symbols.register(symbol, function_def.id)?;
+        let fn_type = self.llvm_function_type(&function_def.fn_type());
+        let (function, _) = self.declare_or_reuse_function(symbol, fn_type);
+        function.set_linkage(match function_def.linkage {
+            omega_mir::MirLinkage::Export => Linkage::External,
+            omega_mir::MirLinkage::Weak => Linkage::WeakODR,
+        });
+        function.set_call_conventions(crate::abi::llvm_calling_convention(
+            function_def.calling_convention,
+        ));
+        if self.target.os != omega_analyzer::Os::MacOs {
+            function.set_section(Some(&format!(".text.{symbol}")));
+        }
+        self.functions.insert(function_def.id, function);
+        Ok(())
+    }
+
+    pub(super) fn define_foreign_function_def(&mut self, function_def: MirForeignFunctionDef) {
+        let Some(body) = function_def.body else {
+            return;
+        };
+        let function = *self
+            .functions
+            .get(&function_def.id)
+            .expect("declared for every item, across every module, before any body is defined");
+        self.define_function_body(function, function_def.return_type, body);
     }
 
     pub(super) fn define_function_def(&mut self, function_def: MirFunctionDef) {
@@ -147,6 +195,15 @@ impl<'ctx> Codegen<'ctx> {
         let MirFunctionDef {
             return_type, body, ..
         } = function_def;
+        self.define_function_body(function, return_type, body);
+    }
+
+    fn define_function_body(
+        &mut self,
+        function: inkwell::values::FunctionValue<'ctx>,
+        return_type: ResolvedType,
+        body: MirFunctionBody,
+    ) {
         let body = match body {
             MirFunctionBody::Normal(body) => body,
             MirFunctionBody::Naked(asm) => return self.define_naked_function(function, &asm),

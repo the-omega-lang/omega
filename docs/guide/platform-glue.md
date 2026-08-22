@@ -26,12 +26,12 @@ runtime/plat/
 ```
 
 `libc.omg` declares everything this platform needs directly: five
-`shared extern` bindings to libc's `malloc`/`free`/`realloc` and
+`shared foreign(c)` declarations for libc's `malloc`/`free`/`realloc` and
 `write`/`read`, plus glue declarations for the allocator and three console
 capabilities.
 A deliberate, real name collision lives here — the marker's own
-`free`/`realloc` methods share their literal names with the raw externs
-they call — confirmed safe rather than assumed: a bare call inside a
+`free`/`realloc` methods share their literal names with the raw foreign
+declarations they call — confirmed safe rather than assumed: a bare call inside a
 method's own body always resolves through ordinary module-level
 resolution, never implicitly back to the enclosing method.
 
@@ -84,7 +84,7 @@ just the one platform that exists right now, at its own honest path.
   error handling beyond a straight pass-through — the gap's own signature
   has no failure channel (no `Option`/`Result`) to put anything else in;
   a `NULL` from `malloc`/`realloc` is returned as-is.
-- The five `extern` bindings themselves are `shared` (package-wide,
+- The five `foreign(c)` declarations themselves are `shared` (package-wide,
   not `exposed`): implementation detail, not part of any public surface.
 - **Console glue** — `StandardOutput` and `StandardError` forward their byte
   slice to `write(2)` on descriptors 1 and 2; `StandardInput` forwards its

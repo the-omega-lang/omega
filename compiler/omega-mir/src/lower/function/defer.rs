@@ -23,7 +23,6 @@ fn collect_block(block: &CheckedBlock, out: &mut Vec<(HirId, Span)>) {
 fn collect_stmt(stmt: &CheckedStmt, out: &mut Vec<(HirId, Span)>) {
     match stmt {
         CheckedStmt::Declaration(_)
-        | CheckedStmt::ExternDeclaration(_)
         | CheckedStmt::Break(_)
         | CheckedStmt::Continue(_)
         | CheckedStmt::InlineAsm(_) => {}

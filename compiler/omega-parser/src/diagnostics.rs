@@ -88,7 +88,7 @@ impl ParseError {
                 .with_help("add an item after the annotation or remove it"),
             ParseErrorKind::VisibilityNotAllowedHere => Diagnostic::error("a visibility modifier is not allowed here")
                 .with_label(self.span, "this item can't carry a visibility modifier")
-                .with_help("'exposed'/'shared' are only allowed on structs, enums, unions, specs, macros, functions, globals, and externs"),
+                .with_help("'exposed'/'shared' are only allowed on structs, enums, unions, specs, macros, functions, globals, and foreign items"),
             ParseErrorKind::GapOrGlueVisibility => Diagnostic::error("gaps and glues take no visibility modifier")
                 .with_label(self.span, "gaps and glues are global by nature")
                 .with_help("remove this visibility modifier"),
@@ -143,6 +143,12 @@ impl ParseError {
             ParseErrorKind::ChainedComparison => Diagnostic::error("comparison operators are non-associative")
                 .with_label(self.span, "comparisons do not chain")
                 .with_help("parenthesize the comparison you intend to evaluate first"),
+            ParseErrorKind::ForeignConventionOnBinding => Diagnostic::error("a foreign binding cannot carry its own calling convention")
+                .with_label(self.span, "'foreign(cc)' is not allowed directly on a 'name : Type' binding")
+                .with_help("write 'foreign name : foreign(cc) (...) => T;' instead -- the convention belongs to the type"),
+            ParseErrorKind::NestedForeignBlock => Diagnostic::error("foreign blocks cannot nest")
+                .with_label(self.span, "this 'foreign' block is inside another foreign block")
+                .with_help("flatten this into a direct entry of the enclosing block"),
         }
     }
 }
@@ -213,6 +219,8 @@ pub enum ParseErrorKind {
     NestedMacroRepetition,
     ImportInMacroBody,
     UnterminatedAsmBody,
+    ForeignConventionOnBinding,
+    NestedForeignBlock,
 }
 
 impl fmt::Display for ParseErrorKind {

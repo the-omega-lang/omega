@@ -63,7 +63,7 @@ libraries without making reachability analysis part of the language model.
 
 ## Linkage
 
-For every gap function, the declaring package emits an extern declaration.
+For every gap function, the declaring package emits a foreign-style declaration.
 The corresponding glue function is compiled with the exact same mangled
 symbol, so calls have the normal direct-function ABI and need no runtime
 registry, object, or dynamic dispatch.

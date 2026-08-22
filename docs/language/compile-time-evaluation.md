@@ -69,7 +69,7 @@ Current compile-time evaluation supports the ordinary operations needed by Omega
 
 The following operations are not currently evaluable by `comp`:
 
-- calling an `extern` function;
+- calling a `foreign` function;
 - dynamic dispatch through `spec *S` / `spec *mut S`;
 - indirect calls through a function-typed variable or field;
 - reading a non-`comp` global from within compile-time evaluation.

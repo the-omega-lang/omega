@@ -4,12 +4,60 @@ use std::cell::RefCell;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
+/// The resolved calling convention of a function type. `Omega` is the
+/// implicit convention of every ordinary Omega function type; the others are
+/// selected only by explicit `foreign(cc)` syntax. Distinct even where a
+/// target happens to lower two conventions identically -- see
+/// `docs/language/foreign-function-interface.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CallingConvention {
+    Omega,
+    C,
+    SysV64,
+}
+
+impl CallingConvention {
+    /// Whether this convention can express a variadic tail at all, before
+    /// any target gating. Ordinary Omega functions are never variadic.
+    pub fn supports_variadic(self) -> bool {
+        match self {
+            Self::Omega => false,
+            Self::C | Self::SysV64 => true,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Omega => "omega",
+            Self::C => "c",
+            Self::SysV64 => "sysv64",
+        }
+    }
+
+    /// Whether this convention is meaningful on `target` at all. `sysv64`
+    /// names one specific machine convention and must fail semantically off
+    /// its supported x86-64 targets rather than silently falling back.
+    pub fn is_available_on(self, target: crate::target::Target) -> bool {
+        match self {
+            Self::Omega | Self::C => true,
+            Self::SysV64 => target.arch == crate::target::Arch::X86_64,
+        }
+    }
+}
+
+impl std::fmt::Display for CallingConvention {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ResolvedFunctionType {
     pub params: Vec<(Ident, ResolvedType)>,
     pub return_type: Box<ResolvedType>,
     pub is_variadic: bool,
     pub self_mode: Option<SelfMode>,
+    pub calling_convention: CallingConvention,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -659,3 +707,6 @@ impl ResolvedType {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

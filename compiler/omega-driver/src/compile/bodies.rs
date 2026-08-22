@@ -340,7 +340,7 @@ impl Driver {
                     continue;
                 };
                 for (fn_name, gap_fn) in &gap.functions {
-                    items.push(CheckedItem::ExternDeclaration(CheckedExternDeclaration {
+                    items.push(CheckedItem::ForeignBinding(CheckedForeignBinding {
                         id: gap_fn.decl_id,
                         span: gap_fn.span,
                         ident: fn_name.clone(),

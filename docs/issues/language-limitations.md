@@ -124,12 +124,13 @@ Normative chapter: [`../language/specs-and-conformance.md`](../language/specs-an
   by the orphan rule can conform a concrete target to a spec.
 - **Variadic spec functions are not planned**, not a limitation. `f(*self,
   ...)` is rejected at the spec's own declaration
-  (`VariadicSpecFunctionUnsatisfiable`): Omega has no variadic function
-  *definitions* — only `extern` declarations may be variadic, for C varargs
-  interop — so no `conform` block or spec default could ever supply a
-  matching body, and nothing else in the language is scheduled to support
-  `...`. Not banned forever, just unscheduled; the `is_variadic` plumbing
-  behind the guard is complete, and the guard lifts the day variadic
+  (`VariadicSpecFunctionUnsatisfiable`): Omega has no ordinary Omega-convention
+  variadic function *definitions* — only `foreign` declarations, under a
+  convention that supports variadics (`c`; `sysv64` on its supported
+  targets), may be variadic — so no `conform` block or spec default could
+  ever supply a matching body, and nothing else in the language is scheduled
+  to support `...`. Not banned forever, just unscheduled; the `is_variadic`
+  plumbing behind the guard is complete, and the guard lifts the day variadic
   definitions exist.
 - **A definition-site `spec T` return type is rejected** — the same
   `SpecStaticNotAllowedHere` on a free function and a method alike (see

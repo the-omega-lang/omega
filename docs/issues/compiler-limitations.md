@@ -56,10 +56,10 @@ Implementation caveats migrated out of architecture chapters. These are non-norm
 - **`MirItem::Declaration`/`MirPlaceRoot::Global` are fully implemented**
   (an ordinary top-level global, `mut` included, with or without a
   compile-time-known initial value — see
-  [compile-time-evaluation.md](../language/compile-time-evaluation.md)). Extern
-  *data* (a non-function `extern`) is the one storage gap left, rejected by
-  shared codegen preflight before backend selection — its storage lives in
-  another translation unit, a genuinely separate question.
+  [compile-time-evaluation.md](../language/compile-time-evaluation.md)).
+  `MirItem::ForeignBinding` for non-function data is also implemented: a
+  real linker-visible external global with no initializer/local section, its
+  storage genuinely living in another translation unit.
 
 ## Compile-time evaluation fuel limit
 

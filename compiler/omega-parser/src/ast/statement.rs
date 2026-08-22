@@ -11,7 +11,6 @@ use crate::diagnostics::Span;
 pub enum Statement {
     Declaration(DeclarationStmt),
     DeclarationWithInit(DeclarationStmt, ExpressionNode),
-    ExternDeclaration(ExternDeclarationStmt),
     Expression(ExpressionNode),
     MacroInvocation(MacroInvocationExpr),
     Return(ReturnStmt),
@@ -40,14 +39,6 @@ pub struct DeclarationStmt {
     pub origin: Origin,
     pub r#type: Type,
     pub mutable: bool,
-    pub visibility: Visibility,
-    pub explicit_hidden_span: Option<Span>,
-}
-
-#[derive(Debug, Clone)]
-pub struct ExternDeclarationStmt {
-    pub ident: Ident,
-    pub r#type: Type,
     pub visibility: Visibility,
     pub explicit_hidden_span: Option<Span>,
 }
@@ -151,6 +142,7 @@ impl FunctionDefinitionStmt {
             return_type: Box::new(self.return_type.clone()),
             is_variadic: false,
             self_mode: self.self_mode,
+            convention: None,
         }
     }
 }

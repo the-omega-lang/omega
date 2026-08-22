@@ -1,13 +1,15 @@
 use super::Codegen;
 use inkwell::module::Linkage;
 use omega_analyzer::checked::ExternFunctionRef;
-use omega_mir::MirItem;
+use omega_analyzer::resolved_type::ResolvedType;
+use omega_mir::{MirForeignBinding, MirItem};
 use omega_parser::prelude::Ident;
 
 impl<'ctx> Codegen<'ctx> {
     fn declare_item(&mut self, item: &MirItem, path: &[Ident]) -> Result<(), String> {
         match item {
-            MirItem::ExternDeclaration(extern_decl) => self.declare_extern_decl(extern_decl),
+            MirItem::ForeignBinding(binding) => self.declare_foreign_binding(binding)?,
+            MirItem::ForeignFunction(f) => self.declare_foreign_function_def(f)?,
             MirItem::FunctionDefinition(f) => self.declare_function_def(f)?,
             MirItem::Struct(s) => {
                 for f in &s.functions {
@@ -27,6 +29,7 @@ impl<'ctx> Codegen<'ctx> {
             // Globals are declared before initialization so references are order-independent.
             MirItem::Declaration(decl) => {
                 let symbol = omega_mir::mangle::global_symbol_string(path, &decl.ident);
+                self.symbols.register(&symbol, decl.id)?;
                 let total = omega_analyzer::layout::total_bytes(&decl.r#type, self.pointer_bytes());
                 let blob = decl
                     .initial_value
@@ -57,7 +60,8 @@ impl<'ctx> Codegen<'ctx> {
 
     fn define_item(&mut self, item: MirItem) {
         match item {
-            MirItem::ExternDeclaration(_) | MirItem::Declaration(_) => {}
+            MirItem::ForeignBinding(_) | MirItem::Declaration(_) => {}
+            MirItem::ForeignFunction(f) => self.define_foreign_function_def(f),
             MirItem::FunctionDefinition(f) => self.define_function_def(f),
             MirItem::Struct(s) => {
                 for f in s.functions {
@@ -95,6 +99,24 @@ impl<'ctx> Codegen<'ctx> {
                 self.define_item(item);
             }
         }
+        Ok(())
+    }
+
+    /// `foreign name : Type;`. A function-typed binding is just an external
+    /// function declaration; any other type becomes a real linker-visible
+    /// global with no initializer and no local section -- its storage lives
+    /// in whatever other object/library defines the symbol.
+    fn declare_foreign_binding(&mut self, binding: &MirForeignBinding) -> Result<(), String> {
+        if let ResolvedType::Function(fn_type) = &binding.r#type {
+            return self.declare_foreign_function_decl(binding.id, &binding.symbol, fn_type);
+        }
+        self.symbols.register(&binding.symbol, binding.id)?;
+        let total = omega_analyzer::layout::total_bytes(&binding.r#type, self.pointer_bytes());
+        let byte_array = self.context.i8_type().array_type(total.max(1));
+        let global = self.module.add_global(byte_array, None, &binding.symbol);
+        global.set_linkage(Linkage::External);
+        global.set_alignment(omega_analyzer::layout::type_alignment(&binding.r#type));
+        self.globals.insert(binding.id, global);
         Ok(())
     }
 }

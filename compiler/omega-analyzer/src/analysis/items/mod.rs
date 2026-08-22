@@ -62,6 +62,7 @@ impl<'r> Analyzer<'r> {
                         return_type: Box::new(return_type),
                         is_variadic: false,
                         self_mode: None,
+                        calling_convention: crate::resolved_type::CallingConvention::Omega,
                     },
                 },
             ));
@@ -279,66 +280,199 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    pub fn analyze_extern_decl(
+    /// Rejects an aggregate passed or returned by value against a
+    /// non-Omega-ABI-safe boundary rather than silently miscompiling
+    /// against a foreign caller/callee (see docs/issues/known-issues.md,
+    /// "Omega's calling convention is not the platform C ABI").
+    fn reject_foreign_aggregate_by_value<'a>(
         &mut self,
-        extern_decl: &HirExternDeclaration,
-    ) -> Option<CheckedExternDeclaration> {
-        self.check_redundant_hidden(extern_decl.id, extern_decl.explicit_hidden_span);
-        let resolved_type = self.resolve_type_or_error(
-            extern_decl.id,
-            extern_decl.span,
-            &extern_decl.r#type,
-            true,
-        )?;
-        // Rejects an aggregate passed or returned by value across an
-        // `extern` boundary rather than silently miscompiling against a C
-        // caller/callee (see docs/issues/known-issues.md, "Omega's calling
-        // convention is not the platform C ABI").
-        if let ResolvedType::Function(fn_type) = &resolved_type {
-            let aggregate = fn_type
-                .params
-                .iter()
-                .map(|(_, ty)| ty)
-                .chain(std::iter::once(&*fn_type.return_type))
-                .find(|ty| {
-                    matches!(
-                        ty,
-                        ResolvedType::Struct(_)
-                            | ResolvedType::Union(_)
-                            | ResolvedType::Enum { .. }
-                    )
-                });
-            if let Some(aggregate) = aggregate {
+        id: HirId,
+        span: Span,
+        types: impl Iterator<Item = &'a ResolvedType>,
+    ) -> bool {
+        let aggregate = types.into_iter().find(|ty| {
+            matches!(
+                ty,
+                ResolvedType::Struct(_) | ResolvedType::Union(_) | ResolvedType::Enum { .. }
+            )
+        });
+        match aggregate {
+            Some(aggregate) => {
                 self.error(
-                    extern_decl.id,
-                    extern_decl.span,
-                    AnalysisErrorKind::ExternAggregateByValue {
+                    id,
+                    span,
+                    AnalysisErrorKind::ForeignAggregateByValue {
                         r#type: aggregate.clone(),
                     },
                 );
-                return None;
+                false
             }
+            None => true,
         }
+    }
+
+    pub fn analyze_foreign_binding(
+        &mut self,
+        binding: &omega_hir::HirForeignBinding,
+    ) -> Option<(ResolvedType, crate::annotations::ResolvedAnnotations)> {
+        self.check_redundant_hidden(binding.id, binding.explicit_hidden_span);
+        let resolved_type =
+            self.resolve_type_or_error(binding.id, binding.span, &binding.r#type, true)?;
+        let ok = match &resolved_type {
+            ResolvedType::Function(fn_type) => self.reject_foreign_aggregate_by_value(
+                binding.id,
+                binding.span,
+                fn_type
+                    .params
+                    .iter()
+                    .map(|(_, ty)| ty)
+                    .chain(std::iter::once(&*fn_type.return_type)),
+            ),
+            other => {
+                self.reject_foreign_aggregate_by_value(binding.id, binding.span, std::iter::once(other))
+            }
+        };
+        if !ok {
+            return None;
+        }
+        let annotations = crate::annotations::resolve(
+            self,
+            binding.id,
+            &binding.annotations,
+            crate::annotations::ItemKind::ForeignBinding,
+            false,
+            false,
+            crate::annotations::ManglingMode::Disabled,
+        );
         let storage = if matches!(resolved_type, ResolvedType::Function(_)) {
             Storage::Function
         } else {
             Storage::Global
         };
         self.declare_binding(
-            extern_decl.id,
-            extern_decl.span,
-            &extern_decl.ident,
+            binding.id,
+            binding.span,
+            &binding.ident,
             Origin::default(),
             resolved_type.clone(),
             storage,
             false,
         )?;
-        Some(CheckedExternDeclaration {
-            id: extern_decl.id,
-            span: extern_decl.span,
-            ident: extern_decl.ident.clone(),
-            r#type: resolved_type,
-            mangling: crate::annotations::ManglingMode::Disabled,
+        Some((resolved_type, annotations))
+    }
+
+    pub fn collect_foreign_function_signature(
+        &mut self,
+        f: &omega_hir::HirForeignFunction,
+    ) -> Option<(
+        ResolvedFunctionType,
+        crate::annotations::ResolvedAnnotations,
+    )> {
+        self.check_redundant_hidden(f.id, f.explicit_hidden_span);
+        if !f.generics.is_empty() {
+            self.error(f.id, f.span, AnalysisErrorKind::GenericForeignFunctionUnsupported);
+            return None;
+        }
+        let params = self.analyze_all(&f.params, |this, p| {
+            this.resolve_type_or_error(p.id, p.span, &p.r#type, true)
+                .map(|t| (p.ident.clone(), t))
+        })?;
+        let return_type = self.resolve_return_type_or_error(f.id, f.span, &f.return_type, true)?;
+        let calling_convention =
+            match self.context.resolve_convention(f.convention.as_ref().map(|c| &c.name)) {
+                Ok(cc) => cc,
+                Err(e) => {
+                    self.error(f.id, f.span, AnalysisErrorKind::UnresolvedType(e));
+                    return None;
+                }
+            };
+        if f.is_variadic && !calling_convention.supports_variadic() {
+            self.error(
+                f.id,
+                f.span,
+                AnalysisErrorKind::UnresolvedType(TypeResolutionError::VariadicNotSupportedByConvention {
+                    convention: calling_convention,
+                }),
+            );
+            return None;
+        }
+        if !self.reject_foreign_aggregate_by_value(
+            f.id,
+            f.span,
+            params.iter().map(|(_, t)| t).chain(std::iter::once(&return_type)),
+        ) {
+            return None;
+        }
+        let annotations = crate::annotations::resolve(
+            self,
+            f.id,
+            &f.annotations,
+            crate::annotations::ItemKind::ForeignFunction,
+            false,
+            !f.generics.is_empty(),
+            crate::annotations::ManglingMode::Disabled,
+        );
+        Some((
+            ResolvedFunctionType {
+                params,
+                return_type: Box::new(return_type),
+                is_variadic: f.is_variadic,
+                self_mode: None,
+                calling_convention,
+            },
+            annotations,
+        ))
+    }
+
+    pub fn check_foreign_function_body(
+        &mut self,
+        f: &omega_hir::HirForeignFunction,
+        fn_type: &ResolvedFunctionType,
+        annotations: &crate::annotations::ResolvedAnnotations,
+    ) -> Option<CheckedForeignFunctionDef> {
+        let Some(body) = &f.body else {
+            return Some(CheckedForeignFunctionDef {
+                id: f.id,
+                span: f.span,
+                name: f.name.clone(),
+                calling_convention: fn_type.calling_convention,
+                is_variadic: fn_type.is_variadic,
+                params: fn_type
+                    .params
+                    .iter()
+                    .zip(&f.params)
+                    .map(|((ident, r#type), p)| CheckedParam {
+                        id: p.id,
+                        span: p.span,
+                        ident: ident.clone(),
+                        r#type: r#type.clone(),
+                    })
+                    .collect(),
+                return_type: (*fn_type.return_type).clone(),
+                body: None,
+                mangling: annotations.mangling.clone(),
+            });
+        };
+        let ((params, checked_body), scope) = self.with_scope(|this| {
+            let params = this.analyze_all(&f.params, Self::analyze_param);
+            this.current_return_type = (*fn_type.return_type).clone();
+            let checked_body = this.analyze_block(body, Some(fn_type.return_type.as_ref()));
+            (params, checked_body)
+        });
+        self.warn_unused_bindings(scope, true);
+        let params = params?;
+        let checked_body = checked_body?;
+        self.check_function_return(f.id, f.return_type_span, &fn_type.return_type, &checked_body)?;
+        Some(CheckedForeignFunctionDef {
+            id: f.id,
+            span: f.span,
+            name: f.name.clone(),
+            calling_convention: fn_type.calling_convention,
+            is_variadic: fn_type.is_variadic,
+            params,
+            return_type: (*fn_type.return_type).clone(),
+            body: Some(checked_body),
+            mangling: annotations.mangling.clone(),
         })
     }
 
@@ -457,6 +591,7 @@ impl<'r> Analyzer<'r> {
             crate::annotations::ItemKind::Function,
             f.self_mode.is_some(),
             !f.generics.is_empty(),
+            crate::annotations::ManglingMode::Enabled,
         );
         Some((
             ResolvedFunctionType {
@@ -464,6 +599,7 @@ impl<'r> Analyzer<'r> {
                 return_type: Box::new(return_type),
                 is_variadic: false,
                 self_mode: f.self_mode,
+                calling_convention: crate::resolved_type::CallingConvention::Omega,
             },
             annotations,
         ))
@@ -526,7 +662,15 @@ impl<'r> Analyzer<'r> {
         annotations: &[omega_hir::HirAnnotation],
         kind: crate::annotations::ItemKind,
     ) -> crate::annotations::ResolvedAnnotations {
-        crate::annotations::resolve(self, id, annotations, kind, false, false)
+        crate::annotations::resolve(
+            self,
+            id,
+            annotations,
+            kind,
+            false,
+            false,
+            crate::annotations::ManglingMode::Enabled,
+        )
     }
 
     fn collect_methods(
@@ -997,3 +1141,6 @@ impl<'r> Analyzer<'r> {
 }
 
 mod bodies;
+
+#[cfg(test)]
+mod tests;
