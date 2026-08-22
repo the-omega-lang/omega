@@ -169,12 +169,19 @@ fn wrapped_types() {
         MangleType::Array(Box::new(MangleType::Char), true),
         MangleType::SizedArray(Box::new(MangleType::I32), 17),
         MangleType::SpecObject(
-            Box::new(named(nested(root("mymod"), Namespace::Type, "Animal"))),
+            vec![named(nested(root("mymod"), Namespace::Type, "Animal"))],
             false,
         ),
         MangleType::SpecObject(
-            Box::new(named(nested(root("mymod"), Namespace::Type, "Animal"))),
+            vec![named(nested(root("mymod"), Namespace::Type, "Animal"))],
             true,
+        ),
+        MangleType::SpecObject(
+            vec![
+                named(nested(root("mymod"), Namespace::Type, "Animal")),
+                named(nested(root("mymod"), Namespace::Type, "Named")),
+            ],
+            false,
         ),
         MangleType::Function(vec![MangleType::I32], Box::new(MangleType::Bool), false, MangleConvention::Omega),
         MangleType::Function(vec![MangleType::I32], Box::new(MangleType::Void), true, MangleConvention::Omega),

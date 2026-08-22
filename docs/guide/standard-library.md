@@ -77,7 +77,7 @@ The generic collections route heap operations through the non-generic
 
 ## Formatting and I/O
 
-`std::fmt::Display` formats into a dynamic `spec *mut std::io::Write`.
+`std::fmt::Display` formats into a dynamic `*mut spec std::io::Write`.
 `std::io` provides the byte I/O contracts, console marker implementations,
 caller-owned buffering, `read_line`, `String` formatting, and the print
 macros. No old broad `Writer` or `Reader` type exists. The complete API and

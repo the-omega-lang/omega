@@ -408,8 +408,7 @@ impl<'r> Analyzer<'r> {
     ) -> CheckedExprNode {
         let Some(
             target @ ResolvedType::SpecObject {
-                spec,
-                type_args,
+                shape,
                 mutable: expected_mutable,
             },
         ) = expected
@@ -429,9 +428,7 @@ impl<'r> Analyzer<'r> {
         if !*value_mutable && *expected_mutable {
             return value;
         }
-        let Ok(slots) =
-            self.type_implements_spec(value.id, value.span, pointee, spec, type_args, true)
-        else {
+        let Ok(slots) = self.type_implements_shape(value.id, value.span, pointee, shape) else {
             return value;
         };
         let id = value.id;
@@ -809,12 +806,9 @@ impl<'r> Analyzer<'r> {
                         .iter()
                         .all(|a| Self::generic_refs_resolvable(a, generics, defaults, subst))
             }
-            Type::SpecObject(inner, _) => {
-                Self::generic_refs_resolvable(inner, generics, defaults, subst)
-            }
-            Type::SpecStatic(inner) => {
-                Self::generic_refs_resolvable(inner, generics, defaults, subst)
-            }
+            Type::SpecStatic(members) => members
+                .iter()
+                .all(|m| Self::generic_refs_resolvable(m, generics, defaults, subst)),
             Type::Function(f) => {
                 f.params
                     .iter()

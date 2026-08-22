@@ -77,8 +77,14 @@ fn render_type(ty: &MangleType) -> String {
         MangleType::Str(false) => "*str".to_string(),
         MangleType::Str(true) => "*mut str".to_string(),
         MangleType::SizedArray(inner, len) => format!("[{len}]{}", render_type(inner)),
-        MangleType::SpecObject(inner, false) => format!("spec *{}", render_type(inner)),
-        MangleType::SpecObject(inner, true) => format!("spec *mut {}", render_type(inner)),
+        MangleType::SpecObject(members, mutable) => {
+            let members: Vec<String> = members.iter().map(render_type).collect();
+            format!(
+                "*{}spec {}",
+                if *mutable { "mut " } else { "" },
+                members.join(" + ")
+            )
+        }
         MangleType::Function(params, return_type, variadic, convention) => {
             let mut rendered_params = params.iter().map(render_type).collect::<Vec<_>>();
             if *variadic {

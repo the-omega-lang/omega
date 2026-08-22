@@ -65,7 +65,7 @@ already buffered bytes first and makes at most one inner read per call, so it
 does not hide a source's short-read behavior. A zero-length buffer simply
 delegates to its inner reader or writer.
 
-`read_line(reader: spec *mut Read, into: *mut String) => bool` is a free
+`read_line(reader: *mut spec Read, into: *mut String) => bool` is a free
 function rather than a required method on every reader. It appends a line to
 the caller's `String`, consumes but does not append a newline, and returns
 false only when it read no byte at all. `StringWriter` and
@@ -76,7 +76,7 @@ false only when it read no byte at all. `StringWriter` and
 
 ```omega
 exposed spec Display {
-    fmt(*self, out: spec *mut Write) => void;
+    fmt(*self, out: *mut spec Write) => void;
 }
 ```
 
@@ -93,7 +93,7 @@ import std::fmt::Display;
 import std::io::Write;
 
 conform Pair to Display {
-    fmt(*self, out: spec *mut Write) => void {
+    fmt(*self, out: *mut spec Write) => void {
         out.write(b"pair");
     }
 }

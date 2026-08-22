@@ -402,9 +402,6 @@ pub enum AnalysisErrorKind {
         function: Ident,
         return_type: String,
     },
-    ConformToAliasSpec {
-        alias: Ident,
-    },
     UnknownAnnotation {
         name: Ident,
     },
@@ -1136,14 +1133,6 @@ impl fmt::Display for AnalysisErrorKind {
                      return type '{return_type}' does not say which type implements it",
                     spec = spec.as_ref(),
                     function = function.as_ref(),
-                )
-            }
-            Self::ConformToAliasSpec { alias } => {
-                write!(
-                    f,
-                    "cannot conform to spec alias '{}' -- an alias names a combination of specs \
-                     and is not itself implementable; conform to each member separately",
-                    alias.as_ref()
                 )
             }
             Self::UnknownAnnotation { name } => {

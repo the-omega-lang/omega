@@ -3,7 +3,7 @@ use super::*;
 pub(super) struct FlattenedSpecFn {
     pub(super) name: Ident,
     pub(super) fn_type: ResolvedFunctionType,
-    pub(super) return_type_bound: Option<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)>,
+    pub(super) return_type_bound: Vec<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)>,
     pub(super) raw: RawSpecFunctionSig,
     pub(super) spec_id: HirId,
     pub(super) spec_name: Ident,
@@ -24,7 +24,7 @@ impl FlattenedSpecFn {
 pub struct PendingSpecMethod {
     pub id: HirId,
     pub fn_type: ResolvedFunctionType,
-    pub return_type_bound: Option<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)>,
+    pub return_type_bound: Vec<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)>,
     pub raw: RawSpecFunctionSig,
     pub substitution: Vec<(Ident, ResolvedType)>,
 }
@@ -77,7 +77,6 @@ impl<'r> Analyzer<'r> {
                 | Type::UnknownSizeArray(..)
                 | Type::SizedArray(..)
                 | Type::Function(..)
-                | Type::SpecObject(..)
                 | Type::SpecStatic(..)
         ) {
             self.error(id, span, AnalysisErrorKind::ConformTargetNotAType);
@@ -344,20 +343,7 @@ impl<'r> Analyzer<'r> {
         (functions, annotations)
     }
 
-    pub fn resolve_spec_dependencies(
-        &mut self,
-        sp: &HirSpecDef,
-    ) -> Vec<(Rc<RefCell<ResolvedSpecType>>, Vec<Type>)> {
-        let module = self.module_path.clone();
-        sp.dependencies
-            .iter()
-            .filter_map(|dep| {
-                self.resolve_spec_dependency_cell(sp.id, sp.span, dep, false, &module)
-            })
-            .collect()
-    }
-
-    fn resolve_spec_dependency_cell(
+    fn resolve_spec_application_cell(
         &mut self,
         id: HirId,
         span: Span,
@@ -492,7 +478,7 @@ impl<'r> Analyzer<'r> {
         module: &[Ident],
     ) -> Option<(
         ResolvedFunctionType,
-        Option<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)>,
+        Vec<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)>,
     )> {
         self.with_substitution(substitution, |this| {
             let mut params = Vec::with_capacity(raw.params.len());
@@ -503,24 +489,31 @@ impl<'r> Analyzer<'r> {
                     None => ok = false,
                 }
             }
-            let mut return_type_bound = None;
+            let mut return_type_bound = Vec::new();
             let return_type = match &raw.return_type {
-                Type::SpecStatic(bound) => {
-                    match this.resolve_spec_dependency_cell(id, span, bound, true, module) {
-                        Some((cell, raw_args)) => {
-                            let resolved_args: Option<Vec<ResolvedType>> = raw_args
-                                .iter()
-                                .map(|a| this.resolve_type_or_error_in(id, span, a, true, module))
-                                .collect();
-                            match resolved_args {
-                                Some(args) => {
-                                    return_type_bound = Some((cell, args));
-                                    Some(ResolvedType::Void)
+                Type::SpecStatic(members) => {
+                    let mut bound_ok = true;
+                    for member in members {
+                        match this.resolve_spec_application_cell(id, span, member, true, module) {
+                            Some((cell, raw_args)) => {
+                                let resolved_args: Option<Vec<ResolvedType>> = raw_args
+                                    .iter()
+                                    .map(|a| {
+                                        this.resolve_type_or_error_in(id, span, a, true, module)
+                                    })
+                                    .collect();
+                                match resolved_args {
+                                    Some(args) => return_type_bound.push((cell, args)),
+                                    None => bound_ok = false,
                                 }
-                                None => None,
                             }
+                            None => bound_ok = false,
                         }
-                        None => None,
+                    }
+                    if bound_ok {
+                        Some(ResolvedType::Void)
+                    } else {
+                        None
                     }
                 }
                 other => this.resolve_return_type_or_error_in(id, span, other, true, module),
@@ -563,14 +556,13 @@ impl<'r> Analyzer<'r> {
         self_type: &ResolvedType,
         out: &mut Vec<FlattenedSpecFn>,
     ) -> Option<()> {
-        let (spec_id, spec_name, spec_module, generics, dependencies, functions) = {
+        let (spec_id, spec_name, spec_module, generics, functions) = {
             let s = spec.borrow();
             (
                 s.id,
                 s.name.clone(),
                 s.module_path.clone(),
                 s.generics.clone(),
-                s.dependencies.clone(),
                 s.functions.clone(),
             )
         };
@@ -581,21 +573,10 @@ impl<'r> Analyzer<'r> {
                 .chain(generics.iter().cloned().zip(type_args.iter().cloned()))
                 .collect();
 
-        for (member_spec, member_raw_args) in &dependencies {
-            let member_args: Vec<ResolvedType> = self.with_substitution(&substitution, |this| {
-                member_raw_args
-                    .iter()
-                    .map(|a| this.resolve_type_or_error_in(id, span, a, true, &spec_module))
-                    .collect::<Option<Vec<_>>>()
-            })?;
-            self.flatten_spec_into(id, span, member_spec, &member_args, self_type, out)?;
-        }
-
         for (name, raw) in &functions {
             let (fn_type, return_type_bound) =
                 self.resolve_raw_spec_fn_type(id, span, raw, &substitution, &spec_module)?;
-            // Identity dedup only -- same spec, same type args, same name
-            // (a diamond alias); a different spec or instantiation is kept.
+            // Identity dedup only -- same spec, same type args, same name.
             if out.iter().any(|existing| {
                 existing.spec_id == spec_id
                     && existing.type_args() == *type_args
@@ -623,96 +604,37 @@ impl<'r> Analyzer<'r> {
         span: Span,
         own: &ResolvedFunctionType,
         req_fn_type: &ResolvedFunctionType,
-        req_bound: &Option<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)>,
+        req_bound: &[(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)],
     ) -> bool {
-        match req_bound {
-            None => own == req_fn_type,
-            Some((spec, type_args)) => {
-                own.self_mode == req_fn_type.self_mode
-                    && own.is_variadic == req_fn_type.is_variadic
-                    && own.params == req_fn_type.params
-                    && self
-                        .type_implements_spec(id, span, &own.return_type, spec, type_args, false)
-                        .is_ok()
-            }
+        if req_bound.is_empty() {
+            return own == req_fn_type;
         }
+        own.self_mode == req_fn_type.self_mode
+            && own.is_variadic == req_fn_type.is_variadic
+            && own.params == req_fn_type.params
+            && req_bound.iter().all(|(spec, type_args)| {
+                self.type_implements_spec(id, span, &own.return_type, spec, type_args, false)
+                    .is_ok()
+            })
     }
 
-    pub fn alias_member_ids(spec: &Rc<RefCell<ResolvedSpecType>>, out: &mut HashSet<HirId>) {
-        let (id, dependencies) = {
-            let spec = spec.borrow();
-            (spec.id, spec.dependencies.clone())
-        };
-        if !out.insert(id) {
-            return;
-        }
-        for (member, _) in dependencies {
-            Self::alias_member_ids(&member, out);
-        }
-    }
-
+    /// Bound-set expansion no longer follows spec-alias dependencies (they
+    /// were removed with the alias mechanism): a generic parameter's bound
+    /// list is already the explicit set of specs it must satisfy.
     pub fn expand_bound_set(
         &mut self,
-        id: HirId,
-        span: Span,
+        _id: HirId,
+        _span: Span,
         bounds: &[ResolvedBound],
     ) -> Vec<(HirId, Vec<ResolvedType>)> {
         let mut out: Vec<(HirId, Vec<ResolvedType>)> = Vec::new();
         for bound in bounds {
-            self.expand_bound_into(
-                id,
-                span,
-                &bound.target,
-                &bound.spec,
-                &bound.spec_args,
-                &mut out,
-            );
-        }
-        out
-    }
-
-    fn expand_bound_into(
-        &mut self,
-        id: HirId,
-        span: Span,
-        concrete: &ResolvedType,
-        spec: &Rc<RefCell<ResolvedSpecType>>,
-        spec_args: &[ResolvedType],
-        out: &mut Vec<(HirId, Vec<ResolvedType>)>,
-    ) {
-        let (generics, dependencies, module) = {
-            let s = spec.borrow();
-            (
-                s.generics.clone(),
-                s.dependencies.clone(),
-                s.module_path.clone(),
-            )
-        };
-        if dependencies.is_empty() {
-            let key = (spec.borrow().id, spec_args.to_vec());
+            let key = (bound.spec.borrow().id, bound.spec_args.clone());
             if !out.contains(&key) {
                 out.push(key);
             }
-            return;
         }
-        let self_ident = Ident("Self".to_string());
-        let substitution: Vec<(Ident, ResolvedType)> =
-            std::iter::once((self_ident, concrete.clone()))
-                .chain(generics.iter().cloned().zip(spec_args.iter().cloned()))
-                .collect();
-        for (member, member_raw_args) in &dependencies {
-            let Some(member_args): Option<Vec<ResolvedType>> =
-                self.with_substitution(&substitution, |this| {
-                    member_raw_args
-                        .iter()
-                        .map(|a| this.resolve_type_or_error_in(id, span, a, true, &module))
-                        .collect::<Option<Vec<_>>>()
-                })
-            else {
-                continue;
-            };
-            self.expand_bound_into(id, span, concrete, member, &member_args, out);
-        }
+        out
     }
 
     pub(super) fn type_implements_spec(
@@ -735,9 +657,8 @@ impl<'r> Analyzer<'r> {
                 else {
                     return Err(vec![]);
                 };
-                let mut permitted = HashSet::new();
-                Self::alias_member_ids(spec, &mut permitted);
-                let member_ids: Vec<HirId> = permitted.iter().copied().collect();
+                let spec_id = spec.borrow().id;
+                let member_ids: Vec<HirId> = vec![spec_id];
                 let candidates = match self.resolver.conformances_for_specs(ty, &member_ids) {
                     Ok(entries) => entries,
                     Err(error) => {
@@ -747,7 +668,7 @@ impl<'r> Analyzer<'r> {
                 };
                 let available: Vec<(HirId, Vec<ResolvedType>, Ident, ResolvedMethod)> = candidates
                     .into_iter()
-                    .filter(|entry| permitted.contains(&entry.spec.borrow().id))
+                    .filter(|entry| entry.spec.borrow().id == spec_id)
                     .flat_map(|entry| {
                         let spec_id = entry.spec.borrow().id;
                         let spec_args = entry.spec_args.clone();
@@ -791,6 +712,59 @@ impl<'r> Analyzer<'r> {
                 Err(vec![])
             }
         }
+    }
+
+    /// Conformance of a concrete type to a whole canonical dynamic shape:
+    /// every member must be satisfied independently, and its slots
+    /// concatenate in canonical shape order. This is the section layout the
+    /// vtable follows, so callers that need a single member's section start
+    /// offset can sum the slot counts of the members before it.
+    pub(super) fn type_implements_shape(
+        &mut self,
+        id: HirId,
+        span: Span,
+        ty: &ResolvedType,
+        shape: &crate::resolved_type::ResolvedSpecShape,
+    ) -> Result<Vec<HirId>, Vec<Ident>> {
+        let mut slots = Vec::new();
+        let mut missing = Vec::new();
+        for member in &shape.members {
+            match self.type_implements_spec(id, span, ty, &member.spec, &member.spec_args, false) {
+                Ok(member_slots) => slots.extend(member_slots),
+                Err(names) => missing.extend(names),
+            }
+        }
+        if missing.is_empty() {
+            Ok(slots)
+        } else {
+            Err(missing)
+        }
+    }
+
+    /// The compile-time section start offset of one already-present shape
+    /// member, purely from each member's own declared requirement count --
+    /// section sizes never depend on a concrete conforming type, only on the
+    /// shape itself (an object-safe spec may legally have zero methods).
+    /// Returns `None` if `target_spec_id` is not a member of `shape`.
+    pub(super) fn shape_member_section(
+        &mut self,
+        id: HirId,
+        span: Span,
+        shape: &crate::resolved_type::ResolvedSpecShape,
+        target_spec_id: HirId,
+    ) -> Option<(usize, usize)> {
+        let mut offset = 0usize;
+        for member in &shape.members {
+            let count = self
+                .flatten_spec(id, span, &member.spec, &member.spec_args, &ResolvedType::Void)
+                .map(|fns| fns.len())
+                .unwrap_or(0);
+            if member.spec.borrow().id == target_spec_id {
+                return Some((offset, count));
+            }
+            offset += count;
+        }
+        None
     }
 
     pub fn check_generic_bound(

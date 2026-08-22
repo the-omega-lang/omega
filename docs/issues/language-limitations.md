@@ -145,15 +145,16 @@ Normative chapter: [`../language/specs-and-conformance.md`](../language/specs-an
   (`conform S to A`, `conform<T: A> T to B`, `conform<T: B> T to C`)
   resolves in any declaration order, and a cycle is reported only when the
   goal stack closes on itself — with the chain that closes it. A bound
-  *context* (alias members, entailed derived conformances) is body-checking
-  information, computed when a body is checked, never in the middle of a
-  proof.
-- **An alias bound and its inline spelling are interchangeable everywhere.**
-  `T: AB` and `T: A + B` describe the same set: they compare equal in
-  blanket precedence (so the two spellings of the same blanket are a
-  `DuplicateConformance`), each entails the other's derived conformances in
-  a bound context, and a generic alias (`Both<T> = Iter<T> + Eq`) expands
-  with its arguments substituted.
+  *context* (conjunction members, entailed derived conformances) is
+  body-checking information, computed when a body is checked, never in the
+  middle of a proof.
+- **A conjunction bound's member order is interchangeable everywhere.**
+  `T: A + B` and `T: B + A` describe the same set, because both canonicalize
+  to the same resolved shape: they compare equal in blanket precedence (so
+  the two spellings of the same blanket are a `DuplicateConformance`), each
+  entails the other's derived conformances in a bound context, and a generic
+  conjunction (`Iter<T> + Eq` vs. `Eq + Iter<T>`) expands identically with
+  its arguments substituted.
 - Generic primitive and conform templates are instantiated lazily for the
   concrete target types a compilation uses.
 
@@ -213,7 +214,7 @@ Normative chapter: [`../language/iteration-and-ranges.md`](../language/iteration
   ordinary overloaded method call, there's no argument shape to resolve
   against (`to_iterator(*self)` takes none), and the explicit-cast
   disambiguation the dynamic-dispatch design used to offer
-  (`<spec *ToIterator<u64>>expr`) no longer applies now that `ToIterator<T>`
+  (`<*spec ToIterator<u64>>expr`) no longer applies now that `ToIterator<T>`
   isn't object-safe. Narrow in practice (this scenario needs two
   `to_iterator` overloads differing only in return type, which most specs
   won't hit), but a genuine, currently-unsolved gap if it comes up.

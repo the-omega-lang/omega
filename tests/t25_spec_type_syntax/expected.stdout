@@ -1,0 +1,7 @@
+static-conjunction: 23
+dynamic-conjunction: 23
+reordered-conjunction: 23
+object-pseudo-fields: true true
+narrowed-member: 11
+marker-member-object: 11 12
+duplicate-member: 11

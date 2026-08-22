@@ -37,3 +37,47 @@ fn function_pointer_assignment_rejects_calling_convention_mismatch() {
     assert!(!expected.accepts(&found));
     assert!(expected.accepts(&ResolvedType::Function(fn_type(CallingConvention::Omega))));
 }
+
+fn spec_cell(id: u32, name: &str) -> Rc<RefCell<ResolvedSpecType>> {
+    Rc::new(RefCell::new(ResolvedSpecType {
+        id: HirId {
+            module: omega_hir::ModuleId(0),
+            local: id,
+        },
+        name: Ident(name.to_string()),
+        visibility: Visibility::Exposed,
+        generics: vec![],
+        module_path: vec![],
+        type_args: vec![],
+        is_object_safe: true,
+        functions: vec![],
+        suppress: vec![],
+    }))
+}
+
+#[test]
+fn spec_shape_canonicalizes_reordered_members_identically() {
+    let a = spec_cell(1, "A");
+    let b = spec_cell(2, "B");
+    let ab = ResolvedSpecShape::canonicalize(vec![
+        ResolvedSpecApplication::new(a.clone(), vec![]),
+        ResolvedSpecApplication::new(b.clone(), vec![]),
+    ]);
+    let ba = ResolvedSpecShape::canonicalize(vec![
+        ResolvedSpecApplication::new(b, vec![]),
+        ResolvedSpecApplication::new(a, vec![]),
+    ]);
+    assert_eq!(ab, ba);
+    assert_eq!(ab.to_string(), "A + B");
+}
+
+#[test]
+fn spec_shape_canonicalizes_duplicate_members_away() {
+    let a1 = spec_cell(1, "A");
+    let a2 = spec_cell(1, "A");
+    let shape = ResolvedSpecShape::canonicalize(vec![
+        ResolvedSpecApplication::new(a1, vec![]),
+        ResolvedSpecApplication::new(a2, vec![]),
+    ]);
+    assert_eq!(shape.members.len(), 1);
+}

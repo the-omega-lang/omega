@@ -314,12 +314,9 @@ impl Context {
             Type::Pointer(pointee, mutable) => {
                 self.resolve_pointer_type(*pointee, mutable, resolver, module_path, options)
             }
-            Type::SpecObject(pointee, mutable) => {
-                self.resolve_spec_object_type(*pointee, mutable, resolver, module_path, options)
-            }
-            Type::SpecStatic(pointee) => {
-                let name = match pointee.as_ref() {
-                    Type::Named(path) | Type::Generic(path, _) => path.head.clone(),
+            Type::SpecStatic(members) => {
+                let name = match members.first() {
+                    Some(Type::Named(path)) | Some(Type::Generic(path, _)) => path.head.clone(),
                     _ => Ident("<spec>".to_string()),
                 };
                 Err(TypeResolutionError::SpecStaticNotAllowedHere(name))
@@ -531,6 +528,9 @@ impl Context {
                     self.resolve_type(*item, resolver, module_path, options.through_indirection())?;
                 Ok(ResolvedType::Array(Box::new(item), mutable))
             }
+            Type::SpecStatic(members) => {
+                self.resolve_spec_object_type(members, mutable, resolver, module_path, options)
+            }
             Type::Named(path) if path.is_unqualified() && path.head.as_ref() == "str" => {
                 Ok(ResolvedType::Str { mutable })
             }
@@ -561,17 +561,22 @@ impl Context {
         }
     }
 
+    /// Resolves an immediate `Pointer(SpecStatic(members), mutable)` -- the
+    /// only place raw `*spec A + B` syntax becomes a semantic dynamic
+    /// object. Each member is resolved to its final spec application
+    /// independently, then the whole set is canonicalized: source order and
+    /// exact duplicates never affect the resulting shape.
     fn resolve_spec_object_type(
         &self,
-        pointee: Type,
+        members: Vec<Type>,
         mutable: bool,
         resolver: &mut dyn ModuleResolver,
         module_path: &[Ident],
         options: ResolveItemOptions,
     ) -> Result<ResolvedType, TypeResolutionError> {
-        let pointee = Box::new(pointee);
-        let resolved = {
-            let type_args = match pointee.as_ref() {
+        let mut applications = Vec::with_capacity(members.len());
+        for member in members {
+            let type_args = match &member {
                 Type::Generic(_, args) => args.clone(),
                 _ => vec![],
             };
@@ -579,30 +584,27 @@ impl Context {
                 .into_iter()
                 .map(|a| self.resolve_type(a, resolver, module_path, options.through_indirection()))
                 .collect::<Result<Vec<_>, _>>()?;
-            let pointee_name = match pointee.as_ref() {
+            let member_name = match &member {
                 Type::Named(path) | Type::Generic(path, _) => path.head.clone(),
                 _ => Ident("<spec>".to_string()),
             };
-            match self.resolve_type(
-                *pointee,
-                resolver,
-                module_path,
-                options.through_indirection(),
-            )? {
+            match self.resolve_type(member, resolver, module_path, options.through_indirection())? {
                 ResolvedType::Spec(spec) => {
                     if !spec.borrow().is_object_safe {
-                        return Err(TypeResolutionError::SpecNotObjectSafe(pointee_name));
+                        return Err(TypeResolutionError::SpecNotObjectSafe(member_name));
                     }
-                    ResolvedType::SpecObject {
+                    applications.push(crate::resolved_type::ResolvedSpecApplication::new(
                         spec,
-                        type_args: resolved_args,
-                        mutable,
-                    }
+                        resolved_args,
+                    ));
                 }
-                _ => return Err(TypeResolutionError::NotASpec(pointee_name)),
+                _ => return Err(TypeResolutionError::NotASpec(member_name)),
             }
-        };
-        Ok(resolved)
+        }
+        Ok(ResolvedType::SpecObject {
+            shape: crate::resolved_type::ResolvedSpecShape::canonicalize(applications),
+            mutable,
+        })
     }
 
     fn try_resolve_enum_variant_type(

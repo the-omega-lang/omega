@@ -80,12 +80,33 @@ fn each_spec_parameter_becomes_its_own_bound_generic() {
 }
 
 #[test]
-fn spec_parameters_are_found_behind_a_pointer() {
+fn pointer_to_spec_static_creates_no_synthetic_generic() {
+    // Only a parameter's outermost type desugars: `*spec Foo` stays a
+    // structural `Pointer(SpecStatic(..))` for the analyzer to recognize as
+    // a dynamic object, rather than being turned into a generic bound here.
     let module = lower(
         "spec Foo { f(*self) => i32; }\n\
          takes(a: *spec Foo) => i32 { 0 }",
     );
-    assert_eq!(only_function(&module).generics.len(), 1);
+    let f = only_function(&module);
+    assert_eq!(f.generics.len(), 0, "no synthetic generic behind a pointer");
+    assert!(matches!(
+        &f.params[0].r#type,
+        omega_parser::prelude::Type::Pointer(inner, false)
+            if matches!(**inner, omega_parser::prelude::Type::SpecStatic(_))
+    ));
+}
+
+#[test]
+fn top_level_spec_conjunction_becomes_one_generic_with_every_bound() {
+    let module = lower(
+        "spec Foo { f(*self) => i32; }\n\
+         spec Bar { g(*self) => i32; }\n\
+         takes(a: spec Foo + Bar) => i32 { 0 }",
+    );
+    let f = only_function(&module);
+    assert_eq!(f.generics.len(), 1, "one fresh generic for the conjunction");
+    assert_eq!(f.generics[0].bounds.len(), 2, "both members become bounds");
 }
 
 #[test]

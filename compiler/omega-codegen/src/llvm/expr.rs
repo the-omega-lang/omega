@@ -120,17 +120,15 @@ impl<'ctx> Codegen<'ctx> {
 
             MirExpr::SpecCoerce(MirSpecCoerce { base, slots }) => {
                 let data_ptr = self.process_expr(base)[0].into_pointer_value();
-                let (spec, type_args) = match &node.r#type {
-                    ResolvedType::SpecObject {
-                        spec, type_args, ..
-                    } => (spec.clone(), type_args.clone()),
+                let shape = match &node.r#type {
+                    ResolvedType::SpecObject { shape, .. } => shape.clone(),
                     _ => unreachable!("mir body guarantees a SpecCoerce's own type is SpecObject"),
                 };
                 let concrete = match &base.r#type {
                     ResolvedType::Pointer { pointee, .. } => (**pointee).clone(),
                     _ => unreachable!("mir body guarantees a SpecCoerce's base is a plain pointer"),
                 };
-                let vtable = self.vtable_for(&concrete, &spec, &type_args, slots);
+                let vtable = self.vtable_for(&concrete, &shape, slots);
                 vec![data_ptr.into(), vtable.as_pointer_value().into()]
             }
 

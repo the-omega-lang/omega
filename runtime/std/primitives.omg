@@ -27,7 +27,7 @@ macro signed_integer($T: type) => {
         hash(*self) => u64 { mix64(<u64>*self) }
     }
     conform $T to Display {
-        fmt(*self, out: spec *mut Write) => void { write_int(out, <i64>*self, 10u32); }
+        fmt(*self, out: *mut spec Write) => void { write_int(out, <i64>*self, 10u32); }
     }
 }
 
@@ -37,7 +37,7 @@ macro unsigned_integer($T: type) => {
         hash(*self) => u64 { mix64(<u64>*self) }
     }
     conform $T to Display {
-        fmt(*self, out: spec *mut Write) => void { write_uint(out, <u64>*self, 10u32); }
+        fmt(*self, out: *mut spec Write) => void { write_uint(out, <u64>*self, 10u32); }
     }
 }
 
@@ -52,7 +52,7 @@ macro float_ops($T: type) => {
         }
     }
     conform $T to Display {
-        fmt(*self, out: spec *mut Write) => void { write_float(out, <f64>*self); }
+        fmt(*self, out: *mut spec Write) => void { write_float(out, <f64>*self); }
     }
 }
 
@@ -86,19 +86,19 @@ conform str to Hash {
 }
 
 conform str to Display {
-    fmt(*self, out: spec *mut Write) => void {
+    fmt(*self, out: *mut spec Write) => void {
         out.write(<*[]u8>self);
     }
 }
 
 conform char to Display {
-    fmt(*self, out: spec *mut Write) => void {
+    fmt(*self, out: *mut spec Write) => void {
         write_char(out, *self);
     }
 }
 
 conform bool to Display {
-    fmt(*self, out: spec *mut Write) => void {
+    fmt(*self, out: *mut spec Write) => void {
         write_bool(out, *self);
     }
 }

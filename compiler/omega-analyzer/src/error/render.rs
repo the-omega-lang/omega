@@ -572,12 +572,6 @@ impl AnalysisErrorKind {
                     "write the type explicitly: `<Type : {spec}>::{function}()`, or call it as \
                      `Type::{function}()` when unambiguous"
                 )),
-            Self::ConformToAliasSpec { alias } => d
-                .with_label(span, format!("`{alias}` is a spec alias, not a declaration"))
-                .with_help(format!(
-                    "an alias names a combination of specs and is satisfied by conforming each member \
-                     separately, never by one block conformed to `{alias}` itself"
-                )),
             Self::UnknownAnnotation { name } => {
                 d.with_label(span, format!("'@{}' is not a recognized annotation", name.as_ref()))
             }

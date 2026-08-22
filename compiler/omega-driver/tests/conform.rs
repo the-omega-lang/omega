@@ -146,45 +146,43 @@ fn a_three_way_conjunction_bound_requires_all_members() {
 }
 
 #[test]
-fn an_alias_bound_and_an_inline_conjunction_behave_identically() {
+fn a_bound_spelled_either_member_order_admits_the_same_types() {
     let source = r#"
         exposed spec A { a(*self) => i32; }
         exposed spec B { b(*self) => i32; }
-        spec AB = A + B;
         struct Full { exposed value: i32; }
         conform Full to A { a(*self) => i32 { self.value } }
         conform Full to B { b(*self) => i32 { self.value } }
 
-        use_alias<T: AB>(value: *T) => i32 { value.a() + value.b() }
-        use_inline<T: A + B>(value: *T) => i32 { value.a() + value.b() }
+        use_ab<T: A + B>(value: *T) => i32 { value.a() + value.b() }
+        use_ba<T: B + A>(value: *T) => i32 { value.a() + value.b() }
         entry_fn() => i32 {
             full := Full { value = 1; };
-            use_alias(&full) + use_inline(&full)
+            use_ab(&full) + use_ba(&full)
         }
         "#;
     let package = TestPackage::new(source);
     package
         .compile()
-        .expect("an alias bound and the identical inline conjunction admit the same types");
+        .expect("a conjunction bound admits the same types regardless of member order");
 
     let missing_b = TestPackage::new(
         r#"
         exposed spec A { a(*self) => i32; }
         exposed spec B { b(*self) => i32; }
-        spec AB = A + B;
         struct Half { exposed value: i32; }
         conform Half to A { a(*self) => i32 { self.value } }
 
-        use_alias<T: AB>(value: *T) => i32 { value.a() }
+        use_ba<T: B + A>(value: *T) => i32 { value.a() }
         entry_fn() => i32 {
             half := Half { value = 1; };
-            use_alias(&half)
+            use_ba(&half)
         }
         "#,
     );
     let errors = compile_errors(
         &missing_b,
-        "a type conforming to only one member must not satisfy the alias",
+        "a type conforming to only one member must not satisfy the conjunction",
     );
     assert!(has_analysis_error(&errors, |kind| matches!(
         kind,
@@ -192,8 +190,29 @@ fn an_alias_bound_and_an_inline_conjunction_behave_identically() {
             spec,
             missing,
             ..
-        }) if spec.as_ref() == "AB" && missing.contains(&Ident("b".to_string()))
+        }) if spec.as_ref() == "B" && missing.contains(&Ident("b".to_string()))
     )));
+}
+
+#[test]
+fn a_conjunction_with_a_repeated_member_collapses_to_the_member() {
+    let package = TestPackage::new(
+        r#"
+        exposed spec A { a(*self) => i32; }
+        struct S { exposed v: i32; }
+        conform S to A { a(*self) => i32 { self.v } }
+
+        use_repeated<T: A + A>(x: *T) => i32 { x.a() }
+        via_object(x: *spec A + A) => i32 { x.a() }
+        entry_fn() => i32 {
+            s := S { v = 5; };
+            use_repeated(&s) + via_object(&s)
+        }
+        "#,
+    );
+    package
+        .compile()
+        .expect("A + A collapses to A: a repeated member is not a distinct requirement");
 }
 
 #[test]
@@ -220,47 +239,6 @@ fn a_blanket_bounded_on_a_conjunction_applies_conditionally() {
     package
         .compile()
         .expect("a blanket bounded on a conjunction must apply to a type with both");
-}
-
-#[test]
-fn a_spec_alias_is_not_conformable() {
-    let package = TestPackage::new(
-        r#"
-        exposed spec A { a(*self) => i32; }
-        exposed spec B { b(*self) => i32; }
-        spec AB = A + B;
-        struct Full { exposed value: i32; }
-        conform Full to AB {
-            a(*self) => i32 { self.value }
-            b(*self) => i32 { self.value }
-        }
-        entry_fn() => i32 { 0 }
-        "#,
-    );
-    let errors = compile_errors(&package, "conforming to an alias must fail");
-    assert!(has_analysis_error(&errors, |kind| matches!(
-        kind,
-        AnalysisErrorKind::ConformToAliasSpec { alias } if alias.as_ref() == "AB"
-    )));
-
-    let split = TestPackage::new(
-        r#"
-        exposed spec A { a(*self) => i32; }
-        exposed spec B { b(*self) => i32; }
-        spec AB = A + B;
-        struct Full { exposed value: i32; }
-        conform Full to A { a(*self) => i32 { self.value } }
-        conform Full to B { b(*self) => i32 { self.value } }
-        use_ab<T: AB>(value: *T) => i32 { value.a() + value.b() }
-        entry_fn() => i32 {
-            full := Full { value = 2; };
-            use_ab(&full)
-        }
-        "#,
-    );
-    split
-        .compile()
-        .expect("an alias is satisfied by conforming each member separately");
 }
 
 #[test]
@@ -292,12 +270,11 @@ fn a_colliding_method_on_a_conjunction_object_is_ambiguous() {
         r#"
         exposed spec A { tag(*self) => i32; }
         exposed spec B { tag(*self) => i32; }
-        spec AB = A + B;
         struct Thing { exposed a: i32; exposed b: i32; }
         conform Thing to A { tag(*self) => i32 { self.a } }
         conform Thing to B { tag(*self) => i32 { self.b } }
 
-        via_ab(x: spec *AB) => i32 { x.tag() }
+        via_ab(x: *spec A + B) => i32 { x.tag() }
         entry_fn() => i32 {
             t := Thing { a = 1; b = 2; };
             via_ab(&t)
@@ -321,13 +298,12 @@ fn a_narrowing_cast_disambiguates_a_conjunction_object() {
         r#"
         exposed spec A { tag(*self) => i32; }
         exposed spec B { tag(*self) => i32; }
-        spec AB = A + B;
         struct Thing { exposed a: i32; exposed b: i32; }
         conform Thing to A { tag(*self) => i32 { self.a } }
         conform Thing to B { tag(*self) => i32 { self.b } }
 
-        via_a(x: spec *AB) => i32 { (<spec *A>x).tag() }
-        via_b(x: spec *AB) => i32 { (<spec *B>x).tag() }
+        via_a(x: *spec A + B) => i32 { (<*spec A>x).tag() }
+        via_b(x: *spec A + B) => i32 { (<*spec B>x).tag() }
         entry_fn() => i32 {
             t := Thing { a = 1; b = 2; };
             via_a(&t) + via_b(&t)
@@ -340,19 +316,42 @@ fn a_narrowing_cast_disambiguates_a_conjunction_object() {
 }
 
 #[test]
+fn a_spec_object_type_is_identical_regardless_of_member_order() {
+    let package = TestPackage::new(
+        r#"
+        exposed spec A { a(*self) => i32; }
+        exposed spec B { b(*self) => i32; }
+        struct Full { exposed value: i32; }
+        conform Full to A { a(*self) => i32 { self.value } }
+        conform Full to B { b(*self) => i32 { self.value } }
+
+        via_a_b(x: *spec A + B) => i32 { x.a() + x.b() }
+        via_b_a(x: *spec B + A) => i32 { x.a() + x.b() }
+        entry_fn() => i32 {
+            full := Full { value = 3; };
+            obj : *spec A + B = &full;
+            via_a_b(obj) + via_b_a(obj)
+        }
+        "#,
+    );
+    package.compile().expect(
+        "*spec A + B and *spec B + A are exactly the same type and need no cast between them",
+    );
+}
+
+#[test]
 fn widening_and_unrelated_spec_object_casts_are_rejected() {
     let package = TestPackage::new(
         r#"
         exposed spec A { tag(*self) => i32; }
         exposed spec B { tag(*self) => i32; }
         exposed spec C { tag(*self) => i32; }
-        spec AB = A + B;
         struct Thing { exposed a: i32; }
         conform Thing to A { tag(*self) => i32 { self.a } }
         conform Thing to B { tag(*self) => i32 { self.a } }
         conform Thing to C { tag(*self) => i32 { self.a } }
 
-        widen(x: spec *A) => spec *AB { <spec *AB>x }
+        widen(x: *spec A) => *spec A + B { <*spec A + B>x }
         entry_fn() => i32 {
             t := Thing { a = 1; };
             widen(&t).tag()
@@ -1452,7 +1451,7 @@ fn an_unrelated_spec_query_does_not_report_a_foreign_template_bound() {
         struct NotW { exposed value: i32; }
         struct Buf<T> { exposed inner: *T; }
         conform<T: W> Buf<T> to Show { show(*self) => i32 { 1 } }
-        as_w(value: *Buf<NotW>) => spec *W { value }
+        as_w(value: *Buf<NotW>) => *spec W { value }
         entry_fn() => i32 {
             value := NotW { value = 0; };
             buf := Buf<NotW> { inner = &value; };
@@ -1473,19 +1472,18 @@ fn an_unrelated_spec_query_does_not_report_a_foreign_template_bound() {
 }
 
 #[test]
-fn generic_conform_bounds_expand_spec_aliases() {
+fn generic_conform_bounds_expand_conjunctions() {
     let package = TestPackage::new(
         r#"
         exposed spec A { a(*self) => i32; }
         exposed spec B { b(*self) => i32 { 2 } }
-        spec AB = A + B;
         exposed spec Sum { sum(*self) => i32; }
         struct Value { exposed value: i32; }
         conform Value to A { a(*self) => i32 { self.value } }
         conform Value to B { }
 
         struct Buf<T> { exposed inner: *T; }
-        conform<T: AB> Buf<T> to Sum {
+        conform<T: A + B> Buf<T> to Sum {
             sum(*self) => i32 { self.inner.a() + self.inner.b() }
         }
         use_sum<T: Sum>(value: *T) => i32 { value.sum() }
@@ -1498,7 +1496,7 @@ fn generic_conform_bounds_expand_spec_aliases() {
     );
     package
         .compile()
-        .expect("a conform generic alias bound must reach its member conformances");
+        .expect("a conform generic conjunction bound must reach its member conformances");
 }
 
 #[test]
@@ -1589,23 +1587,22 @@ fn distinct_generic_spec_conformances_emit_distinct_bodies() {
 }
 
 #[test]
-fn a_bound_on_a_spec_alias_reaches_its_members_conformances() {
+fn a_bound_on_a_conjunction_reaches_its_members_conformances() {
     let package = TestPackage::new(
         r#"
         exposed spec A { a(*self) => i32; }
         exposed spec B { b(*self) => i32 { 2 } }
-        spec AB = A + B;
         struct Foo { exposed v: i32; }
         conform Foo to A { a(*self) => i32 { 1 } }
         conform Foo to B { }
 
-        use_alias<T: AB>(x: *T) => i32 { x.a() + x.b() }
-        entry_fn() => i32 { f := Foo { v = 0; }; use_alias(&f) }
+        use_conjunction<T: A + B>(x: *T) => i32 { x.a() + x.b() }
+        entry_fn() => i32 { f := Foo { v = 0; }; use_conjunction(&f) }
         "#,
     );
     package
         .compile()
-        .expect("an alias bound must resolve through its members' conformances");
+        .expect("a conjunction bound must resolve through its members' conformances");
 }
 
 #[test]
@@ -2019,23 +2016,25 @@ fn a_template_whose_spec_does_not_resolve_still_reports_not_a_spec() {
 }
 
 #[test]
-fn an_alias_bound_and_its_inline_spelling_do_not_compare_as_equal() {
+fn a_blanket_conform_declared_for_both_member_orderings_is_a_duplicate() {
     let package = TestPackage::new(
         r#"
         exposed spec A { a(*self) => i32; }
         exposed spec B { b(*self) => i32; }
-        exposed spec AB = A + B;
         exposed spec X { x(*self) => i32; }
         struct S { exposed v: i32; }
         conform S to A { a(*self) => i32 { 0 } }
         conform S to B { b(*self) => i32 { 0 } }
-        conform<T: AB> T to X { x(*self) => i32 { 1 } }
-        conform<T: A + B> T to X { x(*self) => i32 { 2 } }
+        conform<T: A + B> T to X { x(*self) => i32 { 1 } }
+        conform<T: B + A> T to X { x(*self) => i32 { 2 } }
         use_x<T: X>(t: T) => i32 { t.x() }
         entry_fn() => i32 { use_x(S { v = 0; }) }
         "#,
     );
-    let errors = compile_errors(&package, "alias vs inline must compare as equal");
+    let errors = compile_errors(
+        &package,
+        "A + B and B + A name the same bound, so both blankets collide",
+    );
     assert!(has_analysis_error(&errors, |kind| matches!(
         kind,
         AnalysisErrorKind::DuplicateConformance { .. }
@@ -2043,66 +2042,45 @@ fn an_alias_bound_and_its_inline_spelling_do_not_compare_as_equal() {
 }
 
 #[test]
-fn an_alias_bound_and_its_inline_spelling_are_interchangeable_in_bound_contexts() {
+fn a_blanket_declared_in_one_member_order_is_reachable_through_the_other() {
     let package = TestPackage::new(
         r#"
         exposed spec A { a(*self) => i32; }
         exposed spec B { b(*self) => i32; }
-        exposed spec AB = A + B;
-        exposed spec X { x(*self) => i32; }
-        struct S { exposed v: i32; }
-        conform S to A { a(*self) => i32 { 1 } }
-        conform S to B { b(*self) => i32 { 2 } }
-        conform<T: AB> T to X { x(*self) => i32 { 10 } }
-        use_inline<T: A + B>(t: T) => i32 { t.x() }
-        use_alias<T: AB>(t: T) => i32 { t.x() }
-        entry_fn() => i32 { use_inline(S { v = 0; }) + use_alias(S { v = 0; }) }
-        "#,
-    );
-    package
-        .compile()
-        .expect("alias-declared blanket must be reachable under an inline bound and back");
-}
-
-#[test]
-fn an_inline_blanket_is_reachable_under_an_alias_bound() {
-    let package = TestPackage::new(
-        r#"
-        exposed spec A { a(*self) => i32; }
-        exposed spec B { b(*self) => i32; }
-        exposed spec AB = A + B;
         exposed spec X { x(*self) => i32; }
         struct S { exposed v: i32; }
         conform S to A { a(*self) => i32 { 1 } }
         conform S to B { b(*self) => i32 { 2 } }
         conform<T: A + B> T to X { x(*self) => i32 { 10 } }
-        use_alias<T: AB>(t: T) => i32 { t.x() }
-        entry_fn() => i32 { use_alias(S { v = 0; }) }
+        use_reordered<T: B + A>(t: T) => i32 { t.x() }
+        entry_fn() => i32 { use_reordered(S { v = 0; }) }
         "#,
     );
-    package
-        .compile()
-        .expect("inline-declared blanket must be reachable under an alias bound");
+    package.compile().expect(
+        "a blanket declared under one member order must be reachable through the other",
+    );
 }
 
 #[test]
-fn a_generic_alias_bound_expands_with_its_arguments_substituted() {
+fn a_generic_conjunction_bound_ignores_declaration_order() {
     let package = TestPackage::new(
         r#"
         exposed spec Iter<T> { next(*self) => i32; }
         exposed spec Eq { equals(*self, other: *Self) => bool; }
-        exposed spec Both<T> = Iter<T> + Eq;
         exposed spec X { x(*self) => i32; }
         struct S { exposed v: i32; }
         conform S to Iter<i32> { next(*self) => i32 { self.v } }
         conform S to Eq { equals(*self, other: *S) => bool { false } }
-        conform<T: Both<i32>> T to X { x(*self) => i32 { 1 } }
-        conform<T: Iter<i32> + Eq> T to X { x(*self) => i32 { 2 } }
+        conform<T: Iter<i32> + Eq> T to X { x(*self) => i32 { 1 } }
+        conform<T: Eq + Iter<i32>> T to X { x(*self) => i32 { 2 } }
         use_x<T: X>(t: T) => i32 { t.x() }
         entry_fn() => i32 { use_x(S { v = 0; }) }
         "#,
     );
-    let errors = compile_errors(&package, "the generic alias expands with its arguments");
+    let errors = compile_errors(
+        &package,
+        "reordering a generic conjunction's members must not change the bound",
+    );
     assert!(has_analysis_error(&errors, |kind| matches!(
         kind,
         AnalysisErrorKind::DuplicateConformance { .. }

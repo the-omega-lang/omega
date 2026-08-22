@@ -140,7 +140,7 @@ HIR lowering owns four important source-shape normalizations:
 
 1. **Synthetic `self` insertion.** Member functions receive the parameter shape implied by `SelfMode`.
 2. **By-value `mut self` shadowing.** It becomes an implicit mutable local shadow at the beginning of the body, avoiding a separate downstream “mutable parameter” concept.
-3. **`spec T` parameter lowering.** Static-spec parameter sugar becomes an ordinary fresh bound generic parameter, so later phases reason through one generic mechanism.
+3. **`spec T` parameter lowering.** Only when a parameter's *outermost* type is `Type::SpecStatic(members)` (a raw `spec A + B + ...` conjunction) does it become one fresh generic parameter bounded by every member, so later phases reason through one generic mechanism. This does not recurse: `*spec A + B` (or a `spec ...` behind an array/generic argument/function type) stays structurally untouched, because only semantic analysis can tell a static bound from a dynamic-object pointee -- see [`semantic-analysis.md`](semantic-analysis.md).
 4. **Place-chain flattening.** Nested field/index/deref AST expressions that form an assignable/addressable place become `HirPlace { root, projections }`.
 
 These transforms are deliberately centralized so the analyzer, MIR and backends do not each recognize the same sugar independently.

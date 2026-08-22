@@ -225,8 +225,6 @@ pub struct ResolvedSpecType {
     pub module_path: Vec<Ident>,
     pub type_args: Vec<ResolvedType>,
     pub is_object_safe: bool,
-    pub is_alias: bool,
-    pub dependencies: Vec<(Rc<RefCell<ResolvedSpecType>>, Vec<Type>)>,
     pub functions: Vec<(Ident, RawSpecFunctionSig)>,
     pub suppress: Vec<Ident>,
 }
@@ -241,6 +239,110 @@ impl Eq for ResolvedSpecType {}
 impl Hash for ResolvedSpecType {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.id.hash(state);
+    }
+}
+
+/// One resolved member of a spec conjunction: a spec declaration plus its
+/// resolved (already-substituted) generic arguments. `ResolvedSpecType`
+/// itself never carries the arguments of a particular application -- the
+/// declaration is cached once and shared, so every application pairs it with
+/// its own argument list here instead.
+#[derive(Debug, Clone)]
+pub struct ResolvedSpecApplication {
+    pub spec: Rc<RefCell<ResolvedSpecType>>,
+    pub spec_args: Vec<ResolvedType>,
+}
+
+impl ResolvedSpecApplication {
+    pub fn new(spec: Rc<RefCell<ResolvedSpecType>>, spec_args: Vec<ResolvedType>) -> Self {
+        Self { spec, spec_args }
+    }
+
+    /// The deterministic ordering/dedup key: fully qualified final spec name
+    /// followed by a canonical rendering of the normalized arguments. Must
+    /// never depend on declaration/discovery order (`HirId`), since that can
+    /// vary across compilations.
+    fn canonical_key(&self) -> String {
+        let spec = self.spec.borrow();
+        let mut key = String::new();
+        for segment in &spec.module_path {
+            key.push_str(segment.as_ref());
+            key.push_str("::");
+        }
+        key.push_str(spec.name.as_ref());
+        key.push('<');
+        for (i, arg) in self.spec_args.iter().enumerate() {
+            if i > 0 {
+                key.push(',');
+            }
+            key.push_str(&arg.to_string());
+        }
+        key.push('>');
+        key
+    }
+}
+
+impl PartialEq for ResolvedSpecApplication {
+    fn eq(&self, other: &Self) -> bool {
+        self.spec.borrow().id == other.spec.borrow().id && self.spec_args == other.spec_args
+    }
+}
+impl Eq for ResolvedSpecApplication {}
+
+impl Hash for ResolvedSpecApplication {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.spec.borrow().hash(state);
+        self.spec_args.hash(state);
+    }
+}
+
+impl std::fmt::Display for ResolvedSpecApplication {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.spec.borrow().name.as_ref())?;
+        if !self.spec_args.is_empty() {
+            write!(f, "<")?;
+            for (i, arg) in self.spec_args.iter().enumerate() {
+                if i > 0 {
+                    write!(f, ", ")?;
+                }
+                write!(f, "{arg}")?;
+            }
+            write!(f, ">")?;
+        }
+        Ok(())
+    }
+}
+
+/// A canonical spec conjunction: a deduplicated, deterministically ordered
+/// list of resolved spec applications. Commutative and idempotent at the
+/// semantic level -- `A + B` and `B + A` normalize to the same shape, and
+/// `A + A` normalizes to `A` -- so source order never participates in
+/// equality, hashing, mangling, or vtable identity.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ResolvedSpecShape {
+    pub members: Vec<ResolvedSpecApplication>,
+}
+
+impl ResolvedSpecShape {
+    /// Sorts by canonical key and removes exact duplicate applications.
+    /// Callers are responsible for resolving every member to its final spec
+    /// declaration/normalized arguments before calling this.
+    pub fn canonicalize(mut members: Vec<ResolvedSpecApplication>) -> Self {
+        members.sort_by(|a, b| a.canonical_key().cmp(&b.canonical_key()));
+        members.dedup();
+        Self { members }
+    }
+}
+
+impl std::fmt::Display for ResolvedSpecShape {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (i, member) in self.members.iter().enumerate() {
+            if i > 0 {
+                write!(f, " + ")?;
+            }
+            write!(f, "{member}")?;
+        }
+        Ok(())
     }
 }
 
@@ -352,8 +454,7 @@ pub enum ResolvedType {
     },
     Spec(Rc<RefCell<ResolvedSpecType>>),
     SpecObject {
-        spec: Rc<RefCell<ResolvedSpecType>>,
-        type_args: Vec<ResolvedType>,
+        shape: ResolvedSpecShape,
         mutable: bool,
     },
 }
@@ -403,13 +504,8 @@ impl Hash for ResolvedType {
                 variant.hash(state);
             }
             Self::Spec(cell) => cell.borrow().hash(state),
-            Self::SpecObject {
-                spec,
-                type_args,
-                mutable,
-            } => {
-                spec.borrow().hash(state);
-                type_args.hash(state);
+            Self::SpecObject { shape, mutable } => {
+                shape.hash(state);
                 mutable.hash(state);
             }
         }
@@ -487,24 +583,8 @@ impl std::fmt::Display for ResolvedType {
                 Ok(())
             }
             Self::Spec(cell) => write!(f, "{}", cell.borrow().name.as_ref()),
-            Self::SpecObject {
-                spec,
-                type_args,
-                mutable,
-            } => {
-                write!(f, "spec *{}", if *mutable { "mut " } else { "" })?;
-                write!(f, "{}", spec.borrow().name.as_ref())?;
-                if !type_args.is_empty() {
-                    write!(f, "<")?;
-                    for (i, arg) in type_args.iter().enumerate() {
-                        if i > 0 {
-                            write!(f, ", ")?;
-                        }
-                        write!(f, "{arg}")?;
-                    }
-                    write!(f, ">")?;
-                }
-                Ok(())
+            Self::SpecObject { shape, mutable } => {
+                write!(f, "*{}spec {shape}", if *mutable { "mut " } else { "" })
             }
         }
     }

@@ -107,14 +107,19 @@ pub(super) fn mangle_type(ty: &ResolvedType) -> MangleType {
             let cell = cell.borrow();
             named_type(&cell.module_path, &cell.name, &cell.type_args, None)
         }
-        ResolvedType::SpecObject {
-            spec,
-            type_args,
-            mutable,
-        } => {
-            let spec = spec.borrow();
-            let inner = named_type(&spec.module_path, &spec.name, type_args, None);
-            MangleType::SpecObject(Box::new(inner), *mutable)
+        ResolvedType::SpecObject { shape, mutable } => {
+            // `shape.members` is already in canonical final-name order, so
+            // this never needs to re-sort: source permutations already
+            // produced the same member order here.
+            let members = shape
+                .members
+                .iter()
+                .map(|member| {
+                    let spec = member.spec.borrow();
+                    named_type(&spec.module_path, &spec.name, &member.spec_args, None)
+                })
+                .collect();
+            MangleType::SpecObject(members, *mutable)
         }
     }
 }

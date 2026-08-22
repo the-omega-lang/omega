@@ -91,7 +91,7 @@ The following source-level types are distinct even though each has a two-word lo
 
 - `*[]T` / `*mut []T`: data pointer plus an `i32` element count, exposed as `.length`.
 - `*str` / `*mut str`: data pointer plus an `i32` UTF-8 byte count, exposed as `.size`.
-- `spec *S` / `spec *mut S`: data pointer plus a dispatch-table pointer.
+- `*spec S` / `*mut spec S`: data pointer plus a dispatch-table pointer.
 
 There is no implicit coercion between `*str` and `*[]u8`; conversions are explicit. Dynamic spec objects are governed by [`specs-and-conformance.md`](specs-and-conformance.md).
 

@@ -122,7 +122,7 @@ A non-function `foreign name : Type;` binding becomes a real linker-visible exte
 
 ## Dynamic spec representation
 
-A dynamic `spec *T` / `spec *mut T` value is represented as a pair:
+A dynamic `*spec T` / `*mut spec T` value is represented as a pair:
 
 ```text
 data pointer
@@ -131,7 +131,9 @@ vtable pointer
 
 The analyzer decides the concrete conformance/method-slot meaning. MIR/codegen use that resolved slot set to materialize/select the vtable and emit dynamic calls.
 
-Vtable symbol identity is generated above codegen; see [`symbol-mangling.md`](symbol-mangling.md).
+This representation is exactly two machine words regardless of how many members a conjunction shape has (`*spec A + B + C` is still one data pointer and one vtable pointer). Member count affects only the static vtable's contents/identity: each canonical shape member contributes its own section, concatenated in the shape's canonical order (sorted by fully qualified spec name), and a zero-method marker member still occupies a section identity even though it contributes no slots. Source order and duplicate members never reach codegen -- the analyzer's canonical shape (see [`semantic-analysis.md`](semantic-analysis.md)) is what MIR/codegen consume, so `*spec A + B` and `*spec B + A` for the same concrete type reuse one statically emitted vtable.
+
+Vtable symbol identity is generated above codegen; see [`symbol-mangling.md`](symbol-mangling.md). The vtable cache key is the concrete type plus the canonical shape identity (in practice, the resulting stable mangled symbol) rather than the raw method-slot list alone, since a slot-only key can collide across distinct shapes that happen to produce the same number of slots.
 
 ## Zero-sized values
 

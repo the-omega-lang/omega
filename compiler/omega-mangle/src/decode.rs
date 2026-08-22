@@ -164,8 +164,22 @@ impl Decoder<'_> {
                 let length = base62::decode(self.bytes, &mut self.pos)?;
                 MangleType::SizedArray(Box::new(item), length)
             }
-            TAG_SPEC_OBJECT => self.parse_wrapped_type(false, MangleType::SpecObject)?,
-            TAG_SPEC_OBJECT_MUT => self.parse_wrapped_type(true, MangleType::SpecObject)?,
+            TAG_SPEC_OBJECT => {
+                self.pos += 1;
+                MangleType::SpecObject(vec![self.parse_type()?], false)
+            }
+            TAG_SPEC_OBJECT_MUT => {
+                self.pos += 1;
+                MangleType::SpecObject(vec![self.parse_type()?], true)
+            }
+            TAG_SPEC_OBJECT_SHAPE => {
+                self.pos += 1;
+                MangleType::SpecObject(self.parse_type_list()?, false)
+            }
+            TAG_SPEC_OBJECT_SHAPE_MUT => {
+                self.pos += 1;
+                MangleType::SpecObject(self.parse_type_list()?, true)
+            }
             TAG_FUNCTION => {
                 self.pos += 1;
                 let convention = self.parse_convention();

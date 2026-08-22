@@ -265,9 +265,7 @@ pub struct HirSpecDef {
     pub explicit_hidden_span: Option<Span>,
     pub name: Ident,
     pub generics: Vec<HirGenericParam>,
-    pub dependencies: Vec<Type>,
     pub functions: Vec<HirSpecFunction>,
-    pub is_alias: bool,
     pub annotations: Vec<HirAnnotation>,
 }
 

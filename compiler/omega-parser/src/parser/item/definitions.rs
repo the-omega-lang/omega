@@ -193,29 +193,6 @@ pub fn parse_spec_def(
     let ident = p.expect_ident()?;
     let generics = parse_optional_generics(p)?;
 
-    if p.eat(&TokenKind::Eq) {
-        let mut dependencies = vec![crate::parser::r#type::parse_type(p)?];
-        while p.eat(&TokenKind::Plus) {
-            dependencies.push(crate::parser::r#type::parse_type(p)?);
-        }
-        if p.check(&TokenKind::LBrace) {
-            p.error(ParseErrorKind::SpecAliasCannotDeclareFunctions);
-            recovery::skip_balanced_group(p);
-        } else {
-            p.expect_terminator(&TokenKind::Semi, "';'");
-        }
-        return Some(SpecStmt {
-            ident,
-            visibility,
-            explicit_hidden_span,
-            generics,
-            dependencies,
-            functions: Vec::new(),
-            is_alias: true,
-            annotations,
-        });
-    }
-
     // `:` here is the removed provisioning form (`spec X : A, B`) --
     // reported with a dedicated error naming both replacements rather than
     // left to the ordinary "'{'" expectation, then skipped so the rest of
@@ -248,9 +225,7 @@ pub fn parse_spec_def(
         visibility,
         explicit_hidden_span,
         generics,
-        dependencies: Vec::new(),
         functions,
-        is_alias: false,
         annotations,
     })
 }

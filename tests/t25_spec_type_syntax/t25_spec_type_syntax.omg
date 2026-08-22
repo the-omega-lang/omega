@@ -1,0 +1,76 @@
+import std::io::println;
+
+# Each member is a real declaration -- there is no alias mechanism anymore.
+exposed spec A {
+	a(*self) => i32;
+}
+
+exposed spec B {
+	b(*self) => i32;
+}
+
+# An object-safe marker: zero methods. Section offsets for the members after
+# it must not depend on finding a first method.
+exposed spec M {}
+
+struct Foo {
+	exposed tally: i32;
+}
+
+conform Foo to A {
+	a(*self) => i32 { self.tally + 1 }
+}
+
+conform Foo to B {
+	b(*self) => i32 { self.tally + 2 }
+}
+
+conform Foo to M {}
+
+# --- static conjunction parameter: one fresh generic, both bounds ---------
+use_conjunction<T: A + B>(value: *T) => i32 {
+	A::a(value) + B::b(value)
+}
+
+# --- dynamic object parameter: *spec A + B --------------------------------
+speak(obj: *spec A + B) => i32 {
+	obj.a() + obj.b()
+}
+
+# Source order is semantically irrelevant: `B + A` must coerce into this
+# `A + B` parameter with no conversion at all.
+speak_reordered(obj: *spec B + A) => i32 {
+	obj.a() + obj.b()
+}
+
+main() => void {
+	foo := Foo { tally = 10; };
+
+	# --- static dispatch through a top-level conjunction parameter ---------
+	println$("static-conjunction: ", use_conjunction(&foo));
+
+	# --- implicit coercion to a dynamic conjunction object ------------------
+	println$("dynamic-conjunction: ", speak(&foo));
+
+	# --- reordered spelling coerces identically (same canonical shape) -----
+	println$("reordered-conjunction: ", speak_reordered(&foo));
+
+	# --- explicit cast to a dynamic object, plus its pseudo-fields ----------
+	obj := <*spec A + B>&foo;
+	raw := obj.ptr;
+	vt := obj.vtable;
+	println$("object-pseudo-fields: ", <usize>raw != 0usize, " ", <usize>vt != 0usize);
+
+	# --- narrowing to one already-present member, no widening --------------
+	narrowed := <*spec A>obj;
+	println$("narrowed-member: ", narrowed.a());
+
+	# --- a zero-method marker member joins the shape without breaking the --
+	# --- section layout of the members after it -----------------------------
+	full := <*spec A + B + M>&foo;
+	println$("marker-member-object: ", full.a(), " ", full.b());
+
+	# --- duplicate members collapse: `A + A` is exactly `A` ----------------
+	dup := <*spec A + A>&foo;
+	println$("duplicate-member: ", dup.a());
+}

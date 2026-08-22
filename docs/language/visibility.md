@@ -95,6 +95,6 @@ conform Dog to Mammal {
 }
 ```
 
-Each requirement keeps the visibility of the spec that declared it (or its own explicit modifier, capped at the spec's visibility), including when reached through a spec alias/conjunction.
+Each requirement keeps the visibility of the spec that declared it (or its own explicit modifier, capped at the spec's visibility), including when reached through a conjunction (`spec A + B`).
 
-Dynamic dispatch must not widen visibility. A method that is inaccessible to a source location through direct dispatch must not become callable there merely by coercing the value to `spec *S`; forming/using the dynamic object remains subject to the requirement's effective visibility.
+Dynamic dispatch must not widen visibility. A method that is inaccessible to a source location through direct dispatch must not become callable there merely by coercing the value to `*spec S`; forming/using the dynamic object remains subject to the requirement's effective visibility.

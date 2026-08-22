@@ -9,7 +9,7 @@ pub fn parse_type(p: &mut Parser) -> Option<Type> {
         TokenKind::Star => parse_pointer_type(p),
         TokenKind::LBracket => parse_bracket_type(p),
         TokenKind::LParen => parse_function_type(p),
-        TokenKind::Spec => parse_spec_object_type(p),
+        TokenKind::Spec => parse_spec_static_type(p),
         TokenKind::Foreign => parse_foreign_function_type(p),
         TokenKind::Ident(_) => parse_named_type(p),
         _ => {
@@ -29,15 +29,13 @@ fn parse_pointer_type(p: &mut Parser) -> Option<Type> {
     Some(Type::Pointer(Box::new(inner), mutable))
 }
 
-fn parse_spec_object_type(p: &mut Parser) -> Option<Type> {
+fn parse_spec_static_type(p: &mut Parser) -> Option<Type> {
     p.advance(); // 'spec'
-    if !p.eat(&TokenKind::Star) {
-        let inner = parse_named_type(p)?;
-        return Some(Type::SpecStatic(Box::new(inner)));
+    let mut members = vec![parse_named_type(p)?];
+    while p.eat(&TokenKind::Plus) {
+        members.push(parse_named_type(p)?);
     }
-    let mutable = p.eat_contextual(contextual::MUT);
-    let inner = parse_named_type(p)?;
-    Some(Type::SpecObject(Box::new(inner), mutable))
+    Some(Type::SpecStatic(members))
 }
 
 fn parse_bracket_type(p: &mut Parser) -> Option<Type> {

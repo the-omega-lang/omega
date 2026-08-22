@@ -27,7 +27,6 @@ item = import
      | marker-declaration
      | enum-declaration
      | spec-declaration
-     | spec-alias
      | conformance
      | primitive-block
      | gap-declaration
@@ -123,8 +122,10 @@ fixed-array-type        = "[", decimal-integer, "]", type ;
 inferred-array-type     = "[", "]", type ;
 unknown-size-array-type = "[", "?", "]", type ;
 
-spec-type = "spec", [ "*", [ "mut" ] ], type-path ;
+spec-type = "spec", type-path, { "+", type-path } ;
 ```
+
+`spec-type` parses one static conjunction of members; there is no `spec *...` prefix-pointer spelling. `pointer-type = "*", ["mut"], type` already covers a dynamic spec object structurally: `*spec A + B` and `*mut spec A + B` are ordinary `pointer-type`s whose `type` is a `spec-type`. Semantic type resolution recognizes that specific immediate combination and turns it into a dynamic spec-object type; the grammar itself does not distinguish "static" from "dynamic" spec types. See [`specs-and-conformance.md`](specs-and-conformance.md).
 
 `[]T` is syntactically a type form used where array length is inferred; its legal semantic positions are restricted by [`types-and-primitives.md`](types-and-primitives.md). Slice values use pointer forms such as `*[]T`/`*mut []T`.
 
@@ -222,10 +223,6 @@ spec-declaration = [ visibility ], "spec", identifier,
                    [ generic-parameters ],
                    "{", { spec-member }, "}" ;
 
-spec-alias = [ visibility ], "spec", identifier,
-             [ generic-parameters ],
-             "=", type, { "+", type }, ";" ;
-
 spec-member = [ visibility ], identifier,
               "(", [ spec-parameters ], ")",
               "=>", type,
@@ -236,7 +233,7 @@ spec-parameters = function-parameters, [ ",", "..." ]
                 | "..." ;
 ```
 
-A spec member does not introduce its own generic-parameter list. A body supplies a default implementation. `spec X : A, B { ... }` is not valid Omega syntax; express requirements as generic bounds and/or blanket conformances.
+A spec member does not introduce its own generic-parameter list. A body supplies a default implementation. A spec declaration never carries a dependency/alias list: `spec X : A, B { ... }` and `spec X = A + B;` are both invalid Omega syntax; express requirements as generic bounds and/or blanket conformances, and spell a conjunction directly at the type where it is needed (`spec A + B`, `*spec A + B`) rather than naming it separately.
 
 A spec member's visibility modifier, when given, must not exceed the declaring spec's own visibility; when omitted, it defaults to the spec's own visibility rather than to hidden (see [`visibility.md`](visibility.md)).
 

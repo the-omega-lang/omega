@@ -259,7 +259,6 @@ fn every_parse_error_renders_a_headline_and_a_label() {
         ParseErrorKind::StructNotAllowedHere,
         ParseErrorKind::UnionNotAllowedHere,
         ParseErrorKind::SpecNotAllowedHere,
-        ParseErrorKind::SpecAliasCannotDeclareFunctions,
         ParseErrorKind::RangeMissingEnd,
         ParseErrorKind::OpenRangeHasEnd,
         ParseErrorKind::ChainedComparison,

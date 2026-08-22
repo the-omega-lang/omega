@@ -57,6 +57,5 @@ pub enum Type {
     UnknownSizeArray(Box<Type>),
     SizedArray(Box<Type>, String),
     Generic(Path, Vec<Type>),
-    SpecObject(Box<Type>, bool),
-    SpecStatic(Box<Type>),
+    SpecStatic(Vec<Type>),
 }

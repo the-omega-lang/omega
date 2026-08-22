@@ -58,4 +58,4 @@ The same place/address rule applies to marker locals, fields, array elements, va
 
 Passing a marker by value transfers no payload bytes, but otherwise follows normal by-value call semantics. Pointer receivers operate on the marker place's real address.
 
-A marker may conform to a spec and be coerced to `spec *Spec` / `spec *mut Spec` in the same way as any other concrete type. The data pointer identifies the concrete marker place; the dispatch metadata follows the ordinary dynamic-spec-object rules in [`specs-and-conformance.md`](specs-and-conformance.md).
+A marker may conform to a spec and be coerced to `*spec Spec` / `*mut spec Spec` in the same way as any other concrete type. The data pointer identifies the concrete marker place; the dispatch metadata follows the ordinary dynamic-spec-object rules in [`specs-and-conformance.md`](specs-and-conformance.md).

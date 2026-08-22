@@ -1,5 +1,5 @@
 use omega_parser::SourceModule;
-use omega_parser::prelude::Item;
+use omega_parser::prelude::{Item, Type};
 
 fn function(source: &str) -> omega_parser::prelude::FunctionDefinitionStmt {
     let module = SourceModule::parse(source).unwrap();
@@ -7,6 +7,10 @@ fn function(source: &str) -> omega_parser::prelude::FunctionDefinitionStmt {
         panic!("expected function definition");
     };
     definition
+}
+
+fn param_type(source: &str) -> Type {
+    function(source).params[0].r#type.clone()
 }
 
 #[test]
@@ -52,13 +56,51 @@ fn bound_conjunction_parses_on_structs_too() {
 }
 
 #[test]
-fn spec_alias_plus_separator_parses() {
-    let module = SourceModule::parse("spec X = A + B;").unwrap();
-    let Item::Spec(definition) = module.nodes.into_iter().next().unwrap().item else {
-        panic!("expected spec definition");
+fn spec_conjunction_type_parses_to_static_shape() {
+    let ty = param_type("f(x: spec A + B) => void {}");
+    let Type::SpecStatic(members) = ty else {
+        panic!("expected a static spec conjunction, got {ty:?}");
     };
-    assert!(definition.is_alias);
-    assert_eq!(definition.dependencies.len(), 2);
+    assert_eq!(members.len(), 2);
+}
+
+#[test]
+fn pointer_to_spec_conjunction_is_an_ordinary_structural_pointer() {
+    let ty = param_type("f(x: *spec A + B) => void {}");
+    let Type::Pointer(inner, mutable) = ty else {
+        panic!("expected an ordinary pointer, got {ty:?}");
+    };
+    assert!(!mutable);
+    assert!(matches!(*inner, Type::SpecStatic(members) if members.len() == 2));
+}
+
+#[test]
+fn mut_pointer_to_spec_conjunction_is_an_ordinary_structural_pointer() {
+    let ty = param_type("f(x: *mut spec A + B) => void {}");
+    let Type::Pointer(inner, mutable) = ty else {
+        panic!("expected an ordinary pointer, got {ty:?}");
+    };
+    assert!(mutable);
+    assert!(matches!(*inner, Type::SpecStatic(members) if members.len() == 2));
+}
+
+#[test]
+fn old_prefix_pointer_spec_object_syntax_is_rejected() {
+    assert!(SourceModule::parse("f(x: spec *A) => void {}").is_err());
+    assert!(SourceModule::parse("f(x: spec *mut A) => void {}").is_err());
+}
+
+#[test]
+fn old_spec_alias_declaration_syntax_is_an_ordinary_parse_error() {
+    // `spec Name = ...` is not recognized at all anymore -- no dedicated
+    // diagnostic remembers that alias syntax used to exist; `=` where a
+    // spec body is expected just fails like any other invalid syntax.
+    let errors = SourceModule::parse("spec AB = A + B;").unwrap_err();
+    assert!(errors.iter().any(|e| matches!(
+        &e.kind,
+        omega_parser::diagnostics::ParseErrorKind::Expected { expected, .. }
+            if *expected == "'{'"
+    )));
 }
 
 #[test]

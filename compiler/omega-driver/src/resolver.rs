@@ -586,13 +586,12 @@ fn rewrite_self_return(ty: &Type, owner: &Ident, owner_generics: &[Ident]) -> Ty
             Box::new(rewrite_self_return(inner, owner, owner_generics)),
             n.clone(),
         ),
-        Type::SpecObject(inner, mutable) => Type::SpecObject(
-            Box::new(rewrite_self_return(inner, owner, owner_generics)),
-            *mutable,
+        Type::SpecStatic(members) => Type::SpecStatic(
+            members
+                .iter()
+                .map(|m| rewrite_self_return(m, owner, owner_generics))
+                .collect(),
         ),
-        Type::SpecStatic(inner) => {
-            Type::SpecStatic(Box::new(rewrite_self_return(inner, owner, owner_generics)))
-        }
         Type::Generic(path, args) => Type::Generic(
             path.clone(),
             args.iter()

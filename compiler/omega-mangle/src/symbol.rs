@@ -48,7 +48,10 @@ pub enum MangleType {
     Str(bool),
     Array(Box<MangleType>, bool),
     SizedArray(Box<MangleType>, u64),
-    SpecObject(Box<MangleType>, bool),
+    /// One dynamic spec-object shape, member types in canonical final-name
+    /// order. A single-member shape mangles byte-identically to the
+    /// pre-conjunction singleton encoding.
+    SpecObject(Vec<MangleType>, bool),
     Function(Vec<MangleType>, Box<MangleType>, bool, MangleConvention),
     Named(ManglePath, Option<u32>),
 }

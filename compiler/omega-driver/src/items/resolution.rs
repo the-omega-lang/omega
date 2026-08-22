@@ -535,12 +535,7 @@ impl Driver {
             module_path,
             &[],
             AnalysisSite::new(sp.id, sp.span),
-            |analyzer| {
-                (
-                    analyzer.resolve_spec_dependencies(&sp),
-                    analyzer.resolve_spec_functions(&sp),
-                )
-            },
+            |analyzer| analyzer.resolve_spec_functions(&sp),
         );
         self.diagnostics.record_warnings(module_path, run.warnings);
 
@@ -551,13 +546,10 @@ impl Driver {
                 item: key.1,
             });
         }
-        let (dependencies, (functions, annotations)) = run.result;
+        let (functions, annotations) = run.result;
         let is_object_safe = functions
             .iter()
-            .all(|(_, raw)| !matches!(raw.return_type, Type::SpecStatic(_)))
-            && dependencies
-                .iter()
-                .all(|(dep, _)| dep.borrow().is_object_safe);
+            .all(|(_, raw)| !matches!(raw.return_type, Type::SpecStatic(_)));
         let cell = Rc::new(RefCell::new(ResolvedSpecType {
             id: sp.id,
             name: sp.name.clone(),
@@ -566,8 +558,6 @@ impl Driver {
             module_path: module_path.to_vec(),
             type_args: vec![],
             is_object_safe,
-            is_alias: sp.is_alias,
-            dependencies,
             functions,
             suppress: annotations.suppress,
         }));

@@ -4,10 +4,10 @@
 import super::io::Write;
 
 exposed spec Display {
-    fmt(*self, out: spec *mut Write) => void;
+    fmt(*self, out: *mut spec Write) => void;
 }
 
-write_byte(out: spec *mut Write, byte: u8) => void {
+write_byte(out: *mut spec Write, byte: u8) => void {
     mut bytes: [1]u8;
     bytes[0] = byte;
     out.write(&bytes[0..]);
@@ -18,7 +18,7 @@ write_byte(out: spec *mut Write, byte: u8) => void {
 # rather than corrupting the stack -- a caller bug with no failure channel
 # to report through (see docs/guide/console-io.md). Digits are reversed into
 # `output` and issued as one `write` to avoid a per-byte indirect call.
-exposed write_uint(out: spec *mut Write, value: u64, base: u32) => void {
+exposed write_uint(out: *mut spec Write, value: u64, base: u32) => void {
     radix_ok := if base < 2u32 { false } else { base <= 36u32 };
     if radix_ok {
         mut digits: [64]u8;
@@ -47,7 +47,7 @@ exposed write_uint(out: spec *mut Write, value: u64, base: u32) => void {
     }
 }
 
-exposed write_int(out: spec *mut Write, value: i64, base: u32) => void {
+exposed write_int(out: *mut spec Write, value: i64, base: u32) => void {
     if value < 0i64 {
         write_byte(out, 45u8);
         write_uint(out, <u64>(-(value + 1i64)) + 1u64, base);
@@ -56,11 +56,11 @@ exposed write_int(out: spec *mut Write, value: i64, base: u32) => void {
     }
 }
 
-exposed write_bool(out: spec *mut Write, value: bool) => void {
+exposed write_bool(out: *mut spec Write, value: bool) => void {
     if value { out.write(b"true"); } else { out.write(b"false"); }
 }
 
-exposed write_char(out: spec *mut Write, value: char) => void {
+exposed write_char(out: *mut spec Write, value: char) => void {
     code := <u32>value;
     mut bytes: [4]u8;
     if code < 128u32 {
@@ -84,7 +84,7 @@ exposed write_char(out: spec *mut Write, value: char) => void {
     }
 }
 
-exposed write_float(out: spec *mut Write, value: f64) => void {
+exposed write_float(out: *mut spec Write, value: f64) => void {
     bits := *<*u64>&value;
     exponent := (bits >> 52u64) & 0x7ffu64;
     mantissa := bits & 0x000fffffffffffffu64;
@@ -122,7 +122,7 @@ exposed write_float(out: spec *mut Write, value: f64) => void {
     }
 }
 
-write_float_fixed(out: spec *mut Write, magnitude: f64) => void {
+write_float_fixed(out: *mut spec Write, magnitude: f64) => void {
     mut rounded := magnitude + 0.0000005;
     mut place: f64 = 1.0;
     while place * 10.0 <= rounded {

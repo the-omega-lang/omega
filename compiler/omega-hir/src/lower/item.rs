@@ -242,43 +242,24 @@ impl Lowerer {
         }
     }
 
+    // Only a parameter's outermost type desugars: `value: spec A + B` becomes
+    // one fresh generic bound by every member. `*spec A + B` (or a spec
+    // buried in an array/generic/function type) stays structural -- it
+    // survives into semantic analysis, which is the only layer that can tell
+    // a static bound from a dynamic-object pointee.
     fn desugar_spec_static_params(params: &mut [HirParam], generics: &mut Vec<HirGenericParam>) {
         let mut next = 0usize;
         for param in params.iter_mut() {
-            Self::replace_spec_static(&mut param.r#type, &mut next, generics);
-        }
-    }
-
-    fn replace_spec_static(ty: &mut Type, next: &mut usize, generics: &mut Vec<HirGenericParam>) {
-        match ty {
-            Type::SpecStatic(bound) => {
+            if let Type::SpecStatic(members) = &param.r#type {
                 let fresh = Ident(format!("$Param{next}"));
-                *next += 1;
+                next += 1;
                 generics.push(HirGenericParam {
                     ident: fresh.clone(),
-                    bounds: vec![(**bound).clone()],
+                    bounds: members.clone(),
                     default: None,
                 });
-                *ty = Type::Named(fresh.into());
+                param.r#type = Type::Named(fresh.into());
             }
-            Type::Pointer(inner, _)
-            | Type::InferredArray(inner)
-            | Type::UnknownSizeArray(inner)
-            | Type::SizedArray(inner, _) => {
-                Self::replace_spec_static(inner, next, generics);
-            }
-            Type::Generic(_, args) => {
-                for a in args.iter_mut() {
-                    Self::replace_spec_static(a, next, generics);
-                }
-            }
-            Type::Function(f) => {
-                for p in f.params.iter_mut() {
-                    Self::replace_spec_static(&mut p.r#type, next, generics);
-                }
-                Self::replace_spec_static(&mut f.return_type, next, generics);
-            }
-            Type::Named(_) | Type::SpecObject(_, _) => {}
         }
     }
 
@@ -400,7 +381,6 @@ impl Lowerer {
     fn lower_spec_def(&mut self, sp: &SpecStmt, span: Span) -> HirSpecDef {
         let id = self.ids.next();
         let generics = Self::lower_generics(&sp.generics);
-        let dependencies = sp.dependencies.clone();
         let functions = sp
             .functions
             .iter()
@@ -415,9 +395,7 @@ impl Lowerer {
             explicit_hidden_span: sp.explicit_hidden_span,
             name: sp.ident.clone(),
             generics,
-            dependencies,
             functions,
-            is_alias: sp.is_alias,
             annotations,
         }
     }

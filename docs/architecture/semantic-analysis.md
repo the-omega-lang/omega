@@ -216,7 +216,11 @@ Bounds are resolved/expanded and available to body checking. Conformance lookup 
 
 ## Specs and conformances
 
-Specs have canonical declaration cells containing raw member/dependency information. A concrete use substitutes spec arguments + `Self` and resolves effective member slots.
+Specs have canonical declaration cells containing their own raw requirement information -- a spec declares only itself, with no alias/dependency mechanism. A concrete use substitutes spec arguments + `Self` and resolves effective member slots.
+
+A raw `spec A + B + ...` conjunction (`Type::SpecStatic`, parser/HIR-level) becomes semantic only at the point where `Context::resolve_pointer_type` sees it as an *immediate* pointer pointee: `Pointer(SpecStatic(members), mutable)` resolves to `ResolvedType::SpecObject { shape, mutable }`. A bare (non-pointer) `spec ...` in a supported static position instead desugars earlier, in HIR, into one fresh generic bounded by every member (see [`parsing-and-hir.md`](parsing-and-hir.md)); a bare `spec ...` anywhere else remains a `TypeResolutionError`. This is the one place static-vs-dynamic is decided -- MIR/codegen never see an unresolved `Type::SpecStatic`.
+
+`shape` is a `ResolvedSpecShape`: a canonicalized list of `ResolvedSpecApplication { spec, spec_args }`. Canonicalization resolves every member to its final spec declaration, normalizes its generic arguments, removes exact duplicate applications, and sorts what remains by fully qualified spec name plus a canonical normalized-argument key -- never by declaration/discovery order, which can vary across compilations. Consequently `*spec A + B` and `*spec B + A` resolve to the same `ResolvedSpecShape` and compare/hash equal; reordering is not a coercion or cast, because there is nothing to convert.
 
 Conformance logic spans analyzer + driver:
 
@@ -225,7 +229,7 @@ Conformance logic spans analyzer + driver:
 
 This split prevents the analyzer from owning a global conformance database while keeping semantic compatibility logic out of the driver.
 
-Dynamic spec calls emerge as checked nodes with enough resolved slot/callee information for codegen to build/use vtables without re-running conformance selection.
+Dynamic spec calls emerge as checked nodes with enough resolved slot/callee information for codegen to build/use vtables without re-running conformance selection. For a conjunction object, each canonical shape member's slots are concatenated in shape order (`Analyzer::type_implements_shape`/`finish_dynamic_dispatch_call`) -- this concatenation is exactly the vtable section layout codegen materializes, so a member's compile-time section offset is a sum of the slot counts of the members before it, not a search for its first method (an object-safe spec may legally have zero).
 
 ## Pattern matching and exhaustiveness
 

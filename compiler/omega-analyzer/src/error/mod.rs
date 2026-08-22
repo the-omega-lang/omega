@@ -51,14 +51,10 @@ pub fn raw_type_display(ty: &omega_parser::prelude::Type) -> String {
                 raw_type_display(&f.return_type)
             )
         }
-        Type::SpecObject(inner, mutable) => {
-            format!(
-                "spec *{}{}",
-                if *mutable { "mut " } else { "" },
-                raw_type_display(inner)
-            )
+        Type::SpecStatic(members) => {
+            let members: Vec<String> = members.iter().map(raw_type_display).collect();
+            format!("spec {}", members.join(" + "))
         }
-        Type::SpecStatic(inner) => format!("spec {}", raw_type_display(inner)),
     }
 }
 

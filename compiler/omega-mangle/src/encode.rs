@@ -139,14 +139,27 @@ impl Encoder {
                 self.encode_type(inner);
                 self.out.push_str(&base62::encode(*len));
             }
-            MangleType::SpecObject(inner, mutable) => self.encode_wrapped_type(
-                if *mutable {
-                    TAG_SPEC_OBJECT_MUT
+            // A single member mangles byte-identically to the
+            // pre-conjunction singleton encoding; two or more use a
+            // dedicated list encoding so the two forms are unambiguous.
+            MangleType::SpecObject(members, mutable) if members.len() == 1 => self
+                .encode_wrapped_type(
+                    if *mutable {
+                        TAG_SPEC_OBJECT_MUT
+                    } else {
+                        TAG_SPEC_OBJECT
+                    },
+                    &members[0],
+                ),
+            MangleType::SpecObject(members, mutable) => {
+                self.push_tag(if *mutable {
+                    TAG_SPEC_OBJECT_SHAPE_MUT
                 } else {
-                    TAG_SPEC_OBJECT
-                },
-                inner,
-            ),
+                    TAG_SPEC_OBJECT_SHAPE
+                });
+                self.encode_types(members);
+                self.push_tag(TAG_LIST_END);
+            }
             MangleType::Function(params, return_type, variadic, convention) => {
                 self.push_tag(TAG_FUNCTION);
                 if let Some(tag) = convention_tag(*convention) {

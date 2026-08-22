@@ -24,15 +24,18 @@ impl Driver {
                 Type::Pointer(inner, _)
                 | Type::InferredArray(inner)
                 | Type::UnknownSizeArray(inner)
-                | Type::SizedArray(inner, _)
-                | Type::SpecObject(inner, _) => walk(this, module, inner),
+                | Type::SizedArray(inner, _) => walk(this, module, inner),
                 Type::Function(f) => {
                     for param in &f.params {
                         walk(this, module, &param.r#type);
                     }
                     walk(this, module, &f.return_type);
                 }
-                Type::SpecStatic(_) => {}
+                Type::SpecStatic(members) => {
+                    for member in members {
+                        walk(this, module, member);
+                    }
+                }
             }
         }
         for param in generics {
@@ -155,19 +158,6 @@ impl Driver {
         );
         self.diagnostics.record_warnings(module, spec_run.warnings);
         let spec_reference = spec_run.result?;
-        if spec_reference.0.borrow().is_alias {
-            self.diagnostics.error(
-                module,
-                AnalysisError::new(
-                    conform.id,
-                    conform.span,
-                    AnalysisErrorKind::ConformToAliasSpec {
-                        alias: spec_reference.0.borrow().name.clone(),
-                    },
-                ),
-            );
-            return None;
-        }
         let type_args: Vec<_> = conform
             .generics
             .iter()

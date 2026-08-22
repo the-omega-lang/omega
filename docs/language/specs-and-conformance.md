@@ -4,7 +4,7 @@ This chapter is normative for current Omega language behavior. Known implementat
 
 A `spec` is Omega's named interface/trait construct. Specs define function requirements, can provide default bodies, can be used as generic bounds, and can be used for static or dynamic dispatch.
 
-## Declarations and aliases
+## Declarations
 
 ```omega
 exposed spec Animal {
@@ -15,23 +15,28 @@ exposed spec Animal {
         self.kind().tag == AnimalKind::Dog.tag
     }
 }
-
-spec ReadWrite = Read + Write;
 ```
 
 A function without a body is required. A function with a body is a default implementation that a conformance may use or replace.
 
 `Self` denotes the concrete implementing type. Spec receiver parameters must use `*self` or `*mut self`; by-value `self`/`mut self` is invalid in a spec declaration.
 
-A spec alias (`spec AB = A + B;`) names a conjunction of specs. It is not itself a separately conformable contract: a type satisfies the alias by satisfying every member. `conform T to AB` is invalid; write the member conformances instead.
-
-`spec X : A, B { ... }` is not valid Omega syntax. A spec declaration does not carry a dependency list.
+A spec declares only its own requirements. There is no alias mechanism: `spec AB = A + B;` is not valid Omega syntax, and a spec declaration never carries a dependency list (`spec X : A, B { ... }` is also invalid). A conjunction of specs is written directly at the type where it is needed -- see [Spec conjunctions in type syntax](#spec-conjunctions-in-type-syntax) below -- and is satisfied by conforming to each member separately; there is nothing to `conform T to` for a conjunction itself.
 
 ## Requirement identity
 
-A spec function is identified by its declaring spec as well as its name/signature. `A::tag` and `B::tag` are distinct requirements even when their source signatures are identical.
+A spec function is identified by its declaring spec as well as its name/signature. `A::tag` and `B::tag` are distinct requirements even when their source signatures are identical, and a conjunction never merges them merely because their names match.
 
-When the same spec reaches a conjunction more than once through aliases, the same underlying requirement is included once. Requirements from different specs are never merged merely because their names match.
+## Spec conjunctions in type syntax
+
+`spec A + B + ...` is one type-level form: a non-empty, `+`-separated list of spec members. Source order carries no semantic weight -- `spec A + B` and `spec B + A` are exactly the same type, and a repeated member (`spec A + A`) collapses to the same type as `spec A`. The compiler canonicalizes a conjunction by resolving every member to its final spec declaration, normalizing its generic arguments, removing exact duplicates, and sorting what remains by fully qualified spec name (with normalized arguments breaking ties among same-named specs). Two conjunctions that canonicalize to the same shape are the same type: nothing about them differs, so there is no conversion, cast, or diagnostic for reordering one into the other.
+
+What a `spec ...` type means depends entirely on where it appears, never on how it is spelled:
+
+- As a **bare type** (a generic bound, or the top-level type of a function parameter), it denotes a *static* constraint -- see [`spec S` as a static-dispatch type](#spec-s-as-a-static-dispatch-type-not-behind-a-pointer).
+- As the **immediate pointee of a pointer** (`*spec A + B`, `*mut spec A + B`), it denotes a *dynamic* spec object -- see [Dynamic dispatch](#dynamic-dispatch-pointer-to-spec).
+
+A `spec ...` type appearing anywhere else (behind an array, inside another type's generic arguments, as a function type's parameter/return without being that function type's own outermost form, etc.) is not allowed; static-vs-dynamic is decided only by that one immediate structural position.
 
 ## Explicit conformance
 
@@ -146,49 +151,51 @@ use_both<T: Animal + Dummy>(value: *T) => void {
 }
 ```
 
-A bound is nominal: a concrete instantiation of `T: Animal` must have an applicable conformance to `Animal`. `T: A + B` requires both. A spec alias used as a bound expands to the same conjunction of member requirements.
+A bound is nominal: a concrete instantiation of `T: Animal` must have an applicable conformance to `Animal`. `T: A + B` requires both.
 
 Methods supplied by declared/entailed bounds are in scope for generic code. If two bound specs make the same method name applicable and no unique overload can be selected, the call is ambiguous.
 
 An unbound generic parameter is not implicitly considered to conform to arbitrary specs; however, ordinary method lookup on its concrete monomorphized instantiation may still succeed where the language permits unconstrained generic duck-typed method use. See [`generics.md`](generics.md).
 
-## Dynamic dispatch: `spec *S`
+## Dynamic dispatch: pointer to `spec ...`
 
 ```omega
-speak(animal: spec *Animal) => void {
+speak(animal: *spec Animal) => void {
     animal.make_sound();
 }
 
 speak(&dog);
 ```
 
-`spec *S` is an immutable dynamic-dispatch object and `spec *mut S` is its mutable counterpart. The value is a fat pointer containing:
+`*spec S` is parsed structurally as an ordinary pointer to the static spec type `spec S` -- the grammar does not manufacture a fat pointer. Semantic type resolution recognizes an *immediate* `Pointer(spec ...)` and turns it into a dynamic spec-object type: an immutable dynamic-dispatch object, with `*mut spec S` (or `*mut spec A + B`) as its mutable counterpart. The value is a fat pointer containing:
 
 1. an opaque data pointer to the concrete value, and
 2. a dispatch-table pointer for the requested spec shape.
+
+Only that one immediate position is recognized this way; an ordinary `Pointer { pointee: Spec, .. }` never survives past semantic analysis behind another type constructor -- see [Spec conjunctions in type syntax](#spec-conjunctions-in-type-syntax).
 
 A pointer to a conforming concrete value may be coerced to an expected dynamic spec-object type at ordinary coercion sites such as arguments, assignments/initializers, returns, aggregate fields, and array elements. The mutable form requires a mutable concrete pointer.
 
 An explicit cast is also available:
 
 ```omega
-obj := <spec *Animal>&dog;
+obj := <*spec Animal>&dog;
 ```
 
 The cast is valid only when the concrete pointee satisfies the requested spec/conjunction.
 
 ### Conjunction objects and narrowing
 
-For an alias/conjunction object such as `spec *AB` where `AB = A + B`, each member spec retains its own section of the dispatch table. If both member specs declare the same callable name, an unqualified dynamic call is ambiguous.
+For a conjunction object such as `*spec A + B`, each canonical shape member retains its own section of the dispatch table, in the shape's canonical order (sorted by fully qualified spec name). If two members declare the same callable name, an unqualified dynamic call is ambiguous. A zero-method member (a marker spec) still occupies its section identity even though it contributes no slots, so members after it are unaffected by whether an earlier member happens to have methods.
 
-Use a narrowing cast to select a member:
+Use a narrowing cast to select one already-present member:
 
 ```omega
-(<spec *A>obj).tag();
-(<spec *B>obj).tag();
+(<*spec A>obj).tag();
+(<*spec B>obj).tag();
 ```
 
-Narrowing from a conjunction object to one of its member specs is valid. Widening from a narrower dynamic object to a larger conjunction is not implicitly or explicitly fabricated, because the missing dispatch sections do not exist.
+Narrowing only ever selects one member already present in the source shape's canonical set; it never reconstructs an arbitrary multi-member sub-conjunction. Reordering a conjunction's own spelling (`*spec B + A` vs. `*spec A + B`) is not a narrowing cast at all -- both spellings are the same canonical type, so there is nothing to convert. Widening from a narrower dynamic object to a larger conjunction is not implicitly or explicitly fabricated, because the missing dispatch sections do not exist.
 
 ### `.ptr` and `.vtable`
 
@@ -208,9 +215,9 @@ For the same concrete type and same resolved dynamic-spec shape, implementations
 
 Dynamic spec objects are not currently supported by `comp` evaluation; see [`compile-time-evaluation.md`](compile-time-evaluation.md).
 
-## `spec S` as a static-dispatch type
+## `spec S` as a static-dispatch type (not behind a pointer)
 
-`spec S` without `*` means “some concrete type satisfying `S`” and is distinct from the dynamic `spec *S` form.
+`spec S` as a bare type -- not the immediate pointee of a pointer -- means "some concrete type satisfying `S`" and is distinct from the dynamic `*spec S` form.
 
 ### Parameter position
 
@@ -230,7 +237,7 @@ spec ToIterator<T> {
 
 Inside a spec requirement, `=> spec S` allows each implementor to choose its own concrete return type, provided that return type satisfies `S`. This is associated-type-like behavior for that function result.
 
-A spec containing such a return requirement is **not object-safe** and therefore cannot form `spec *ThatSpec`: a single dynamic dispatch slot cannot describe an implementation-specific concrete return type.
+A spec containing such a return requirement is **not object-safe** and therefore cannot form `*spec ThatSpec`: a single dynamic dispatch slot cannot describe an implementation-specific concrete return type.
 
 ### Return position in an ordinary function
 
@@ -240,7 +247,7 @@ An ordinary function definition may not return `spec S` as a hidden body-inferre
 make() => spec Animal { ... }   # invalid
 ```
 
-Use an explicit generic chosen by the caller, a concrete return type, or a dynamic `spec *Animal` return as appropriate.
+Use an explicit generic chosen by the caller, a concrete return type, or a dynamic `*spec Animal` return as appropriate.
 
 ## Primitive extension blocks
 

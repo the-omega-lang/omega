@@ -62,7 +62,7 @@ pub(crate) struct Codegen<'ctx> {
     functions: HashMap<HirId, inkwell::values::FunctionValue<'ctx>>,
     bytes: HashMap<String, inkwell::values::GlobalValue<'ctx>>,
     const_blobs: HashMap<String, inkwell::values::GlobalValue<'ctx>>,
-    vtables: HashMap<Vec<HirId>, inkwell::values::GlobalValue<'ctx>>,
+    vtables: HashMap<String, inkwell::values::GlobalValue<'ctx>>,
     globals: HashMap<HirId, inkwell::values::GlobalValue<'ctx>>,
 
     symbols: SymbolRegistry,

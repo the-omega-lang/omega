@@ -159,18 +159,14 @@ impl<'r> Analyzer<'r> {
             mutable,
         };
 
-        if let ResolvedType::SpecObject {
-            spec, type_args, ..
-        } = &receiver.r#type
-        {
-            let (spec, type_args) = (spec.clone(), type_args.clone());
+        if let ResolvedType::SpecObject { shape, .. } = &receiver.r#type {
+            let shape = shape.clone();
             return Some(CalleeResolution::Dynamic(
                 self.finish_dynamic_dispatch_call(
                     callee.id,
                     callee.span,
                     receiver.checked,
-                    &spec,
-                    &type_args,
+                    &shape,
                     field,
                     args,
                 ),
@@ -606,13 +602,24 @@ impl<'r> Analyzer<'r> {
         id: HirId,
         span: Span,
         base: CheckedPlace,
-        spec: &Rc<RefCell<ResolvedSpecType>>,
-        type_args: &[ResolvedType],
+        shape: &crate::resolved_type::ResolvedSpecShape,
         field: &Ident,
         args: &[HirExprNode],
     ) -> Option<CheckedExprNode> {
         let self_placeholder = ResolvedType::Void;
-        let flattened = self.flatten_spec(id, span, spec, type_args, &self_placeholder)?;
+        // Concatenate every member's flattened functions in canonical shape
+        // order -- this is exactly the vtable section layout, so the index
+        // found here doubles as the global vtable slot.
+        let mut flattened = Vec::new();
+        for member in &shape.members {
+            flattened.extend(self.flatten_spec(
+                id,
+                span,
+                &member.spec,
+                &member.spec_args,
+                &self_placeholder,
+            )?);
+        }
         let matches: Vec<usize> = flattened
             .iter()
             .enumerate()
@@ -621,12 +628,11 @@ impl<'r> Analyzer<'r> {
             .collect();
         let slot_index = match matches.as_slice() {
             [] => {
-                let spec_name = spec.borrow().name.clone();
                 self.error(
                     id,
                     span,
                     AnalysisErrorKind::NoSuchSpecFunction {
-                        spec: spec_name,
+                        spec: Ident(shape.to_string()),
                         function: field.clone(),
                     },
                 );

@@ -44,7 +44,7 @@ main() => void {
 	# A marker may conform to a spec and dispatch statically or dynamically.
 	beacon := Beacon {};
 	println$("marker-static-dispatch: ", Pingable::ping(&beacon));
-	obj := <spec *Pingable>&beacon;
+	obj := <*spec Pingable>&beacon;
 	println$("marker-dynamic-dispatch: ", obj.ping());
 
 	# A zero-sized field does not advance the containing object's offset,

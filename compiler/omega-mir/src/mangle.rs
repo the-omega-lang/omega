@@ -72,11 +72,11 @@ pub fn conformance_method_symbol(
     function_symbol(value_path(spec, method_name), fn_type)
 }
 
-pub fn vtable_symbol(
-    concrete: &ResolvedType,
-    spec_name: &Ident,
-    spec_type_args: &[ResolvedType],
-) -> Symbol {
+/// `shape_members` must already be in the object's canonical shape order (see
+/// `ResolvedSpecShape`), so `A + B` and `B + A` always produce this symbol
+/// identically. A single member nests exactly like the pre-conjunction
+/// singleton encoding, since the loop below runs once in that case.
+pub fn vtable_symbol(concrete: &ResolvedType, shape_members: &[(Ident, Vec<ResolvedType>)]) -> Symbol {
     let omega_mangle::MangleType::Named(concrete_path, _) = semantic::mangle_type(concrete) else {
         unreachable!(
             "a spec-object coercion's concrete pointee is always a nominal aggregate type"
@@ -85,8 +85,11 @@ pub fn vtable_symbol(
 
     // See conformance_method_symbol: spec module identity is intentionally not changed here in a
     // refactor because linker-name changes are an ABI/separate-compilation migration.
-    let spec = generic_path(type_path(concrete_path, spec_name), spec_type_args);
-    data_item_symbol(value_path_name(spec, "vtable"))
+    let mut path = concrete_path;
+    for (spec_name, spec_type_args) in shape_members {
+        path = generic_path(type_path(path, spec_name), spec_type_args);
+    }
+    data_item_symbol(value_path_name(path, "vtable"))
 }
 
 pub fn data_symbol(bytes: &[u8]) -> String {
@@ -249,5 +252,40 @@ mod tests {
             &fn_type(vec![ResolvedType::I32], ResolvedType::I32),
         );
         assert_adapter_round_trip(symbol);
+    }
+
+    fn concrete_struct(name: &str) -> ResolvedType {
+        use omega_analyzer::resolved_type::ResolvedStructType;
+        use omega_hir::{HirId, ModuleId};
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        ResolvedType::Struct(Rc::new(RefCell::new(ResolvedStructType {
+            id: HirId {
+                module: ModuleId(0),
+                local: 0,
+            },
+            name: ident(name),
+            module_path: vec![ident("mymod")],
+            type_args: vec![],
+            fields: vec![],
+            functions: vec![],
+            layout: omega_analyzer::annotations::Layout::default(),
+            suppress: vec![],
+            is_marker: false,
+        })))
+    }
+
+    // `vtable_symbol` itself nests members in whatever order it is given --
+    // it is `ResolvedSpecShape::canonicalize` (see omega-analyzer's
+    // `resolved_type::tests`) that guarantees callers always pass the same
+    // canonical order for a reordered source spelling, so `*spec A + B` and
+    // `*spec B + A` reach this function with an identical member list.
+
+    #[test]
+    fn vtable_symbol_single_member_matches_singleton_shape() {
+        let concrete = concrete_struct("Foo");
+        let single = vtable_symbol(&concrete, &[(ident("A"), vec![])]);
+        let shape = vtable_symbol(&concrete, &[(ident("A"), vec![])]);
+        assert_eq!(encode(&single), encode(&shape));
     }
 }

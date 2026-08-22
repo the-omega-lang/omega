@@ -333,10 +333,11 @@ conform<T: Ord> T to Eq {
 }
 ```
 
-Specs may be aliases/compositions:
+A conjunction of specs is written directly at the type where it's needed, not declared separately:
 
 ```omega
-spec AB = A + B;
+use_both<T: A + B>(value: *T) => void { ... }
+speak(animal: *spec A + B) => void { ... }
 ```
 
 See [`../language/specs-and-conformance.md`](../language/specs-and-conformance.md).

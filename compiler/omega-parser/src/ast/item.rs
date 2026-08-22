@@ -157,9 +157,7 @@ pub struct SpecStmt {
     pub visibility: Visibility,
     pub explicit_hidden_span: Option<Span>,
     pub generics: Vec<GenericParam>,
-    pub dependencies: Vec<Type>,
     pub functions: Vec<SpecFunctionStmt>,
-    pub is_alias: bool,
     pub annotations: Vec<AnnotationNode>,
 }
 

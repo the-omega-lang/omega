@@ -278,7 +278,7 @@ conform<R: Read> BufReader<R> to Read {
 
 # Line splitting is policy, not a method every byte source must carry.  The
 # newline is consumed but not appended; `false` means no byte was read.
-exposed read_line(reader: spec *mut Read, into: *mut String) => bool {
+exposed read_line(reader: *mut spec Read, into: *mut String) => bool {
     mut chunk: [256]u8;
     mut count: i32 = 0;
     mut one: [1]u8;

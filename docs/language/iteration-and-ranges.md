@@ -99,7 +99,7 @@ If several `ToIterator<T>` conformances make the element type ambiguous, an expl
 for value : u8 in source { ... }
 ```
 
-`ToIterator<T>::to_iterator` returns `spec Iterator<T>` in the static-dispatch sense: each implementor may return its own concrete iterator type satisfying `Iterator<T>`. Consequently `ToIterator<T>` is not object-safe as a dynamic `spec *ToIterator<T>` contract; see [`specs-and-conformance.md`](specs-and-conformance.md).
+`ToIterator<T>::to_iterator` returns `spec Iterator<T>` in the static-dispatch sense: each implementor may return its own concrete iterator type satisfying `Iterator<T>`. Consequently `ToIterator<T>` is not object-safe as a dynamic `*spec ToIterator<T>` contract; see [`specs-and-conformance.md`](specs-and-conformance.md).
 
 ## Semantic expansion of protocol iteration
 

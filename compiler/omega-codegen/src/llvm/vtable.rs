@@ -1,20 +1,29 @@
 use super::Codegen;
 use inkwell::module::Linkage;
-use omega_analyzer::resolved_type::{ResolvedSpecType, ResolvedType};
+use omega_analyzer::resolved_type::{ResolvedSpecShape, ResolvedType};
 use omega_hir::HirId;
-use std::cell::RefCell;
-use std::rc::Rc;
 
 impl<'ctx> Codegen<'ctx> {
     pub(super) fn vtable_for(
         &mut self,
         concrete: &ResolvedType,
-        spec: &Rc<RefCell<ResolvedSpecType>>,
-        spec_type_args: &[ResolvedType],
+        shape: &ResolvedSpecShape,
         slots: &[HirId],
     ) -> inkwell::values::GlobalValue<'ctx> {
-        let key = slots.to_vec();
-        if let Some(&global) = self.vtables.get(&key) {
+        let shape_members: Vec<_> = shape
+            .members
+            .iter()
+            .map(|member| (member.spec.borrow().name.clone(), member.spec_args.clone()))
+            .collect();
+        let symbol = omega_mir::mangle::encode(&omega_mir::mangle::vtable_symbol(
+            concrete,
+            &shape_members,
+        ));
+        // Keyed by concrete type + canonical shape identity (via the stable
+        // mangled symbol) rather than slots alone: a slot-only key can
+        // collide across distinct shapes, most easily for a zero-method
+        // marker/object-safe member.
+        if let Some(&global) = self.vtables.get(&symbol) {
             return global;
         }
 
@@ -37,11 +46,6 @@ impl<'ctx> Codegen<'ctx> {
                 .collect::<Vec<_>>(),
         );
 
-        let symbol = omega_mir::mangle::encode(&omega_mir::mangle::vtable_symbol(
-            concrete,
-            &spec.borrow().name,
-            spec_type_args,
-        ));
         let global = self.module.add_global(array_type, None, &symbol);
         global.set_linkage(Linkage::WeakODR);
         global.set_initializer(&init);
@@ -51,7 +55,7 @@ impl<'ctx> Codegen<'ctx> {
             global.set_section(Some(&format!(".rodata.{symbol}")));
         }
 
-        self.vtables.insert(key, global);
+        self.vtables.insert(symbol, global);
         global
     }
 }

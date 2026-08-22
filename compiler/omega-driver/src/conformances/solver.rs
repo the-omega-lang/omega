@@ -76,7 +76,7 @@ impl Driver {
         declared_keys: &[(HirId, Vec<ResolvedType>)],
     ) -> Vec<ResolvedBound> {
         let mut permitted = HashSet::new();
-        Analyzer::alias_member_ids(&spec, &mut permitted);
+        permitted.insert(spec.borrow().id);
         let mut seeds = vec![ResolvedBound::new(concrete.clone(), spec, spec_args)];
         for entry in self.conformances_for_type(concrete) {
             if permitted.contains(&entry.spec.borrow().id) {

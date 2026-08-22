@@ -115,13 +115,13 @@ main() => void {
 	speak(&dog);
 	speak(&cat);
 
-	obj := <spec *Animal>&dog;
+	obj := <*spec Animal>&dog;
 	println$("dynamic-dispatch-call: ", obj.make_sound());
 	raw := obj.ptr;
 	vt := obj.vtable;
 	println$("dispatch-pseudo-fields: ", <usize>raw != 0usize, " ", <usize>vt != 0usize);
 }
 
-speak(animal: spec *Animal) => void {
+speak(animal: *spec Animal) => void {
 	println$("speak-dynamic-dispatch: ", animal.make_sound());
 }

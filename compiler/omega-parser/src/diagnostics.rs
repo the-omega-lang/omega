@@ -68,9 +68,6 @@ impl ParseError {
             ParseErrorKind::SpecNotAllowedHere => Diagnostic::error("specs can only be declared at the top level of a module")
                 .with_label(self.span, "not allowed inside a function body")
                 .with_help("move this `spec` to the module's top level"),
-            ParseErrorKind::SpecAliasCannotDeclareFunctions => Diagnostic::error("an alias spec can't declare its own functions")
-                .with_label(self.span, "an alias spec (`= A | B`) can't declare its own functions")
-                .with_help("give this spec a `{ ... }` body instead of `= ...` if it needs functions"),
             ParseErrorKind::RangeMissingEnd => Diagnostic::error("an inclusive ('..=') or exclusive ('..<') range must have an end bound")
                 .with_label(self.span, "this range has no end bound")
                 .with_help("give it an end (`..<end`/`..=end`), or use `..` if you mean an inferred, open-ended range"),
@@ -121,7 +118,7 @@ impl ParseError {
             ParseErrorKind::SpecDependenciesRemoved => Diagnostic::error("spec provisioning (`spec Name : Dep, Dep`) was removed from the language")
                 .with_label(self.span, "spec provisioning was removed from the language")
                 .with_note("a spec declares what its implementer provides, never a list of other specs to also satisfy")
-                .with_help("name the combination with an alias (`spec X = A + B;`) or spell the conjunction at the bound (`<T: A + B>`), and conform each member separately"),
+                .with_help("spell the conjunction at the bound (`<T: A + B>`), and conform each member separately"),
             ParseErrorKind::MacroInvocationNotAllowedAfterDefer => Diagnostic::error("a macro invocation can expand to more than one statement; write `defer { name$(...); }`")
                 .with_label(self.span, "this invocation could expand to several statements")
                 .with_help("write `defer { name$(...); }`"),
@@ -179,7 +176,6 @@ pub enum ParseErrorKind {
     StructNotAllowedHere,
     UnionNotAllowedHere,
     SpecNotAllowedHere,
-    SpecAliasCannotDeclareFunctions,
     RangeMissingEnd,
     OpenRangeHasEnd,
     ChainedComparison,

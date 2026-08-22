@@ -32,7 +32,7 @@ main() => void {
 
 	# Dynamic dispatch does not widen visibility: `Mammal` stays shared
 	# whether `breathe` is reached through static or dynamic dispatch.
-	obj := <spec *Mammal>&dog;
+	obj := <*spec Mammal>&dog;
 	println$("dynamic-dispatch-visibility: ", obj.breathe());
 
 	# `greet` has no modifier, so it inherits `Greeter`'s own visibility

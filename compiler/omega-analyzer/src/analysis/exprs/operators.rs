@@ -235,15 +235,9 @@ impl<'r> Analyzer<'r> {
             return None;
         }
 
-        if let ResolvedType::SpecObject {
-            spec,
-            type_args,
-            mutable,
-        } = &target_type
-        {
+        if let ResolvedType::SpecObject { shape, mutable } = &target_type {
             if let ResolvedType::SpecObject {
-                spec: base_spec,
-                type_args: base_type_args,
+                shape: base_shape,
                 mutable: base_mutable,
             } = &checked_base.r#type
             {
@@ -258,39 +252,43 @@ impl<'r> Analyzer<'r> {
                     );
                     return None;
                 }
-                let flattened = self.flatten_spec(
-                    node_id,
-                    span,
-                    base_spec,
-                    base_type_args,
-                    &ResolvedType::Void,
-                )?;
-                // The section offset is the target's slot position in the
-                // source object's flattened list -- the same ordered list
-                // the vtable was built from.
-                let target_spec_id = spec.borrow().id;
-                // Same spec, same instantiation: identity cast, offset zero.
-                // Checked first because an alias's own id never appears
-                // among its flattened members' entries.
-                let slot_offset =
-                    if target_spec_id == base_spec.borrow().id && *type_args == *base_type_args {
-                        0
-                    } else {
-                        let Some(slot_offset) = flattened.iter().position(|f| {
-                            f.spec_id == target_spec_id && f.type_args() == *type_args
-                        }) else {
-                            self.error(
-                                node_id,
-                                span,
-                                AnalysisErrorKind::SpecObjectCastImpossible {
-                                    from: base_spec.borrow().name.clone(),
-                                    to: spec.borrow().name.clone(),
-                                },
-                            );
-                            return None;
-                        };
-                        slot_offset
+                // Reordered spellings canonicalize to the same shape, so
+                // this is an identity cast at offset zero -- checked before
+                // the single-member narrow path below.
+                let slot_offset = if shape == base_shape {
+                    0
+                } else if let [target_member] = shape.members.as_slice() {
+                    let Some((offset, _)) = self.shape_member_section(
+                        node_id,
+                        span,
+                        base_shape,
+                        target_member.spec.borrow().id,
+                    ) else {
+                        self.error(
+                            node_id,
+                            span,
+                            AnalysisErrorKind::SpecObjectCastImpossible {
+                                from: Ident(base_shape.to_string()),
+                                to: Ident(shape.to_string()),
+                            },
+                        );
+                        return None;
                     };
+                    offset
+                } else {
+                    // Widening (or reconstructing an arbitrary sub-shape) is
+                    // not supported: only narrowing to one already-present
+                    // member is a compile-time offset, no metadata synthesis.
+                    self.error(
+                        node_id,
+                        span,
+                        AnalysisErrorKind::SpecObjectCastImpossible {
+                            from: Ident(base_shape.to_string()),
+                            to: Ident(shape.to_string()),
+                        },
+                    );
+                    return None;
+                };
                 return Some(CheckedExprNode {
                     id: node_id,
                     span,
@@ -329,11 +327,8 @@ impl<'r> Analyzer<'r> {
                 return None;
             }
             let pointee = (**pointee).clone();
-            let spec = spec.clone();
-            let type_args = type_args.clone();
-            let Ok(slots) =
-                self.type_implements_spec(node_id, span, &pointee, &spec, &type_args, true)
-            else {
+            let shape = shape.clone();
+            let Ok(slots) = self.type_implements_shape(node_id, span, &pointee, &shape) else {
                 self.error(
                     node_id,
                     span,
