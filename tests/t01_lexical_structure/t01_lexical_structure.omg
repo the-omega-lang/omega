@@ -1,4 +1,4 @@
-import extern::std::io::println;
+import std::io::println;
 
 # A single hash starts a line comment.
 

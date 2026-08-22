@@ -6,8 +6,8 @@
 #   list := LinkedList<i32>::new();
 #   defer list.free();
 
-import alloc::alloc;
-import alloc::free;
+import super::alloc::alloc;
+import super::alloc::free;
 
 # `Node<T>` is hidden (module-scoped); its fields are `shared` rather than
 # hidden since `LinkedList<T>`/`LinkedListIterator<T>` (both in this file)

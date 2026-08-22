@@ -1,0 +1,3 @@
+error: 'root' under module 't12c_reserved_module_name' is not a valid Omega module name
+= help: rename `root` to a valid Omega identifier (ASCII letters/digits/underscore, not starting with a digit) other than `root`, `self`, or `super`, which are reserved for import navigation; Omega does not normalize module names automatically
+

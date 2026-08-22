@@ -1,16 +1,24 @@
-import extern::std::io::println;
-import helper;
-import mymodule;
-import mymodule::thing::something;
+import std::io::println;
+import self::helper;
+import self::mymodule;
+import self::mymodule::thing::something;
+import self::mymodule::other::other_greeting;
 
 main() => void {
-	# `import helper;` -- an unrooted import of a sibling root-level module.
+	# `import self::helper;` -- an explicit same-package sibling import from
+	# the package root; unprefixed `import helper;` is no longer legal since
+	# unprefixed imports are always top-level package identities.
 	println$("helper-greeting: ", helper::greeting());
 
-	# `import mymodule;` makes the module path available; `import
-	# mymodule::thing::something;` separately binds one item's final name.
+	# `import self::mymodule;` makes the module path available; `import
+	# self::mymodule::thing::something;` separately binds one item's final name.
 	println$("mymodule-label: ", mymodule::label());
 	println$("something-import: ", something());
+
+	# `mymodule::other` reaches `helper` through a chained `super::super::`
+	# from two logical levels down -- the same target `thing.omg` reaches
+	# with `root::helper`.
+	println$("chained-super-import: ", other_greeting());
 
 	# `core`'s exposed declarations participate in ambient name resolution:
 	# `Option` needs no explicit import here.

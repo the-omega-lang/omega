@@ -1,0 +1,5 @@
+# `root` is reserved for import navigation (`root::`) and may not itself be
+# a module identity, even though it lexes as an ordinary contextual word.
+exposed marker() => i32 {
+	0
+}

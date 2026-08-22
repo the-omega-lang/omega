@@ -1,0 +1,5 @@
+# `super::` at the package root has no parent segment left to remove; this
+# must be a deterministic compile error, not a silent no-op or fallback.
+import super::helper;
+
+main() => void {}

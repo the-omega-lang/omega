@@ -101,7 +101,7 @@ fn main_returning_a_value_is_rejected() {
 fn non_root_module_main_is_unaffected() {
     let package = TestPackage::new(
         r#"
-        import helper;
+        import self::helper;
         main() => void { helper::main(); }
         "#,
     );

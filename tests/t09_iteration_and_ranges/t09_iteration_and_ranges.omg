@@ -1,7 +1,7 @@
-import extern::std::io::println;
-import extern::core::option::Option;
-import extern::core::iterator::Iterator;
-import extern::core::range::Range;
+import std::io::println;
+import core::option::Option;
+import core::iterator::Iterator;
+import core::range::Range;
 
 # A minimal user-defined cursor: proves `for ... in` dispatches through the
 # `Iterator<T>` protocol itself rather than matching a same-named method.

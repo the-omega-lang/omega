@@ -1,4 +1,4 @@
-import extern::std::io::println;
+import std::io::println;
 
 add(a: i32, b: i32) => i32 { a + b }
 

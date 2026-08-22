@@ -20,6 +20,7 @@ pub struct ExternRoot {
 pub(crate) struct ModuleRoots {
     local_tree: HashMap<ModulePath, Result<ModuleLocation, ResolveError>>,
     local_dir: PathBuf,
+    local_identity: Option<Ident>,
     externs: IndexMap<Ident, ExternRoot>,
     extern_trees: IndexMap<Ident, HashMap<ModulePath, Result<ModuleLocation, ResolveError>>>,
 }
@@ -32,7 +33,23 @@ impl ModuleRoots {
     ) -> Result<Self, Vec<CompileError>> {
         let mut registered: IndexMap<Ident, ExternRoot> = IndexMap::new();
         let mut errors = Vec::new();
+        let invalid_identity = |name: &Ident| CompileError::Resolve {
+            error: ResolveError::InvalidModuleName {
+                path: vec![],
+                invalid: name.to_string(),
+            },
+            importer: None,
+        };
+        if let Some(name) = &local_name
+            && !fs_resolve::is_valid_module_name(name.as_ref())
+        {
+            errors.push(invalid_identity(name));
+        }
         for root in externs {
+            if !fs_resolve::is_valid_module_name(root.name.as_ref()) {
+                errors.push(invalid_identity(&root.name));
+                continue;
+            }
             match registered.get(&root.name) {
                 Some(existing) if existing.dir == root.dir => {}
                 Some(existing) => errors.push(CompileError::DuplicateModuleIdentity {
@@ -53,14 +70,16 @@ impl ModuleRoots {
         if let Some(name) = &local_name {
             local_tree = fs_resolve::relabel_root(local_tree, name);
         }
-        if let Some(local_identity) = local_tree
+        let local_identity = local_tree
             .keys()
             .find(|path| path.len() == 1)
             .and_then(|path| path.first())
-            && let Some(extern_root) = registered.get(local_identity)
+            .cloned();
+        if let Some(identity) = &local_identity
+            && let Some(extern_root) = registered.get(identity)
         {
             return Err(vec![CompileError::DuplicateModuleIdentity {
-                name: local_identity.clone(),
+                name: identity.clone(),
                 first: local,
                 second: extern_root.dir.clone(),
             }]);
@@ -98,6 +117,7 @@ impl ModuleRoots {
         Ok(Self {
             local_tree,
             local_dir: local,
+            local_identity,
             externs: registered,
             extern_trees,
         })
@@ -108,8 +128,11 @@ impl ModuleRoots {
             .is_some_and(|head| self.externs.contains_key(head))
     }
 
-    pub fn has_extern(&self, name: &Ident) -> bool {
-        self.externs.contains_key(name)
+    /// Whether `name` is a known top-level package identity: the local
+    /// package or a registered dependency. Unprefixed imports resolve
+    /// directly against this namespace, with no relative fallback.
+    pub fn is_known_top_level(&self, name: &Ident) -> bool {
+        self.local_identity.as_ref() == Some(name) || self.externs.contains_key(name)
     }
 
     pub fn locate(&self, path: &[Ident]) -> Result<ModuleLocation, ResolveError> {
@@ -184,4 +207,118 @@ fn invalid_module_name_errors(
         )),
         _ => None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT_DIR: AtomicUsize = AtomicUsize::new(0);
+
+    struct TestDir(PathBuf);
+
+    impl TestDir {
+        fn new() -> Self {
+            let sequence = NEXT_DIR.fetch_add(1, Ordering::Relaxed);
+            let root = std::env::temp_dir().join(format!(
+                "omega_roots_test_{}_{}",
+                std::process::id(),
+                sequence,
+            ));
+            std::fs::create_dir_all(&root).expect("create test root");
+            Self(root)
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn write(dir: &std::path::Path, relative: &str) {
+        let path = dir.join(relative);
+        std::fs::create_dir_all(path.parent().expect("test file has a parent"))
+            .expect("create test module parent");
+        std::fs::write(path, "").expect("write test module");
+    }
+
+    #[test]
+    fn a_declared_local_identity_named_root_self_or_super_is_rejected() {
+        for reserved in ["root", "self", "super"] {
+            let local = TestDir::new();
+            write(&local.0, "main.omg");
+
+            let result = ModuleRoots::new(local.0.clone(), Some(Ident(reserved.to_string())), vec![]);
+            assert!(
+                matches!(
+                    result,
+                    Err(errors) if errors.iter().any(|e| matches!(
+                        e,
+                        CompileError::Resolve {
+                            error: ResolveError::InvalidModuleName { invalid, .. },
+                            ..
+                        } if invalid == reserved
+                    ))
+                ),
+                "expected declared local identity `{reserved}` to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn a_declared_dependency_identity_named_root_self_or_super_is_rejected() {
+        for reserved in ["root", "self", "super"] {
+            let local = TestDir::new();
+            write(&local.0, "main.omg");
+            let dependency = TestDir::new();
+            write(&dependency.0, "lib.omg");
+
+            let result = ModuleRoots::new(
+                local.0.clone(),
+                None,
+                vec![ExternRoot {
+                    name: Ident(reserved.to_string()),
+                    dir: dependency.0.clone(),
+                }],
+            );
+            assert!(
+                matches!(
+                    result,
+                    Err(errors) if errors.iter().any(|e| matches!(
+                        e,
+                        CompileError::Resolve {
+                            error: ResolveError::InvalidModuleName { invalid, .. },
+                            ..
+                        } if invalid == reserved
+                    ))
+                ),
+                "expected declared dependency identity `{reserved}` to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unprefixed_import_head_is_known_top_level_for_local_and_dependency_identities() {
+        let local = TestDir::new();
+        write(&local.0, "main.omg");
+        let dependency = TestDir::new();
+        write(&dependency.0, "lib.omg");
+
+        let roots = ModuleRoots::new(
+            local.0.clone(),
+            None,
+            vec![ExternRoot {
+                name: Ident("lib".to_string()),
+                dir: dependency.0.clone(),
+            }],
+        )
+        .expect("valid roots");
+
+        let local_name = fs_resolve::basename(&local.0).expect("local basename");
+        assert!(roots.is_known_top_level(&local_name));
+        assert!(roots.is_known_top_level(&Ident("lib".to_string())));
+        assert!(!roots.is_known_top_level(&Ident("unregistered".to_string())));
+    }
 }

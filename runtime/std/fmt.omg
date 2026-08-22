@@ -1,7 +1,7 @@
 # `std::fmt` -- allocation-free Display formatting into any dynamic `Write`
 # object.  Formatting knows no concrete sink or buffer type.
 
-import io::Write;
+import super::io::Write;
 
 exposed spec Display {
     fmt(*self, out: spec *mut Write) => void;

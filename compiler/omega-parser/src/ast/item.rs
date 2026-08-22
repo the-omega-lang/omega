@@ -155,9 +155,11 @@ pub struct ImportStmt {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImportRoot {
-    Local,
-    ProjectRoot,
-    Extern,
+    TopLevel,
+    Root,
+    SelfModule,
+    /// One or more chained leading `super::` segments; the count is the depth.
+    Super(u32),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

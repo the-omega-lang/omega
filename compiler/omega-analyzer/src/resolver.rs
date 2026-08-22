@@ -31,7 +31,12 @@ pub enum ImportTarget {
 #[derive(Debug, Clone)]
 pub enum ResolveError {
     UnknownModule(Vec<Ident>),
-    UnknownExtern(Ident),
+    /// An unprefixed import's head is not a known top-level package
+    /// identity (the local package or a registered dependency).
+    UnknownTopLevelPackage(Ident),
+    /// A `super::` chain removed more segments than the importing
+    /// module's package-relative depth allows.
+    SuperAboveRoot { depth: u32, importer: Vec<Ident> },
     UnknownItem {
         module: Vec<Ident>,
         item: Ident,
@@ -91,11 +96,17 @@ impl fmt::Display for ResolveError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnknownModule(path) => write!(f, "cannot find module '{}'", join(path)),
-            Self::UnknownExtern(name) => write!(
+            Self::UnknownTopLevelPackage(name) => write!(
                 f,
-                "no extern dependency named '{}' (missing --extern={}:<path>?)",
+                "'{}' is not a known top-level package (unprefixed imports are top-level; use `root::`, `self::`, or `super::` for local navigation, or register a dependency with --import={}:<path>)",
                 name.as_ref(),
                 name.as_ref()
+            ),
+            Self::SuperAboveRoot { depth, importer } => write!(
+                f,
+                "'super' used {} time(s) from '{}' would cross the package root",
+                depth,
+                join(importer)
             ),
             Self::UnknownItem { module, item } => {
                 write!(

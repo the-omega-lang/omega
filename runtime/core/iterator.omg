@@ -3,7 +3,7 @@
 # `IntoIterator`: `Iterator<T>` is the cursor itself, `ToIterator<T>` is
 # what a collection implements to produce one.
 
-import option::Option;
+import super::option::Option;
 
 # `to_iterator` returns `spec Iterator<T>` (static dispatch): each
 # implementor returns its own concrete iterator type, checked against the

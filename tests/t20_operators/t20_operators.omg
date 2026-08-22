@@ -1,4 +1,4 @@
-import extern::std::io::println;
+import std::io::println;
 
 # Type-check helpers: a call only compiles if the argument already has the
 # exact expected type, so a passing compile is itself part of the assertion.

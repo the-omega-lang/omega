@@ -1,4 +1,4 @@
-import extern::std::io::println;
+import std::io::println;
 
 main() => void {
 	# --- strings and byte strings: distinct fat/thin pointer types --------

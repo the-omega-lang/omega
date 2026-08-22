@@ -80,8 +80,16 @@ fn resolve_segment(dir: &Path, name: &Ident) -> Result<ModuleLocation, SegmentEr
     }
 }
 
-fn is_module_segment_name(name: &str) -> bool {
-    omega_parser::lexer::is_valid_identifier(name)
+/// Whether `name` is legal as a module/package identity: a valid Omega
+/// identifier that is not one of the three import-navigation spellings.
+/// Those spellings stay usable as ordinary contextual identifiers
+/// everywhere else (bindings, fields, item names, ...); they are excluded
+/// here only because reusing them as a module identity would make
+/// `root::`/`self::`/`super::` ambiguous between navigation and a literal
+/// module segment.
+pub fn is_valid_module_name(name: &str) -> bool {
+    use omega_parser::parser::contextual::{ROOT, SELF, SUPER};
+    omega_parser::lexer::is_valid_identifier(name) && ![ROOT, SELF, SUPER].contains(&name)
 }
 
 /// Whether `dir`'s subtree contains any `.omg` source, at any depth. Used to
@@ -154,7 +162,7 @@ fn discover_into(
         if skip.is_some_and(|s| s.as_ref() == candidate) {
             continue;
         }
-        if !is_module_segment_name(&candidate) {
+        if !is_valid_module_name(&candidate) {
             // A malformed candidate must still be reported if it is
             // source-bearing (a direct `.omg` file, or a directory that
             // leads to `.omg` source at any depth): silently dropping it
@@ -333,6 +341,54 @@ mod tests {
             tree.get(&key),
             Some(Err(ResolveError::InvalidModuleName { invalid, .. })) if invalid == "foo-bar"
         ));
+    }
+
+    #[test]
+    fn root_self_and_super_are_invalid_module_names_but_other_contextual_words_are_not() {
+        for reserved in ["root", "self", "super"] {
+            assert!(!is_valid_module_name(reserved), "{reserved} should be rejected");
+        }
+        for ordinary in ["mut", "comp", "reveal", "helper", "std"] {
+            assert!(is_valid_module_name(ordinary), "{ordinary} should be accepted");
+        }
+    }
+
+    #[test]
+    fn a_source_bearing_file_named_root_self_or_super_is_rejected() {
+        for reserved in ["root", "self", "super"] {
+            let root = TestDir::new();
+            let name = root.name();
+            root.write(&format!("{reserved}.omg"));
+
+            let tree = discover_tree(&root.0);
+            let key = vec![name, Ident(reserved.to_string())];
+            assert!(
+                matches!(
+                    tree.get(&key),
+                    Some(Err(ResolveError::InvalidModuleName { invalid, .. })) if invalid == reserved
+                ),
+                "expected `{reserved}.omg` to be rejected as a module identity"
+            );
+        }
+    }
+
+    #[test]
+    fn a_source_bearing_directory_named_root_self_or_super_is_rejected() {
+        for reserved in ["root", "self", "super"] {
+            let root = TestDir::new();
+            let name = root.name();
+            root.write(&format!("{reserved}/child.omg"));
+
+            let tree = discover_tree(&root.0);
+            let key = vec![name, Ident(reserved.to_string())];
+            assert!(
+                matches!(
+                    tree.get(&key),
+                    Some(Err(ResolveError::InvalidModuleName { invalid, .. })) if invalid == reserved
+                ),
+                "expected a `{reserved}/` directory to be rejected as a module identity"
+            );
+        }
     }
 
     #[test]

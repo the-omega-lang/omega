@@ -27,10 +27,11 @@ When editing `.omg`, do not infer missing syntax from Rust simply because the la
 ```omega
 # A line comment.
 
-import simplemodule;
-import mymodule::thing::something2;
+import std::fmt::Display;
+import self::simplemodule;
+import self::mymodule::thing::something2;
 import root::simplemodule;
-import extern::std::fmt::Display;
+import super::sibling;
 ```
 
 See [`../language/lexical-structure.md`](../language/lexical-structure.md) and [`../language/modules-and-imports.md`](../language/modules-and-imports.md).

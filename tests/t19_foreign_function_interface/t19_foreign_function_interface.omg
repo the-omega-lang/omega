@@ -1,5 +1,5 @@
-import extern::std::io::println;
-import helper;
+import std::io::println;
+import self::helper;
 
 # An extern declaration gives a name a function type with no Omega body;
 # calls use ordinary Omega call syntax.

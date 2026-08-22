@@ -1,8 +1,8 @@
-import extern::std::io::println;
-import child;
-import child::Mammal;
-import child::Greeter;
-import child::Dog;
+import std::io::println;
+import self::child;
+import self::child::Mammal;
+import self::child::Greeter;
+import self::child::Dog;
 
 main() => void {
 	# `exposed` and `shared` are both reachable across modules within the

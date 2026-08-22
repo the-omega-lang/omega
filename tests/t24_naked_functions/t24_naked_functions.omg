@@ -1,4 +1,4 @@
-import extern::std::io::println;
+import std::io::println;
 
 # The whole function body is the raw asm; there is no Omega return statement
 # and no Omega-generated prologue/epilogue around it.

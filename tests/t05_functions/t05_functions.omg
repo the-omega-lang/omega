@@ -1,4 +1,4 @@
-import extern::std::io::println;
+import std::io::println;
 
 # --- declaration syntax and recursion -----------------------------------
 fibo(n: i32) => i32 {

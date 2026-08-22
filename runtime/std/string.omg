@@ -5,7 +5,7 @@
 #   s := String::new();
 #   defer s.free();
 
-import list::List;
+import super::list::List;
 
 exposed struct String {
     bytes: List<u8>;

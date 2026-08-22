@@ -9,7 +9,7 @@ struct HiddenByDefault { ... }
 hidden struct AlsoHiddenByDefault { ... }
 
 reveal some_module::hidden_thing();
-import reveal extern::some_package;
+import reveal some_package;
 ```
 
 Omega has three declaration visibility levels plus a use-site bypass:
@@ -46,7 +46,7 @@ p := &mut reveal value.hidden_field;
 It can also be used in imports:
 
 ```omega
-import reveal extern::lib::hidden_module;
+import reveal lib::hidden_module;
 ```
 
 The bypass applies only to the syntactic use wrapped by `reveal`; it does not change the declaration itself or grant permanent visibility to later code.

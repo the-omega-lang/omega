@@ -16,7 +16,7 @@ This document also explains where package identity and emission ownership feed l
 
 - local package root;
 - optional declared-name override;
-- registered `--extern` roots;
+- registered `--import` roots;
 - compilation target.
 
 It then calls:

@@ -1,4 +1,4 @@
-import extern::std::io::println;
+import std::io::println;
 
 main() => void {
 	# By-value reg + explicit address mutation: `y` is a snapshot with no

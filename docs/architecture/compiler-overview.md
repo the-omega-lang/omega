@@ -196,7 +196,7 @@ LLVM-specific target triples/settings are derived only inside `omega-codegen::ll
 
 ## Separate compilation
 
-Omega packages are compiled in independent `omgc` processes and later linked as normal object files. `--extern` registers dependency roots for semantic resolution; it does not merge packages into one source compilation unit.
+Omega packages are compiled in independent `omgc` processes and later linked as normal object files. `--import` registers dependency roots for semantic resolution; it does not merge packages into one source compilation unit.
 
 This makes several facts cross-process contracts:
 

@@ -2,15 +2,15 @@
 # integer conformances live in `core`, alongside range iteration; inherent
 # primitive methods remain there too.
 
-import default::Default;
-import fmt::Display;
-import fmt::write_bool;
-import fmt::write_char;
-import fmt::write_float;
-import fmt::write_int;
-import fmt::write_uint;
-import hash::Hash;
-import io::Write;
+import super::default::Default;
+import super::fmt::Display;
+import super::fmt::write_bool;
+import super::fmt::write_char;
+import super::fmt::write_float;
+import super::fmt::write_int;
+import super::fmt::write_uint;
+import super::hash::Hash;
+import super::io::Write;
 
 # SplitMix64's fixed-cost finalizer, shared by integer and float `Hash`
 # conformances rather than copied into every generated block.

@@ -17,7 +17,6 @@ use std::rc::Rc;
 pub(crate) struct ParsedModule {
     pub id: ModuleId,
     pub hir: Rc<HirModule>,
-    pub directory_shaped: bool,
     pub index: Option<ModuleIndex>,
 }
 
@@ -241,7 +240,6 @@ impl Driver {
     fn macro_env(
         &mut self,
         path: &[Ident],
-        directory_shaped: bool,
     ) -> Result<HashMap<Ident, MacroDefinitionStmt>, CompileError> {
         let mut environment = (*self.prelude_macros()?).clone();
         if path.first().map(Ident::as_ref) == Some("core") {
@@ -282,9 +280,8 @@ impl Driver {
             }
         };
 
-        let base = self.relative_base_for(path, directory_shaped);
         for import in imports {
-            let absolute = match self.import_absolute_path(path, &base, import.root, &import.path) {
+            let absolute = match self.import_absolute_path(path, import.root, &import.path) {
                 Ok(path) => path,
                 Err(_) => continue,
             };
@@ -326,9 +323,7 @@ impl Driver {
             None => HirModule { id, items: vec![] },
             Some(file) => {
                 let ast = self.ensure_ast(path, &file)?;
-                let macros = self
-                    .macro_env(path, location.children_dir.is_some())
-                    .map_err(|e| {
+                let macros = self.macro_env(path).map_err(|e| {
                         self.modules
                             .failures
                             .insert(path.to_vec(), LoadFailure::Compile(e));
@@ -362,7 +357,6 @@ impl Driver {
             ParsedModule {
                 id,
                 hir: hir.clone(),
-                directory_shaped: location.children_dir.is_some(),
                 index: None,
             },
         );
@@ -462,7 +456,6 @@ impl Driver {
 
     fn index_imports(&mut self, path: &[Ident], hir: &HirModule) -> IndexMap<Ident, ImportEntry> {
         let mut imports: IndexMap<Ident, ImportEntry> = IndexMap::new();
-        let base = self.relative_base(path);
         for item in &hir.items {
             let HirItem::Import(import) = item else {
                 continue;
@@ -473,7 +466,7 @@ impl Driver {
                 .last()
                 .cloned()
                 .unwrap_or_else(|| import.path.head.clone());
-            let target = match self.import_absolute_path(path, &base, import.root, &import.path) {
+            let target = match self.import_absolute_path(path, import.root, &import.path) {
                 Ok(target) => target,
                 Err(e) => {
                     self.diagnostics.error(
@@ -583,49 +576,46 @@ impl Driver {
         Ok(!self.item_generics(module_path, name)?.is_empty())
     }
 
-    fn relative_base(&self, module_path: &[Ident]) -> ModulePath {
-        self.relative_base_for(
-            module_path,
-            self.modules.parsed(module_path).directory_shaped,
-        )
-    }
-
-    fn relative_base_for(&self, module_path: &[Ident], directory_shaped: bool) -> ModulePath {
-        if directory_shaped {
-            module_path.to_vec()
-        } else {
-            module_path[..module_path.len().saturating_sub(1)].to_vec()
-        }
-    }
-
+    /// Converts an import's anchor and source path into one absolute
+    /// `ModulePath`, shared by macro-import preparation and ordinary import
+    /// indexing so both obey identical anchor semantics.
     fn import_absolute_path(
         &self,
         importer: &[Ident],
-        base: &[Ident],
         root: ImportRoot,
         path: &Path,
     ) -> Result<ModulePath, ResolveError> {
         match root {
-            ImportRoot::Local => {
-                let mut absolute = base.to_vec();
-                absolute.extend(path.segments());
-                Ok(absolute)
+            ImportRoot::TopLevel => {
+                if !self.roots.is_known_top_level(&path.head) {
+                    return Err(ResolveError::UnknownTopLevelPackage(path.head.clone()));
+                }
+                Ok(path.segments())
             }
-            ImportRoot::ProjectRoot => {
+            ImportRoot::Root => {
                 let mut absolute = Vec::new();
-                if let Some(project_root) = importer.first() {
-                    absolute.push(project_root.clone());
+                if let Some(package_root) = importer.first() {
+                    absolute.push(package_root.clone());
                 }
                 absolute.extend(path.segments());
                 Ok(absolute)
             }
-            ImportRoot::Extern => {
-                if !self.roots.has_extern(&path.head) {
-                    return Err(ResolveError::UnknownExtern(path.head.clone()));
+            ImportRoot::SelfModule => {
+                let mut absolute = importer.to_vec();
+                absolute.extend(path.segments());
+                Ok(absolute)
+            }
+            ImportRoot::Super(depth) => {
+                let depth = depth as usize;
+                if depth >= importer.len() {
+                    return Err(ResolveError::SuperAboveRoot {
+                        depth: depth as u32,
+                        importer: importer.to_vec(),
+                    });
                 }
-                Ok(std::iter::once(path.head.clone())
-                    .chain(path.tail.iter().cloned())
-                    .collect())
+                let mut absolute = importer[..importer.len() - depth].to_vec();
+                absolute.extend(path.segments());
+                Ok(absolute)
             }
         }
     }

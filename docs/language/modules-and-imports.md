@@ -4,13 +4,13 @@ Omega packages are directory trees. Module identity and source layout are part o
 
 ## Package root and declared identity
 
-A compilation is given a package root directory. Its declared root-module name defaults to that directory's basename. Tooling may override the declared identity (`omgc --name=<name>` for the local package and `--extern=<name>:<dir>` for a dependency); source paths use the declared identity, not an independent alias layer.
+A compilation is given a package root directory. Its declared root-module name defaults to that directory's basename. Tooling may override the declared identity (`omgc --name=<name>` for the local package and `--import=<name>:<dir>` for a dependency); source paths use the declared identity, not an independent alias layer.
 
 Two package roots in one compilation context must not claim the same declared identity.
 
-Every module identity -- a filesystem-discovered segment (an `.omg` file stem, or a directory segment that owns or leads to `.omg` source) as well as a declared identity (`--name=<name>`, an explicit `--extern=<name>:<dir>`, or an inferred package/extern root basename) -- must be a spelling the language's identifier grammar accepts as a single `Ident` token: it must not be a reserved keyword. A malformed candidate is a hard error, not a silently omitted module or a normalized substitute; Omega never rewrites `foo-bar` into `foo_bar` or otherwise reshapes an invalid name into a valid one. A directory that owns no Omega source, directly or in any descendant, is not a module candidate and is not subject to this rule regardless of its name.
+Every module identity -- a filesystem-discovered segment (an `.omg` file stem, or a directory segment that owns or leads to `.omg` source) as well as a declared identity (`--name=<name>`, an explicit `--import=<name>:<dir>`, or an inferred package/dependency root basename) -- must be a spelling the language's identifier grammar accepts as a single `Ident` token: it must not be a reserved keyword, and it must not be `root`, `self`, or `super`. Those three spellings remain ordinary contextual identifiers everywhere else (bindings, fields, parameters, item names); they are excluded only as module/package identities, because reusing one there would make the import anchor of the same spelling ambiguous with a literal module segment. A malformed or reserved candidate is a hard error, not a silently omitted module or a normalized substitute; Omega never rewrites `foo-bar` into `foo_bar` or otherwise reshapes an invalid name into a valid one. A directory that owns no Omega source, directly or in any descendant, is not a module candidate and is not subject to this rule regardless of its name.
 
-A package root's own declared identity is validated where it is decided (an explicit `--name`/`--extern` override, or the inferred physical basename), not by module discovery itself; declaring a valid override is the only way to compile a package whose physical directory basename is not spellable as an identifier.
+A package root's own declared identity is validated where it is decided (an explicit `--name`/`--import` override, or the inferred physical basename), not by module discovery itself; declaring a valid override is the only way to compile a package whose physical directory basename is not spellable as an identifier.
 
 The root directory itself is the root module. It may have its own source file named after the directory's **physical basename**:
 
@@ -39,22 +39,31 @@ Consequently, a malformed local module cannot become valid merely because no oth
 ## Import syntax
 
 ```omega
-import sibling;
-import mymodule::thing::something;
+import std::fmt::Display;
+import self::sibling;
+import self::mymodule::thing::something;
 import root::simplemodule;
-import extern::std::fmt::Display;
+import super::helper;
+import super::super::helper;
 ```
 
 Grammar:
 
 ```ebnf
 import = "import", [ "reveal" ],
-         [ "root", "::" | "extern", "::" ],
+         [ "root", "::" | "self", "::" | { "super", "::" } ],
          path,
          ";" ;
 ```
 
-An unrooted import is resolved relative to the current package/module rules. `root::` explicitly starts at the current package root. `extern::NAME::...` starts at a registered external package identity.
+An import's source path is anchored by one of four mutually exclusive forms:
+
+- **Unprefixed (top-level).** The path is already an absolute logical path whose first segment must be a known top-level package identity: either the package that owns the importing module, or a dependency registered with the compilation. There is no relative fallback -- a missing head is an unknown-top-level-package error, not an invitation to search locally.
+- **`root::`.** Starts at the root of the package that owns the importing module, independent of how deeply the importing module is nested. When source belonging to a registered dependency is itself being analyzed, `root::` refers to that dependency's own root, never the consuming package's root.
+- **`self::`.** Starts at the exact logical module being analyzed, independent of whether that module is file-shaped or directory-shaped.
+- **`super::`, one or more times.** Each occurrence removes one logical module segment from the importing module's own path before appending the source path. A chain may not remove the importing module's package-root segment; `super::` at the package root, or a chain that would cross it, is a deterministic compile error.
+
+`root`, `self`, and `super` are reserved only in these anchor positions; as ordinary path segments (including the final item name) or in any other identifier position, they remain the same contextual identifiers described in [`lexical-structure.md`](lexical-structure.md).
 
 Importing an item binds its final name in the importing module. Importing a module makes that module path/name available according to normal resolution rules.
 
@@ -64,7 +73,7 @@ Imports do not automatically re-export what they import. Omega currently has no 
 
 ## External packages
 
-An `extern::name::...` path can resolve only if a dependency with declared identity `name` was supplied to the compilation. External package modules are separately compiled objects/packages; source-level resolution must agree on package/module identity across processes.
+An unprefixed import whose first segment names a registered dependency (`omgc --import=<name>:<dir>`) resolves against that dependency's own module tree, the same top-level namespace the local package's own identity occupies. External package modules are separately compiled objects/packages; source-level resolution must agree on package/module identity across processes.
 
 External dependencies are not textually source-included into the local package. Their declarations/signatures participate in name and type resolution through Omega's separate-compilation model.
 

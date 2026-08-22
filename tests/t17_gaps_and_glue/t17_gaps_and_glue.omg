@@ -1,6 +1,6 @@
-import extern::std::io::println;
-import capability;
-import capability::Multiplier;
+import std::io::println;
+import self::capability;
+import self::capability::Multiplier;
 
 # A glue names one qualified gap path and supplies its function set exactly.
 glue capability::Multiplier {

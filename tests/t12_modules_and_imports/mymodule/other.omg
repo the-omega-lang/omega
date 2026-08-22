@@ -1,0 +1,8 @@
+# Chained `super::` removes one logical module segment per occurrence;
+# two hops from `mymodule::other` reach the package root, the same target
+# `thing.omg` reaches with `root::helper`.
+import super::super::helper;
+
+exposed other_greeting() => *str {
+	helper::greeting()
+}

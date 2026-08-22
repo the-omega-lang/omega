@@ -98,7 +98,7 @@ fn an_arbitrary_integer_does_not_cast_into_char() {
 fn from_u32_is_available_and_returns_an_option() {
     TestPackage::new(
         r#"
-        import extern::core::option::Option;
+        import core::option::Option;
         entry_fn() => i32 {
             checked := char::from_u32(0x41u32);
             match checked {
@@ -134,7 +134,7 @@ fn every_char_classifier_is_callable() {
 fn char_satisfies_an_ord_bound() {
     TestPackage::new(
         r#"
-        import extern::core::cmp::Ord;
+        import core::cmp::Ord;
         biggest<T: Ord>(a: T, b: T) => bool { a.greater_than(b) }
         entry_fn() => i32 { if biggest('b', 'a') { 0 } else { 1 } }
         "#,
@@ -146,8 +146,8 @@ fn char_satisfies_an_ord_bound() {
 fn char_conforms_to_bounded_and_successor() {
     TestPackage::new(
         r#"
-        import extern::core::range::Successor;
-        import extern::core::option::Option;
+        import core::range::Successor;
+        import core::option::Option;
         step<T: Successor>(value: T) => Option<T> { value.successor() }
         entry_fn() => i32 {
             first : char = char::min();

@@ -1,4 +1,4 @@
-import extern::std::io::println;
+import std::io::println;
 
 marker NullSink {
 	exposed write(*self, tag: i32) => i32 { tag * 2 }

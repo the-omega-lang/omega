@@ -46,7 +46,7 @@ impl Drop for TestPackage {
 fn macro_body_items_resolve_in_its_definition_module() {
     let package = TestPackage::new(
         r#"
-        import helper::apply;
+        import self::helper::apply;
         # This caller-local declaration deliberately shadows the helper's
         # name. The macro body must still select helper::add_one.
         add_one(value: i32) => i32 { value + 100 }
@@ -67,7 +67,7 @@ fn macro_body_items_resolve_in_its_definition_module() {
 fn an_exposed_macro_cannot_name_a_hidden_item() {
     let package = TestPackage::new(
         r#"
-        import helper::apply;
+        import self::helper::apply;
         entry_fn() => i32 { apply$(1) }
         "#,
     );
@@ -96,7 +96,7 @@ fn an_exposed_macro_cannot_name_a_hidden_item() {
 fn macro_locals_do_not_capture_substituted_arguments() {
     let package = TestPackage::new(
         r#"
-        import helper::keep;
+        import self::helper::keep;
         entry_fn() => i32 { out := 7; keep$(out); out }
         "#,
     );
@@ -115,7 +115,7 @@ fn macro_locals_do_not_capture_substituted_arguments() {
 fn nested_macro_calls_use_the_definition_environment() {
     let package = TestPackage::new(
         r#"
-        import helper::outer;
+        import self::helper::outer;
         entry_fn() => i32 { outer$(41) }
         "#,
     );
@@ -133,7 +133,7 @@ fn nested_macro_calls_use_the_definition_environment() {
 fn a_macro_invocation_passed_as_an_argument_resolves_at_the_call_site() {
     let package = TestPackage::new(
         r#"
-        import helper::takes_expr;
+        import self::helper::takes_expr;
         macro caller_macro($a: expr) => { ($a) * 2 }
         entry_fn() => i32 { takes_expr$(caller_macro$(20)) }
         "#,

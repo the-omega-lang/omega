@@ -14,6 +14,7 @@ pub const CONFORM: &str = "conform";
 pub const TO: &str = "to";
 pub const PRIMITIVE: &str = "primitive";
 pub const ROOT: &str = "root";
+pub const SUPER: &str = "super";
 pub const EXPR: &str = "expr";
 pub const TYPE: &str = "type";
 pub const IDENT: &str = "ident";
@@ -24,5 +25,5 @@ pub const CLOBBER: &str = "clobber";
 
 pub const ALL: &[&str] = &[
     MUT, COMP, SELF, REVEAL, SIZEOF, IN, EXPOSED, SHARED, HIDDEN, MARKER, GAP, GLUE, CONFORM, TO,
-    PRIMITIVE, ROOT, EXPR, TYPE, IDENT, ASM, REG, CONST, CLOBBER,
+    PRIMITIVE, ROOT, SUPER, EXPR, TYPE, IDENT, ASM, REG, CONST, CLOBBER,
 ];

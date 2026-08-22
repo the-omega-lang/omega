@@ -206,16 +206,24 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
 fn parse_import(p: &mut Parser, annotations: Vec<AnnotationNode>) -> Option<ImportStmt> {
     p.expect(&TokenKind::Import, "'import'");
     let reveal = p.eat_contextual(contextual::REVEAL);
-    let root = if p.check(&TokenKind::Extern) && matches!(p.peek_at(1), TokenKind::ColonColon) {
-        p.advance(); // 'extern'
-        p.advance(); // '::'
-        ImportRoot::Extern
-    } else if p.at_contextual(contextual::ROOT) && matches!(p.peek_at(1), TokenKind::ColonColon) {
+    let root = if p.at_contextual(contextual::ROOT) && matches!(p.peek_at(1), TokenKind::ColonColon) {
         p.advance(); // 'root'
         p.advance(); // '::'
-        ImportRoot::ProjectRoot
+        ImportRoot::Root
+    } else if p.at_contextual(contextual::SELF) && matches!(p.peek_at(1), TokenKind::ColonColon) {
+        p.advance(); // 'self'
+        p.advance(); // '::'
+        ImportRoot::SelfModule
+    } else if p.at_contextual(contextual::SUPER) && matches!(p.peek_at(1), TokenKind::ColonColon) {
+        let mut depth = 0u32;
+        while p.at_contextual(contextual::SUPER) && matches!(p.peek_at(1), TokenKind::ColonColon) {
+            p.advance(); // 'super'
+            p.advance(); // '::'
+            depth += 1;
+        }
+        ImportRoot::Super(depth)
     } else {
-        ImportRoot::Local
+        ImportRoot::TopLevel
     };
     let path = parse_path(p)?;
     p.expect_terminator(&TokenKind::Semi, "';'");

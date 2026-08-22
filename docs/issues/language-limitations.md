@@ -20,7 +20,7 @@ Normative chapter: [`../language/types-and-primitives.md`](../language/types-and
 - **No real C-ABI aggregate-passing convention.** Structs/enums are passed
   as flattened positional scalars, not per platform calling-convention
   aggregate rules. This works fine for Omega-to-Omega calls (including
-  across separately-compiled `--extern` object files, since both sides
+  across separately-compiled `--import` object files, since both sides
   agree by construction) but means an Omega function taking a struct
   by value is not safely callable from, say, hand-written C expecting the
   System V ABI's actual struct-passing rules.

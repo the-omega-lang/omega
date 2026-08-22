@@ -55,7 +55,6 @@ Omitted visibility means hidden, except on a spec member, where it means the dec
 
 ```ebnf
 path         = identifier, { "::", identifier } ;
-rooted-path  = [ "root", "::" | "extern", "::" ], path ;
 type-path    = path, [ generic-arguments ] ;
 
 generic-arguments = "<", type, { ",", type }, ">" ;
@@ -66,8 +65,8 @@ Expression-path generic arguments are only syntactically committed where the fol
 ## Imports
 
 ```ebnf
-import = "import", [ "reveal" ], import-root, ";" ;
-import-root = [ "extern", "::" | "root", "::" ], path ;
+import      = "import", [ "reveal" ], import-anchor, ";" ;
+import-anchor = [ "root", "::" | "self", "::" | { "super", "::" } ], path ;
 ```
 
 Module/import meaning is specified in [`modules-and-imports.md`](modules-and-imports.md).

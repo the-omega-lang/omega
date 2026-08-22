@@ -1,4 +1,4 @@
-import extern::std::io::println;
+import std::io::println;
 
 enum Ordering {
 	Less,

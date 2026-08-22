@@ -12,10 +12,10 @@
 # `insert`/`get`/`remove` return `Option<V>`, following Rust's `HashMap`
 # shape (no existing Omega precedent to match here).
 
-import alloc::alloc;
-import alloc::free;
-import extern::core::cmp::Eq;
-import hash::Hash;
+import super::alloc::alloc;
+import super::alloc::free;
+import core::cmp::Eq;
+import super::hash::Hash;
 
 # Hidden (module-scoped), `shared` fields -- see `std::linked_list::Node<T>`.
 struct Entry<K, V> {

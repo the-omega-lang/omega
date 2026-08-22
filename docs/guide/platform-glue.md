@@ -4,12 +4,12 @@
 subdirectory under it is its own independent, standalone-compilable
 package, honestly named after what it physically is (`libc/` today), that
 *presents* as the same declared identity `plat` purely via a compiler-
-level alias (`--name=`/`--extern=plat:...`) — the project's own files
+level alias (`--name=`/`--import=plat:...`) — the project's own files
 never lie about what they are; only the compiler's view of a root's
 identity can differ from its on-disk name. Unlike `core`
 ([the core library](core-library.md)), `plat` gets no ambient-prelude
 treatment, no `primitive`-block privilege, and no eager-discovery exemption of
-its own; it's just an ordinary `--extern` package that happens to ship
+its own; it's just an ordinary `--import` package that happens to ship
 `glue` implementations for `core`'s own gaps (see
 [gaps and glue](../language/gaps-and-glue.md)). Any consumer that registers it gets
 its glue discovered automatically, whether or not it ever `import`s `plat`
@@ -40,12 +40,12 @@ sibling directory, its own independent package, aliased to `plat` the
 same way — not a submodule of `libc`, and not a variant of it. There is
 no selection mechanism *between* platforms (see "No platform selection"
 below); each is simply available at its own honest path, and a build
-picks one by choosing which directory its `--name=`/`--extern=plat:...`
+picks one by choosing which directory its `--name=`/`--import=plat:...`
 flags point at.
 
 ## The `plat` alias
 
-`--name=<name>` (standalone compilation) and `--extern=<name>:<dir>`
+`--name=<name>` (standalone compilation) and `--import=<name>:<dir>`
 (consumption) let a package's *declared* identity differ from its root
 directory's own basename. `libc/` needs no move for the root-module layout:
 `libc.omg` is already the root's own file, even though the package presents as
@@ -59,7 +59,7 @@ end-to-end, not just at the entry point:
   named the same as its own entry file** (`X/X.omg`) — the exact shape
   real nesting under an aliased root would otherwise need. Now fixed.
 - **`ModuleRoots::locate`** used to reconstruct a filesystem path
-  directly from a path's *declared* segments for every `--extern`
+  directly from a path's *declared* segments for every `--import`
   lookup — which would search for a literal `plat.omg` on disk no matter
   what. It now reads the already-discovered, already-aliased inventory
   (`ModuleRoots::extern_trees`) instead, a plain map lookup with no live
@@ -71,7 +71,7 @@ end-to-end, not just at the entry point:
 There is no OS/target conditional-compilation mechanism anywhere in this
 compiler today (no `cfg`-equivalent), so there is nothing for the
 *compiler* to choose between platforms with — picking one is entirely a
-build-script decision: which directory `--extern=plat:...` points at.
+build-script decision: which directory `--import=plat:...` points at.
 `libc` isn't a chosen default among several in any deeper sense; it's
 just the one platform that exists right now, at its own honest path.
 
@@ -96,11 +96,11 @@ just the one platform that exists right now, at its own honest path.
 ## Building it
 
 ```
-just build-plat     # omgc runtime/plat/libc/ --name=plat --extern=core:runtime/core/ -o target/plat.o
+just build-plat     # omgc runtime/plat/libc/ --name=plat --import=core:runtime/core/ -o target/plat.o
 ```
 
-Built and linked exactly like any other `--extern` dependency — `just
-build-exe`/`run-exec` register `--extern=plat:runtime/plat/libc/` and
+Built and linked exactly like any other `--import` dependency — `just
+build-exe`/`run-exec` register `--import=plat:runtime/plat/libc/` and
 link `target/plat.o` alongside `core.o`/`mathlib.o`, even though
 `examples/dev` never imports `plat` (see `examples/dev/dev.omg`'s own
 `GlobalAllocator::alloc`/`free` demo, resolved through the ambient `core`

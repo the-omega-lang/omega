@@ -1,5 +1,5 @@
-import extern::std::io::println;
-import extern::core::option::Option;
+import std::io::println;
+import core::option::Option;
 
 # --- numeric literal inference proofs ---------------------------------
 # These only compile if the unsuffixed literal actually took the inferred

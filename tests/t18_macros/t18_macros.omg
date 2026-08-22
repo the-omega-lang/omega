@@ -1,6 +1,6 @@
-import extern::std::io::println;
-import defs::read_secret;
-import defs::make_doubler;
+import std::io::println;
+import self::defs::read_secret;
+import self::defs::make_doubler;
 
 make_doubler$(i32, double_i32);
 

@@ -10,10 +10,10 @@
 # iteration state would lose progress on assignment with nothing to catch
 # it. Splitting the value from the cursor avoids that class of problem.
 
-import cmp::Ord;
-import iterator::Iterator;
-import iterator::ToIterator;
-import option::Option;
+import super::cmp::Ord;
+import super::iterator::Iterator;
+import super::iterator::ToIterator;
+import super::option::Option;
 
 exposed struct Range<T> {
     exposed start: T;

@@ -3,11 +3,11 @@
 # three zero-sized markers below; every other writer and reader is an adapter
 # over an ordinary `Write` or `Read` implementor.
 
-import extern::core::platform::StandardInput;
-import extern::core::platform::StandardError;
-import extern::core::platform::StandardOutput;
-import fmt::Display;
-import string::String;
+import core::platform::StandardInput;
+import core::platform::StandardError;
+import core::platform::StandardOutput;
+import super::fmt::Display;
+import super::string::String;
 
 # `None` is failure.  `Some(n)` is the exact number of bytes consumed, so a
 # short result is visible to the caller and can be resumed without an

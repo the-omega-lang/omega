@@ -805,8 +805,16 @@ pub fn resolve_error_diagnostic(error: &ResolveError, span: Option<Span>) -> Dia
                 "modules are looked up as `{name}.omg` files or `{name}/` directories under the compiler's search roots"
             ))
         }
-        ResolveError::UnknownExtern(name) => with_label(d, "no such extern dependency".to_string())
-            .with_help(format!("pass --extern={}:<path> on the command line", name.as_ref())),
+        ResolveError::UnknownTopLevelPackage(name) => {
+            with_label(d, "not a known top-level package".to_string()).with_help(format!(
+                "unprefixed imports are top-level; use `root::`, `self::`, or `super::` to navigate within a package, or pass --import={}:<path> to register a dependency",
+                name.as_ref()
+            ))
+        }
+        ResolveError::SuperAboveRoot { .. } => with_label(d, "crosses the package root".to_string())
+            .with_help(
+                "a `super::` chain may remove segments only down to the importing module's package root".to_string(),
+            ),
         ResolveError::UnknownItem { module, .. } => with_label(d, format!("not found in `{}`", join(module))),
         ResolveError::NotVisible { .. } => with_label(d, "not visible from this module".to_string()),
         ResolveError::Cycle(_) => with_label(d, "this reference completes the cycle".to_string())
@@ -817,8 +825,8 @@ pub fn resolve_error_diagnostic(error: &ResolveError, span: Option<Span>) -> Dia
                 .with_help(format!("keep either the `{name}.omg` file or the `{name}/` directory, not both"))
         }
         ResolveError::InvalidModuleName { invalid, .. } => {
-            with_label(d, "not a valid Omega identifier".to_string()).with_help(format!(
-                "rename `{invalid}` to a valid Omega identifier (ASCII letters/digits/underscore, not starting with a digit); Omega does not normalize module names automatically"
+            with_label(d, "not a valid Omega module name".to_string()).with_help(format!(
+                "rename `{invalid}` to a valid Omega identifier (ASCII letters/digits/underscore, not starting with a digit) other than `root`, `self`, or `super`, which are reserved for import navigation; Omega does not normalize module names automatically"
             ))
         }
         ResolveError::LoadFailed { .. } => with_label(d, "imported from here".to_string()),

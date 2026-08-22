@@ -89,8 +89,8 @@ Primitive `Display` conformances live in `std::primitives`. A package-owned
 type can conform to it in the usual way:
 
 ```omega
-import extern::std::fmt::Display;
-import extern::std::io::Write;
+import std::fmt::Display;
+import std::io::Write;
 
 conform Pair to Display {
     fmt(*self, out: spec *mut Write) => void {

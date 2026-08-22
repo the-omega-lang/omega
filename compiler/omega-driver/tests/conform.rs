@@ -31,6 +31,16 @@ impl TestPackage {
         fs::write(self.0.join(format!("{name}.omg")), source).expect("write test child module");
     }
 
+    /// Writes a module at an arbitrary logical depth, e.g.
+    /// `write_nested("outer/inner", ...)` creates a directory-shaped `outer`
+    /// with a file-shaped child `outer::inner`.
+    fn write_nested(&self, relative: &str, source: &str) {
+        let path = self.0.join(format!("{relative}.omg"));
+        fs::create_dir_all(path.parent().expect("nested module has a parent"))
+            .expect("create nested module directory");
+        fs::write(path, source).expect("write nested test module");
+    }
+
     fn compile(&self) -> Result<omega_driver::CompiledProgram, Vec<CompileError>> {
         Driver::new(self.0.clone(), None, Vec::new(), Target::DEFAULT)
             .expect("construct driver")
@@ -715,7 +725,7 @@ fn extern_generic_instantiation_keeps_its_declaring_module() {
     );
     let consumer = TestPackage::new(
         r#"
-        import extern::lib::identity;
+        import lib::identity;
         entry_fn() => i32 { identity(7) }
         "#,
     );
@@ -757,8 +767,8 @@ fn extern_owned_concrete_conform_is_imported_not_reemitted() {
     );
     let consumer = TestPackage::new(
         r#"
-        import extern::lib::Show;
-        import extern::lib::Value;
+        import lib::Show;
+        import lib::Value;
 
         entry_fn() => i32 {
             value := Value { n = 7; };
@@ -799,7 +809,7 @@ fn blanket_conforms_require_a_package_local_spec() {
     let library = TestPackage::new("exposed spec Foreign { show(*self) => i32; }");
     let consumer = TestPackage::new(
         r#"
-        import extern::lib::Foreign;
+        import lib::Foreign;
         conform<T> T to Foreign { show(*self) => i32 { 1 } }
         entry_fn() => i32 { 0 }
         "#,
@@ -841,8 +851,8 @@ fn externally_owned_stdout_cannot_conform_to_externally_owned_write() {
     );
     let consumer = TestPackage::new(
         r#"
-        import extern::lib::Stdout;
-        import extern::lib::Write;
+        import lib::Stdout;
+        import lib::Write;
 
         conform Stdout to Write {
             write(*mut self, bytes: *[?]u8) => Option<usize> {
@@ -961,7 +971,7 @@ fn formatting_is_not_available_from_core() {
 fn shared_items_are_visible_across_executable_modules() {
     let package = TestPackage::new(
         r#"
-        import helper::fortytwo;
+        import self::helper::fortytwo;
         entry_fn() => i32 { fortytwo() }
         "#,
     );
@@ -983,6 +993,93 @@ fn root_imports_are_anchored_to_the_package_root_module() {
     package
         .compile()
         .expect("root imports from a child should remain inside the package");
+}
+
+#[test]
+fn a_bare_local_import_no_longer_resolves_relatively() {
+    let package = TestPackage::new(
+        r#"
+        import helper::fortytwo;
+        entry_fn() => i32 { fortytwo() }
+        "#,
+    );
+    package.write_child("helper", "shared fortytwo() => i32 { 42 }");
+    let errors = compile_errors(
+        &package,
+        "unprefixed imports no longer fall back to package-relative lookup",
+    );
+    assert!(has_module_resolution_error(&errors, |error| matches!(
+        error,
+        ResolveError::UnknownTopLevelPackage(name) if name.as_ref() == "helper"
+    )));
+}
+
+#[test]
+fn self_anchor_resolves_a_directory_shaped_modules_child() {
+    let package = TestPackage::new(
+        r#"
+        import self::outer::compute;
+        entry_fn() => i32 { compute() }
+        "#,
+    );
+    package.write_nested(
+        "outer/outer",
+        r#"
+        import self::inner::helper_value;
+        exposed compute() => i32 { helper_value() }
+        "#,
+    );
+    package.write_nested("outer/inner", "exposed helper_value() => i32 { 42 }");
+    package
+        .compile()
+        .expect("self:: resolves against the logical module regardless of its filesystem shape");
+}
+
+#[test]
+fn chained_super_resolves_across_multiple_nesting_levels() {
+    let package = TestPackage::new(
+        r#"
+        import self::a::b::c::compute;
+        entry_fn() => i32 { compute() }
+        "#,
+    );
+    package.write_child("helper", "exposed value() => i32 { 42 }");
+    package.write_nested(
+        "a/b/c",
+        r#"
+        import super::super::super::helper::value;
+        exposed compute() => i32 { value() }
+        "#,
+    );
+    package
+        .compile()
+        .expect("a chained super:: removes one logical segment per occurrence");
+}
+
+#[test]
+fn super_above_a_nested_modules_package_root_is_a_deterministic_error() {
+    let package = TestPackage::new("entry_fn() => i32 { 0 }");
+    package.write_child("leaf", "import super::super::helper::value;");
+    let errors = compile_errors(
+        &package,
+        "super:: may not remove the importing module's own package-root segment",
+    );
+    assert!(has_module_resolution_error(&errors, |error| matches!(
+        error,
+        ResolveError::SuperAboveRoot { depth: 2, .. }
+    )));
+}
+
+fn has_module_resolution_error(
+    errors: &[CompileError],
+    predicate: impl Fn(&ResolveError) -> bool,
+) -> bool {
+    errors
+        .iter()
+        .any(|error| matches!(error, CompileError::Resolve { error, .. } if predicate(error)))
+        || has_analysis_error(errors, |kind| {
+            matches!(kind, AnalysisErrorKind::ModuleResolution(error) if predicate(error))
+        })
 }
 
 #[test]

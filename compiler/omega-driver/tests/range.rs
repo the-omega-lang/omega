@@ -131,7 +131,7 @@ fn the_same_range_value_can_be_iterated_twice() {
 fn a_range_passes_through_a_function_boundary() {
     TestPackage::new(
         r#"
-        import extern::core::range::Range;
+        import core::range::Range;
         widen(r: Range<i32>) => Range<i32> { r.start..<20 }
         entry_fn() => i32 {
             mut total := 0;
@@ -275,7 +275,7 @@ fn a_bare_dotdot_is_rejected_with_no_context() {
 fn a_bare_dotdot_resolves_against_an_expected_range_type() {
     TestPackage::new(
         r#"
-        import extern::core::range::Range;
+        import core::range::Range;
         entry_fn() => i32 { r : Range<i32> = ..; if r.inclusive { 0 } else { 1 } }
         "#,
     )
@@ -286,11 +286,11 @@ fn a_bare_dotdot_resolves_against_an_expected_range_type() {
 fn a_user_type_conforming_to_successor_is_range_iterable() {
     TestPackage::new(
         r#"
-        import extern::core::range::Successor;
-        import extern::core::range::Bounded;
-        import extern::core::cmp::Ord;
-        import extern::core::cmp::Ordering;
-        import extern::core::option::Option;
+        import core::range::Successor;
+        import core::range::Bounded;
+        import core::cmp::Ord;
+        import core::cmp::Ordering;
+        import core::option::Option;
 
         struct PageIndex { exposed value: i32; }
 
@@ -328,10 +328,10 @@ fn a_user_type_conforming_to_successor_is_range_iterable() {
 fn an_open_bound_without_bounded_names_the_missing_spec() {
     let package = TestPackage::new(
         r#"
-        import extern::core::range::Successor;
-        import extern::core::cmp::Ord;
-        import extern::core::cmp::Ordering;
-        import extern::core::option::Option;
+        import core::range::Successor;
+        import core::cmp::Ord;
+        import core::cmp::Ordering;
+        import core::option::Option;
 
         struct P { exposed v: i32; }
         conform P to Ord {
@@ -451,8 +451,8 @@ fn an_end_may_not_follow_bare_dotdot_in_a_slice() {
 fn char_ranges_compile_through_the_ordinary_successor_protocol() {
     TestPackage::new(
         r#"
-        import extern::core::cmp::Ord;
-        import extern::core::option::Option;
+        import core::cmp::Ord;
+        import core::option::Option;
         needs_ord<T: Ord>(value: T) => T { value }
         entry_fn() => i32 {
             mut count := 0;

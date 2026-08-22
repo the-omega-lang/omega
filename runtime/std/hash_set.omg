@@ -10,9 +10,9 @@
 #   set := HashSet<i32>::new();
 #   defer set.free();
 
-import hash_map::HashMap;
-import hash_map::HashMapIterator;
-import hash::Hash;
+import super::hash_map::HashMap;
+import super::hash_map::HashMapIterator;
+import super::hash::Hash;
 
 marker Unit {}
 

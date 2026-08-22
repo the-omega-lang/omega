@@ -1,6 +1,6 @@
-import extern::std::io::println;
-import extern::core::option::Option;
-import extern::core::range::Bounded;
+import std::io::println;
+import core::option::Option;
+import core::range::Bounded;
 
 # --- monomorphized generic aggregate and unbounded (duck-typed) function -
 struct Node<T> {

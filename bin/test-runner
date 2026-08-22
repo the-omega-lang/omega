@@ -26,8 +26,8 @@ RUNTIME_OBJECTS = RUNTIME_PACKAGES.keys.map{ |x| ARTIFACTS_DIR.join("#{x}.o") }.
 
 # omgc
 OMGC = BIN_DIR.join("omgc-debug")
-OMGC_EXTERNS =RUNTIME_PACKAGES.map do |name, path|
-  "--extern=#{name}:#{path}"
+OMGC_IMPORTS = RUNTIME_PACKAGES.map do |name, path|
+  "--import=#{name}:#{path}"
 end.freeze
 
 module Color
@@ -221,7 +221,7 @@ class TestRunner
     compile = capture(
       OMGC.to_s,
       test.path.to_s,
-      *OMGC_EXTERNS,
+      *OMGC_IMPORTS,
       "-o", object.to_s
     )
 

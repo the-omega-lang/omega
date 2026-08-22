@@ -2,7 +2,7 @@
 # the target platform or final application supplies one via a `glue` block.
 # See docs/language/gaps-and-glue.md. This file only adds gaps, never their glue.
 
-import option::Option;
+import super::option::Option;
 
 # The global heap allocator: every function required (no default body, see
 # docs/language/gaps-and-glue.md), self-less (called via

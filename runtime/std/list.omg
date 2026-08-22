@@ -14,9 +14,9 @@
 # `Iterator`/`ToIterator`/`Option<T>`. `alloc`/`free`/`realloc` come from
 # `std::alloc`, not `core::platform::GlobalAllocator` directly -- see that
 # file's own comment for why.
-import alloc::alloc;
-import alloc::free;
-import alloc::realloc;
+import super::alloc::alloc;
+import super::alloc::free;
+import super::alloc::realloc;
 
 exposed struct List<T> {
     shared data: *mut T;

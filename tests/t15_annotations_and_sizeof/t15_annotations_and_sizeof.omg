@@ -1,7 +1,7 @@
-import extern::std::io::println;
+import std::io::println;
 
 @suppress(unused_import)
-import extern::core::option::Option;
+import core::option::Option;
 
 # Default struct layout is `pack = 1, align = 1`: no natural-alignment
 # padding between fields.

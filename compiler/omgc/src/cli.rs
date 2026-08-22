@@ -42,8 +42,8 @@ fn parse_compile(args: &[String]) -> Result<Args, String> {
 
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
-        if let Some(value) = arg.strip_prefix("--extern=") {
-            externs.push(parse_extern(arg, value)?);
+        if let Some(value) = arg.strip_prefix("--import=") {
+            externs.push(parse_import(arg, value)?);
         } else if let Some(value) = arg.strip_prefix("--name=") {
             name = Some(
                 validate_module_name(value, "declared by --name")
@@ -90,24 +90,24 @@ fn parse_compile(args: &[String]) -> Result<Args, String> {
     })
 }
 
-fn parse_extern(flag: &str, value: &str) -> Result<ExternRoot, String> {
-    let (explicit_name, dir) = split_extern(value)
-        .map_err(|reason| format!("invalid --extern flag '{flag}': {reason}"))?;
+fn parse_import(flag: &str, value: &str) -> Result<ExternRoot, String> {
+    let (explicit_name, dir) = split_import(value)
+        .map_err(|reason| format!("invalid --import flag '{flag}': {reason}"))?;
     let name = match explicit_name {
-        Some(raw) => validate_module_name(raw.as_ref(), "declared by --extern")
-            .map_err(|reason| format!("invalid --extern flag '{flag}': {reason}"))?,
+        Some(raw) => validate_module_name(raw.as_ref(), "declared by --import")
+            .map_err(|reason| format!("invalid --import flag '{flag}': {reason}"))?,
         None => {
             let Some(physical_name) = basename(&dir) else {
                 return Err(format!(
-                    "invalid --extern flag '{flag}': '{}' has no usable directory name",
+                    "invalid --import flag '{flag}': '{}' has no usable directory name",
                     dir.display()
                 ));
             };
             validate_module_name(
                 physical_name.as_ref(),
-                "inferred from the extern directory name; pass --extern=<name>:<dir> to override",
+                "inferred from the import directory name; pass --import=<name>:<dir> to override",
             )
-            .map_err(|reason| format!("invalid --extern flag '{flag}': {reason}"))?
+            .map_err(|reason| format!("invalid --import flag '{flag}': {reason}"))?
         }
     };
 
@@ -133,10 +133,10 @@ pub(crate) fn validate_module_name(
     }
 }
 
-fn split_extern(value: &str) -> Result<(Option<Ident>, PathBuf), String> {
+fn split_import(value: &str) -> Result<(Option<Ident>, PathBuf), String> {
     // A drive letter is part of a bare Windows path, not an explicit module
-    // identity (`--extern=C:\\...`). Explicit identities still work with
-    // Windows paths: `--extern=core:C:\\...` splits at the first colon.
+    // identity (`--import=C:\\...`). Explicit identities still work with
+    // Windows paths: `--import=core:C:\\...` splits at the first colon.
     if is_windows_absolute_path(value) {
         return Ok((None, PathBuf::from(value)));
     }
@@ -185,7 +185,7 @@ pub(crate) fn print_help() {
     );
     help_option(
         colors,
-        "--extern=[<name>:]<dir>",
+        "--import=[<name>:]<dir>",
         "Register an external module root (repeatable; name defaults to the directory basename)",
     );
     help_option(
@@ -229,7 +229,7 @@ mod tests {
             "out.s",
             "-O3",
             "--emit=asm",
-            "--extern=core:deps/core",
+            "--import=core:deps/core",
             "--verbose",
         ])) else {
             panic!("expected compile command");
@@ -274,8 +274,16 @@ mod tests {
     }
 
     #[test]
+    fn rejects_legacy_extern_flag_as_unknown() {
+        let Err(err) = parse(&args(&["src", "-o", "out.o", "--extern=core:deps/core"])) else {
+            panic!("expected legacy --extern flag to be rejected");
+        };
+        assert!(err.contains("--extern"), "{err}");
+    }
+
+    #[test]
     fn rejects_invalid_explicit_extern_name() {
-        let Err(err) = parse(&args(&["src", "-o", "out.o", "--extern=foo-bar:deps/core"])) else {
+        let Err(err) = parse(&args(&["src", "-o", "out.o", "--import=foo-bar:deps/core"])) else {
             panic!("expected invalid explicit extern name to be rejected");
         };
         assert!(err.contains("foo-bar"), "{err}");
@@ -283,7 +291,7 @@ mod tests {
 
     #[test]
     fn rejects_invalid_inferred_extern_basename_without_an_override() {
-        let Err(err) = parse(&args(&["src", "-o", "out.o", "--extern=deps/foo-bar"])) else {
+        let Err(err) = parse(&args(&["src", "-o", "out.o", "--import=deps/foo-bar"])) else {
             panic!("expected invalid inferred extern basename to be rejected");
         };
         assert!(err.contains("foo-bar"), "{err}");
@@ -296,7 +304,7 @@ mod tests {
             "-o",
             "out.o",
             "--name=my_pkg",
-            "--extern=core:deps/core",
+            "--import=core:deps/core",
         ])) else {
             panic!("expected compile command");
         };
@@ -306,11 +314,11 @@ mod tests {
 
     #[test]
     fn windows_drive_letter_is_not_parsed_as_an_extern_name() {
-        let (name, dir) = split_extern(r"C:\omega\core").unwrap();
+        let (name, dir) = split_import(r"C:\omega\core").unwrap();
         assert!(name.is_none());
         assert_eq!(dir, PathBuf::from(r"C:\omega\core"));
 
-        let (name, dir) = split_extern(r"core:C:\omega\core").unwrap();
+        let (name, dir) = split_import(r"core:C:\omega\core").unwrap();
         assert_eq!(name.as_ref().map(Ident::as_ref), Some("core"));
         assert_eq!(dir, PathBuf::from(r"C:\omega\core"));
     }
