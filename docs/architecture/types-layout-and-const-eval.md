@@ -42,7 +42,7 @@ Consumers should keep/reference the cell rather than copy a second aggregate def
 
 Not every aggregate is nominal. A dynamic spec object and an anonymous enum are **structural**: they have no declaration, no `HirId`, no module, and no driver-owned cell, so their identity is the shape itself.
 
-Both are canonicalized once — a deterministically ordered, exact-duplicate-free member list — before any equality, hash, layout, or mangling question is asked. Ordering comes from `omega-analyzer::type_key`, the single structural identity key for a `ResolvedType`:
+Both are canonicalized once — a deterministically ordered, exact-duplicate-free member list — before any equality, hash, layout, or mangling question is asked. For an anonymous enum that canonical list is a **leaf** list: `ResolvedAnonymousEnum::canonicalize` first replaces every immediate `ResolvedType::AnonymousEnum` member by its own members, recursively, so no stored member is itself an anonymous enum. Type resolution is the sole producer of the shape, so an alias or generic substitution that lands one anonymous enum inside another normalizes there and downstream phases — layout, tags, const values, pattern coverage, mangling — consume the already-flattened list and must not re-sort or re-flatten it. Ordering comes from `omega-analyzer::type_key`, the single structural identity key for a `ResolvedType`:
 
 - it uses fully qualified nominal names plus normalized generic arguments, recursively;
 - it never observes `HirId`, pointer addresses, or discovery order, so separate compilations and separate packages agree;

@@ -82,7 +82,9 @@ fn a_member_may_be_any_type_form() {
 #[test]
 fn a_nested_anonymous_member_consumes_the_rest_of_the_list() {
     // There is no parenthesized type syntax, so `enum` inside a member list
-    // nests to the right rather than continuing the outer list.
+    // nests to the right rather than continuing the outer list. This nesting
+    // is source structure only: semantic resolution flattens it away, so the
+    // parser must not be taught to flatten it here.
     let ty = alias_target("alias A = enum C | enum A | B;");
     let members = members(&ty);
     assert_eq!(members.len(), 2);

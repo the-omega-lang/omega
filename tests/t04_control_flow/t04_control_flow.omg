@@ -13,6 +13,16 @@ classify(n: i32) => *str {
 	}
 }
 
+# The surrounding expected type reaches every arm and the `else` block, so
+# unsuffixed literals adapt to `u64` instead of defaulting to `i32`.
+scaled(n: i32) => u64 {
+	match n {
+		0 => 1,
+	} else {
+		2
+	}
+}
+
 # `defer` runs at function exit, FILO, after the return value is fixed.
 defer_demo() => i32 {
 	mut result := 10;
@@ -33,6 +43,14 @@ main() => void {
 
 	# --- match as an expression, with a fallback `else` ---------------------
 	println$("match-expr: ", classify(4), " ", classify(42), " ", classify(-1));
+
+	# --- an expected type reaches match arms, exactly as it does `if` -------
+	wide: u64 = match 3 {
+		0 => 10,
+	} else {
+		20
+	};
+	println$("expected-arms: ", scaled(0), " ", scaled(1), " ", wide);
 
 	# --- the four loop forms -------------------------------------------------
 	mut total := 0;

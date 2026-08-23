@@ -122,14 +122,28 @@ fn refinement_never_changes_an_anonymous_enum_value() {
 }
 
 #[test]
-fn a_nested_anonymous_member_lays_out_as_one_member() {
+fn a_nested_anonymous_member_lays_out_as_its_flattened_leaves() {
     let inner = anonymous(vec![ResolvedType::I32, ResolvedType::Bool]);
     let nested = anonymous(vec![inner.clone(), ResolvedType::Bool]);
     let view = EnumView::of(&nested).expect("an anonymous enum is enum-like");
 
     assert_eq!(view.variants.len(), 2);
     assert_eq!(
+        leaves_of(&nested, POINTER_BYTES),
+        leaves_of(&inner, POINTER_BYTES)
+    );
+}
+
+#[test]
+fn a_member_merely_containing_an_anonymous_enum_lays_out_as_one_member() {
+    let inner = anonymous(vec![ResolvedType::I32, ResolvedType::Bool]);
+    let wrapper = ResolvedType::SizedArray(Box::new(inner.clone()), 1);
+    let outer = anonymous(vec![wrapper.clone(), ResolvedType::Bool]);
+    let view = EnumView::of(&outer).expect("an anonymous enum is enum-like");
+
+    assert_eq!(view.variants.len(), 2);
+    assert_eq!(
         enum_payload_bytes(&view, POINTER_BYTES),
-        total_bytes(&inner, POINTER_BYTES)
+        total_bytes(&wrapper, POINTER_BYTES)
     );
 }

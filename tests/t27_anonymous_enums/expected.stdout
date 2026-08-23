@@ -5,7 +5,7 @@ return-and-field: failure positive failure
 catch-all: text not a string 1 0
 member-access: failure 3
 pointer-match: 3 4
-nested: kind failure
+nested: kind failure leaf
 array: first failure
 global: global
 argument-injection: failure arg
@@ -14,3 +14,7 @@ generic-argument: failure 6
 cross-module: helper-int cross-str
 comp: 7 100 6
 sizeof-identity: true true
+flatten-identity: kind true
+generic-flatten: failure true
+expected-branches: failure small failure
+cross-nested: helper-int helper-bool cn

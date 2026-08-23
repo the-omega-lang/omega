@@ -403,9 +403,14 @@ impl Context {
         }
     }
 
-    /// `enum A | B | ...`. Members resolve independently and then lose their
-    /// written order for good: the canonical list decides equality, layout,
-    /// tags, and mangling, so no later phase may recover how it was spelled.
+    /// `enum A | B | ...`. This is the only place a fresh anonymous-enum type
+    /// comes into existence, so it is also the only place the canonical shape
+    /// is built. Members resolve independently -- an alias or generic argument
+    /// may well resolve to another anonymous enum -- and then lose their
+    /// written order and their nesting for good: `canonicalize` flattens
+    /// immediate anonymous-enum members into leaves, and the resulting list
+    /// alone decides equality, layout, tags, and mangling. The tag-domain
+    /// check therefore runs on the flattened list, not on what was written.
     fn resolve_anonymous_enum_type(
         &self,
         members: Vec<Type>,

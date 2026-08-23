@@ -7,3 +7,15 @@ exposed label(value: enum *str | i32) => *str {
 		*str => value,
 	}
 }
+
+alias Inner = enum *str | i32;
+
+# A nested/aliased spelling here and a flat spelling in the caller are one
+# type, so separate compilation agrees on members, tags, and symbols.
+exposed tag_of_nested(value: enum bool | Inner) => *str {
+	match value {
+		bool => "helper-bool",
+		i32 => "helper-int",
+		*str => value,
+	}
+}

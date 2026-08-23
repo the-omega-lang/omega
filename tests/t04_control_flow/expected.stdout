@@ -1,6 +1,7 @@
 if-expr: zero
 if-brace-disambig: has-x
 match-expr: single digit double digit large or negative
+expected-arms: 1 2 20
 loop-forms: 10 3 6 3
 break-continue: 16
 defer-b

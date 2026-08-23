@@ -99,6 +99,28 @@ fn struct_cell(id: u32, name: &str, type_args: Vec<ResolvedType>) -> ResolvedTyp
     })))
 }
 
+fn enum_cell(id: u32, name: &str) -> ResolvedType {
+    ResolvedType::Enum {
+        cell: Rc::new(RefCell::new(ResolvedEnumType {
+            id: HirId {
+                module: omega_hir::ModuleId(0),
+                local: id,
+            },
+            name: Ident(name.to_string()),
+            module_path: vec![Ident("pkg".into())],
+            type_args: vec![],
+            tag_type: ResolvedType::U8,
+            header: vec![],
+            dynamic_fields: vec![],
+            variants: vec![],
+            functions: vec![],
+            layout: crate::annotations::Layout::default(),
+            suppress: vec![],
+        })),
+        variant: None,
+    }
+}
+
 fn anonymous(members: Vec<ResolvedType>) -> ResolvedType {
     ResolvedType::AnonymousEnum {
         shape: Rc::new(ResolvedAnonymousEnum::canonicalize(members)),
@@ -160,13 +182,90 @@ fn anonymous_enum_member_indices_are_the_tags() {
 }
 
 #[test]
-fn anonymous_enum_does_not_flatten_a_nested_member() {
+fn anonymous_enum_flattens_nested_members_recursively() {
     let inner = anonymous(vec![ResolvedType::I32, ResolvedType::Bool]);
-    let nested = anonymous(vec![inner.clone(), ResolvedType::Char]);
-    let flat = anonymous(vec![ResolvedType::I32, ResolvedType::Bool, ResolvedType::Char]);
-    assert_ne!(nested, flat);
-    assert_eq!(shape_of(&nested).members().len(), 2);
-    assert!(shape_of(&nested).members().contains(&inner));
+    let middle = anonymous(vec![inner, ResolvedType::Char]);
+    let nested = anonymous(vec![middle, ResolvedType::U8]);
+    let flat = anonymous(vec![
+        ResolvedType::I32,
+        ResolvedType::Bool,
+        ResolvedType::Char,
+        ResolvedType::U8,
+    ]);
+    assert_eq!(nested, flat);
+    assert_eq!(hash_of(&nested), hash_of(&flat));
+    assert_eq!(shape_of(&nested).members().len(), 4);
+    assert!(!shape_of(&nested)
+        .members()
+        .iter()
+        .any(|member| matches!(member, ResolvedType::AnonymousEnum { .. })));
+}
+
+#[test]
+fn anonymous_enum_flattening_collapses_duplicates_across_nesting() {
+    let left = anonymous(vec![ResolvedType::I32, ResolvedType::Bool]);
+    let right = anonymous(vec![ResolvedType::Bool, ResolvedType::Char]);
+    let merged = anonymous(vec![left, right, ResolvedType::I32]);
+    assert_eq!(
+        merged,
+        anonymous(vec![ResolvedType::I32, ResolvedType::Bool, ResolvedType::Char])
+    );
+    assert_eq!(shape_of(&merged).members().len(), 3);
+}
+
+#[test]
+fn anonymous_enum_flattening_ignores_a_members_refinement() {
+    let inner = anonymous(vec![ResolvedType::I32, ResolvedType::Bool]);
+    let refined = ResolvedType::AnonymousEnum {
+        shape: shape_of(&inner),
+        variant: Some(0),
+    };
+    assert_eq!(
+        anonymous(vec![refined, ResolvedType::Char]),
+        anonymous(vec![ResolvedType::I32, ResolvedType::Bool, ResolvedType::Char])
+    );
+}
+
+#[test]
+fn anonymous_enum_flattening_stops_at_every_other_constructor() {
+    let inner = anonymous(vec![ResolvedType::I32, ResolvedType::Bool]);
+    let named = enum_cell(7, "Named");
+
+    // A named enum is nominal, so it is one member whatever its variants are.
+    let with_named = anonymous(vec![named.clone(), ResolvedType::Char]);
+    assert_eq!(shape_of(&with_named).members().len(), 2);
+    assert!(shape_of(&with_named).members().contains(&named));
+
+    // A type that merely *contains* an anonymous enum is still one member.
+    let pointer = ResolvedType::Pointer {
+        pointee: Box::new(inner.clone()),
+        mutable: false,
+    };
+    let array = ResolvedType::SizedArray(Box::new(inner.clone()), 4);
+    let container = struct_cell(9, "Box", vec![inner]);
+    let boundaries = anonymous(vec![pointer.clone(), array.clone(), container.clone()]);
+    assert_eq!(shape_of(&boundaries).members().len(), 3);
+    for member in [pointer, array, container] {
+        assert!(shape_of(&boundaries).members().contains(&member));
+    }
+}
+
+#[test]
+fn anonymous_enum_tags_follow_the_flattened_order() {
+    let nested = anonymous(vec![
+        anonymous(vec![ResolvedType::Str { mutable: false }, ResolvedType::I32]),
+        ResolvedType::Bool,
+    ]);
+    let flat = anonymous(vec![
+        ResolvedType::Bool,
+        ResolvedType::I32,
+        ResolvedType::Str { mutable: false },
+    ]);
+    let shape = shape_of(&nested);
+    assert_eq!(shape.members().to_vec(), shape_of(&flat).members().to_vec());
+    for (index, member) in shape.members().iter().enumerate() {
+        assert_eq!(shape.index_of(member), Some(index));
+    }
 }
 
 #[test]
@@ -208,6 +307,18 @@ fn anonymous_enum_tag_domain_is_the_u16_range() {
         members[..ResolvedAnonymousEnum::MAX_MEMBERS].to_vec(),
     );
     assert!(!exact.exceeds_tag_domain());
+
+    // The limit applies to the flattened list, so two shapes that each fit can
+    // combine into one that does not.
+    let split = ResolvedAnonymousEnum::MAX_MEMBERS / 2;
+    let left = anonymous(members[..split].to_vec());
+    let right = anonymous(members[split..].to_vec());
+    let combined = ResolvedAnonymousEnum::canonicalize(vec![left, right]);
+    assert_eq!(
+        combined.members().len(),
+        ResolvedAnonymousEnum::MAX_MEMBERS + 1
+    );
+    assert!(combined.exceeds_tag_domain());
 }
 
 #[test]

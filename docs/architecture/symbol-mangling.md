@@ -61,7 +61,7 @@ optional vendor suffix
 
 Nominal types are encoded by path + generic args rather than recursively encoding their fields, which keeps recursive nominal types finite.
 
-Structural types have no path, so they encode their shape instead: a dynamic spec object encodes its member list, and an anonymous enum encodes its member types in order, with an optional refined-member index. Both arrive already canonically ordered from `omega-analyzer::type_key`. **Nothing downstream of the analyzer may re-sort them** — one canonical order is what makes `enum A | B` and `enum B | A` one symbol, and a second ordering rule here could disagree with the one that decided the layout.
+Structural types have no path, so they encode their shape instead: a dynamic spec object encodes its member list, and an anonymous enum encodes its member types in order, with an optional refined-member index. Both arrive already canonical from the analyzer — for an anonymous enum that means the flattened leaf member list, ordered by `omega-analyzer::type_key`. **Nothing downstream of the analyzer may re-sort or re-flatten them** — one canonical order is what makes `enum A | B` and `enum B | A` one symbol, and a second ordering rule here could disagree with the one that decided the layout.
 
 ## Overloads
 

@@ -123,31 +123,49 @@ A member must be a value type under the same rules that apply to an aggregate
 field: a `spec` declaration and `never` are rejected, as are the bare `[]T` and
 `[?]T` array forms.
 
-A member that is itself an anonymous enum stays one member; members are **not**
-recursively flattened. There is no parenthesized type syntax, so a nested
-anonymous enum is written either through an alias or as the last member, where
-the inner `enum` consumes the rest of the list:
+An anonymous enum is a set of **leaf** member types. A member that is itself an
+anonymous enum is **flattened**: its own members become members of the outer
+enum, recursively. There is no parenthesized type syntax, so a nested anonymous
+enum is written either through an alias or as the last member, where the inner
+`enum` consumes the rest of the list:
 
 ```omega
 alias Inner = enum A | B;
-alias Outer = enum C | Inner;   # two members: C and `enum A | B`
-                                # same type as `enum C | enum A | B`
+alias Outer = enum C | Inner;   # three members: A, B, and C
+                                # the same type as `enum C | enum A | B`
+                                # and as `enum A | B | C`
 ```
 
-`Outer` is a different type from `enum A | B | C`. Flattening would silently
-change both the layout and which values convert implicitly.
+Flattening erases only an *immediate* anonymous-enum member. Every other type
+constructor is a boundary:
+
+- a named enum is nominal, so `enum Named | C` has exactly the two members
+  `Named` and `C`, whatever variants `Named` declares;
+- a type that merely *contains* an anonymous enum keeps it inside: with
+  `alias Inner = enum A | B;`, `enum *Inner | C` has the members `*Inner` and
+  `C`, not `*A | *B | C`. The same holds for arrays, function types, and
+  generic arguments;
+- an alias is not a boundary, and neither is generic substitution: when a
+  generic argument lands an anonymous enum in immediate member position it
+  flattens there too, and any duplicates that substitution introduces
+  disappear before tags and layout are assigned.
+
+Flattening never removes the enum itself: a single-member anonymous enum is
+still an anonymous enum, so `enum A` is not `A`.
 
 ### Structural identity
 
 An anonymous enum has no declaration, so its identity is entirely structural.
-After every member is resolved to its final type, the member list is
-deterministically ordered and exact duplicates are removed. The resulting
-**canonical member list** is the type's identity.
+After every member is resolved to its final type, immediate anonymous-enum
+members are flattened away, the remaining leaf members are deterministically
+ordered, and exact duplicates are removed. The resulting **canonical member
+list** is the type's identity.
 
 Consequently:
 
 - `enum A | B` and `enum B | A` are the same type;
 - `enum A | A` is the same type as `enum A`;
+- `enum C | enum A | B` is the same type as `enum A | B | C`;
 - an alias adds nothing: given `alias Errors = enum ParseError | IoError;`,
   `Errors` and `enum IoError | ParseError` are one type with one layout and one
   symbol, exactly as [`aliases.md`](aliases.md) requires;
@@ -171,6 +189,8 @@ spelling of the same anonymous enum produces the same tag for the same member.
 
 An anonymous enum may therefore have at most 65536 distinct members; a larger
 canonical member list is rejected, because the tag domain is fixed at `u16`.
+The limit applies to the flattened, deduplicated list, so combining two shapes
+that each fit can still exceed it.
 
 ### Member injection
 
@@ -204,6 +224,35 @@ a disjunction of its members, so the member must already be known:
 Overload resolution treats injection as a conversion: a candidate that accepts
 an argument exactly always outranks one that requires injecting it.
 
+### An anonymous enum type is never inferred
+
+An anonymous enum comes into existence only where a type is *written*: a local
+annotation, a parameter or return type, an aggregate field, an alias target, or
+a generic instantiation whose argument is an anonymous enum. Inference never
+manufactures one, so unrelated branch or arm types are never joined into a
+union:
+
+```omega
+x := if cond { a } else { b };   # error when `a` and `b` have different types;
+                                 # there is no inferred `enum A | B`
+```
+
+Writing the type down makes the branches *checked* against it, injecting each
+member as above:
+
+```omega
+x: enum A | B = if cond { a } else { b };
+```
+
+The same expected type reaches `match` arms, `else` blocks, function returns,
+parameters, fields, and elements — every position that already checks a value
+against a known type.
+
+An anonymous enum that already exists propagates like any other type. Passing a
+value of type `Errors` to `identity<T>(x: T) => T` infers `T = Errors`, because
+that anonymous enum was established by `Errors`; only building a *new* one by
+inference is forbidden. See [`generics.md`](generics.md).
+
 ### No subset or superset conversion
 
 An anonymous enum does **not** implicitly convert to another anonymous enum.
@@ -228,6 +277,10 @@ match result {
 Each arm's type is resolved in the enclosing module (aliases included) and must
 be exactly a member of the scrutinee's canonical member list. Naming a
 non-member, or naming the same member twice, is an error.
+
+Because the canonical list holds leaves, arms name leaves. An alias that itself
+resolves to an anonymous enum is not a member and is therefore not an arm that
+groups several leaves at once; match those leaf types individually.
 
 Coverage follows the ordinary enum rules: the arms may cover every member, or
 coverage is completed by a single bare `..` arm or an `else` block. Matching

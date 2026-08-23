@@ -45,6 +45,8 @@ Inference uses call arguments and the surrounding expected result type. Constrai
 
 An explicitly typed expression or suffixed numeric literal does not silently change type to satisfy an incompatible expectation.
 
+An anonymous enum that already exists is an ordinary type here. Given `alias Errors = enum ParseError | IoError;` and a value `e: Errors`, calling `identity<T>(x: T) => T` with `e` infers `T = Errors`, and substituting `T = Errors` into `enum T | C` flattens to `enum ParseError | IoError | C`. What inference may **not** do is construct an anonymous enum that no written type established: two arguments of unrelated types `A` and `B` never unify a parameter `T` to `enum A | B`, and the members of an expected anonymous enum are never tried one at a time as inference candidates. See [`enums-and-pattern-matching.md`](enums-and-pattern-matching.md).
+
 ## Generic aggregate inference
 
 Generic struct/union/enum construction can infer owner type arguments from:

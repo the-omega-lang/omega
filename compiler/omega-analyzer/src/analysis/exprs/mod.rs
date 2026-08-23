@@ -75,7 +75,7 @@ impl<'r> Analyzer<'r> {
                 self.analyze_array_literal(id, span, elements, expected)
             }
             HirExpr::StructLiteral(lit) => self.analyze_struct_literal(id, span, lit, expected),
-            HirExpr::Match(m) => self.analyze_match(id, span, m),
+            HirExpr::Match(m) => self.analyze_match(id, span, m, expected),
             HirExpr::Cast(HirCast { target, base }) => self.analyze_cast(id, span, target, base),
 
             HirExpr::Slice(_) => {

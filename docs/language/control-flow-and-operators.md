@@ -12,7 +12,9 @@ result := if x > 0 { "positive" }
 
 `if` is an expression. Its condition must be `bool`. When an `if` is used as a value, its value-producing branches must be type-compatible.
 
-Branch typing is source-order anchored: the first branch establishes the initial result type/literal expectation and later branches are checked against it. For example, `if true { 10 } else { 20u64 }` is invalid because the first unsuffixed `10` defaults to `i32`; the later explicit `u64` does not retroactively choose the first branch's type.
+When the `if` sits in a position with an expected type — an annotated declaration, an argument, a `return`, a field or element — that expected type is what every value-producing branch is checked against, so each branch may convert to it exactly as a standalone expression in that position would. Otherwise branch typing is source-order anchored: the first branch establishes the initial result type/literal expectation and later branches are checked against it. For example, `if true { 10 } else { 20u64 }` is invalid because the first unsuffixed `10` defaults to `i32`; the later explicit `u64` does not retroactively choose the first branch's type.
+
+An untyped branch join never manufactures a type of its own. Branches with unrelated types are a type mismatch, not an inferred union; in particular no anonymous enum is synthesized (see [`enums-and-pattern-matching.md`](enums-and-pattern-matching.md)).
 
 In condition positions, a following `{` begins the control-flow body rather than being reinterpreted as a struct literal attached to the condition expression. Use explicit syntax/parenthesization where needed to avoid aggregate-literal ambiguity.
 
@@ -29,6 +31,8 @@ match value {
 ```
 
 `match` is an expression when its arms produce values. Pattern forms, exhaustiveness, ranges, overlap rules, and enum narrowing are specified in [`enums-and-pattern-matching.md`](enums-and-pattern-matching.md).
+
+Arm results follow the same rules as `if` branches: a surrounding expected type is checked against every arm body, catch-all, and `else` block, and without one the arms must already agree on a type.
 
 ## Loops
 

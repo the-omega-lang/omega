@@ -90,4 +90,33 @@ error: 'enum Failure | *str' has no members of its own
    |
    = help: `match` it on a member type first -- the arm's binding then *is* that member
 
-error: could not compile the program due to 11 previous errors
+error: 'enum Failure | *str' is not a member of 'enum Failure | Other | *str'
+  --> tests/t27b_anonymous_enum_errors/t27b_anonymous_enum_errors.omg:97:9
+   |
+97 |         Errors => 1,
+   |         ^^^^^^ not one of this type's members
+   |
+   = help: the members of `enum Failure | Other | *str` are the only arms it can match
+
+error: 'if' and 'else' branches have incompatible types
+   --> tests/t27b_anonymous_enum_errors/t27b_anonymous_enum_errors.omg:104:15
+    |
+104 |     joined := if flag { Failure { code = 1; } } else { Other { value = 2; } };
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this branch produces `Other`, but earlier branches produce `Failure`
+    |
+    = note: every branch of an `if` used as an expression must produce the same type
+
+error: 'match' arms have incompatible types
+   --> tests/t27b_anonymous_enum_errors/t27b_anonymous_enum_errors.omg:109:15
+    |
+109 |       joined := match n {
+    |  _______________^
+110 | |         0 => Failure { code = 1; },
+111 | |     } else {
+112 | |         Other { value = 2; }
+113 | |     };
+    | |_____^ this arm produces `Other`, but earlier arms produce `Failure`
+    |
+    = note: every arm of a `match` used as an expression must produce the same type
+
+error: could not compile the program due to 14 previous errors

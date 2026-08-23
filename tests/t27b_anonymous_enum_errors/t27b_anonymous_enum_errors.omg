@@ -87,5 +87,31 @@ no_members(value: Errors) => i32 {
 	value.code
 }
 
+alias Wide = enum Other | Errors;
+
+# `Errors` is flattened into `Wide`'s leaves, so it is not a member of its own
+# and cannot group several leaves into one arm.
+flattened_alias_arm(value: Wide) => i32 {
+	match value {
+		Other => 0,
+		Errors => 1,
+	}
+}
+
+# Branches of unrelated types are a plain mismatch: no `enum Failure | Other`
+# is invented to make an untyped `if` type-check.
+untyped_if(flag: bool) => void {
+	joined := if flag { Failure { code = 1; } } else { Other { value = 2; } };
+}
+
+# The same holds for `match` arms.
+untyped_match(n: i32) => void {
+	joined := match n {
+		0 => Failure { code = 1; },
+	} else {
+		Other { value = 2; }
+	};
+}
+
 main() => void {
 }

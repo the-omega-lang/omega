@@ -81,7 +81,9 @@ The resolved identity is the target's own identity. In particular:
   anonymous enum is structural, so the alias adds no identity, no member
   ordering, and no tag assignment of its own: the canonical member list is
   computed from the resolved members either way (see
-  [`enums-and-pattern-matching.md`](enums-and-pattern-matching.md));
+  [`enums-and-pattern-matching.md`](enums-and-pattern-matching.md)). An alias
+  is likewise not a flattening boundary: `alias Outer = enum Errors | C;` is
+  the same type as `enum ParseError | IoError | C`;
 - `alias plus = add;` calls `add`; no wrapper function or extra symbol exists;
 - an alias of an overloaded name forwards the complete candidate set visible at
   the alias declaration, and overload resolution still happens at the call

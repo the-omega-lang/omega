@@ -1,11 +1,16 @@
 use super::*;
 
 impl<'r> Analyzer<'r> {
+    /// `expected` is the surrounding expected type of the whole `match`, and
+    /// it reaches every arm body, catch-all, and `else` exactly as it reaches
+    /// an `if` branch: arms are *checked* against a type that already exists,
+    /// never joined into a new one.
     pub(super) fn analyze_match(
         &mut self,
         node_id: HirId,
         span: Span,
         m: &HirMatch,
+        expected: Option<&ResolvedType>,
     ) -> Option<CheckedExprNode> {
         let narrow_target = self.narrowable_scrutinee(&m.scrutinee);
         let checked_scrutinee = self.analyze_expr(&m.scrutinee, None)?;
@@ -62,6 +67,7 @@ impl<'r> Analyzer<'r> {
                 &scrutinee_type,
                 &scrutinee_place,
                 narrow_binding,
+                expected,
             )?
         } else if let ResolvedType::AnonymousEnum { shape, .. } = matched {
             let shape = shape.clone();
@@ -73,12 +79,20 @@ impl<'r> Analyzer<'r> {
                 &scrutinee_type,
                 &scrutinee_place,
                 narrow_binding,
+                expected,
             )?
         } else if scrutinee_type
             .integer_domain(self.target.pointer_bits())
             .is_some()
         {
-            self.analyze_value_match(node_id, span, m, &scrutinee_type, &scrutinee_place)?
+            self.analyze_value_match(
+                node_id,
+                span,
+                m,
+                &scrutinee_type,
+                &scrutinee_place,
+                expected,
+            )?
         } else {
             self.error(
                 node_id,
@@ -150,11 +164,16 @@ impl<'r> Analyzer<'r> {
         self.narrowable_place(place)
     }
 
-    fn analyze_match_arm_body(&mut self, body: &HirExprNode) -> Option<CheckedBlock> {
+    fn analyze_match_arm_body(
+        &mut self,
+        body: &HirExprNode,
+        expected: Option<&ResolvedType>,
+    ) -> Option<CheckedBlock> {
         if let HirExpr::Codeblock(block) = &body.expr {
-            self.analyze_block(block, None)
+            self.analyze_block(block, expected)
         } else {
-            let checked = self.analyze_expr(body, None)?;
+            let checked = self.analyze_expr(body, expected)?;
+            let checked = self.coerce_to_expected(expected, checked);
             Some(CheckedBlock {
                 stmts: vec![],
                 tail: Some(Box::new(checked)),
@@ -170,6 +189,7 @@ impl<'r> Analyzer<'r> {
         scrutinee_type: &ResolvedType,
         scrutinee_place: &CheckedPlace,
         narrow_binding: Option<(Ident, Origin, HirId, Storage, bool)>,
+        expected: Option<&ResolvedType>,
     ) -> Option<(Vec<CheckedMatchArm>, Option<CheckedBlock>, ResolvedType)> {
         let (cell, through_pointer) = match scrutinee_type {
             ResolvedType::Enum { cell, .. } => (cell.clone(), None),
@@ -259,7 +279,7 @@ impl<'r> Analyzer<'r> {
                         *decl_id, arm.span, ident, *origin, narrowed, *storage, *mutable,
                     );
                 }
-                this.analyze_match_arm_body(&arm.body)
+                this.analyze_match_arm_body(&arm.body, expected)
             });
 
             checked_arms.push(CheckedMatchArm {
@@ -294,12 +314,12 @@ impl<'r> Analyzer<'r> {
                     )]
                 })
                 .collect();
-            let body = self.analyze_match_arm_body(&arm.body)?;
+            let body = self.analyze_match_arm_body(&arm.body, expected)?;
             checked_arms.push(CheckedMatchArm { conditions, body });
         }
 
         let else_branch = match &m.else_branch {
-            Some(b) => Some(self.analyze_block(b, None)?),
+            Some(b) => Some(self.analyze_block(b, expected)?),
             None if catch_all.is_none() && !missing.is_empty() => {
                 let missing_names = missing
                     .iter()
@@ -341,6 +361,7 @@ impl<'r> Analyzer<'r> {
         scrutinee_type: &ResolvedType,
         scrutinee_place: &CheckedPlace,
         narrow_binding: Option<(Ident, Origin, HirId, Storage, bool)>,
+        expected: Option<&ResolvedType>,
     ) -> Option<(Vec<CheckedMatchArm>, Option<CheckedBlock>, ResolvedType)> {
         let through_pointer = match scrutinee_type {
             ResolvedType::Pointer { mutable, .. } => Some(*mutable),
@@ -423,7 +444,7 @@ impl<'r> Analyzer<'r> {
                         *decl_id, arm.span, ident, *origin, narrowed, *storage, *mutable,
                     );
                 }
-                this.analyze_match_arm_body(&arm.body)
+                this.analyze_match_arm_body(&arm.body, expected)
             });
 
             checked_arms.push(CheckedMatchArm {
@@ -456,12 +477,12 @@ impl<'r> Analyzer<'r> {
                     )]
                 })
                 .collect();
-            let body = self.analyze_match_arm_body(&arm.body)?;
+            let body = self.analyze_match_arm_body(&arm.body, expected)?;
             checked_arms.push(CheckedMatchArm { conditions, body });
         }
 
         let else_branch = match &m.else_branch {
-            Some(b) => Some(self.analyze_block(b, None)?),
+            Some(b) => Some(self.analyze_block(b, expected)?),
             None if catch_all.is_none() && !missing.is_empty() => {
                 self.error(
                     node_id,
@@ -664,6 +685,7 @@ impl<'r> Analyzer<'r> {
         m: &HirMatch,
         scrutinee_type: &ResolvedType,
         scrutinee_place: &CheckedPlace,
+        expected: Option<&ResolvedType>,
     ) -> Option<(Vec<CheckedMatchArm>, Option<CheckedBlock>, ResolvedType)> {
         let domain = scrutinee_type
             .integer_domain(self.target.pointer_bits())
@@ -699,7 +721,7 @@ impl<'r> Analyzer<'r> {
                 hi,
                 span: arm.pattern.span(),
             });
-            let body = self.analyze_match_arm_body(&arm.body)?;
+            let body = self.analyze_match_arm_body(&arm.body, expected)?;
             checked_arms.push(CheckedMatchArm {
                 conditions: vec![conditions],
                 body,
@@ -741,7 +763,7 @@ impl<'r> Analyzer<'r> {
                 hi,
                 span: arm.pattern.span(),
             });
-            let body = self.analyze_match_arm_body(&arm.body)?;
+            let body = self.analyze_match_arm_body(&arm.body, expected)?;
             checked_arms.push(CheckedMatchArm {
                 conditions: vec![conditions],
                 body,
@@ -766,7 +788,7 @@ impl<'r> Analyzer<'r> {
         }
 
         let else_branch = match &m.else_branch {
-            Some(b) => Some(self.analyze_block(b, None)?),
+            Some(b) => Some(self.analyze_block(b, expected)?),
             None if !coverage.gaps.is_empty() => {
                 let gaps = coverage
                     .gaps

@@ -332,11 +332,12 @@ impl std::fmt::Display for ResolvedSpecShape {
 
 /// The canonical member list of an anonymous enum.
 ///
-/// Members are ordered by `type_key::structural_key` and exact duplicates are
-/// removed, so `enum A | B`, `enum B | A`, and `enum A | B | A` are one type
-/// with one layout, one tag assignment, and one mangled symbol. Construction
-/// goes through `canonicalize` precisely so no later phase can observe source
-/// order.
+/// Members are flattened to leaves, ordered by `type_key::structural_key`, and
+/// exact duplicates are removed, so `enum A | B`, `enum B | A`,
+/// `enum A | B | A`, and `enum (enum A | B) | B` are one type with one layout,
+/// one tag assignment, and one mangled symbol. Construction goes through
+/// `canonicalize` precisely so no later phase can observe source order or a
+/// nested member.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ResolvedAnonymousEnum {
     members: Vec<ResolvedType>,
@@ -349,10 +350,36 @@ impl ResolvedAnonymousEnum {
 
     /// Callers must resolve every member to its final type first; ordering
     /// and deduplication are meaningless on unresolved syntax.
-    pub fn canonicalize(mut members: Vec<ResolvedType>) -> Self {
-        members.sort_by_cached_key(crate::type_key::structural_key);
-        members.dedup();
-        Self { members }
+    ///
+    /// The stored list holds no `ResolvedType::AnonymousEnum`: an immediate
+    /// anonymous-enum member is replaced by its own members, so an alias or a
+    /// generic substitution that lands one anonymous enum inside another
+    /// produces the same type as writing the leaves directly. Every other
+    /// constructor is a boundary and stays one atomic member, including a
+    /// named enum and a pointer/array/function/generic type that merely
+    /// *contains* an anonymous enum.
+    pub fn canonicalize(members: Vec<ResolvedType>) -> Self {
+        let mut flattened = Vec::with_capacity(members.len());
+        for member in members {
+            Self::flatten_member_into(member, &mut flattened);
+        }
+        flattened.sort_by_cached_key(crate::type_key::structural_key);
+        flattened.dedup();
+        Self { members: flattened }
+    }
+
+    /// Refinement proves which member a value currently holds; it is not part
+    /// of type or storage identity, so a refined member contributes its whole
+    /// shape here rather than the single proven member.
+    fn flatten_member_into(member: ResolvedType, out: &mut Vec<ResolvedType>) {
+        match member {
+            ResolvedType::AnonymousEnum { shape, .. } => {
+                for inner in shape.members() {
+                    Self::flatten_member_into(inner.clone(), out);
+                }
+            }
+            atomic => out.push(atomic),
+        }
     }
 
     pub fn members(&self) -> &[ResolvedType] {

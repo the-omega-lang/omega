@@ -101,7 +101,7 @@ Byte layout is target-aware through pointer width and resolved layout annotation
 
 Enum helpers take `layout::EnumView`, the one shape shared by declared enums and structural anonymous enums, so both forms have exactly one representation owner. An anonymous enum is the ordinary enum representation with a `u16` tag holding the canonical member index, no header, no shared dynamic fields, and one body field per variant. It follows the ordinary aggregate ABI, including the platform-C-aggregate limitation noted under **External C boundary**.
 
-Because an anonymous enum's identity is its canonical member list rather than a declaration, `enum A | B` compiled in one unit and `enum B | A` compiled in another produce the same layout, the same tag values, and the same mangled type.
+Because an anonymous enum's identity is its canonical member list rather than a declaration, `enum A | B` compiled in one unit and `enum B | A` compiled in another produce the same layout, the same tag values, and the same mangled type. That list is the flattened leaf list, so a nested or alias spelling such as `enum C | enum A | B` agrees with `enum A | B | C` across units too.
 
 See [`types-layout-and-const-eval.md`](types-layout-and-const-eval.md).
 

@@ -37,8 +37,13 @@ one_member(value: enum i32 | i32) => i32 {
 	}
 }
 
-# Nested anonymous members are members, not flattened away.
+# An immediate anonymous-enum member is flattened away, so `Nested` has the
+# three leaf members `Kind`, `Failure`, and `*str`. A named enum stays atomic.
 alias Nested = enum Kind | Errors;
+
+# Generic substitution re-enters the same canonicalization.
+alias WithKind<T> = enum T | Kind;
+alias Twice<T> = enum T | Errors;
 
 pick(n: i32) => Errors {
 	if n < 0 {
@@ -88,7 +93,23 @@ through_pointer(value: *Errors) => i32 {
 describe_nested(value: Nested) => *str {
 	match value {
 		Kind => "kind",
-		Errors => describe(value),
+		Failure => value.describe(),
+		*str => value,
+	}
+}
+
+# The flat spelling is the same type, so it accepts a `Nested` value with no
+# conversion at all.
+flat_spelling(value: enum *str | Kind | Failure) => *str {
+	describe_nested(value)
+}
+
+# The expected return type reaches every arm, so arms producing two different
+# leaf types are checked -- and injected -- against it.
+from_kind(kind: Kind) => Errors {
+	match kind {
+		Kind::Small => "small",
+		Kind::Large => Failure::new(11),
 	}
 }
 
@@ -152,10 +173,10 @@ main() => void {
 	# --- pointer scrutinee, refined through the pointer -------------------
 	println$("pointer-match: ", through_pointer(&failure), " ", through_pointer(&text));
 
-	# --- a nested anonymous member stays one member -----------------------
+	# --- a nested anonymous member flattens into leaf members -------------
 	kind: Nested = Kind::Large;
-	inner: Nested = failure;
-	println$("nested: ", describe_nested(kind), " ", describe_nested(inner));
+	inner: Nested = Failure::new(7);
+	println$("nested: ", describe_nested(kind), " ", describe_nested(inner), " ", describe_nested("leaf"));
 
 	# --- an array of the anonymous enum, injected element by element ------
 	items: [2]Errors = ["first", Failure::new(2)];
@@ -184,4 +205,20 @@ main() => void {
 
 	# --- identical spellings have identical size --------------------------
 	println$("sizeof-identity: ", sizeof<Errors> == sizeof<enum *str | Failure>, " ", sizeof<enum i32 | i32> == sizeof<enum i32>);
+
+	# --- the flat spelling is the very same type --------------------------
+	println$("flatten-identity: ", flat_spelling(kind), " ", sizeof<Nested> == sizeof<enum *str | Kind | Failure>);
+
+	# --- generic substitution flattens, and collapses the duplicates ------
+	substituted: WithKind<Errors> = Failure::new(8);
+	println$("generic-flatten: ", describe_nested(substituted), " ", sizeof<Twice<Errors>> == sizeof<Errors>);
+
+	# --- an explicit type makes `if` branches and `match` arms inject -----
+	n := 1;
+	branch: Errors = if n > 0 { Failure::new(10) } else { "branch" };
+	println$("expected-branches: ", describe(branch), " ", describe(from_kind(Kind::Small)), " ", describe(from_kind(Kind::Large)));
+
+	# --- a nested spelling across a module boundary is the same type ------
+	cross_flat: enum bool | i32 | *str = 7;
+	println$("cross-nested: ", helper::tag_of_nested(cross_flat), " ", helper::tag_of_nested(true), " ", helper::tag_of_nested("cn"));
 }
