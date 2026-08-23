@@ -398,8 +398,9 @@ pub enum AnalysisErrorKind {
     VariadicSpecFunctionUnsatisfiable {
         name: Ident,
     },
-    ForeignAggregateByValue {
+    UnsupportedConventionByValue {
         r#type: ResolvedType,
+        convention: CallingConvention,
     },
     GenericForeignFunctionUnsupported,
     AmbiguousSpecObjectMethod {
@@ -1114,8 +1115,12 @@ impl fmt::Display for AnalysisErrorKind {
                     name.as_ref()
                 )
             }
-            Self::ForeignAggregateByValue { r#type } => {
-                write!(f, "'{type}' cannot cross a 'foreign' boundary by value")
+            Self::UnsupportedConventionByValue { r#type, convention } => {
+                write!(
+                    f,
+                    "'{type}' cannot be passed or returned by value using the '{}' calling convention",
+                    convention.name()
+                )
             }
             Self::GenericForeignFunctionUnsupported => {
                 write!(f, "a generic 'foreign' function is not yet supported")

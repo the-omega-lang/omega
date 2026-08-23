@@ -8,4 +8,5 @@ c_callback via pointer: 13
 sysv_add: 30
 sysv64 sum = 25
 sysv64 snprintf n: 16
+quad_rotate: 4123
 helper-main: 999

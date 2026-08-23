@@ -1,0 +1,29 @@
+# Body-phase ABI rules. The non-Omega by-value restriction belongs to the
+# function type, so it applies at an indirect call even though no `foreign`
+# item appears at the call site.
+#
+# This is a separate package from `t19b_foreign_abi_errors` because a rejected
+# signature stops body analysis before these calls are ever reached.
+
+struct Pair {
+	exposed a: i32;
+	exposed b: i32;
+}
+
+# Holding, passing, and returning the function pointer is fine -- only
+# invoking it depends on the pointee's `c` ABI.
+forward(fp: foreign(c) (value: Pair) => void) => foreign(c) (value: Pair) => void {
+	fp
+}
+
+call_through_param(fp: foreign(c) (value: Pair) => void, value: Pair) => void {
+	fp(value)
+}
+
+call_through_local(fp: foreign(c) () => Pair) => void {
+	local := fp;
+	local();
+}
+
+main() => void {
+}

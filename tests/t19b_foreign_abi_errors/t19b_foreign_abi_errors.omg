@@ -1,0 +1,31 @@
+# Signature-phase ABI rules for non-Omega calling conventions. The restriction
+# follows the resolved convention, never `foreign` linkage: every rejection
+# below names `c`, and the bare-`foreign` Omega-ABI forms that stay valid are
+# exercised in `t19_foreign_function_interface`.
+#
+# They live in their own package because a rejected signature stops body
+# analysis, which is where `t19c_foreign_abi_call_errors` does its work.
+
+struct Pair {
+	exposed a: i32;
+	exposed b: i32;
+}
+
+# A named aggregate by value under `c`.
+foreign(c) c_takes_struct(value: Pair) => void;
+
+# ... and returned by value.
+foreign(c) c_returns_struct() => Pair;
+
+# A fixed array is an inline composite, not C's decayed pointer parameter.
+foreign(c) c_takes_fixed_array(values: [4]i32) => void;
+
+# `*str` is Omega's string fat pointer -- two leaves, not one C scalar.
+foreign(c) c_takes_str(text: *str) => void;
+
+# A typed binding carries its own convention, so an explicitly C function type
+# is restricted exactly like the direct declaration above.
+foreign c_typed_binding : foreign(c) (value: Pair) => void;
+
+main() => void {
+}

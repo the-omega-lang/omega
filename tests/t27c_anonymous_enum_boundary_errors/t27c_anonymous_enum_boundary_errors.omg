@@ -16,8 +16,9 @@ conform Errors to Named {
 	}
 }
 
-# It is an ordinary aggregate, so it faces the same foreign-boundary
-# restriction every other by-value aggregate does.
+# It is an ordinary composite, so the non-Omega `c` convention rejects it by
+# value exactly as it does every other composite. `foreign` linkage is not
+# what causes this -- bare `foreign` uses the Omega ABI and accepts it.
 foreign(c) takes_by_value(value: Errors) => void;
 
 main() => void {

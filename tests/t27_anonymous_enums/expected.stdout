@@ -21,4 +21,5 @@ widen: 7 7 3
 cast: 7 12 helper-int
 cast-explicitness: narrow wide
 comp-widen: 21 22 23 41
+foreign-omega-abi: failure fp
 cross-nested: helper-int helper-bool cn

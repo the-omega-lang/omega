@@ -280,40 +280,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// Rejects an aggregate passed or returned by value against a
-    /// non-Omega-ABI-safe boundary rather than silently miscompiling
-    /// against a foreign caller/callee (see docs/issues/known-issues.md,
-    /// "Omega's calling convention is not the platform C ABI").
-    fn reject_foreign_aggregate_by_value<'a>(
-        &mut self,
-        id: HirId,
-        span: Span,
-        types: impl Iterator<Item = &'a ResolvedType>,
-    ) -> bool {
-        let aggregate = types.into_iter().find(|ty| {
-            matches!(
-                ty,
-                ResolvedType::Struct(_)
-                    | ResolvedType::Union(_)
-                    | ResolvedType::Enum { .. }
-                    | ResolvedType::AnonymousEnum { .. }
-            )
-        });
-        match aggregate {
-            Some(aggregate) => {
-                self.error(
-                    id,
-                    span,
-                    AnalysisErrorKind::ForeignAggregateByValue {
-                        r#type: aggregate.clone(),
-                    },
-                );
-                false
-            }
-            None => true,
-        }
-    }
-
     pub fn analyze_foreign_binding(
         &mut self,
         binding: &omega_hir::HirForeignBinding,
@@ -321,24 +287,13 @@ impl<'r> Analyzer<'r> {
         self.check_redundant_hidden(binding.id, binding.explicit_hidden_span);
         let resolved_type =
             self.resolve_type_or_error(binding.id, binding.span, &binding.r#type, true)?;
-        let ok = match &resolved_type {
-            ResolvedType::Function(fn_type) => self.reject_foreign_aggregate_by_value(
-                binding.id,
-                binding.span,
-                fn_type
-                    .params
-                    .iter()
-                    .map(|(_, ty)| ty)
-                    .chain(std::iter::once(&*fn_type.return_type)),
-            ),
-            other => self.reject_foreign_aggregate_by_value(
-                binding.id,
-                binding.span,
-                std::iter::once(other),
-            ),
-        };
-        if !ok {
-            return None;
+        // A non-function binding is an external data symbol, not a call
+        // boundary, so no calling convention applies to it.
+        if let ResolvedType::Function(fn_type) = &resolved_type {
+            let fn_type = fn_type.clone();
+            if !self.check_signature_abi(binding.id, binding.span, &fn_type) {
+                return None;
+            }
         }
         let annotations = crate::annotations::resolve(
             self,
@@ -409,14 +364,14 @@ impl<'r> Analyzer<'r> {
             );
             return None;
         }
-        if !self.reject_foreign_aggregate_by_value(
-            f.id,
-            f.span,
-            params
-                .iter()
-                .map(|(_, t)| t)
-                .chain(std::iter::once(&return_type)),
-        ) {
+        let fn_type = ResolvedFunctionType {
+            params,
+            return_type: Box::new(return_type),
+            is_variadic: f.is_variadic,
+            self_mode: None,
+            calling_convention,
+        };
+        if !self.check_signature_abi(f.id, f.span, &fn_type) {
             return None;
         }
         let annotations = crate::annotations::resolve(
@@ -428,16 +383,7 @@ impl<'r> Analyzer<'r> {
             !f.generics.is_empty(),
             crate::annotations::ManglingMode::Disabled,
         );
-        Some((
-            ResolvedFunctionType {
-                params,
-                return_type: Box::new(return_type),
-                is_variadic: f.is_variadic,
-                self_mode: None,
-                calling_convention,
-            },
-            annotations,
-        ))
+        Some((fn_type, annotations))
     }
 
     pub fn check_foreign_function_body(

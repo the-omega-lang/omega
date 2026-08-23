@@ -65,6 +65,14 @@ describe(value: Errors) => *str {
 	}
 }
 
+# An anonymous enum is an ordinary Omega value, so it crosses a bare `foreign`
+# boundary by value: `foreign` selects linkage, and the Omega convention
+# transports the sum exactly as an internal call does. Only a non-Omega
+# convention restricts it -- see `t27c_anonymous_enum_boundary_errors`.
+foreign foreign_passthrough(value: Errors) => Errors {
+	value
+}
+
 # `..` covers what the explicit arms left.
 only_str(value: Errors) => *str {
 	match value {
@@ -303,6 +311,9 @@ main() => void {
 
 	# --- widening and casting are compile-time evaluable ------------------
 	println$("comp-widen: ", COMP_WIDENED, " ", COMP_CAST_WIDENED, " ", COMP_CONST_CAST, " ", wide_payload(GLOBAL_WIDE));
+
+	# --- bare `foreign` is Omega-ABI, so the sum passes by value ----------
+	println$("foreign-omega-abi: ", describe(foreign_passthrough(Failure::new(5))), " ", describe(foreign_passthrough("fp")));
 
 	# --- a nested spelling across a module boundary is the same type ------
 	cross_flat: enum bool | i32 | *str = 7;

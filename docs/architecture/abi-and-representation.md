@@ -67,7 +67,7 @@ Indirect   caller provides hidden destination pointer
 
 Large/complex flattened results can use the hidden struct-return path. The current threshold/convention is an Omega compiler convention, not a claim that every target's platform C ABI uses the same rule.
 
-That distinction matters at `foreign`/C boundaries and is tracked as design debt until a true per-platform C aggregate ABI is implemented.
+That distinction matters at non-Omega (`c`/`sysv64`) convention boundaries and is tracked as design debt until a true per-platform C aggregate ABI is implemented.
 
 ## Parameter flattening
 
@@ -85,7 +85,9 @@ A variadic `foreign(sysv64)` call gets no such promotion: its tail is passed usi
 
 Omega's current internal ABI is intentional and stable, but it is not yet a full implementation of every platform's C ABI for aggregates.
 
-The compiler therefore has responsibility to reject or constrain unsupported FFI shapes rather than silently emit an object with a call convention that merely happens to work on one target.
+The unsupported case is a **non-Omega calling convention**, not foreign linkage. A bare `foreign` function uses `CallingConvention::Omega` and therefore the same `AbiSignature` as any ordinary Omega call, including across separately compiled objects; it transports composites by value exactly as an internal call does.
+
+`omega_analyzer::analysis::abi` therefore classifies by-value shapes only for `CallingConvention::C`/`SysV64`, and does so wherever such a signature is actually relied upon: a direct declaration/definition, a function-typed foreign binding, and an indirect call through a non-Omega function type. Passing the function pointer itself stays legal, since only invoking it depends on the pointee's ABI. The compiler rejects those shapes rather than silently emitting an object with a call convention that merely happens to work on one target.
 
 Current unsupported cases belong in [`../issues/known-issues.md`](../issues/known-issues.md) / [`../issues/design-debt.md`](../issues/design-debt.md).
 
@@ -99,7 +101,7 @@ Byte layout is target-aware through pointer width and resolved layout annotation
 - local frames;
 - type size/alignment.
 
-Enum helpers take `layout::EnumView`, the one shape shared by declared enums and structural anonymous enums, so both forms have exactly one representation owner. An anonymous enum is the ordinary enum representation with a `u16` tag holding the canonical member index, no header, no shared dynamic fields, and one body field per variant. It follows the ordinary aggregate ABI, including the platform-C-aggregate limitation noted under **External C boundary**.
+Enum helpers take `layout::EnumView`, the one shape shared by declared enums and structural anonymous enums, so both forms have exactly one representation owner. An anonymous enum is the ordinary enum representation with a `u16` tag holding the canonical member index, no header, no shared dynamic fields, and one body field per variant. It follows the ordinary aggregate ABI, including the non-Omega-convention limitation noted under **External C boundary**.
 
 Because an anonymous enum's identity is its canonical member list rather than a declaration, `enum A | B` compiled in one unit and `enum B | A` compiled in another produce the same layout, the same tag values, and the same mangled type. That list is the flattened leaf list, so a nested or alias spelling such as `enum C | enum A | B` agrees with `enum A | B | C` across units too.
 

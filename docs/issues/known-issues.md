@@ -293,11 +293,17 @@ Shape problems in `omega-driver` and `omega-analyzer` that still need a delibera
   correct.
 
   To keep it that way rather than waiting for someone to discover it,
-  aggregate-by-value across a `foreign` boundary of any convention (`c`,
-  `sysv64`, ...) is a **hard error** (`AnalysisErrorKind::ForeignAggregateByValue`)
-  pointing back at this entry. One `if` to delete once a real per-target ABI
-  classifier exists; until then it turns a silent miscompile into a compile
-  error.
+  an unsupported composite/by-value shape under a **non-Omega convention**
+  (`c`, `sysv64`, ...) is a **hard error**
+  (`AnalysisErrorKind::UnsupportedConventionByValue`) pointing back at this
+  entry. `foreign` linkage by itself is not the trigger: a bare `foreign`
+  function uses `CallingConvention::Omega` and the ordinary `AbiSignature`,
+  so it accepts Omega composites by value like any other Omega call.
+  `analysis::abi` owns the classifier and is applied at foreign
+  declarations/definitions, function-typed foreign bindings, and indirect
+  calls through a non-Omega function type. One classifier to replace once a
+  real per-target ABI classifier exists; until then it turns a silent
+  miscompile into a compile error.
 
   Fixing it properly means per-target, per-convention ABI classification in
   `abi.rs` (eightbyte classification for SysV, AAPCS for aarch64, ...). The

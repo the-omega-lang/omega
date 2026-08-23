@@ -1,0 +1,19 @@
+error: 'Pair' cannot be passed or returned by value using the 'c' calling convention
+  --> tests/t19c_foreign_abi_call_errors/t19c_foreign_abi_call_errors.omg:20:5
+   |
+20 |     fp(value)
+   |     ^^ `Pair` passes by value under the `c` convention
+   |
+   = note: Omega-convention calls transport Omega composites consistently across every backend and separately compiled object, but platform aggregate/composite ABI classification is not implemented yet, so the same value would silently miscompile against a `c`/`sysv64` caller or callee
+   = help: pass or return a pointer to it instead, or redesign the external boundary (see the ABI entry in docs/issues/known-issues.md)
+
+error: 'Pair' cannot be passed or returned by value using the 'c' calling convention
+  --> tests/t19c_foreign_abi_call_errors/t19c_foreign_abi_call_errors.omg:25:5
+   |
+25 |     local();
+   |     ^^^^^ `Pair` passes by value under the `c` convention
+   |
+   = note: Omega-convention calls transport Omega composites consistently across every backend and separately compiled object, but platform aggregate/composite ABI classification is not implemented yet, so the same value would silently miscompile against a `c`/`sysv64` caller or callee
+   = help: pass or return a pointer to it instead, or redesign the external boundary (see the ABI entry in docs/issues/known-issues.md)
+
+error: could not compile the program due to 2 previous errors

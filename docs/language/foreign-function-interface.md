@@ -122,9 +122,40 @@ The root-module `main` is **not** itself emitted under the platform's native ent
 
 There is no language-level library/program mode. A separately compiled package with no root-module `main` simply exports/references whatever its declarations require; the final linker decides how the object is used.
 
-## Calling convention and aggregate ABI
+## Calling convention and by-value ABI
 
-Omega's internal calling convention is stable within the compiler's own separately compiled objects. For non-Omega conventions (`c`, `sysv64`), the current implementation supports the scalar/pointer/function-pointer boundary; it does **not** yet promise platform ABI compatibility for aggregates (structs/unions/enums) passed or returned by value across a `foreign` boundary of any convention -- that is rejected at compile time rather than silently miscompiled. Pointers to such data remain fine.
+By-value ABI validity follows the **calling convention** of the function type involved. It is never a consequence of `foreign` linkage: `foreign` controls symbol/linkage behavior only, exactly as stated at the top of this chapter.
+
+The Omega convention is stable across the compiler's own separately compiled objects, so any otherwise-valid Omega value -- struct, union, declared or anonymous enum, fixed array, slice/string -- may be passed and returned by value under it.
+
+For the non-Omega conventions (`c`, `sysv64`), the current implementation supports only the scalar/pointer/function-pointer boundary. It does **not** yet promise platform ABI compatibility for composite shapes passed or returned by value, so those are rejected at compile time rather than silently miscompiled. Pointers to such data remain fine, as does passing a function pointer whose own signature would be unsupported to invoke.
+
+The three forms differ exactly as their conventions do:
+
+```omega
+foreign takes_by_value(value: S) => S;         # Omega ABI -- composites by value are fine
+foreign(c) c_takes_by_value(value: S) => S;    # non-Omega ABI -- rejected for now
+foreign state : S;                             # external data symbol -- no convention involved
+```
+
+A non-function `foreign name : Type;` is an external data symbol, not a call boundary. No function by-value ABI rule applies to it, whatever `Type` is.
+
+A typed entry keeps the convention encoded in its own type, so a `foreign(c)` block does not make a typed binding C-convention:
+
+```omega
+foreign(c) {
+	fp : (S) => S;                 # Omega convention -- accepted
+	typed_fp : foreign(c) (S) => S;  # explicitly C -- rejected for now
+}
+```
+
+Because the hazard belongs to the signature rather than to any declaration, the restriction is also checked at an **indirect call** through a non-Omega function type, even where no `foreign` item appears:
+
+```omega
+call_it(fp: foreign(c) (S) => void, value: S) => void {
+	fp(value)     # rejected: the call relies on the `c` signature ABI
+}
+```
 
 The missing full C/SysV aggregate classification is tracked in [`../issues/known-issues.md`](../issues/known-issues.md). A reimplementation must not assume Rust/C ABI aggregate lowering where Omega's language/ABI docs do not promise it.
 

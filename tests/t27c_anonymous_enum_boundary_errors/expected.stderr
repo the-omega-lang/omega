@@ -11,13 +11,13 @@ error: 'enum i32 | bool' has no declaration to conform
    |
    = help: conform the member types instead, or give the sum a declared `enum` if it needs behavior of its own
 
-error: 'enum i32 | bool' cannot cross a 'foreign' boundary by value
-  --> tests/t27c_anonymous_enum_boundary_errors/t27c_anonymous_enum_boundary_errors.omg:21:1
+error: 'enum i32 | bool' cannot be passed or returned by value using the 'c' calling convention
+  --> tests/t27c_anonymous_enum_boundary_errors/t27c_anonymous_enum_boundary_errors.omg:22:1
    |
-21 | foreign(c) takes_by_value(value: Errors) => void;
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `enum i32 | bool` passes by value across a `foreign` boundary
+22 | foreign(c) takes_by_value(value: Errors) => void;
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `enum i32 | bool` passes by value under the `c` convention
    |
-   = note: Omega's calling convention is internally consistent across its backends, but it is not the platform C ABI -- an aggregate passed by value would silently miscompile against a foreign caller or callee
-   = help: pass or return a pointer to it instead (see the ABI entry in docs/issues/known-issues.md)
+   = note: Omega-convention calls transport Omega composites consistently across every backend and separately compiled object, but platform aggregate/composite ABI classification is not implemented yet, so the same value would silently miscompile against a `c`/`sysv64` caller or callee
+   = help: pass or return a pointer to it instead, or redesign the external boundary (see the ABI entry in docs/issues/known-issues.md)
 
 error: could not compile the program due to 2 previous errors

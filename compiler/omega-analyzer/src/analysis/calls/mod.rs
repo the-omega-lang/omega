@@ -597,7 +597,11 @@ impl<'r> Analyzer<'r> {
         r#type: ResolvedType,
     ) -> Option<ResolvedFunctionType> {
         match r#type {
-            ResolvedType::Function(fn_type) => Some(fn_type),
+            // Invoking the value is what relies on the pointed-to signature's
+            // ABI; merely storing or passing the function pointer does not.
+            ResolvedType::Function(fn_type) => self
+                .check_signature_abi(id, span, &fn_type)
+                .then_some(fn_type),
             _ => {
                 self.error(id, span, AnalysisErrorKind::UnresolvedCallee);
                 None

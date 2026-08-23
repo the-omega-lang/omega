@@ -1,0 +1,46 @@
+error: 'Pair' cannot be passed or returned by value using the 'c' calling convention
+  --> tests/t19b_foreign_abi_errors/t19b_foreign_abi_errors.omg:15:1
+   |
+15 | foreign(c) c_takes_struct(value: Pair) => void;
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Pair` passes by value under the `c` convention
+   |
+   = note: Omega-convention calls transport Omega composites consistently across every backend and separately compiled object, but platform aggregate/composite ABI classification is not implemented yet, so the same value would silently miscompile against a `c`/`sysv64` caller or callee
+   = help: pass or return a pointer to it instead, or redesign the external boundary (see the ABI entry in docs/issues/known-issues.md)
+
+error: 'Pair' cannot be passed or returned by value using the 'c' calling convention
+  --> tests/t19b_foreign_abi_errors/t19b_foreign_abi_errors.omg:18:1
+   |
+18 | foreign(c) c_returns_struct() => Pair;
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Pair` passes by value under the `c` convention
+   |
+   = note: Omega-convention calls transport Omega composites consistently across every backend and separately compiled object, but platform aggregate/composite ABI classification is not implemented yet, so the same value would silently miscompile against a `c`/`sysv64` caller or callee
+   = help: pass or return a pointer to it instead, or redesign the external boundary (see the ABI entry in docs/issues/known-issues.md)
+
+error: '[4]i32' cannot be passed or returned by value using the 'c' calling convention
+  --> tests/t19b_foreign_abi_errors/t19b_foreign_abi_errors.omg:21:1
+   |
+21 | foreign(c) c_takes_fixed_array(values: [4]i32) => void;
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `[4]i32` passes by value under the `c` convention
+   |
+   = note: Omega-convention calls transport Omega composites consistently across every backend and separately compiled object, but platform aggregate/composite ABI classification is not implemented yet, so the same value would silently miscompile against a `c`/`sysv64` caller or callee
+   = help: pass or return a pointer to it instead, or redesign the external boundary (see the ABI entry in docs/issues/known-issues.md)
+
+error: '*str' cannot be passed or returned by value using the 'c' calling convention
+  --> tests/t19b_foreign_abi_errors/t19b_foreign_abi_errors.omg:24:1
+   |
+24 | foreign(c) c_takes_str(text: *str) => void;
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `*str` passes by value under the `c` convention
+   |
+   = note: Omega-convention calls transport Omega composites consistently across every backend and separately compiled object, but platform aggregate/composite ABI classification is not implemented yet, so the same value would silently miscompile against a `c`/`sysv64` caller or callee
+   = help: pass or return a pointer to it instead, or redesign the external boundary (see the ABI entry in docs/issues/known-issues.md)
+
+error: 'Pair' cannot be passed or returned by value using the 'c' calling convention
+  --> tests/t19b_foreign_abi_errors/t19b_foreign_abi_errors.omg:28:1
+   |
+28 | foreign c_typed_binding : foreign(c) (value: Pair) => void;
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Pair` passes by value under the `c` convention
+   |
+   = note: Omega-convention calls transport Omega composites consistently across every backend and separately compiled object, but platform aggregate/composite ABI classification is not implemented yet, so the same value would silently miscompile against a `c`/`sysv64` caller or callee
+   = help: pass or return a pointer to it instead, or redesign the external boundary (see the ABI entry in docs/issues/known-issues.md)
+
+error: could not compile the program due to 5 previous errors

@@ -22,6 +22,39 @@ foreign(c) {
 @mangling(disabled)
 raw_add(a: i32, b: i32) => i32 { a + b }
 
+# --- Omega-convention foreign items ---------------------------------------
+# `foreign` selects symbol/linkage behavior, not ABI. Without `(cc)` the type
+# is an ordinary Omega function type, so it uses the same `AbiSignature` as
+# any internal Omega call and transports composites by value normally.
+
+struct Quad {
+	exposed a: i32;
+	exposed b: i32;
+	exposed c: i32;
+	exposed d: i32;
+}
+
+# Four leaves, so the result also travels the Omega indirect-return (`sret`)
+# path while the parameter is flattened.
+foreign quad_rotate(value: Quad) => Quad {
+	Quad { a = value.d; b = value.a; c = value.b; d = value.c; }
+}
+
+# Compile/link-only: an external data symbol has no calling convention at all,
+# so its aggregate type is never a function-ABI question.
+shared foreign external_quad : Quad;
+
+# Compile/link-only: an Omega-convention function type named by a foreign
+# binding keeps aggregates by value.
+shared foreign omega_quad_fp : (value: Quad) => Quad;
+
+# A `foreign(c)` block applies `c` only to direct signature entries. A typed
+# entry's own type is authoritative, so this stays Omega-convention and
+# therefore still accepts `Quad` by value.
+foreign(c) {
+	shared typed_quad_fp : (value: Quad) => Quad;
+}
+
 # A mangled `foreign(c)` definition: a C-convention function Omega itself
 # defines and exports under its normal mangled symbol, callable both
 # directly and through a `foreign(c)` function-pointer type.
@@ -76,6 +109,11 @@ main() => void {
 	printf(<*u8>b"%s", <*u8>&mut sysv_buf[0]);
 	fflush(<*mut u8>0usize);
 	println$("sysv64 snprintf n: ", sysv_n);
+
+	# --- bare `foreign` uses the Omega ABI: an aggregate crosses it by value
+	# in both directions -----------------------------------------------------
+	rotated := quad_rotate(Quad { a = 1; b = 2; c = 3; d = 4; });
+	println$("quad_rotate: ", rotated.a, rotated.b, rotated.c, rotated.d);
 
 	# --- program entry point: only root-module `main` is the C entry ---------
 	println$("helper-main: ", helper::main());

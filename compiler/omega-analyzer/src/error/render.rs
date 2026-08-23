@@ -545,12 +545,15 @@ impl AnalysisErrorKind {
                      dispatch erases the concrete type down to a bare data pointer, which can't carry a \
                      by-value copy",
                 ),
-            Self::ForeignAggregateByValue { r#type } => d
-                .with_label(span, format!("`{type}` passes by value across a `foreign` boundary"))
-                .with_note(
-                    "Omega's calling convention is internally consistent across its backends, but it is not the platform C ABI -- an aggregate passed by value would silently miscompile against a foreign caller or callee",
+            Self::UnsupportedConventionByValue { r#type, convention } => d
+                .with_label(
+                    span,
+                    format!("`{type}` passes by value under the `{}` convention", convention.name()),
                 )
-                .with_help("pass or return a pointer to it instead (see the ABI entry in docs/issues/known-issues.md)"),
+                .with_note(
+                    "Omega-convention calls transport Omega composites consistently across every backend and separately compiled object, but platform aggregate/composite ABI classification is not implemented yet, so the same value would silently miscompile against a `c`/`sysv64` caller or callee",
+                )
+                .with_help("pass or return a pointer to it instead, or redesign the external boundary (see the ABI entry in docs/issues/known-issues.md)"),
             Self::GenericForeignFunctionUnsupported => d
                 .with_label(span, "generic 'foreign' functions are not yet supported")
                 .with_help("write a non-generic 'foreign' function per concrete signature instead"),
