@@ -404,11 +404,7 @@ impl Driver {
                     Self::check_generic_arity(&module, &name, &generics, args.len())?;
                     if expect_spec {
                         let instantiated = Self::instantiate_alias_type_syntax(
-                            &module,
-                            &name,
-                            &generics,
-                            &r#type,
-                            args,
+                            &module, &name, &generics, &r#type, args,
                         )?;
                         self.validate_alias_spec_type(
                             module_path,
@@ -547,7 +543,9 @@ impl Driver {
             };
             subst.push((generic.ident.clone(), argument));
         }
-        Ok(omega_analyzer::aliases::substitute_type_params(r#type, &subst))
+        Ok(omega_analyzer::aliases::substitute_type_params(
+            r#type, &subst,
+        ))
     }
 
     /// An explicit argument list must fit the declared parameters, and every
@@ -680,9 +678,11 @@ impl Driver {
                 // cannot resolve as one. The macro namespace is separate and
                 // is a legal alias target, subject to the same gate a direct
                 // invocation of that binding would pass.
-                Err(error) => ItemAccess::authorized(
-                    self.imported_macro_target(module_path, &path.head, error)?,
-                ),
+                Err(error) => ItemAccess::authorized(self.imported_macro_target(
+                    module_path,
+                    &path.head,
+                    error,
+                )?),
             }
         } else {
             let Some((mut absolute, _)) = self.alias_path_base(module_path, &path.head)? else {
@@ -700,10 +700,7 @@ impl Driver {
             let item = item.clone();
             let target_module = target_module.to_vec();
             if let Some(module) = self.resolve_module_path(module_path, &target_module)? {
-                access.absolute = module
-                    .into_iter()
-                    .chain(std::iter::once(item))
-                    .collect();
+                access.absolute = module.into_iter().chain(std::iter::once(item)).collect();
             }
         }
         let (name, target_module) = access
@@ -714,24 +711,18 @@ impl Driver {
         // revealed import has already passed this particular gate, so its
         // authorization travels with the imported path instead of being
         // discarded and re-checked here.
-        if let Some(chained) = self.visible_alias(
-            module_path,
-            target_module,
-            name,
-            access.bypass_visibility,
-        )? {
+        if let Some(chained) =
+            self.visible_alias(module_path, target_module, name, access.bypass_visibility)?
+        {
             return Ok(Some(chained));
         }
         // An overload group is one name for several declarations, each with
         // its own visibility. The alias freezes exactly the candidates this
         // declaration site is authorized to name; `import reveal` authorizes
         // the imported group before this alias is built.
-        if let Some(candidates) = self.visible_overload_decls(
-            module_path,
-            target_module,
-            name,
-            access.bypass_visibility,
-        )? {
+        if let Some(candidates) =
+            self.visible_overload_decls(module_path, target_module, name, access.bypass_visibility)?
+        {
             return Ok(Some(ResolvedAlias::Overloads {
                 absolute: access.absolute,
                 candidates,
@@ -790,7 +781,7 @@ impl Driver {
                 };
                 (bypass_visibility
                     || Self::visibility_allows(f.visibility, target_module, accessor))
-                    .then_some(f.id)
+                .then_some(f.id)
             })
             .collect();
         if visible.is_empty() {
@@ -878,9 +869,7 @@ impl Driver {
                     return Ok(None);
                 };
                 (
-                    ItemAccess::gated(
-                        base.into_iter().chain(path.tail.iter().cloned()).collect(),
-                    ),
+                    ItemAccess::gated(base.into_iter().chain(path.tail.iter().cloned()).collect()),
                     top_level_head,
                 )
             };
@@ -892,10 +881,7 @@ impl Driver {
             let item = item.clone();
             let target_module = target_module.to_vec();
             if let Some(module) = self.resolve_module_path(module_path, &target_module)? {
-                access.absolute = module
-                    .into_iter()
-                    .chain(std::iter::once(item))
-                    .collect();
+                access.absolute = module.into_iter().chain(std::iter::once(item)).collect();
             }
         }
         Ok(Some(AliasTargetSite::Declaration {
@@ -1070,11 +1056,7 @@ impl Driver {
             match self.declared_alias(module_path, &name) {
                 Ok(Some(_)) => {
                     let mut seen = std::collections::HashSet::new();
-                    self.mark_alias_declaration_import_dependencies(
-                        module_path,
-                        &name,
-                        &mut seen,
-                    );
+                    self.mark_alias_declaration_import_dependencies(module_path, &name, &mut seen);
                 }
                 Ok(None) => {}
                 Err(error) => {

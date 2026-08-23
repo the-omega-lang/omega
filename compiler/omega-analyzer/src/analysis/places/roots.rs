@@ -23,8 +23,7 @@ impl<'r> Analyzer<'r> {
                 ),
             HirPlaceRoot::Path(expr_path) => {
                 let path = &expr_path.path;
-                let (root, r#type, mutable) = match self
-                    .module_qualified_path(node_id, span, path)
+                let (root, r#type, mutable) = match self.module_qualified_path(node_id, span, path)
                 {
                     ModuleQualifiedPath::Item(access) => self.resolve_qualified_value(
                         node_id,
@@ -35,24 +34,24 @@ impl<'r> Analyzer<'r> {
                         None,
                         expected,
                     )?,
-                    ModuleQualifiedPath::NotModule => match self
-                        .module_headed_path(node_id, span, path)?
-                    {
-                        Some(access) => self.resolve_qualified_value(
-                            node_id,
-                            span,
-                            path,
-                            &self.path_module(path),
-                            access,
-                            None,
-                            expected,
-                        )?,
-                        None => {
-                            let (root, r#type) = self
-                                .resolve_type_qualified_value(node_id, span, path, expected)?;
-                            (root, r#type, false)
+                    ModuleQualifiedPath::NotModule => {
+                        match self.module_headed_path(node_id, span, path)? {
+                            Some(access) => self.resolve_qualified_value(
+                                node_id,
+                                span,
+                                path,
+                                &self.path_module(path),
+                                access,
+                                None,
+                                expected,
+                            )?,
+                            None => {
+                                let (root, r#type) = self
+                                    .resolve_type_qualified_value(node_id, span, path, expected)?;
+                                (root, r#type, false)
+                            }
                         }
-                    },
+                    }
                     ModuleQualifiedPath::Failed => return None,
                 };
                 Some((root, r#type, mutable))

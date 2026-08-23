@@ -395,8 +395,12 @@ pub fn enum_body_field_offset(
     pointer_bytes: u32,
 ) -> u32 {
     enum_payload_offset(view, pointer_bytes)
-        + layout_fields(&view.variants[variant_index].fields, view.pack, pointer_bytes)
-            .byte_offsets[field_index]
+        + layout_fields(
+            &view.variants[variant_index].fields,
+            view.pack,
+            pointer_bytes,
+        )
+        .byte_offsets[field_index]
 }
 
 pub fn stack_align_shift(align: u32) -> u8 {

@@ -388,7 +388,9 @@ impl ResolvedAnonymousEnum {
 
     /// The canonical index -- and therefore the tag -- of an exact member.
     pub fn index_of(&self, member: &ResolvedType) -> Option<usize> {
-        self.members.iter().position(|candidate| candidate == member)
+        self.members
+            .iter()
+            .position(|candidate| candidate == member)
     }
 
     /// The destination index of every `source` member, in source canonical

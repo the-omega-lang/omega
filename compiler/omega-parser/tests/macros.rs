@@ -311,9 +311,10 @@ fn path_fragment_accepts_ordinary_path_syntax_and_reparses_as_a_path() {
         Some(omega_parser::prelude::PathAnchor::Root)
     ));
     assert_eq!(path.head.0, "a");
-    assert_eq!(path.tail.iter().map(|i| i.0.as_str()).collect::<Vec<_>>(), [
-        "b", "Holder"
-    ]);
+    assert_eq!(
+        path.tail.iter().map(|i| i.0.as_str()).collect::<Vec<_>>(),
+        ["b", "Holder"]
+    );
 }
 
 #[test]

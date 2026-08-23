@@ -645,7 +645,9 @@ impl<'a> Expander<'a> {
             .map(|arm| {
                 let value = match arm.pattern.value {
                     Some(PatternValue::Value(v)) => Some(PatternValue::Value(self.expand_expr(v)?)),
-                    Some(PatternValue::Range(r)) => Some(PatternValue::Range(self.expand_range(r)?)),
+                    Some(PatternValue::Range(r)) => {
+                        Some(PatternValue::Range(self.expand_range(r)?))
+                    }
                     None => None,
                 };
                 let pattern = Pattern {

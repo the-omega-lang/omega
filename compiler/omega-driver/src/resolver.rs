@@ -503,7 +503,9 @@ impl ModuleResolver for Driver {
                     .cloned()
                     .chain(std::iter::once(alias.clone()))
                     .collect();
-                return Ok(Some(ImportTarget::ItemPath(ItemAccess::authorized(absolute))));
+                return Ok(Some(ImportTarget::ItemPath(ItemAccess::authorized(
+                    absolute,
+                ))));
             }
             Some(ResolvedAlias::Type { .. }) => return Ok(None),
             None => {}

@@ -1,6 +1,6 @@
 use super::Codegen;
-use super::leaf;
 use super::enum_view;
+use super::leaf;
 use inkwell::types::BasicTypeEnum;
 use inkwell::values::{BasicValue, BasicValueEnum, PointerValue};
 use omega_analyzer::layout;
@@ -251,20 +251,12 @@ impl<'ctx> Codegen<'ctx> {
                         PlaceStorage::Slot { slot, offset } => PlaceStorage::Slot {
                             slot,
                             offset: offset
-                                + layout::enum_header_offset(
-                                    &view,
-                                    *index,
-                                    self.pointer_bytes(),
-                                ),
+                                + layout::enum_header_offset(&view, *index, self.pointer_bytes()),
                         },
                         PlaceStorage::Address { base, offset } => PlaceStorage::Address {
                             base,
                             offset: offset
-                                + layout::enum_header_offset(
-                                    &view,
-                                    *index,
-                                    self.pointer_bytes(),
-                                ),
+                                + layout::enum_header_offset(&view, *index, self.pointer_bytes()),
                         },
                     };
                     current_type = r#type.clone();

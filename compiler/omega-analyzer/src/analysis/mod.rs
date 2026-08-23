@@ -42,9 +42,9 @@ use crate::{
     generics::{resolve_inferred_type_args, unify_generic_type},
     resolved_type::{
         CallingConvention, CastClass, ConformanceSource, ConstValue, NumericKind,
-        RawSpecFunctionSig,
-        ResolvedAnonymousEnum, ResolvedBound, ResolvedEnumType, ResolvedEnumVariant, ResolvedField, ResolvedFunctionType, ResolvedMethod,
-        ResolvedSpecType, ResolvedStructType, ResolvedType, ResolvedUnionType,
+        RawSpecFunctionSig, ResolvedAnonymousEnum, ResolvedBound, ResolvedEnumType,
+        ResolvedEnumVariant, ResolvedField, ResolvedFunctionType, ResolvedMethod, ResolvedSpecType,
+        ResolvedStructType, ResolvedType, ResolvedUnionType,
     },
     resolver::{
         GenericLiteralSignature, GenericSignature, GenericStaticFunctionSignature, ImportTarget,
@@ -58,8 +58,7 @@ use omega_hir::{
     HirCompoundAssign, HirDeclaration, HirEnumDef, HirExpr, HirExprNode, HirField, HirFor,
     HirForIn, HirFunctionCall, HirFunctionDef, HirId, HirIf, HirInlineAsm, HirItem, HirMatch,
     HirMatchArm, HirParam, HirPattern, HirPatternValue, HirPlace, HirPlaceRoot, HirProjection,
-    HirRange,
-    HirRangeEnd, HirSlice, HirSpecDef, HirStmt, HirStructDef, HirStructLiteral,
+    HirRange, HirRangeEnd, HirSlice, HirSpecDef, HirStmt, HirStructDef, HirStructLiteral,
     HirStructLiteralField, HirUnionDef, HirWalrusDeclaration, LogicalOp,
 };
 use omega_parser::prelude::{
@@ -274,11 +273,7 @@ impl<'r> Analyzer<'r> {
                         .collect(),
                     Ok(_) => return ModuleQualifiedPath::NotModule,
                     Err(error) => {
-                        self.error(
-                            node_id,
-                            span,
-                            AnalysisErrorKind::ModuleResolution(error),
-                        );
+                        self.error(node_id, span, AnalysisErrorKind::ModuleResolution(error));
                         return ModuleQualifiedPath::Failed;
                     }
                 }
@@ -304,11 +299,7 @@ impl<'r> Analyzer<'r> {
             )),
             Ok(None) => ModuleQualifiedPath::NotModule,
             Err(error) => {
-                self.error(
-                    node_id,
-                    span,
-                    AnalysisErrorKind::ModuleResolution(error),
-                );
+                self.error(node_id, span, AnalysisErrorKind::ModuleResolution(error));
                 ModuleQualifiedPath::Failed
             }
         }
@@ -333,24 +324,23 @@ impl<'r> Analyzer<'r> {
             return Some(None);
         }
         let accessor = self.path_module(path);
-        let head_absolute = match self.anchored_prefix(
-            node_id,
-            span,
-            path,
-            std::slice::from_ref(&path.head),
-        ) {
-            AnchoredPath::Failed => return None,
-            AnchoredPath::Absolute(absolute) => absolute,
-            AnchoredPath::Unanchored => {
-                match self.resolve_path_alias_or_error(node_id, span, path)? {
-                    Some(ImportTarget::Module(target)) => target,
-                    _ => return Some(None),
+        let head_absolute =
+            match self.anchored_prefix(node_id, span, path, std::slice::from_ref(&path.head)) {
+                AnchoredPath::Failed => return None,
+                AnchoredPath::Absolute(absolute) => absolute,
+                AnchoredPath::Unanchored => {
+                    match self.resolve_path_alias_or_error(node_id, span, path)? {
+                        Some(ImportTarget::Module(target)) => target,
+                        _ => return Some(None),
+                    }
                 }
-            }
-        };
+            };
         match self.resolver.resolve_module_path(&accessor, &head_absolute) {
             Ok(Some(module)) => Some(Some(ItemAccess::gated(
-                module.into_iter().chain(path.tail.iter().cloned()).collect(),
+                module
+                    .into_iter()
+                    .chain(path.tail.iter().cloned())
+                    .collect(),
             ))),
             Ok(None) => Some(None),
             Err(error) => {
@@ -378,19 +368,12 @@ impl<'r> Analyzer<'r> {
         let module = module.to_vec();
         match self.resolver.resolve_module_path(accessor, &module) {
             Ok(Some(module)) => Some(ItemAccess {
-                absolute: module
-                    .into_iter()
-                    .chain(std::iter::once(item))
-                    .collect(),
+                absolute: module.into_iter().chain(std::iter::once(item)).collect(),
                 bypass_visibility: access.bypass_visibility,
             }),
             Ok(None) => Some(access),
             Err(error) => {
-                self.error(
-                    node_id,
-                    span,
-                    AnalysisErrorKind::ModuleResolution(error),
-                );
+                self.error(node_id, span, AnalysisErrorKind::ModuleResolution(error));
                 None
             }
         }

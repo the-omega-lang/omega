@@ -413,7 +413,8 @@ impl<'r> Analyzer<'r> {
                 catch_all = Some(arm);
                 continue; // resolved separately below, once every other arm's coverage is known
             }
-            let member_index = self.resolve_anonymous_member_pattern(node_id, arm, shape, &parent)?;
+            let member_index =
+                self.resolve_anonymous_member_pattern(node_id, arm, shape, &parent)?;
 
             if let Some(previous) = covered.insert(member_index, arm.pattern.span()) {
                 self.error(

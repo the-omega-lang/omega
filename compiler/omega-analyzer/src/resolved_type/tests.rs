@@ -144,8 +144,14 @@ fn hash_of(ty: &ResolvedType) -> u64 {
 
 #[test]
 fn anonymous_enum_reordered_spellings_are_one_type() {
-    let ab = anonymous(vec![ResolvedType::I32, ResolvedType::Str { mutable: false }]);
-    let ba = anonymous(vec![ResolvedType::Str { mutable: false }, ResolvedType::I32]);
+    let ab = anonymous(vec![
+        ResolvedType::I32,
+        ResolvedType::Str { mutable: false },
+    ]);
+    let ba = anonymous(vec![
+        ResolvedType::Str { mutable: false },
+        ResolvedType::I32,
+    ]);
     assert_eq!(ab, ba);
     assert_eq!(hash_of(&ab), hash_of(&ba));
     assert_eq!(
@@ -195,10 +201,12 @@ fn anonymous_enum_flattens_nested_members_recursively() {
     assert_eq!(nested, flat);
     assert_eq!(hash_of(&nested), hash_of(&flat));
     assert_eq!(shape_of(&nested).members().len(), 4);
-    assert!(!shape_of(&nested)
-        .members()
-        .iter()
-        .any(|member| matches!(member, ResolvedType::AnonymousEnum { .. })));
+    assert!(
+        !shape_of(&nested)
+            .members()
+            .iter()
+            .any(|member| matches!(member, ResolvedType::AnonymousEnum { .. }))
+    );
 }
 
 #[test]
@@ -208,7 +216,11 @@ fn anonymous_enum_flattening_collapses_duplicates_across_nesting() {
     let merged = anonymous(vec![left, right, ResolvedType::I32]);
     assert_eq!(
         merged,
-        anonymous(vec![ResolvedType::I32, ResolvedType::Bool, ResolvedType::Char])
+        anonymous(vec![
+            ResolvedType::I32,
+            ResolvedType::Bool,
+            ResolvedType::Char
+        ])
     );
     assert_eq!(shape_of(&merged).members().len(), 3);
 }
@@ -222,7 +234,11 @@ fn anonymous_enum_flattening_ignores_a_members_refinement() {
     };
     assert_eq!(
         anonymous(vec![refined, ResolvedType::Char]),
-        anonymous(vec![ResolvedType::I32, ResolvedType::Bool, ResolvedType::Char])
+        anonymous(vec![
+            ResolvedType::I32,
+            ResolvedType::Bool,
+            ResolvedType::Char
+        ])
     );
 }
 
@@ -253,7 +269,10 @@ fn anonymous_enum_flattening_stops_at_every_other_constructor() {
 #[test]
 fn anonymous_enum_tags_follow_the_flattened_order() {
     let nested = anonymous(vec![
-        anonymous(vec![ResolvedType::Str { mutable: false }, ResolvedType::I32]),
+        anonymous(vec![
+            ResolvedType::Str { mutable: false },
+            ResolvedType::I32,
+        ]),
         ResolvedType::Bool,
     ]);
     let flat = anonymous(vec![
@@ -288,7 +307,11 @@ fn anonymous_enum_refinement_widens_but_never_converts_between_shapes() {
 
     // A member is never already the enum, and a subset is never the superset:
     // both need a real construction.
-    let superset = anonymous(vec![ResolvedType::I32, ResolvedType::Bool, ResolvedType::Char]);
+    let superset = anonymous(vec![
+        ResolvedType::I32,
+        ResolvedType::Bool,
+        ResolvedType::Char,
+    ]);
     assert!(!parent.accepts(&ResolvedType::I32));
     assert!(!superset.accepts(&parent));
     assert!(!parent.accepts(&superset));
@@ -343,9 +366,8 @@ fn anonymous_enum_tag_domain_is_the_u16_range() {
     assert_eq!(over.members().len(), ResolvedAnonymousEnum::MAX_MEMBERS + 1);
     assert!(over.exceeds_tag_domain());
 
-    let exact = ResolvedAnonymousEnum::canonicalize(
-        members[..ResolvedAnonymousEnum::MAX_MEMBERS].to_vec(),
-    );
+    let exact =
+        ResolvedAnonymousEnum::canonicalize(members[..ResolvedAnonymousEnum::MAX_MEMBERS].to_vec());
     assert!(!exact.exceeds_tag_domain());
 
     // The limit applies to the flattened list, so two shapes that each fit can

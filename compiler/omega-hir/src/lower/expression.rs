@@ -1,8 +1,9 @@
 use super::Lowerer;
 use crate::hir::{
     HirAddressOf, HirAssignment, HirBinaryOp, HirCast, HirCompoundAssign, HirExpr, HirExprNode,
-    HirFunctionCall, HirIf, HirLogical, HirMatch, HirMatchArm, HirPattern, HirPatternValue, HirPlace, HirPlaceRoot,
-    HirProjection, HirRange, HirRangeEnd, HirSlice, HirStructLiteral, HirStructLiteralField,
+    HirFunctionCall, HirIf, HirLogical, HirMatch, HirMatchArm, HirPattern, HirPatternValue,
+    HirPlace, HirPlaceRoot, HirProjection, HirRange, HirRangeEnd, HirSlice, HirStructLiteral,
+    HirStructLiteralField,
 };
 use omega_parser::prelude::{
     Expression, ExpressionNode, Pattern, PatternValue, RangeEnd, RangeExpr, Span,

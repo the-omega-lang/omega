@@ -29,7 +29,11 @@ fn anonymous_enum_is_a_u16_tag_followed_by_the_largest_member() {
     assert_eq!(view.tag_type, ResolvedType::U16);
     assert!(view.header.is_empty());
     assert!(view.dynamic_fields.is_empty());
-    assert!(view.variants.iter().all(|variant| variant.fields.len() == 1));
+    assert!(
+        view.variants
+            .iter()
+            .all(|variant| variant.fields.len() == 1)
+    );
 
     let tag_bytes = total_bytes(&ResolvedType::U16, POINTER_BYTES);
     assert_eq!(enum_payload_offset(&view, POINTER_BYTES), tag_bytes);
@@ -40,7 +44,10 @@ fn anonymous_enum_is_a_u16_tag_followed_by_the_largest_member() {
 #[test]
 fn anonymous_enum_payload_fits_its_largest_member() {
     // `*str` is a fat pointer, so it, not `i32`, decides the payload size.
-    let ty = anonymous(vec![ResolvedType::Str { mutable: false }, ResolvedType::I32]);
+    let ty = anonymous(vec![
+        ResolvedType::Str { mutable: false },
+        ResolvedType::I32,
+    ]);
     let view = EnumView::of(&ty).expect("an anonymous enum is enum-like");
     let widest = total_bytes(&ResolvedType::Str { mutable: false }, POINTER_BYTES);
 
@@ -81,8 +88,14 @@ fn anonymous_enum_tolerates_a_zero_sized_member() {
 
 #[test]
 fn anonymous_enum_layout_ignores_how_the_members_were_spelled() {
-    let one = anonymous(vec![ResolvedType::Str { mutable: false }, ResolvedType::I32]);
-    let other = anonymous(vec![ResolvedType::I32, ResolvedType::Str { mutable: false }]);
+    let one = anonymous(vec![
+        ResolvedType::Str { mutable: false },
+        ResolvedType::I32,
+    ]);
+    let other = anonymous(vec![
+        ResolvedType::I32,
+        ResolvedType::Str { mutable: false },
+    ]);
 
     assert_eq!(
         leaves_of(&one, POINTER_BYTES),
@@ -93,7 +106,10 @@ fn anonymous_enum_layout_ignores_how_the_members_were_spelled() {
     let one_view = EnumView::of(&one).expect("an anonymous enum is enum-like");
     let other_view = EnumView::of(&other).expect("an anonymous enum is enum-like");
     for index in 0..one_view.variants.len() {
-        assert_eq!(one_view.variants[index].fields, other_view.variants[index].fields);
+        assert_eq!(
+            one_view.variants[index].fields,
+            other_view.variants[index].fields
+        );
         assert_eq!(
             enum_body_field_offset(&one_view, index, 0, POINTER_BYTES),
             enum_body_field_offset(&other_view, index, 0, POINTER_BYTES)
@@ -106,7 +122,10 @@ fn refinement_never_changes_an_anonymous_enum_value() {
     // Refinement is a proof about the current value, so a refined binding
     // must stay byte-identical to the parent -- that is what makes widening
     // back a plain copy.
-    let parent = anonymous(vec![ResolvedType::Str { mutable: false }, ResolvedType::I32]);
+    let parent = anonymous(vec![
+        ResolvedType::Str { mutable: false },
+        ResolvedType::I32,
+    ]);
     for index in 0..2 {
         let refined = refined(&parent, index);
         assert_eq!(

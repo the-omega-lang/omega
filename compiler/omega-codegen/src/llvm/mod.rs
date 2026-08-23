@@ -8,8 +8,6 @@ mod place;
 mod vtable;
 
 use crate::symbol::SymbolRegistry;
-use omega_analyzer::layout::EnumView;
-use omega_analyzer::resolved_type::ResolvedType;
 use crate::{CodegenRequest, EmitKind, EmitOutput, OptLevel};
 use inkwell::OptimizationLevel;
 use inkwell::builder::Builder;
@@ -18,6 +16,8 @@ use inkwell::module::Module;
 use inkwell::targets::{
     FileType, InitializationConfig, RelocMode, Target, TargetMachine, TargetTriple,
 };
+use omega_analyzer::layout::EnumView;
+use omega_analyzer::resolved_type::ResolvedType;
 use omega_analyzer::{Arch, Os, Target as OmegaTarget};
 use omega_hir::HirId;
 use std::collections::HashMap;

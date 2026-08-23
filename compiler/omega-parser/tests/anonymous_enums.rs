@@ -126,7 +126,10 @@ fn a_type_shaped_arm_keeps_both_readings() {
     // the scrutinee's type, so both must survive parsing.
     assert!(arms[0].pattern.value.is_some());
     assert!(matches!(arms[0].pattern.r#type, Some(Type::Named(_))));
-    assert!(matches!(arms[1].pattern.r#type, Some(Type::Pointer(_, false))));
+    assert!(matches!(
+        arms[1].pattern.r#type,
+        Some(Type::Pointer(_, false))
+    ));
 }
 
 #[test]
@@ -134,7 +137,10 @@ fn a_type_only_arm_still_parses() {
     // `[4]u8` and `Holder<i32>` have no value reading at all.
     let arms = match_arms("f(v: T) => void { match v { [4]u8 => 1, Holder<i32> => 2, } }");
     assert!(arms[0].pattern.value.is_none());
-    assert!(matches!(arms[0].pattern.r#type, Some(Type::SizedArray(_, _))));
+    assert!(matches!(
+        arms[0].pattern.r#type,
+        Some(Type::SizedArray(_, _))
+    ));
     assert!(arms[1].pattern.value.is_none());
     assert!(matches!(arms[1].pattern.r#type, Some(Type::Generic(_, _))));
 }

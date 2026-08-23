@@ -56,7 +56,14 @@ impl<'r> Analyzer<'r> {
         mutable: &mut bool,
     ) -> Option<ResolvedType> {
         if let Some(member) = Self::open_refined_anonymous(projections, current_type, mutable) {
-            return self.resolve_field_projection(node_id, span, projections, &member, field, mutable);
+            return self.resolve_field_projection(
+                node_id,
+                span,
+                projections,
+                &member,
+                field,
+                mutable,
+            );
         }
         let base = match current_type {
             ResolvedType::Pointer {

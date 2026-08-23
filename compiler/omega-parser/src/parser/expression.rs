@@ -6,8 +6,8 @@ use crate::ast::expression::{
     Pattern, PatternValue, RevealExpr, SizeofExpr, SliceExpr, StringExpr, StructLiteralExpr,
     StructLiteralField,
 };
-use crate::ast::r#type::Type;
 use crate::ast::range::{RangeEnd, RangeExpr};
+use crate::ast::r#type::Type;
 use crate::diagnostics::{ParseErrorKind, Span};
 use crate::lexer::TokenKind;
 use crate::parser::{
