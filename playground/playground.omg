@@ -1,0 +1,33 @@
+import std::io::println;
+
+enum Result<T, E> {
+	Ok { exposed value: T; },
+	Err { exposed value: E; }
+}
+
+marker ErrorA {}
+marker ErrorB {}
+marker ErrorC {}
+
+my_function_that_errors() => Result<void, enum ErrorA | ErrorB> {
+	return Result::Err { value = ErrorA{}; };
+}
+
+my_function_that_errors_more() => Result<void, enum ErrorA | ErrorB | ErrorC> {
+	result := my_function_that_errors();
+	match result {
+		Result::Ok => {
+			println$("OK");
+		},
+
+		Result::Err => {
+			return Result<void, enum ErrorA | ErrorB | ErrorC>::Err { value = result.value; };
+		}
+	}
+
+	return Result::Err { value = ErrorC{}; };
+}
+
+main() => void {
+	
+}
