@@ -10,7 +10,7 @@ use omega_diagnostics::{SourceFile, Span};
 use omega_hir::{HirGenericParam, HirId, HirItem, HirModule, ModuleId};
 use omega_parser::macros::MacroError;
 use omega_parser::prelude::{
-    AliasItem, AliasTarget, Ident, ImportRoot, ImportStmt, Item, ParseError, Path, SourceModule,
+    AliasItem, AliasTarget, Ident, ImportStmt, Item, ParseError, Path, PathAnchor, SourceModule,
 };
 use omega_parser::prelude::{MacroDefinitionStmt, Visibility};
 use std::collections::HashMap;
@@ -306,7 +306,7 @@ impl Driver {
             .find(|import| {
                 import.path.tail.last().unwrap_or(&import.path.head) == &target.head
             })
-            .and_then(|import| self.import_absolute_path(path, import.root, &import.path).ok())
+            .and_then(|import| self.import_absolute_path(path, &import.path).ok())
             .or_else(|| {
                 self.roots
                     .is_known_top_level(&target.head)
@@ -404,7 +404,7 @@ impl Driver {
         };
 
         for import in imports {
-            let absolute = match self.import_absolute_path(path, import.root, &import.path) {
+            let absolute = match self.import_absolute_path(path, &import.path) {
                 Ok(path) => path,
                 Err(_) => continue,
             };
@@ -633,7 +633,7 @@ impl Driver {
                 .last()
                 .cloned()
                 .unwrap_or_else(|| import.path.head.clone());
-            let target = match self.import_absolute_path(path, import.root, &import.path) {
+            let target = match self.import_absolute_path(path, &import.path) {
                 Ok(target) => target,
                 Err(e) => {
                     self.diagnostics.error(
@@ -755,47 +755,62 @@ impl Driver {
         Ok(!self.item_generics(module_path, name)?.is_empty())
     }
 
-    /// Converts an import's anchor and source path into one absolute
-    /// `ModulePath`, shared by macro-import preparation and ordinary import
-    /// indexing so both obey identical anchor semantics.
+    /// Converts an import's path (including its optional explicit anchor)
+    /// into one absolute `ModulePath`. An unanchored import is
+    /// top-level-by-default.
     fn import_absolute_path(
         &self,
         importer: &[Ident],
-        root: ImportRoot,
         path: &Path,
     ) -> Result<ModulePath, ResolveError> {
-        match root {
-            ImportRoot::TopLevel => {
+        match Self::resolve_explicit_anchor(importer, path) {
+            Some(result) => result,
+            None => {
                 if !self.roots.is_known_top_level(&path.head) {
                     return Err(ResolveError::UnknownTopLevelPackage(path.head.clone()));
                 }
                 Ok(path.segments())
             }
-            ImportRoot::Root => {
+        }
+    }
+
+    /// Resolves a `Path`'s explicit anchor (`root::`/`self::`/`super::`)
+    /// relative to `origin_module` -- the path's semantic resolution module:
+    /// the importer for imports, the macro-origin module for macro-expanded
+    /// paths, the alias declaration module for aliases. Returns `None` when
+    /// the path carries no explicit anchor, so callers fall back to their own
+    /// (import-default-top-level vs. ordinary-relative) unanchored lookup.
+    pub(crate) fn resolve_explicit_anchor(
+        origin_module: &[Ident],
+        path: &Path,
+    ) -> Option<Result<ModulePath, ResolveError>> {
+        Some(match path.anchor? {
+            PathAnchor::Root => {
                 let mut absolute = Vec::new();
-                if let Some(package_root) = importer.first() {
+                if let Some(package_root) = origin_module.first() {
                     absolute.push(package_root.clone());
                 }
                 absolute.extend(path.segments());
                 Ok(absolute)
             }
-            ImportRoot::SelfModule => {
-                let mut absolute = importer.to_vec();
+            PathAnchor::SelfModule => {
+                let mut absolute = origin_module.to_vec();
                 absolute.extend(path.segments());
                 Ok(absolute)
             }
-            ImportRoot::Super(depth) => {
+            PathAnchor::Super(depth) => {
                 let depth = depth as usize;
-                if depth >= importer.len() {
-                    return Err(ResolveError::SuperAboveRoot {
+                if depth >= origin_module.len() {
+                    Err(ResolveError::SuperAboveRoot {
                         depth: depth as u32,
-                        importer: importer.to_vec(),
-                    });
+                        importer: origin_module.to_vec(),
+                    })
+                } else {
+                    let mut absolute = origin_module[..origin_module.len() - depth].to_vec();
+                    absolute.extend(path.segments());
+                    Ok(absolute)
                 }
-                let mut absolute = importer[..importer.len() - depth].to_vec();
-                absolute.extend(path.segments());
-                Ok(absolute)
             }
-        }
+        })
     }
 }

@@ -556,6 +556,77 @@ fn an_alias_owned_generic_bound_is_enforced_in_a_plain_type_position() {
 }
 
 #[test]
+fn a_defaulted_alias_generic_argument_still_satisfies_its_own_bound() {
+    let errors = TestPackage::new(
+        r#"
+        exposed spec Countable {
+            count(*self) => i32;
+        }
+
+        struct Holder<T> {
+            exposed value: T;
+        }
+
+        struct Plain {
+            exposed field: i32;
+        }
+
+        alias Counted<T: Countable = Plain> = Holder<T>;
+
+        entry_fn() => i32 {
+            value: Counted = Counted { value = Plain { field = 1; }; };
+            value.value.field
+        }
+        "#,
+    )
+    .expect_errors();
+    assert!(
+        resolve_errors(&errors).iter().any(|error| matches!(
+            error,
+            ResolveError::SpecNotImplemented { spec, .. } if spec.as_ref() == "Countable"
+        )),
+        "a defaulted alias argument must still be checked against its own bound: {}",
+        rendered(&errors)
+    );
+}
+
+#[test]
+fn a_chained_alias_bound_is_enforced_from_every_link() {
+    let errors = TestPackage::new(
+        r#"
+        exposed spec Countable {
+            count(*self) => i32;
+        }
+
+        struct Holder<T> {
+            exposed value: T;
+        }
+
+        struct Plain {
+            exposed field: i32;
+        }
+
+        alias Counted<T: Countable> = Holder<T>;
+        alias Rewrapped<U: Countable> = Counted<U>;
+
+        entry_fn() => i32 {
+            value: Rewrapped<Plain> = Rewrapped<Plain> { value = Plain { field = 1; }; };
+            value.value.field
+        }
+        "#,
+    )
+    .expect_errors();
+    assert!(
+        resolve_errors(&errors).iter().any(|error| matches!(
+            error,
+            ResolveError::SpecNotImplemented { spec, .. } if spec.as_ref() == "Countable"
+        )),
+        "every alias in a chain must have its own bound obligations checked: {}",
+        rendered(&errors)
+    );
+}
+
+#[test]
 fn an_exposed_macro_alias_cannot_smuggle_a_narrower_dependency() {
     let errors = TestPackage::with_modules(
         r#"

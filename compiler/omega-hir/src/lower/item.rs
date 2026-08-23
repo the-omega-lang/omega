@@ -134,7 +134,6 @@ impl Lowerer {
                 span: node.span,
                 annotations: Self::lower_annotations(&import.annotations),
                 reveal: import.reveal,
-                root: import.root,
                 path: import.path.clone(),
             }),
             Item::MacroDefinition(_) | Item::MacroInvocation(_) => {

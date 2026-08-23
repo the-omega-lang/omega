@@ -273,7 +273,35 @@ pub fn parse_binding_prefix(p: &mut Parser) -> Option<BindingPrefix> {
     parse_binding_modifiers(p)
 }
 
+/// Parses a leading explicit path anchor (`root::`, `self::`, one or more
+/// chained `super::`) if present. `root`, `self`, and `super` are contextual:
+/// only a leading anchored form followed by `::` is navigation, so this must
+/// look ahead before committing.
+pub(crate) fn parse_path_anchor(p: &mut Parser) -> Option<crate::ast::identifier::PathAnchor> {
+    use crate::ast::identifier::PathAnchor;
+    if p.at_contextual(contextual::ROOT) && matches!(p.peek_at(1), TokenKind::ColonColon) {
+        p.advance();
+        p.advance();
+        Some(PathAnchor::Root)
+    } else if p.at_contextual(contextual::SELF) && matches!(p.peek_at(1), TokenKind::ColonColon) {
+        p.advance();
+        p.advance();
+        Some(PathAnchor::SelfModule)
+    } else if p.at_contextual(contextual::SUPER) && matches!(p.peek_at(1), TokenKind::ColonColon) {
+        let mut depth = 0u32;
+        while p.at_contextual(contextual::SUPER) && matches!(p.peek_at(1), TokenKind::ColonColon) {
+            p.advance();
+            p.advance();
+            depth += 1;
+        }
+        Some(PathAnchor::Super(depth))
+    } else {
+        None
+    }
+}
+
 pub fn parse_path(p: &mut Parser) -> Option<crate::ast::identifier::Path> {
+    let anchor = parse_path_anchor(p);
     let (head, origin) = p.expect_ident_with_origin()?;
     let mut tail = Vec::new();
     while p.check(&TokenKind::ColonColon) {
@@ -283,7 +311,12 @@ pub fn parse_path(p: &mut Parser) -> Option<crate::ast::identifier::Path> {
             None => break,
         }
     }
-    Some(crate::ast::identifier::Path { head, tail, origin })
+    Some(crate::ast::identifier::Path {
+        anchor,
+        head,
+        tail,
+        origin,
+    })
 }
 
 pub fn parse_param_decls(p: &mut Parser) -> Vec<crate::ast::r#type::Param> {

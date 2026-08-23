@@ -137,6 +137,7 @@ impl<'r> Analyzer<'r> {
                     expr: HirExpr::Place(HirPlace {
                         root: HirPlaceRoot::Path(ExprPath {
                             path: Path {
+                                anchor: None,
                                 head: name.clone(),
                                 tail: Vec::new(),
                                 origin: *origin,

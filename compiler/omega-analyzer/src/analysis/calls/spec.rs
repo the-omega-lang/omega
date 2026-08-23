@@ -33,6 +33,7 @@ impl<'r> Analyzer<'r> {
             return Intercepted::Declined;
         }
         let spec_path = Path {
+            anchor: path.anchor,
             head: spec_segments[0].clone(),
             tail: spec_segments[1..].to_vec(),
             origin: path.origin,

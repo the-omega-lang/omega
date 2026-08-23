@@ -261,6 +261,9 @@ impl Context {
         let resolution_module = resolver
             .macro_origin_module(path.origin)
             .unwrap_or_else(|| module_path.to_vec());
+        if let Some(anchored) = resolver.resolve_explicit_anchor(&resolution_module, path) {
+            return anchored.map_err(TypeResolutionError::ModuleResolution);
+        }
         if path.is_unqualified() {
             // `ImportTarget::Item`'s eagerly-resolved snapshot is ignored
             // here -- this function's only job is the absolute path; every
@@ -627,6 +630,7 @@ impl Context {
             return Ok(None);
         };
         let prefix = Type::Named(Path {
+            anchor: path.anchor,
             head: path.head.clone(),
             tail: prefix_tail.to_vec(),
             origin: path.origin,

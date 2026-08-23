@@ -229,17 +229,7 @@ pub struct PrimitiveStmt {
 pub struct ImportStmt {
     pub annotations: Vec<AnnotationNode>,
     pub reveal: bool,
-    pub root: ImportRoot,
     pub path: Path,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ImportRoot {
-    TopLevel,
-    Root,
-    SelfModule,
-    /// One or more chained leading `super::` segments; the count is the depth.
-    Super(u32),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

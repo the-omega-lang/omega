@@ -139,6 +139,7 @@ impl<'r> Analyzer<'r> {
             node_id,
             span,
             &Path {
+                anchor: None,
                 head: ident.clone(),
                 tail: vec![],
                 origin,

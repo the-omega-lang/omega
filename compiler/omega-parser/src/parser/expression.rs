@@ -227,6 +227,7 @@ fn parse_cast(p: &mut Parser, start: Span) -> Option<ExpressionNode> {
         let path = ExpressionNode {
             expression: Expression::Path(crate::ast::identifier::ExprPath {
                 path: crate::ast::identifier::Path {
+                    anchor: None,
                     head: function,
                     tail: Vec::new(),
                     origin,
@@ -607,8 +608,10 @@ fn parse_primary(p: &mut Parser) -> Option<ExpressionNode> {
 fn parse_expr_path(p: &mut Parser) -> Option<crate::ast::identifier::ExprPath> {
     use crate::ast::identifier::ExprPath;
 
+    let anchor = crate::parser::parse_path_anchor(p);
     let (head, origin) = p.expect_ident_with_origin()?;
     let mut path = crate::ast::identifier::Path {
+        anchor,
         head,
         tail: Vec::new(),
         origin,

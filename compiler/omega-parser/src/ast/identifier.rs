@@ -19,18 +19,32 @@ impl std::fmt::Display for Ident {
     }
 }
 
+/// An explicit leading path navigation, written as part of the path syntax
+/// itself (`root::`, `self::`, one or more chained `super::`). `None` means
+/// no explicit anchor was written; unanchored meaning is context-dependent
+/// (top-level-by-default for imports, ordinary relative lookup elsewhere).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PathAnchor {
+    Root,
+    SelfModule,
+    /// One or more chained leading `super::` segments; the count is the depth.
+    Super(u32),
+}
+
 #[derive(Debug, Clone)]
 pub struct Path {
+    pub anchor: Option<PathAnchor>,
     pub head: Ident,
     pub tail: Vec<Ident>,
     pub origin: Origin,
 }
 
 // Origin is resolution provenance, not syntax. Structural comparisons of
-// paths/types intentionally keep their longstanding text-only meaning.
+// paths/types intentionally keep their longstanding text-only meaning, but a
+// written anchor is semantically part of the path and must be distinguished.
 impl PartialEq for Path {
     fn eq(&self, other: &Self) -> bool {
-        self.head == other.head && self.tail == other.tail
+        self.anchor == other.anchor && self.head == other.head && self.tail == other.tail
     }
 }
 
@@ -38,6 +52,7 @@ impl Eq for Path {}
 
 impl std::hash::Hash for Path {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.anchor.hash(state);
         self.head.hash(state);
         self.tail.hash(state);
     }
@@ -46,6 +61,7 @@ impl std::hash::Hash for Path {
 impl From<Ident> for Path {
     fn from(ident: Ident) -> Self {
         Self {
+            anchor: None,
             head: ident,
             tail: vec![],
             origin: Origin::default(),
@@ -55,7 +71,7 @@ impl From<Ident> for Path {
 
 impl Path {
     pub fn is_unqualified(&self) -> bool {
-        self.tail.is_empty()
+        self.anchor.is_none() && self.tail.is_empty()
     }
 
     pub fn segments(&self) -> Vec<Ident> {

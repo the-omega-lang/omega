@@ -95,6 +95,7 @@ fn rejected_target_kind(item: &HirItem) -> Option<&'static str> {
 fn retag_origins(ty: &Type, origin: Origin) -> Type {
     let recur = |t: &Type| retag_origins(t, origin);
     let retag_path = |path: &Path| Path {
+        anchor: path.anchor,
         head: path.head.clone(),
         tail: path.tail.clone(),
         origin,

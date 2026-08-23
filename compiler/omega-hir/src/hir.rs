@@ -1,5 +1,5 @@
 use crate::ids::HirId;
-pub use omega_parser::prelude::{AliasTarget, BinaryOp, ImportRoot, LogicalOp};
+pub use omega_parser::prelude::{AliasTarget, BinaryOp, LogicalOp};
 use omega_parser::prelude::{
     ByteStringExpr, ExprPath, FunctionType, Ident, NumberExpr, Origin, Param, Path, RawConvention,
     SelfMode, Span, StringExpr, Type, Visibility,
@@ -91,7 +91,6 @@ pub struct HirImport {
     pub span: Span,
     pub annotations: Vec<HirAnnotation>,
     pub reveal: bool,
-    pub root: ImportRoot,
     pub path: Path,
 }
 

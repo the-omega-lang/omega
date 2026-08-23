@@ -1,5 +1,5 @@
 use crate::ast::annotation::AnnotationNode;
-use crate::ast::item::{AliasItem, AliasTarget, ImportRoot, ImportStmt, Item, ItemNode};
+use crate::ast::item::{AliasItem, AliasTarget, ImportStmt, Item, ItemNode};
 use crate::ast::r#type::Type;
 use crate::ast::visibility::Visibility;
 use crate::diagnostics::{ParseErrorKind, Span};
@@ -250,31 +250,11 @@ fn parse_alias_def(
 fn parse_import(p: &mut Parser, annotations: Vec<AnnotationNode>) -> Option<ImportStmt> {
     p.expect(&TokenKind::Import, "'import'");
     let reveal = p.eat_contextual(contextual::REVEAL);
-    let root = if p.at_contextual(contextual::ROOT) && matches!(p.peek_at(1), TokenKind::ColonColon) {
-        p.advance(); // 'root'
-        p.advance(); // '::'
-        ImportRoot::Root
-    } else if p.at_contextual(contextual::SELF) && matches!(p.peek_at(1), TokenKind::ColonColon) {
-        p.advance(); // 'self'
-        p.advance(); // '::'
-        ImportRoot::SelfModule
-    } else if p.at_contextual(contextual::SUPER) && matches!(p.peek_at(1), TokenKind::ColonColon) {
-        let mut depth = 0u32;
-        while p.at_contextual(contextual::SUPER) && matches!(p.peek_at(1), TokenKind::ColonColon) {
-            p.advance(); // 'super'
-            p.advance(); // '::'
-            depth += 1;
-        }
-        ImportRoot::Super(depth)
-    } else {
-        ImportRoot::TopLevel
-    };
     let path = parse_path(p)?;
     p.expect_terminator(&TokenKind::Semi, "';'");
     Some(ImportStmt {
         annotations,
         reveal,
-        root,
         path,
     })
 }

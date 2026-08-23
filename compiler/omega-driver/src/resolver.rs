@@ -286,6 +286,14 @@ impl ModuleResolver for Driver {
         self.modules.macro_origin_visibility(origin)
     }
 
+    fn resolve_explicit_anchor(
+        &self,
+        origin_module: &[Ident],
+        path: &omega_parser::prelude::Path,
+    ) -> Option<Result<Vec<Ident>, ResolveError>> {
+        Driver::resolve_explicit_anchor(origin_module, path)
+    }
+
     /// An alias is its own visibility gate: the caller is checked against the
     /// alias, never against the declaration it forwards to.
     fn declared_item_visibility(&mut self, absolute_path: &[Ident]) -> Option<Visibility> {

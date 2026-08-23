@@ -4,7 +4,7 @@ use crate::resolved_type::{
     ResolvedSpecType, ResolvedType,
 };
 use omega_hir::{HirGenericParam, HirId};
-use omega_parser::prelude::{Ident, Origin, Type, Visibility};
+use omega_parser::prelude::{Ident, Origin, Path, Type, Visibility};
 use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
@@ -301,6 +301,16 @@ pub trait ModuleResolver {
     fn macro_origin_module(&self, origin: Origin) -> Option<Vec<Ident>>;
 
     fn macro_origin_visibility(&self, origin: Origin) -> Option<Visibility>;
+
+    /// Resolves a `Path`'s explicit anchor (`root::`/`self::`/`super::`)
+    /// relative to `origin_module`. Returns `None` when the path carries no
+    /// explicit anchor, so the caller falls back to its own unanchored
+    /// lookup rules instead of treating the path as navigation.
+    fn resolve_explicit_anchor(
+        &self,
+        origin_module: &[Ident],
+        path: &Path,
+    ) -> Option<Result<Vec<Ident>, ResolveError>>;
 
     fn declared_item_visibility(&mut self, absolute_path: &[Ident]) -> Option<Visibility>;
 

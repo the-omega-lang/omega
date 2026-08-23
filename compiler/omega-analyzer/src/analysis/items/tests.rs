@@ -17,6 +17,14 @@ impl ModuleResolver for NoResolver {
         None
     }
 
+    fn resolve_explicit_anchor(
+        &self,
+        _origin_module: &[Ident],
+        _path: &omega_parser::prelude::Path,
+    ) -> Option<Result<Vec<Ident>, ResolveError>> {
+        None
+    }
+
     fn declared_item_visibility(&mut self, _absolute_path: &[Ident]) -> Option<Visibility> {
         None
     }
