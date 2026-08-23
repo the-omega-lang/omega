@@ -1,7 +1,8 @@
 use crate::checked::{
-    CastKind, CheckedBinaryOp, CheckedBlock, CheckedExpr, CheckedExprNode, CheckedFor,
-    CheckedFunctionCall, CheckedFunctionDef, CheckedIf, CheckedLoop, CheckedMatch, CheckedPlace,
-    CheckedPlaceRoot, CheckedProjection, CheckedStmt, CheckedWhile, NumberValue, Storage,
+    CastKind, CheckedAnonymousEnumWiden, CheckedBinaryOp, CheckedBlock, CheckedExpr,
+    CheckedExprNode, CheckedFor, CheckedFunctionCall, CheckedFunctionDef, CheckedIf, CheckedLoop,
+    CheckedMatch, CheckedPlace, CheckedPlaceRoot, CheckedProjection, CheckedStmt, CheckedWhile,
+    NumberValue, Storage,
 };
 use crate::resolved_type::{ConstValue, ResolvedType};
 use crate::resolver::ResolveError;
@@ -293,9 +294,36 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
             CheckedExpr::Sizeof(target) => Ok(ConstValue::Number(NumberValue::Unsigned(
                 crate::layout::total_bytes(target, self.target.pointer_bytes()) as u64,
             ))),
+            CheckedExpr::AnonymousEnumWiden(widen) => self.eval_anonymous_enum_widen(node, widen),
             CheckedExpr::SpecCoerce(_) => Err(self.err(node.span, CompErrorKind::DynamicDispatch)),
             CheckedExpr::DynamicCall(_) => Err(self.err(node.span, CompErrorKind::DynamicDispatch)),
         }
+    }
+
+    /// Retags a constant anonymous enum under the wider shape. The payload is
+    /// carried over untouched; only the variant index and tag are remapped.
+    fn eval_anonymous_enum_widen(
+        &mut self,
+        node: &CheckedExprNode,
+        widen: &CheckedAnonymousEnumWiden,
+    ) -> CompResult<ConstValue> {
+        let ConstValue::Enum {
+            variant_index,
+            fields,
+            ..
+        } = self.eval_expr(&widen.source)?
+        else {
+            unreachable!("analysis guarantees an anonymous-enum source for widening")
+        };
+        let target_index = widen.variant_map[variant_index];
+        let (tag, header, _) = self.enum_variant_facts(node, target_index)?;
+        Ok(ConstValue::Enum {
+            variant_index: target_index,
+            tag,
+            header,
+            dynamic_fields: Vec::new(),
+            fields,
+        })
     }
 
     fn enum_variant_facts(

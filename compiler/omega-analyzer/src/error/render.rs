@@ -50,7 +50,9 @@ impl AnalysisErrorKind {
             }
             Self::ArgumentTypeMismatch { expected, found } => d
                 .with_label(span, format!("expected `{expected}`, found `{found}`"))
-                .with_note("Omega has no implicit conversions; each argument must match its parameter's type exactly"),
+                .with_note(anonymous_enum_conversion_note(expected, found).unwrap_or(
+                    "Omega has no implicit conversions; each argument must match its parameter's type exactly",
+                )),
             Self::UnresolvedCallee => d.with_label(span, "this is not callable"),
             Self::InvalidNumberType(_) => d.with_label(span, "not a numeric type").with_note(
                 "valid numeric types are i8 i16 i32 i64 isize, u8 u16 u32 u64 usize, and f32 f64",
@@ -76,7 +78,9 @@ impl AnalysisErrorKind {
             Self::AssignmentTypeMismatch { target, value } => {
                 let d = d
                     .with_label(span, format!("expected `{target}`, found `{value}`"))
-                    .with_note("Omega has no implicit conversions; the value must have exactly the target's type");
+                    .with_note(anonymous_enum_conversion_note(target, value).unwrap_or(
+                        "Omega has no implicit conversions; the value must have exactly the target's type",
+                    ));
                 match (target, value) {
                     (
                         ResolvedType::Enum { cell: expected, variant: Some(_) },
@@ -186,7 +190,11 @@ impl AnalysisErrorKind {
                 .with_label(span, format!("this branch produces `{found}`, but earlier branches produce `{expected}`"))
                 .with_note("every branch of an `if` used as an expression must produce the same type"),
             Self::ReturnTypeMismatch { expected, found } => {
-                d.with_label(span, format!("expected `{expected}` because of the declared return type, found `{found}`"))
+                let d = d.with_label(span, format!("expected `{expected}` because of the declared return type, found `{found}`"));
+                match anonymous_enum_conversion_note(expected, found) {
+                    Some(note) => d.with_note(note),
+                    None => d,
+                }
             }
             Self::InvalidMainSignature => d
                 .with_label(span, "`main` must have no parameters, no generics, and return `void` or `never`")
@@ -246,7 +254,9 @@ impl AnalysisErrorKind {
                 .with_secondary_label(*previous, format!("`{}` first set here", field.as_ref())),
             Self::FieldTypeMismatch { expected, found, .. } => d
                 .with_label(span, format!("expected `{expected}`, found `{found}`"))
-                .with_note("Omega has no implicit conversions; each value must have exactly its field's type"),
+                .with_note(anonymous_enum_conversion_note(expected, found).unwrap_or(
+                    "Omega has no implicit conversions; each value must have exactly its field's type",
+                )),
             Self::MissingFieldInitializers { r#struct, missing } => d
                 .with_label(span, format!("missing {}", field_list(missing)))
                 .with_note(format!(
@@ -456,11 +466,11 @@ impl AnalysisErrorKind {
             Self::InvalidCast { from, to } => {
                 let d = d
                     .with_label(span, format!("no cast exists from '{from}' to '{to}'"))
-                    .with_note(
+                    .with_note(anonymous_enum_conversion_note(to, from).unwrap_or(
                     "casts are only supported between numeric types, pointers, \
                      the str/byte-slice family (*str, *[u8], *[i8]), and into a \
                      spec object (spec *Spec) when the source genuinely implements it",
-                    );
+                    ));
                 if *to == ResolvedType::Char && from.numeric_kind(64).is_some() {
                     d.with_help("use `char::from_u32` for a checked Unicode scalar conversion")
                 } else {
@@ -907,4 +917,22 @@ fn type_range(r#type: &ResolvedType) -> Option<String> {
         }
         NumericKind::Float(_) => None,
     }
+}
+
+/// How a failed conversion reads when an anonymous enum is on either side.
+/// The blanket "Omega has no implicit conversions" line is wrong there: a
+/// value does reach an anonymous enum that already exists, provided every
+/// type it could hold is one of that enum's members.
+fn anonymous_enum_conversion_note(
+    expected: &ResolvedType,
+    found: &ResolvedType,
+) -> Option<&'static str> {
+    if matches!(expected, ResolvedType::AnonymousEnum { .. }) {
+        return Some(
+            "a value converts into an already-written anonymous enum when every type it could hold is one of that enum's members,\nso a member value or a narrower anonymous enum converts, but a wider one does not",
+        );
+    }
+    matches!(found, ResolvedType::AnonymousEnum { .. }).then_some(
+        "an anonymous enum only converts into another anonymous enum that has every one of its members;\n`match` it to reach a single member's value",
+    )
 }

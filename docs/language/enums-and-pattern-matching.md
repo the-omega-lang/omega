@@ -221,14 +221,12 @@ a disjunction of its members, so the member must already be known:
 - a value whose type is a refined enum variant injects as its parent enum
   member, because refinement is not part of a value's representation.
 
-Overload resolution treats injection as a conversion: a candidate that accepts
-an argument exactly always outranks one that requires injecting it.
-
 ### An anonymous enum type is never inferred
 
 An anonymous enum comes into existence only where a type is *written*: a local
-annotation, a parameter or return type, an aggregate field, an alias target, or
-a generic instantiation whose argument is an anonymous enum. Inference never
+annotation, a parameter or return type, an aggregate field, an alias target, a
+cast target, or a generic instantiation whose argument is an anonymous enum.
+Inference never
 manufactures one, so unrelated branch or arm types are never joined into a
 union:
 
@@ -246,21 +244,53 @@ x: enum A | B = if cond { a } else { b };
 
 The same expected type reaches `match` arms, `else` blocks, function returns,
 parameters, fields, and elements — every position that already checks a value
-against a known type.
+against a known type. A cast writes the type down just as well, so
+`x := <enum A | B>a;` is fine where `x := if cond { a } else { b };` is not.
 
 An anonymous enum that already exists propagates like any other type. Passing a
 value of type `Errors` to `identity<T>(x: T) => T` infers `T = Errors`, because
 that anonymous enum was established by `Errors`; only building a *new* one by
 inference is forbidden. See [`generics.md`](generics.md).
 
-### No subset or superset conversion
+### Converting into an established anonymous enum
 
-An anonymous enum does **not** implicitly convert to another anonymous enum.
-`enum A | B` is not accepted where `enum A | B | C` is expected, and vice versa.
-Canonical member indices and payload size can both differ, so such a conversion
-would require re-tagging and possibly re-packing at runtime — a hidden cost
-Omega does not introduce implicitly. Convert explicitly by matching the source
-and injecting each member.
+Injection is one case of a single rule. A value converts into an anonymous enum
+that already exists in the program text when **every type the value could hold
+is one of that enum's members**:
+
+- a plain value could only hold its own type, so it converts exactly when that
+  type is a member — this is injection;
+- an anonymous enum could hold any of its own members, so it converts exactly
+  when its member list is a subset of the destination's;
+- a refined value converts as the member its refinement proves.
+
+`enum A | B` therefore converts where `enum A | B | C` is expected, and
+`enum A | B | C` never converts to `enum A | B`: there would be nowhere to put a
+`C`. Partial overlap (`enum A | B` into `enum A | C`) is rejected for the same
+reason.
+
+```omega
+small : enum A | B = A{};
+large : enum A | B | C = small;   # widened: re-tagged for the wider shape
+```
+
+Widening is a real conversion, exactly as injection is. Canonical member indices
+belong to each shape's own member list, so a shared member usually has different
+tags in the two shapes, and the payload can move; the value is rebuilt, never
+reinterpreted. A destination member may sort *before* a source member, so
+appending a member in the source text does not append it to the layout.
+
+The destination must be written down — by an expected type, or by a cast (see
+[`strings-casts-arrays-and-slices.md`](strings-casts-arrays-and-slices.md)).
+Conversion never manufactures the destination, so the inference rule above is
+unaffected.
+
+Conversion is exact rather than a search. `i16` converts into `enum i32 | *str`
+only if `i16` is itself a member; that `i16` *casts* to `i32` does not create an
+`i16` → `i32` → `enum i32 | *str` chain.
+
+Overload resolution treats widening as it treats injection: a candidate that
+accepts a value exactly always outranks one that has to convert it.
 
 ### Matching an anonymous enum
 

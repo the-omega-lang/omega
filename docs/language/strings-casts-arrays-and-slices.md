@@ -43,6 +43,20 @@ Pointer/integer casts use the target pointer width. A cast to a mutable pointer 
 
 Pointer-to-pointer casts are explicit reinterpretations. Pointee types need not be identical.
 
+### Casts into an anonymous enum
+
+A cast to an anonymous enum is not a reinterpretation. It writes the destination type down, which is the one thing conversion into an anonymous enum requires, and then performs the same conversion an expected type would:
+
+```omega
+member := <enum i32 | *str>10;    # tagged as the `i32` member
+small : enum A | B = A{};
+large := <enum A | B | C>small;   # re-tagged for the wider shape
+```
+
+The rule is the one in [`enums-and-pattern-matching.md`](enums-and-pattern-matching.md): the cast succeeds when every type the source could hold is a member of the target. So `<enum A | B | C>small` is valid while `<enum A | B>large` and `<enum A | C>small` are not — casting adds no narrowing, no runtime-checked downcast, and no member extraction. Use `match` to reach a single member's value.
+
+Because the cast itself establishes the type, no surrounding expected type is needed: `x := <enum A | B>A{};` gives `x` that anonymous-enum type, while an untyped `if`/`match` over unrelated branch types remains an error.
+
 ## Fat-pointer casts
 
 The following explicit conversions are supported:

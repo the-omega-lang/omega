@@ -185,6 +185,7 @@ pub(crate) fn collect_expr(expr: &CheckedExprNode, usage: &mut FieldUsage) {
         CheckedExpr::Cast(cast) => collect_expr(&cast.base, usage),
         CheckedExpr::UnionConstruct(construct) => collect_expr(&construct.value, usage),
         CheckedExpr::SpecCoerce(coerce) => collect_expr(&coerce.base, usage),
+        CheckedExpr::AnonymousEnumWiden(widen) => collect_expr(&widen.source, usage),
         CheckedExpr::DynamicCall(call) => {
             collect_place(&call.base, usage);
             for arg in &call.args {

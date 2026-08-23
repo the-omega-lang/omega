@@ -17,4 +17,8 @@ sizeof-identity: true true
 flatten-identity: kind true
 generic-flatten: failure true
 expected-branches: failure small failure
+widen: 7 7 3
+cast: 7 12 helper-int
+cast-explicitness: narrow wide
+comp-widen: 21 22 23 41
 cross-nested: helper-int helper-bool cn

@@ -1,12 +1,18 @@
 use super::{BlockDestination, FunctionLowerer, LoopTargets, is_control_flow_expr};
-use crate::body::{MirExprNode, MirTerminator};
-use crate::ids::{BlockId, LocalId};
-use omega_analyzer::checked::{
-    CheckedBlock, CheckedExpr, CheckedExprNode, CheckedMatchArm, CheckedStmt,
+use crate::body::{
+    MirBinaryOp, MirEnumConstruct, MirExpr, MirExprNode, MirFieldInit, MirPlace, MirProjection,
+    MirTerminator,
 };
+use crate::ids::{BlockId, LocalId};
+use crate::lower::place::place_align;
+use omega_analyzer::checked::{
+    CheckedAnonymousEnumWiden, CheckedBlock, CheckedExpr, CheckedExprNode, CheckedMatchArm,
+    CheckedStmt, NumberValue,
+};
+use omega_analyzer::layout::ANONYMOUS_ENUM_TAG_TYPE;
 use omega_analyzer::resolved_type::ResolvedType;
 use omega_hir::HirId;
-use omega_parser::prelude::Span;
+use omega_parser::prelude::{BinaryOp, Span};
 
 impl FunctionLowerer {
     pub(super) fn lower_control_flow_into(
@@ -349,6 +355,108 @@ impl FunctionLowerer {
         body_reached || fail_reached
     }
 
+    /// Rebuilds an anonymous-enum value under a wider shape by branching on
+    /// the source tag and constructing the mapped destination member. There
+    /// is no bit-level shortcut: the two shapes order their members
+    /// independently, and the payload can move.
+    pub(super) fn lower_anonymous_enum_widen(
+        &mut self,
+        id: HirId,
+        span: Span,
+        r#type: ResolvedType,
+        widen: CheckedAnonymousEnumWiden,
+    ) -> MirExprNode {
+        let source = self.lower_expr(*widen.source);
+        let ResolvedType::AnonymousEnum {
+            shape: source_shape,
+            ..
+        } = source.r#type.clone()
+        else {
+            unreachable!("checked module guarantees an anonymous-enum widening source")
+        };
+        // The source must be read once for the tag and again for the payload,
+        // so any side effect in it happens before either read.
+        let source = self.materialize_once(source);
+        let MirExpr::Place(source_place) = source.kind else {
+            unreachable!("omega-mir lowering bug: materialize_once always yields a place read")
+        };
+        let tag = MirExprNode {
+            id,
+            span,
+            r#type: ANONYMOUS_ENUM_TAG_TYPE,
+            kind: MirExpr::Place(projected(
+                &source_place,
+                MirProjection::EnumTag {
+                    r#type: ANONYMOUS_ENUM_TAG_TYPE,
+                },
+                ANONYMOUS_ENUM_TAG_TYPE,
+            )),
+        };
+        let tag = self.materialize_once(tag);
+
+        let result = self.declare_local(None, r#type);
+        let merge = self.new_block();
+        for (source_index, target_index) in widen.variant_map.into_iter().enumerate() {
+            let member = source_shape.members()[source_index].clone();
+            let body = MirExprNode {
+                id,
+                span,
+                r#type: member.clone(),
+                kind: MirExpr::Place(projected(
+                    &source_place,
+                    MirProjection::EnumBody {
+                        variant_index: source_index,
+                        field_index: 0,
+                        r#type: member.clone(),
+                    },
+                    member,
+                )),
+            };
+            let constructed = MirExprNode {
+                id,
+                span,
+                r#type: self.local_type(result).clone(),
+                kind: MirExpr::EnumConstruct(MirEnumConstruct {
+                    variant_index: target_index,
+                    fields: vec![MirFieldInit {
+                        field_index: 0,
+                        value: body,
+                    }],
+                }),
+            };
+            let matched = self.new_block();
+            let next = self.new_block();
+            self.terminate(MirTerminator::Branch {
+                condition: MirExprNode {
+                    id,
+                    span,
+                    r#type: ResolvedType::Bool,
+                    kind: MirExpr::BinaryOp(MirBinaryOp {
+                        op: BinaryOp::Eq,
+                        left: Box::new(tag.clone()),
+                        right: Box::new(MirExprNode {
+                            id,
+                            span,
+                            r#type: ANONYMOUS_ENUM_TAG_TYPE,
+                            kind: MirExpr::Number(NumberValue::Unsigned(source_index as u64)),
+                        }),
+                    }),
+                },
+                then_block: matched,
+                else_block: next,
+            });
+
+            self.current = matched;
+            self.assign_local(id, span, result, constructed);
+            self.terminate(MirTerminator::Goto(merge));
+            self.current = next;
+        }
+        // The source tag is always one of its own canonical indices.
+        self.terminate(MirTerminator::Unreachable);
+        self.current = merge;
+        self.local_expr(result, id, span)
+    }
+
     fn finish_merge(
         &mut self,
         merge: BlockId,
@@ -362,5 +470,16 @@ impl FunctionLowerer {
             self.terminate(MirTerminator::Unreachable);
         }
         self.local_expr(result, id, span)
+    }
+}
+
+fn projected(base: &MirPlace, projection: MirProjection, r#type: ResolvedType) -> MirPlace {
+    let mut projections = base.projections.clone();
+    projections.push(projection);
+    MirPlace {
+        root: base.root.clone(),
+        projections,
+        align: place_align(&r#type),
+        r#type,
     }
 }

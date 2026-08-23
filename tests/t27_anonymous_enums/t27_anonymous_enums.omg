@@ -117,6 +117,71 @@ struct Holder {
 	exposed slot: Errors;
 }
 
+# --- widening into an explicitly established anonymous enum ----------------
+
+# `Bulk` sorts before both of `Narrow`'s members canonically, so widening
+# shifts *every* source tag, and `Wide`'s payload is larger than `Narrow`'s.
+# Nothing here can be a tag-preserving bit copy.
+struct Bulk {
+	exposed high: i64;
+	exposed low: i64;
+}
+
+struct Tiny {
+	exposed n: i32;
+}
+
+alias Narrow = enum Tiny | i32;
+alias Wide = enum Bulk | Tiny | i32;
+
+wide_payload(value: Wide) => i32 {
+	match value {
+		Bulk => <i32>value.low,
+		Tiny => value.n,
+		i32 => value,
+	}
+}
+
+# Widening at a return: the declared type establishes the destination.
+to_wide(value: Narrow) => Wide {
+	value
+}
+
+struct WideHolder {
+	exposed slot: Wide;
+}
+
+# Exact acceptance still outranks a candidate that has to widen.
+rank(value: Narrow) => *str {
+	"narrow"
+}
+
+rank(value: Wide) => *str {
+	"wide"
+}
+
+as_narrow(n: i32) => Narrow {
+	n
+}
+
+# A widened constant is still a constant, so it can initialize a global.
+exposed GLOBAL_WIDE: Wide = comp as_narrow(41);
+
+widen_at_comp(value: Narrow) => i32 {
+	wide_payload(value)
+}
+
+cast_at_comp(value: Narrow) => i32 {
+	wide_payload(<Wide>value)
+}
+
+# Widening and cast injection fold at compile time on the same remap the
+# runtime uses.
+comp COMP_WIDENED := comp widen_at_comp(Tiny { n = 21; });
+comp COMP_CAST_WIDENED := comp cast_at_comp(Tiny { n = 22; });
+comp COMP_RAW := 23;
+comp COMP_CONST_CAST := comp wide_payload(<Wide>COMP_RAW);
+
 struct Box<T> {
 	exposed value: T;
 }
@@ -217,6 +282,27 @@ main() => void {
 	n := 1;
 	branch: Errors = if n > 0 { Failure::new(10) } else { "branch" };
 	println$("expected-branches: ", describe(branch), " ", describe(from_kind(Kind::Small)), " ", describe(from_kind(Kind::Large)));
+
+	# --- widening into an explicit destination, retagging as it goes ------
+	narrow_small : Narrow = Tiny { n = 7; };
+	narrow_int : Narrow = 3;
+	widened : Wide = narrow_small;
+	held_wide := WideHolder { slot = narrow_int; };
+	println$("widen: ", wide_payload(widened), " ", wide_payload(to_wide(narrow_small)), " ", wide_payload(held_wide.slot));
+
+	# --- a cast establishes the destination just as an expected type does -
+	cast_widened := <Wide>narrow_small;
+	cast_injected := <Wide>Tiny { n = 12; };
+	raw_cast := <enum i32 | *str>10;
+	println$("cast: ", wide_payload(cast_widened), " ", wide_payload(cast_injected), " ", helper::label(raw_cast));
+
+	# --- a cast alone establishes the type, and exact acceptance still ---
+	#     outranks the candidate that would have to widen ------------------
+	standalone := <Narrow>Tiny { n = 31; };
+	println$("cast-explicitness: ", rank(standalone), " ", rank(widened));
+
+	# --- widening and casting are compile-time evaluable ------------------
+	println$("comp-widen: ", COMP_WIDENED, " ", COMP_CAST_WIDENED, " ", COMP_CONST_CAST, " ", wide_payload(GLOBAL_WIDE));
 
 	# --- a nested spelling across a module boundary is the same type ------
 	cross_flat: enum bool | i32 | *str = 7;

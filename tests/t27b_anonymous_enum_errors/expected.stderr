@@ -19,104 +19,155 @@ error: mismatched types: expected return type 'enum Failure | *str', found 'Othe
    |
 26 | non_member() => Errors {
    |                 ^^^^^^ expected `enum Failure | *str` because of the declared return type, found `Other`
-
-error: mismatched types: expected return type 'enum Failure | Other | *str', found 'enum Failure | *str'
-  --> tests/t27b_anonymous_enum_errors/t27b_anonymous_enum_errors.omg:32:25
    |
-32 | widen(value: Errors) => enum Failure | *str | Other {
-   |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `enum Failure | Other | *str` because of the declared return type, found `enum Failure | *str`
+   = note: a value converts into an already-written anonymous enum when every type it could hold is one of that enum's members,
+           so a member value or a narrower anonymous enum converts, but a wider one does not
+
+error: mismatched types: expected return type 'enum Failure | *str', found 'enum Failure | Other | *str'
+  --> tests/t27b_anonymous_enum_errors/t27b_anonymous_enum_errors.omg:34:25
+   |
+34 | narrow(value: Wider) => Errors {
+   |                         ^^^^^^ expected `enum Failure | *str` because of the declared return type, found `enum Failure | Other | *str`
+   |
+   = note: a value converts into an already-written anonymous enum when every type it could hold is one of that enum's members,
+           so a member value or a narrower anonymous enum converts, but a wider one does not
+
+error: cannot cast 'enum Failure | Other | *str' to 'enum Failure | *str'
+  --> tests/t27b_anonymous_enum_errors/t27b_anonymous_enum_errors.omg:41:5
+   |
+41 |     <Errors>value
+   |     ^^^^^^^^^^^^^ no cast exists from 'enum Failure | Other | *str' to 'enum Failure | *str'
+   |
+   = note: a value converts into an already-written anonymous enum when every type it could hold is one of that enum's members,
+           so a member value or a narrower anonymous enum converts, but a wider one does not
+
+error: cannot cast 'enum Failure | *str' to 'enum Failure | Other'
+  --> tests/t27b_anonymous_enum_errors/t27b_anonymous_enum_errors.omg:46:5
+   |
+46 |     <enum Failure | Other>value
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^ no cast exists from 'enum Failure | *str' to 'enum Failure | Other'
+   |
+   = note: a value converts into an already-written anonymous enum when every type it could hold is one of that enum's members,
+           so a member value or a narrower anonymous enum converts, but a wider one does not
+
+error: cannot cast 'Other' to 'enum Failure | *str'
+  --> tests/t27b_anonymous_enum_errors/t27b_anonymous_enum_errors.omg:52:5
+   |
+52 |     <Errors>Other { value = 1; }
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no cast exists from 'Other' to 'enum Failure | *str'
+   |
+   = note: a value converts into an already-written anonymous enum when every type it could hold is one of that enum's members,
+           so a member value or a narrower anonymous enum converts, but a wider one does not
+
+error: cannot cast 'i16' to 'enum i32 | *str'
+  --> tests/t27b_anonymous_enum_errors/t27b_anonymous_enum_errors.omg:58:5
+   |
+58 |     <enum i32 | *str>n
+   |     ^^^^^^^^^^^^^^^^^^ no cast exists from 'i16' to 'enum i32 | *str'
+   |
+   = note: a value converts into an already-written anonymous enum when every type it could hold is one of that enum's members,
+           so a member value or a narrower anonymous enum converts, but a wider one does not
+
+error: cannot cast 'enum Failure | *str' to '*str'
+  --> tests/t27b_anonymous_enum_errors/t27b_anonymous_enum_errors.omg:64:5
+   |
+64 |     <*str>value
+   |     ^^^^^^^^^^^ no cast exists from 'enum Failure | *str' to '*str'
+   |
+   = note: an anonymous enum only converts into another anonymous enum that has every one of its members;
+           `match` it to reach a single member's value
 
 error: 'Other' is not a member of 'enum Failure | *str'
-  --> tests/t27b_anonymous_enum_errors/t27b_anonymous_enum_errors.omg:40:9
+  --> tests/t27b_anonymous_enum_errors/t27b_anonymous_enum_errors.omg:71:9
    |
-40 |         Other => 1,
+71 |         Other => 1,
    |         ^^^^^ not one of this type's members
    |
    = help: the members of `enum Failure | *str` are the only arms it can match
 
 error: overlapping match arms
-  --> tests/t27b_anonymous_enum_errors/t27b_anonymous_enum_errors.omg:49:9
+  --> tests/t27b_anonymous_enum_errors/t27b_anonymous_enum_errors.omg:80:9
    |
-47 |         Failure => 0,
+78 |         Failure => 0,
    |         ------- first covered here
-48 |         *str => 1,
-49 |         Failure => 2,
+79 |         *str => 1,
+80 |         Failure => 2,
    |         ^^^^^^^ this pattern covers values an earlier arm already covers
    |
    = note: `match` has no first-match-wins rule -- every value must be covered by exactly one arm
 
 error: match on 'enum Failure | *str' does not cover every member
-  --> tests/t27b_anonymous_enum_errors/t27b_anonymous_enum_errors.omg:55:5
+  --> tests/t27b_anonymous_enum_errors/t27b_anonymous_enum_errors.omg:86:5
    |
-55 |       match value {
+86 |       match value {
    |  _____^
-56 | |         Failure => 0,
-57 | |     }
+87 | |         Failure => 0,
+88 | |     }
    | |_____^ missing member: '*str'
    |
    = help: cover the remaining member types, or add an `else` block
 
 error: a match arm on 'enum Failure | *str' must name one of its member types
-  --> tests/t27b_anonymous_enum_errors/t27b_anonymous_enum_errors.omg:63:9
+  --> tests/t27b_anonymous_enum_errors/t27b_anonymous_enum_errors.omg:94:9
    |
-63 |         0 => 0,
+94 |         0 => 0,
    |         ^ not a type
    |
    = help: an anonymous enum's variants are its member types, so its arms are written as types (`*str => ...`)
 
 error: '..' has nothing left to cover
-  --> tests/t27b_anonymous_enum_errors/t27b_anonymous_enum_errors.omg:73:9
-   |
-73 |         .. => 2,
-   |         ^^ every value is already covered by an earlier arm
-   |
-   = help: remove this arm -- there's nothing left for it to match
+   --> tests/t27b_anonymous_enum_errors/t27b_anonymous_enum_errors.omg:104:9
+    |
+104 |         .. => 2,
+    |         ^^ every value is already covered by an earlier arm
+    |
+    = help: remove this arm -- there's nothing left for it to match
 
 error: more than one '..' catch-all arm
-  --> tests/t27b_anonymous_enum_errors/t27b_anonymous_enum_errors.omg:81:9
-   |
-80 |         .. => 1,
-   |         -- first `..` arm here
-81 |         .. => 2,
-   |         ^^ a second `..` catch-all arm
-   |
-   = note: only one `..` arm is allowed per `match`
+   --> tests/t27b_anonymous_enum_errors/t27b_anonymous_enum_errors.omg:112:9
+    |
+111 |         .. => 1,
+    |         -- first `..` arm here
+112 |         .. => 2,
+    |         ^^ a second `..` catch-all arm
+    |
+    = note: only one `..` arm is allowed per `match`
 
 error: 'enum Failure | *str' has no members of its own
-  --> tests/t27b_anonymous_enum_errors/t27b_anonymous_enum_errors.omg:87:5
-   |
-87 |     value.code
-   |     ^^^^^^^^^^ an anonymous enum has no fields, elements, or methods of its own
-   |
-   = help: `match` it on a member type first -- the arm's binding then *is* that member
+   --> tests/t27b_anonymous_enum_errors/t27b_anonymous_enum_errors.omg:118:5
+    |
+118 |     value.code
+    |     ^^^^^^^^^^ an anonymous enum has no fields, elements, or methods of its own
+    |
+    = help: `match` it on a member type first -- the arm's binding then *is* that member
 
 error: 'enum Failure | *str' is not a member of 'enum Failure | Other | *str'
-  --> tests/t27b_anonymous_enum_errors/t27b_anonymous_enum_errors.omg:97:9
-   |
-97 |         Errors => 1,
-   |         ^^^^^^ not one of this type's members
-   |
-   = help: the members of `enum Failure | Other | *str` are the only arms it can match
+   --> tests/t27b_anonymous_enum_errors/t27b_anonymous_enum_errors.omg:128:9
+    |
+128 |         Errors => 1,
+    |         ^^^^^^ not one of this type's members
+    |
+    = help: the members of `enum Failure | Other | *str` are the only arms it can match
 
 error: 'if' and 'else' branches have incompatible types
-   --> tests/t27b_anonymous_enum_errors/t27b_anonymous_enum_errors.omg:104:15
+   --> tests/t27b_anonymous_enum_errors/t27b_anonymous_enum_errors.omg:135:15
     |
-104 |     joined := if flag { Failure { code = 1; } } else { Other { value = 2; } };
+135 |     joined := if flag { Failure { code = 1; } } else { Other { value = 2; } };
     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this branch produces `Other`, but earlier branches produce `Failure`
     |
     = note: every branch of an `if` used as an expression must produce the same type
 
 error: 'match' arms have incompatible types
-   --> tests/t27b_anonymous_enum_errors/t27b_anonymous_enum_errors.omg:109:15
+   --> tests/t27b_anonymous_enum_errors/t27b_anonymous_enum_errors.omg:140:15
     |
-109 |       joined := match n {
+140 |       joined := match n {
     |  _______________^
-110 | |         0 => Failure { code = 1; },
-111 | |     } else {
-112 | |         Other { value = 2; }
-113 | |     };
+141 | |         0 => Failure { code = 1; },
+142 | |     } else {
+143 | |         Other { value = 2; }
+144 | |     };
     | |_____^ this arm produces `Other`, but earlier arms produce `Failure`
     |
     = note: every arm of a `match` used as an expression must produce the same type
 
-error: could not compile the program due to 14 previous errors
+error: could not compile the program due to 19 previous errors

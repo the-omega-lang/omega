@@ -235,6 +235,44 @@ impl<'r> Analyzer<'r> {
             return None;
         }
 
+        // An anonymous-enum target is a conversion, not a reinterpretation:
+        // cast syntax is simply another explicit way to establish the
+        // destination shape, so it runs the same analysis -- and produces the
+        // same IR -- as an expected type would, instead of a cast kind of its
+        // own.
+        if matches!(
+            target_type,
+            ResolvedType::AnonymousEnum { variant: None, .. }
+        ) {
+            if checked_base.r#type == target_type {
+                self.warn(
+                    node_id,
+                    span,
+                    AnalysisWarningKind::NoOpCast {
+                        r#type: target_type.clone(),
+                    },
+                );
+            }
+            return match self.convert_to_anonymous_enum(&target_type, checked_base) {
+                Ok(converted) => Some(CheckedExprNode {
+                    id: node_id,
+                    span,
+                    ..converted
+                }),
+                Err(base) => {
+                    self.error(
+                        node_id,
+                        span,
+                        AnalysisErrorKind::InvalidCast {
+                            from: base.r#type,
+                            to: target_type,
+                        },
+                    );
+                    None
+                }
+            };
+        }
+
         if let ResolvedType::SpecObject { shape, mutable } = &target_type {
             if let ResolvedType::SpecObject {
                 shape: base_shape,

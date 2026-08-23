@@ -188,6 +188,9 @@ pub(super) fn lower_expr(lowerer: &mut FunctionLowerer, node: CheckedExprNode) -
                 base: Box::new(lowerer.lower_expr(*cast.base)),
             }),
         ),
+        CheckedExpr::AnonymousEnumWiden(widen) => {
+            lowerer.lower_anonymous_enum_widen(id, span, r#type, widen)
+        }
         CheckedExpr::SpecCoerce(coerce) => mir_node(
             id,
             span,

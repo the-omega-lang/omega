@@ -27,10 +27,41 @@ non_member() => Errors {
 	Other { value = 1; }
 }
 
-# An anonymous enum never implicitly widens to a superset: the canonical
-# member indices and the payload size can both differ.
-widen(value: Errors) => enum Failure | *str | Other {
+alias Wider = enum Failure | Other | *str;
+
+# Widening is allowed, but narrowing is not: `Wider` can hold an `Other`, and
+# the destination has nowhere to put it.
+narrow(value: Wider) => Errors {
 	value
+}
+
+# A cast establishes the destination explicitly, but it does not relax the
+# rule -- narrowing stays a cast that does not exist.
+narrow_cast(value: Wider) => Errors {
+	<Errors>value
+}
+
+# Partial overlap is not a subset either: the source can hold a `*str`.
+partial_overlap_cast(value: Errors) => enum Failure | Other {
+	<enum Failure | Other>value
+}
+
+# The source must itself be a destination member, with no conversion chain
+# invented to get there.
+non_member_cast() => Errors {
+	<Errors>Other { value = 1; }
+}
+
+# Conversion is exact, not a search: `i16` casts to `i32`, but that does not
+# make it reach an `i32`-holding anonymous enum through a hidden chain.
+chained_cast(n: i16) => enum i32 | *str {
+	<enum i32 | *str>n
+}
+
+# An anonymous enum is not extracted by casting: a member is reached by
+# matching.
+extract_cast(value: Errors) => *str {
+	<*str>value
 }
 
 # A match arm must name a member of the scrutinee.

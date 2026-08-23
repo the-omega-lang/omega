@@ -295,6 +295,46 @@ fn anonymous_enum_refinement_widens_but_never_converts_between_shapes() {
 }
 
 #[test]
+fn anonymous_enum_subset_remap_retags_every_member() {
+    // `i32` sorts before both source members, so every source tag shifts:
+    // a widening implementation that kept the source tag would land on the
+    // wrong member here.
+    let source = shape_of(&anonymous(vec![ResolvedType::Bool, ResolvedType::Char]));
+    let destination = shape_of(&anonymous(vec![
+        ResolvedType::Char,
+        ResolvedType::I32,
+        ResolvedType::Bool,
+    ]));
+    assert_eq!(destination.subset_remap(&source), Some(vec![1, 2]));
+
+    // A reordered spelling is the same type, so it remaps identically.
+    let reordered = shape_of(&anonymous(vec![ResolvedType::Char, ResolvedType::Bool]));
+    assert_eq!(destination.subset_remap(&reordered), Some(vec![1, 2]));
+}
+
+#[test]
+fn anonymous_enum_subset_remap_of_an_equal_shape_is_the_identity() {
+    let shape = shape_of(&anonymous(vec![ResolvedType::I32, ResolvedType::Bool]));
+    let same = shape_of(&anonymous(vec![ResolvedType::Bool, ResolvedType::I32]));
+    assert_eq!(shape.subset_remap(&same), Some(vec![0, 1]));
+}
+
+#[test]
+fn anonymous_enum_subset_remap_rejects_anything_but_a_subset() {
+    let narrow = shape_of(&anonymous(vec![ResolvedType::I32, ResolvedType::Bool]));
+    let wide = shape_of(&anonymous(vec![
+        ResolvedType::I32,
+        ResolvedType::Bool,
+        ResolvedType::Char,
+    ]));
+    assert_eq!(narrow.subset_remap(&wide), None);
+
+    let overlapping = shape_of(&anonymous(vec![ResolvedType::I32, ResolvedType::Char]));
+    assert_eq!(narrow.subset_remap(&overlapping), None);
+    assert_eq!(overlapping.subset_remap(&narrow), None);
+}
+
+#[test]
 fn anonymous_enum_tag_domain_is_the_u16_range() {
     let members: Vec<ResolvedType> = (0..=ResolvedAnonymousEnum::MAX_MEMBERS as u32)
         .map(|size| ResolvedType::SizedArray(Box::new(ResolvedType::U8), size))

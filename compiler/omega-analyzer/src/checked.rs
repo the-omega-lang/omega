@@ -338,7 +338,19 @@ pub enum CheckedExpr {
     UnionConstruct(CheckedUnionConstruct),
     Const(ConstValue),
     SpecCoerce(CheckedSpecCoerce),
+    AnonymousEnumWiden(CheckedAnonymousEnumWiden),
     DynamicCall(CheckedDynamicCall),
+}
+
+/// Rebuilds an anonymous-enum value under a wider shape's tags. Both shapes
+/// are canonically ordered independently, so a destination index is not
+/// derivable from a source index: `variant_map` carries the analyzer's
+/// decision, holding the destination canonical index for each source
+/// canonical index.
+#[derive(Debug, Clone)]
+pub struct CheckedAnonymousEnumWiden {
+    pub source: Box<CheckedExprNode>,
+    pub variant_map: Vec<usize>,
 }
 
 #[derive(Debug, Clone)]

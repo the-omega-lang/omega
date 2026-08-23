@@ -11,6 +11,9 @@ mod specs;
 mod stmts;
 mod visibility;
 
+#[cfg(test)]
+mod tests;
+
 use specs::FlattenedSpecFn;
 pub use specs::PendingSpecMethod;
 
@@ -20,16 +23,16 @@ use literals::parse_number_literal;
 use crate::target::Target;
 use crate::{
     checked::{
-        CastKind, CheckedAddressOf, CheckedArrayLiteral, CheckedAsmDescriptor,
-        CheckedAsmDescriptorKind, CheckedAssignment, CheckedBinaryOp, CheckedBlock, CheckedBreak,
-        CheckedCast, CheckedCompoundAssign, CheckedContinue, CheckedDeclaration, CheckedDefer,
-        CheckedDynamicCall, CheckedEnumConstruct, CheckedEnumDef, CheckedExpr, CheckedExprNode,
-        CheckedField, CheckedFor, CheckedForeignFunctionDef, CheckedFunctionCall,
-        CheckedFunctionDef, CheckedIf, CheckedInlineAsm, CheckedLoop, CheckedMatch,
-        CheckedMatchArm, CheckedParam, CheckedPlace, CheckedPlaceRoot, CheckedProjection,
-        CheckedRangeEnd, CheckedSlice, CheckedSpecCoerce, CheckedStmt, CheckedStructDef,
-        CheckedStructLiteral, CheckedStructLiteralField, CheckedUnionConstruct, CheckedUnionDef,
-        CheckedWhile, NumberValue, Storage,
+        CastKind, CheckedAddressOf, CheckedAnonymousEnumWiden, CheckedArrayLiteral,
+        CheckedAsmDescriptor, CheckedAsmDescriptorKind, CheckedAssignment, CheckedBinaryOp,
+        CheckedBlock, CheckedBreak, CheckedCast, CheckedCompoundAssign, CheckedContinue,
+        CheckedDeclaration, CheckedDefer, CheckedDynamicCall, CheckedEnumConstruct, CheckedEnumDef,
+        CheckedExpr, CheckedExprNode, CheckedField, CheckedFor, CheckedForeignFunctionDef,
+        CheckedFunctionCall, CheckedFunctionDef, CheckedIf, CheckedInlineAsm, CheckedLoop,
+        CheckedMatch, CheckedMatchArm, CheckedParam, CheckedPlace, CheckedPlaceRoot,
+        CheckedProjection, CheckedRangeEnd, CheckedSlice, CheckedSpecCoerce, CheckedStmt,
+        CheckedStructDef, CheckedStructLiteral, CheckedStructLiteralField, CheckedUnionConstruct,
+        CheckedUnionDef, CheckedWhile, NumberValue, Storage,
     },
     context::{Context, LexicalScope, VarBinding},
     error::{
@@ -633,15 +636,13 @@ impl<'r> Analyzer<'r> {
         if target.accepts(&value.r#type) {
             return value;
         }
-        // Both anonymous-enum conversions are real representation changes, so
-        // they must leave an explicit node here rather than be spelled as an
-        // acceptance rule. Projection runs first so a refined member can also
-        // be injected into a *different* anonymous enum in one step.
+        let value = match self.convert_to_anonymous_enum(target, value) {
+            Ok(converted) => return converted,
+            Err(value) => value,
+        };
+        // A refined read also satisfies a plain expected type: the proof names
+        // the member, so the site reads it out of the unchanged storage.
         let value = self.project_refined_anonymous(target, value);
-        if target.accepts(&value.r#type) {
-            return value;
-        }
-        let value = self.inject_anonymous_member(target, value);
         if target.accepts(&value.r#type) {
             return value;
         }
@@ -692,18 +693,32 @@ impl<'r> Analyzer<'r> {
             return Some(0);
         }
         if let Some((_, member)) = found.refined_anonymous_member()
-            && (expected.accepts(member) || Self::injects_into(expected, member))
+            && (expected.accepts(member) || Self::converts_to_anonymous(expected, member))
         {
             return Some(ANONYMOUS);
         }
-        Self::injects_into(expected, found).then_some(ANONYMOUS)
+        Self::converts_to_anonymous(expected, found).then_some(ANONYMOUS)
     }
 
-    fn injects_into(expected: &ResolvedType, found: &ResolvedType) -> bool {
+    /// Whether an unrefined `found` can be converted into the anonymous enum
+    /// `expected`: it is either one of its members, or an anonymous enum
+    /// whose every member is. Shared with `convert_to_anonymous_enum` so
+    /// overload viability and real coercion cannot disagree.
+    fn converts_to_anonymous(expected: &ResolvedType, found: &ResolvedType) -> bool {
+        let ResolvedType::AnonymousEnum {
+            shape,
+            variant: None,
+        } = expected
+        else {
+            return false;
+        };
+        if Self::anonymous_member_index(shape, found).is_some() {
+            return true;
+        }
         matches!(
-            expected,
-            ResolvedType::AnonymousEnum { shape, variant: None }
-                if Self::anonymous_member_index(shape, found).is_some()
+            found,
+            ResolvedType::AnonymousEnum { shape: source, variant: None }
+                if shape.subset_remap(source).is_some()
         )
     }
 
@@ -774,23 +789,101 @@ impl<'r> Analyzer<'r> {
         }
     }
 
+    /// Converts `value` into the already-resolved anonymous enum `target`,
+    /// or hands it back untouched when no conversion exists. Both conversions
+    /// are real representation changes, so each leaves an explicit node here
+    /// rather than being spelled as an acceptance rule.
+    ///
+    /// This is the single home of "does this value fit that shape": an
+    /// expected type and a `<enum ...>` cast are two ways to establish the
+    /// destination, and they must agree on the answer and on the IR.
+    pub(crate) fn convert_to_anonymous_enum(
+        &mut self,
+        target: &ResolvedType,
+        value: CheckedExprNode,
+    ) -> Result<CheckedExprNode, CheckedExprNode> {
+        let ResolvedType::AnonymousEnum {
+            shape: target_shape,
+            variant: None,
+        } = target
+        else {
+            return Err(value);
+        };
+        // Dropping a refinement of this very shape is a plain copy, so the
+        // parent type is used as-is rather than unpacked and repacked.
+        if target.accepts(&value.r#type) {
+            return Ok(value);
+        }
+        // Projection runs first so a proven leaf can be injected into a
+        // *different* anonymous enum in one step.
+        let value = self.project_refined_anonymous(target, value);
+        if let Some(index) = Self::anonymous_member_index(target_shape, &value.r#type) {
+            return Ok(self.inject_anonymous_member(target, index, value));
+        }
+        let ResolvedType::AnonymousEnum {
+            shape: source_shape,
+            variant: None,
+        } = &value.r#type
+        else {
+            return Err(value);
+        };
+        let Some(variant_map) = target_shape.subset_remap(source_shape) else {
+            return Err(value);
+        };
+        let id = value.id;
+        let span = value.span;
+        // Widening a constant yields a constant, for the same reason injecting
+        // one does: compile-time-only positions stay on the one shared enum
+        // constant representation.
+        if let CheckedExpr::Const(ConstValue::Enum {
+            variant_index,
+            fields,
+            ..
+        }) = value.kind
+        {
+            return Ok(CheckedExprNode {
+                id,
+                span,
+                r#type: target.clone(),
+                kind: CheckedExpr::Const(Self::anonymous_enum_const(
+                    variant_map[variant_index],
+                    fields,
+                )),
+            });
+        }
+        let mut source = value;
+        source.id = self.resolver.fresh_synthetic_id();
+        Ok(CheckedExprNode {
+            id,
+            span,
+            r#type: target.clone(),
+            kind: CheckedExpr::AnonymousEnumWiden(CheckedAnonymousEnumWiden {
+                source: Box::new(source),
+                variant_map,
+            }),
+        })
+    }
+
+    /// An anonymous enum's constant form: the tag is the canonical member
+    /// index, and the shape has no header or dynamic field to fill.
+    fn anonymous_enum_const(index: usize, fields: Vec<ConstValue>) -> ConstValue {
+        ConstValue::Enum {
+            variant_index: index,
+            tag: NumberValue::Unsigned(index as u64),
+            header: Vec::new(),
+            dynamic_fields: Vec::new(),
+            fields,
+        }
+    }
+
     /// Packs an exact member value into the expected anonymous enum, tagged
     /// with its canonical index.
     fn inject_anonymous_member(
         &mut self,
         target: &ResolvedType,
+        index: usize,
         value: CheckedExprNode,
     ) -> CheckedExprNode {
-        let ResolvedType::AnonymousEnum {
-            shape,
-            variant: None,
-        } = target
-        else {
-            return value;
-        };
-        let Some(index) = Self::anonymous_member_index(shape, &value.r#type) else {
-            return value;
-        };
         let id = value.id;
         let span = value.span;
         // Injecting a constant yields a constant: the tagged value is fully
@@ -802,13 +895,7 @@ impl<'r> Analyzer<'r> {
                 id,
                 span,
                 r#type: target.clone(),
-                kind: CheckedExpr::Const(ConstValue::Enum {
-                    variant_index: index,
-                    tag: NumberValue::Unsigned(index as u64),
-                    header: Vec::new(),
-                    dynamic_fields: Vec::new(),
-                    fields: vec![member],
-                }),
+                kind: CheckedExpr::Const(Self::anonymous_enum_const(index, vec![member])),
             };
         }
         let mut member = value;

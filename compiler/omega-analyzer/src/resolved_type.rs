@@ -391,6 +391,21 @@ impl ResolvedAnonymousEnum {
         self.members.iter().position(|candidate| candidate == member)
     }
 
+    /// The destination index of every `source` member, in source canonical
+    /// order, when every one of them is a member here.
+    ///
+    /// Canonical order is a total order over structural keys rather than an
+    /// extension of the source's, so a destination-only member can sort
+    /// before a shared one and shift every later index. A caller therefore
+    /// has to retag through this map; the source tag is never reusable.
+    pub fn subset_remap(&self, source: &Self) -> Option<Vec<usize>> {
+        source
+            .members
+            .iter()
+            .map(|member| self.index_of(member))
+            .collect()
+    }
+
     /// Whether the canonical member list outgrew the fixed `u16` tag. Checked
     /// once, at type resolution, so no later phase can meet a shape it cannot
     /// tag.
@@ -836,8 +851,9 @@ impl ResolvedType {
             ) => expected.borrow().id == found.borrow().id,
             // Refinement is not part of the representation, so dropping it is
             // a plain copy. Widening between *different* anonymous shapes is
-            // deliberately absent: canonical indices and payload size can both
-            // differ, so it would need real retagging/repacking work.
+            // deliberately absent here: canonical indices and payload size can
+            // both differ, so it is a real conversion that has to leave a node
+            // behind, not an acceptance rule.
             (
                 Self::AnonymousEnum {
                     shape: expected,
