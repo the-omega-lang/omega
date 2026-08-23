@@ -1,0 +1,93 @@
+error: 'Named' is a spec -- it has no size on its own, so it can't be used as a value's type
+  --> tests/t27b_anonymous_enum_errors/t27b_anonymous_enum_errors.omg:21:5
+   |
+21 |     spec_member: SpecMember;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^ a spec has no size or representation on its own
+   |
+   = help: use `spec *Named`/`spec *mut Named` for dynamic dispatch, or a generic bound (`T: Named`)
+
+error: 'never' is only allowed as a function/method's own return type
+  --> tests/t27b_anonymous_enum_errors/t27b_anonymous_enum_errors.omg:22:5
+   |
+22 |     never_member: NeverMember;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^ `never` used outside a function's own return type
+   |
+   = help: there is no such thing as a `never`-typed value -- only a function/method/foreign/gap may declare `=> never`
+
+error: mismatched types: expected return type 'enum Failure | *str', found 'Other'
+  --> tests/t27b_anonymous_enum_errors/t27b_anonymous_enum_errors.omg:26:17
+   |
+26 | non_member() => Errors {
+   |                 ^^^^^^ expected `enum Failure | *str` because of the declared return type, found `Other`
+
+error: mismatched types: expected return type 'enum Failure | Other | *str', found 'enum Failure | *str'
+  --> tests/t27b_anonymous_enum_errors/t27b_anonymous_enum_errors.omg:32:25
+   |
+32 | widen(value: Errors) => enum Failure | *str | Other {
+   |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `enum Failure | Other | *str` because of the declared return type, found `enum Failure | *str`
+
+error: 'Other' is not a member of 'enum Failure | *str'
+  --> tests/t27b_anonymous_enum_errors/t27b_anonymous_enum_errors.omg:40:9
+   |
+40 |         Other => 1,
+   |         ^^^^^ not one of this type's members
+   |
+   = help: the members of `enum Failure | *str` are the only arms it can match
+
+error: overlapping match arms
+  --> tests/t27b_anonymous_enum_errors/t27b_anonymous_enum_errors.omg:49:9
+   |
+47 |         Failure => 0,
+   |         ------- first covered here
+48 |         *str => 1,
+49 |         Failure => 2,
+   |         ^^^^^^^ this pattern covers values an earlier arm already covers
+   |
+   = note: `match` has no first-match-wins rule -- every value must be covered by exactly one arm
+
+error: match on 'enum Failure | *str' does not cover every member
+  --> tests/t27b_anonymous_enum_errors/t27b_anonymous_enum_errors.omg:55:5
+   |
+55 |       match value {
+   |  _____^
+56 | |         Failure => 0,
+57 | |     }
+   | |_____^ missing member: '*str'
+   |
+   = help: cover the remaining member types, or add an `else` block
+
+error: a match arm on 'enum Failure | *str' must name one of its member types
+  --> tests/t27b_anonymous_enum_errors/t27b_anonymous_enum_errors.omg:63:9
+   |
+63 |         0 => 0,
+   |         ^ not a type
+   |
+   = help: an anonymous enum's variants are its member types, so its arms are written as types (`*str => ...`)
+
+error: '..' has nothing left to cover
+  --> tests/t27b_anonymous_enum_errors/t27b_anonymous_enum_errors.omg:73:9
+   |
+73 |         .. => 2,
+   |         ^^ every value is already covered by an earlier arm
+   |
+   = help: remove this arm -- there's nothing left for it to match
+
+error: more than one '..' catch-all arm
+  --> tests/t27b_anonymous_enum_errors/t27b_anonymous_enum_errors.omg:81:9
+   |
+80 |         .. => 1,
+   |         -- first `..` arm here
+81 |         .. => 2,
+   |         ^^ a second `..` catch-all arm
+   |
+   = note: only one `..` arm is allowed per `match`
+
+error: 'enum Failure | *str' has no members of its own
+  --> tests/t27b_anonymous_enum_errors/t27b_anonymous_enum_errors.omg:87:5
+   |
+87 |     value.code
+   |     ^^^^^^^^^^ an anonymous enum has no fields, elements, or methods of its own
+   |
+   = help: `match` it on a member type first -- the arm's binding then *is* that member
+
+error: could not compile the program due to 11 previous errors

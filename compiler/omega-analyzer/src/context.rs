@@ -1,6 +1,8 @@
 use crate::checked::Storage;
 use crate::error::TypeResolutionError;
-use crate::resolved_type::{CallingConvention, ResolvedFunctionType, ResolvedType};
+use crate::resolved_type::{
+    CallingConvention, ResolvedAnonymousEnum, ResolvedFunctionType, ResolvedType,
+};
 use crate::resolver::{
     ImportTarget, ItemAccess, ItemNamespace, ModuleResolver, ResolveError, ResolveItemOptions,
     ResolvedItem,
@@ -395,7 +397,45 @@ impl Context {
                 let item = self.resolve_type(*item, resolver, module_path, options)?;
                 Ok(ResolvedType::SizedArray(Box::new(item), size))
             }
+            Type::AnonymousEnum(members) => {
+                self.resolve_anonymous_enum_type(members, resolver, module_path, options)
+            }
         }
+    }
+
+    /// `enum A | B | ...`. Members resolve independently and then lose their
+    /// written order for good: the canonical list decides equality, layout,
+    /// tags, and mangling, so no later phase may recover how it was spelled.
+    fn resolve_anonymous_enum_type(
+        &self,
+        members: Vec<Type>,
+        resolver: &mut dyn ModuleResolver,
+        module_path: &[Ident],
+        options: ResolveItemOptions,
+    ) -> Result<ResolvedType, TypeResolutionError> {
+        let mut resolved = Vec::with_capacity(members.len());
+        for member in members {
+            // A member is stored inline, exactly like an aggregate field, so
+            // it faces the same value-type restrictions.
+            match self.resolve_type(member, resolver, module_path, options)? {
+                ResolvedType::Spec(spec) => {
+                    let name = spec.borrow().name.clone();
+                    return Err(TypeResolutionError::SpecUsedAsValueType(name));
+                }
+                ResolvedType::Never => return Err(TypeResolutionError::NeverNotAllowedHere),
+                member => resolved.push(member),
+            }
+        }
+        let shape = ResolvedAnonymousEnum::canonicalize(resolved);
+        if shape.exceeds_tag_domain() {
+            return Err(TypeResolutionError::AnonymousEnumTooManyMembers {
+                count: shape.members().len(),
+            });
+        }
+        Ok(ResolvedType::AnonymousEnum {
+            shape: std::rc::Rc::new(shape),
+            variant: None,
+        })
     }
 
     fn resolve_named_type(

@@ -16,5 +16,6 @@ pub mod resolved_type;
 pub mod resolver;
 pub mod similarity;
 pub mod target;
+pub mod type_key;
 
 pub use target::{Arch, Os, Target, TargetParseError};

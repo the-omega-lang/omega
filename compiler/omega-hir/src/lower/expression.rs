@@ -1,10 +1,12 @@
 use super::Lowerer;
 use crate::hir::{
     HirAddressOf, HirAssignment, HirBinaryOp, HirCast, HirCompoundAssign, HirExpr, HirExprNode,
-    HirFunctionCall, HirIf, HirLogical, HirMatch, HirMatchArm, HirPattern, HirPlace, HirPlaceRoot,
+    HirFunctionCall, HirIf, HirLogical, HirMatch, HirMatchArm, HirPattern, HirPatternValue, HirPlace, HirPlaceRoot,
     HirProjection, HirRange, HirRangeEnd, HirSlice, HirStructLiteral, HirStructLiteralField,
 };
-use omega_parser::prelude::{Expression, ExpressionNode, Pattern, RangeEnd, RangeExpr, Span};
+use omega_parser::prelude::{
+    Expression, ExpressionNode, Pattern, PatternValue, RangeEnd, RangeExpr, Span,
+};
 
 impl Lowerer {
     fn node(&mut self, span: Span, expr: HirExpr) -> HirExprNode {
@@ -223,9 +225,13 @@ impl Lowerer {
     }
 
     fn lower_pattern(&mut self, pattern: &Pattern) -> HirPattern {
-        match pattern {
-            Pattern::Value(v) => HirPattern::Value(self.lower_expr(v)),
-            Pattern::Range(r) => HirPattern::Range(self.lower_range(r)),
+        HirPattern {
+            value: pattern.value.as_ref().map(|value| match value {
+                PatternValue::Value(v) => HirPatternValue::Value(self.lower_expr(v)),
+                PatternValue::Range(r) => HirPatternValue::Range(self.lower_range(r)),
+            }),
+            r#type: pattern.r#type.clone(),
+            span: pattern.span,
         }
     }
 

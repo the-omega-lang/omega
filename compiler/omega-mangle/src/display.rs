@@ -85,6 +85,14 @@ fn render_type(ty: &MangleType) -> String {
                 members.join(" + ")
             )
         }
+        MangleType::AnonymousEnum(members, refinement) => {
+            let members: Vec<String> = members.iter().map(render_type).collect();
+            let rendered = format!("enum {}", members.join(" | "));
+            match refinement {
+                Some(index) => format!("{rendered}[#{index}]"),
+                None => rendered,
+            }
+        }
         MangleType::Function(params, return_type, variadic, convention) => {
             let mut rendered_params = params.iter().map(render_type).collect::<Vec<_>>();
             if *variadic {

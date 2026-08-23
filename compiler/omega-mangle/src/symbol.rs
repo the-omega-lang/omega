@@ -52,6 +52,11 @@ pub enum MangleType {
     /// order. A single-member shape mangles byte-identically to the
     /// pre-conjunction singleton encoding.
     SpecObject(Vec<MangleType>, bool),
+    /// One anonymous enum, members in the analyzer's canonical order. The
+    /// optional index is a member refinement, mirroring `Named`'s variant
+    /// refinement. Nothing downstream may reorder the members: canonical
+    /// order is what makes `enum A | B` and `enum B | A` one symbol.
+    AnonymousEnum(Vec<MangleType>, Option<u32>),
     Function(Vec<MangleType>, Box<MangleType>, bool, MangleConvention),
     Named(ManglePath, Option<u32>),
 }

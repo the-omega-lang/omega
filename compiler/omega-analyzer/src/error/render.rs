@@ -405,6 +405,21 @@ impl AnalysisErrorKind {
             Self::NonExhaustiveMatchEnum { missing, .. } => d
                 .with_label(span, format!("missing {} {}", plural(missing.len(), "variant"), ident_list(missing)))
                 .with_help("cover the remaining variants, or add an `else` block"),
+            Self::NonExhaustiveMatchAnonymousEnum { missing, .. } => d
+                .with_label(span, format!("missing {}: {}", plural(missing.len(), "member"), type_list(missing)))
+                .with_help("cover the remaining member types, or add an `else` block"),
+            Self::AnonymousEnumPatternNotAType { .. } => d
+                .with_label(span, "not a type")
+                .with_help("an anonymous enum's variants are its member types, so its arms are written as types (`*str => ...`)"),
+            Self::NotAnAnonymousEnumMember { r#enum, .. } => d
+                .with_label(span, "not one of this type's members")
+                .with_help(format!("the members of `{enum}` are the only arms it can match")),
+            Self::AnonymousEnumNotRefined { .. } => d
+                .with_label(span, "an anonymous enum has no fields, elements, or methods of its own")
+                .with_help("`match` it on a member type first -- the arm's binding then *is* that member"),
+            Self::AnonymousEnumConformTarget { .. } => d
+                .with_label(span, "an anonymous enum is structural -- there is no declaration for a method to belong to")
+                .with_help("conform the member types instead, or give the sum a declared `enum` if it needs behavior of its own"),
             Self::NonExhaustiveMatchValue { gaps, .. } => d
                 .with_label(span, format!("not covered: {}", gaps.join(", ")))
                 .with_help("cover the remaining values, or add an `else` block"),
@@ -795,6 +810,9 @@ fn type_resolution_diagnostic(error: &TypeResolutionError, span: Span) -> Diagno
         TypeResolutionError::VariadicNotSupportedByConvention { .. } => d
             .with_label(span, "'...' is not allowed here")
             .with_help("only conventions that support variadic arguments on this target may declare a '...' tail"),
+        TypeResolutionError::AnonymousEnumTooManyMembers { .. } => d
+            .with_label(span, "too many distinct members for a `u16` tag")
+            .with_note("an anonymous enum tags its members with their canonical index in a `u16`"),
     }
 }
 

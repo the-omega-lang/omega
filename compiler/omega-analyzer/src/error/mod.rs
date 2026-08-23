@@ -55,6 +55,10 @@ pub fn raw_type_display(ty: &omega_parser::prelude::Type) -> String {
             let members: Vec<String> = members.iter().map(raw_type_display).collect();
             format!("spec {}", members.join(" + "))
         }
+        Type::AnonymousEnum(members) => {
+            let members: Vec<String> = members.iter().map(raw_type_display).collect();
+            format!("enum {}", members.join(" | "))
+        }
     }
 }
 
@@ -105,6 +109,9 @@ pub enum TypeResolutionError {
     },
     VariadicNotSupportedByConvention {
         convention: CallingConvention,
+    },
+    AnonymousEnumTooManyMembers {
+        count: usize,
     },
 }
 
@@ -178,6 +185,12 @@ impl fmt::Display for TypeResolutionError {
                 f,
                 "the '{convention}' calling convention does not support variadic functions"
             ),
+            Self::AnonymousEnumTooManyMembers { count } => write!(
+                f,
+                "an anonymous enum has {count} distinct members, but its tag is a 'u16' and can \
+                 only distinguish {} of them",
+                crate::resolved_type::ResolvedAnonymousEnum::MAX_MEMBERS
+            ),
         }
     }
 }
@@ -218,6 +231,16 @@ fn plural(n: usize, word: &str) -> String {
         word.to_string()
     } else {
         format!("{word}s")
+    }
+}
+
+fn type_list(types: &[ResolvedType]) -> String {
+    let names: Vec<String> = types.iter().map(|t| format!("'{t}'")).collect();
+    match names.as_slice() {
+        [one] => one.clone(),
+        [one, two] => format!("{one} and {two}"),
+        [init @ .., last] => format!("{}, and {last}", init.join(", ")),
+        [] => String::new(),
     }
 }
 

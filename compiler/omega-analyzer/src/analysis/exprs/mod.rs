@@ -94,9 +94,32 @@ impl<'r> Analyzer<'r> {
         place: &HirPlace,
         expected: Option<&ResolvedType>,
     ) -> Option<CheckedExprNode> {
-        let (checked_place, r#type, _mutable) = self.analyze_place(id, span, place, expected)?;
+        let (mut checked_place, mut r#type, _mutable) =
+            self.analyze_place(id, span, place, expected)?;
         if let CheckedPlaceRoot::Variable { decl_id, .. } = checked_place.root {
             self.context.mark_used(decl_id);
+        }
+        // A refined anonymous binding read as a value *is* the member it
+        // proves -- that is the only thing an anonymous enum's refinement can
+        // offer, since the type has no members of its own. The exception is a
+        // site that asked for the anonymous enum itself: widening back to the
+        // parent must stay a plain read of the same storage, so the
+        // refinement is kept and `accepts` handles it.
+        //
+        // Deliberately not in `analyze_place`: an assignment target and
+        // `&mut` need the anonymous root, or a mutable alias into the payload
+        // could outlive the proof that the payload holds that member.
+        if let Some((index, member)) = r#type.refined_anonymous_member()
+            && !expected.is_some_and(|expected| expected.accepts(&r#type))
+        {
+            let member = member.clone();
+            checked_place.projections.push(CheckedProjection::EnumBody {
+                variant_index: index,
+                field_index: 0,
+                r#type: member.clone(),
+            });
+            checked_place.r#type = member.clone();
+            r#type = member;
         }
         if let CheckedPlaceRoot::Variable {
             storage: Storage::Comp,

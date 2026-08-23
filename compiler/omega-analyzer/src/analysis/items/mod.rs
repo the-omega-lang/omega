@@ -293,7 +293,10 @@ impl<'r> Analyzer<'r> {
         let aggregate = types.into_iter().find(|ty| {
             matches!(
                 ty,
-                ResolvedType::Struct(_) | ResolvedType::Union(_) | ResolvedType::Enum { .. }
+                ResolvedType::Struct(_)
+                    | ResolvedType::Union(_)
+                    | ResolvedType::Enum { .. }
+                    | ResolvedType::AnonymousEnum { .. }
             )
         });
         match aggregate {
@@ -585,7 +588,10 @@ impl<'r> Analyzer<'r> {
         for (p, (_, r#type)) in f.params.iter().zip(params.iter()) {
             if matches!(
                 r#type,
-                ResolvedType::Struct(_) | ResolvedType::Union(_) | ResolvedType::Enum { .. }
+                ResolvedType::Struct(_)
+                    | ResolvedType::Union(_)
+                    | ResolvedType::Enum { .. }
+                    | ResolvedType::AnonymousEnum { .. }
             ) {
                 let size =
                     crate::annotations::estimate_type_size(r#type, self.target.pointer_bytes());

@@ -460,31 +460,28 @@ pub fn estimate_type_size(r#type: &ResolvedType, pointer_bytes: u32) -> u32 {
             .map(|field| estimate_type_size(&field.r#type, pointer_bytes))
             .max()
             .unwrap_or(0),
-        ResolvedType::Enum { cell, .. } => {
-            let cell = cell.borrow();
-            let tag = estimate_type_size(&cell.tag_type, pointer_bytes);
-            let header: u32 = cell
+        ResolvedType::Enum { .. } | ResolvedType::AnonymousEnum { .. } => {
+            let view = crate::layout::EnumView::of(r#type).expect("just matched an enum-like type");
+            let tag = estimate_type_size(&view.tag_type, pointer_bytes);
+            let prefix: u32 = view
                 .header
                 .iter()
-                .map(|field| estimate_type_size(&field.r#type, pointer_bytes))
+                .chain(&view.dynamic_fields)
+                .map(|field| estimate_type_size(field, pointer_bytes))
                 .sum();
-            let dynamic: u32 = cell
-                .dynamic_fields
-                .iter()
-                .map(|field| estimate_type_size(&field.r#type, pointer_bytes))
-                .sum();
-            let body = cell
+            let body = view
                 .variants
                 .iter()
-                .map(|v| {
-                    v.fields
+                .map(|variant| {
+                    variant
+                        .fields
                         .iter()
-                        .map(|field| estimate_type_size(&field.r#type, pointer_bytes))
+                        .map(|field| estimate_type_size(field, pointer_bytes))
                         .sum::<u32>()
                 })
                 .max()
                 .unwrap_or(0);
-            tag + header + dynamic + body
+            tag + prefix + body
         }
         ResolvedType::SizedArray(item, size) => estimate_type_size(item, pointer_bytes) * size,
         ResolvedType::Slice { .. } | ResolvedType::Str { .. } => 12,

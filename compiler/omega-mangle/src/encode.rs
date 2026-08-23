@@ -160,6 +160,17 @@ impl Encoder {
                 self.encode_types(members);
                 self.push_tag(TAG_LIST_END);
             }
+            MangleType::AnonymousEnum(members, refinement) => {
+                self.push_tag(match refinement {
+                    Some(_) => TAG_ANONYMOUS_ENUM_REFINED,
+                    None => TAG_ANONYMOUS_ENUM,
+                });
+                self.encode_types(members);
+                self.push_tag(TAG_LIST_END);
+                if let Some(index) = refinement {
+                    self.out.push_str(&base62::encode(u64::from(*index)));
+                }
+            }
             MangleType::Function(params, return_type, variadic, convention) => {
                 self.push_tag(TAG_FUNCTION);
                 if let Some(tag) = convention_tag(*convention) {

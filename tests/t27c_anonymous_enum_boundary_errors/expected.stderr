@@ -1,0 +1,23 @@
+error: 'enum i32 | bool' has no declaration to conform
+  --> tests/t27c_anonymous_enum_boundary_errors/t27c_anonymous_enum_boundary_errors.omg:13:1
+   |
+13 |   conform Errors to Named {
+   |  _^
+14 | |     name(*self) => *str {
+15 | |         "anonymous"
+16 | |     }
+17 | | }
+   | |_^ an anonymous enum is structural -- there is no declaration for a method to belong to
+   |
+   = help: conform the member types instead, or give the sum a declared `enum` if it needs behavior of its own
+
+error: 'enum i32 | bool' cannot cross a 'foreign' boundary by value
+  --> tests/t27c_anonymous_enum_boundary_errors/t27c_anonymous_enum_boundary_errors.omg:21:1
+   |
+21 | foreign(c) takes_by_value(value: Errors) => void;
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `enum i32 | bool` passes by value across a `foreign` boundary
+   |
+   = note: Omega's calling convention is internally consistent across its backends, but it is not the platform C ABI -- an aggregate passed by value would silently miscompile against a foreign caller or callee
+   = help: pass or return a pointer to it instead (see the ABI entry in docs/issues/known-issues.md)
+
+error: could not compile the program due to 2 previous errors

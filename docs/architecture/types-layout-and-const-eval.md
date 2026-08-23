@@ -38,6 +38,18 @@ The driver can create the cell before collection completes, allowing safe recurs
 
 Consumers should keep/reference the cell rather than copy a second aggregate definition into every expression.
 
+### Structural shapes
+
+Not every aggregate is nominal. A dynamic spec object and an anonymous enum are **structural**: they have no declaration, no `HirId`, no module, and no driver-owned cell, so their identity is the shape itself.
+
+Both are canonicalized once — a deterministically ordered, exact-duplicate-free member list — before any equality, hash, layout, or mangling question is asked. Ordering comes from `omega-analyzer::type_key`, the single structural identity key for a `ResolvedType`:
+
+- it uses fully qualified nominal names plus normalized generic arguments, recursively;
+- it never observes `HirId`, pointer addresses, or discovery order, so separate compilations and separate packages agree;
+- it distinguishes everything `ResolvedType`'s own `PartialEq` distinguishes, so sorting by it groups equal types adjacently and deduplication is exact.
+
+`Display` is not a substitute: it prints bare nominal names with no generic arguments, so `Vec<i32>` and `Vec<f64>` render alike.
+
 Aggregate members use a dedicated `ResolvedField { name, type, visibility }` representation. Function parameters use the function-signature parameter representation instead. This separation is deliberate: field visibility and aggregate-member identity are semantic facts and should not be encoded in parameter-shaped tuples.
 
 ## Function types
@@ -134,7 +146,11 @@ Memory offsets for header/dynamic/body fields are provided by shared helpers suc
 - `enum_payload_offset`;
 - `enum_body_field_offset`.
 
-The payload can be represented as opaque integer leaves for flattened transfer; those leaves are storage chunks, not semantic numeric values.
+The payload can be represented as opaque integer leaves for flattened transfer; those leaves are storage chunks, not semantic numeric values. A body field therefore has no typed leaf slice of its own: reaching one means reaching memory, so a register-held enum is spilled to a stack slot before its body byte offset is applied.
+
+Those helpers do not take a declared enum. They take `layout::EnumView`, the layout-relevant shape shared by **named and anonymous enums** — tag type, header field types, shared dynamic field types, per-variant tag/header values/body field types, and pack/align. An anonymous enum is the degenerate case of that view: a `u16` tag holding the canonical member index, no header, no shared dynamic fields, and exactly one body field per variant holding that member.
+
+This is the only place the two enum forms are reconciled. Codegen reads tag/header/payload facts through the same view rather than destructuring a nominal enum cell, so neither form can acquire a second representation rule.
 
 Implicit enum tags are checked against the resolved tag type's integer domain before they become `NumberValue`s. This mirrors explicit-tag range checking and keeps the “every variant receives a representable, unique tag” invariant true even for extremely large enums. Pointer-sized integer domains use the active target's pointer width.
 

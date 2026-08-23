@@ -1,0 +1,24 @@
+# Signature-phase rules for anonymous enums. They live in their own package
+# because a rejected signature stops body analysis, which is where
+# `t27b_anonymous_enum_errors` does its work.
+
+spec Named {
+	name(*self) => *str;
+}
+
+alias Errors = enum i32 | bool;
+
+# An anonymous enum has no declaration, so it has no methods, static
+# functions, or conformances of its own in v1.
+conform Errors to Named {
+	name(*self) => *str {
+		"anonymous"
+	}
+}
+
+# It is an ordinary aggregate, so it faces the same foreign-boundary
+# restriction every other by-value aggregate does.
+foreign(c) takes_by_value(value: Errors) => void;
+
+main() => void {
+}

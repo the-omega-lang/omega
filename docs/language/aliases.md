@@ -14,6 +14,7 @@ exposed alias Public = Hidden;
 alias StringKeyedMap<V> = HashMap<*str, V>;
 alias AB = spec A + B;
 alias Dyn = *spec B + A;
+alias Errors = enum ParseError | IoError;
 ```
 
 An alias declaration is:
@@ -75,6 +76,12 @@ The resolved identity is the target's own identity. In particular:
 - `alias IntPair = Pair<i32, i32>;` makes `IntPair` and `Pair<i32, i32>` the
   same type: they accept each other with no conversion, have the same
   `sizeof`, the same fields and static methods, and the same symbol;
+- `alias Errors = enum ParseError | IoError;` makes `Errors`,
+  `enum ParseError | IoError`, and `enum IoError | ParseError` one type. An
+  anonymous enum is structural, so the alias adds no identity, no member
+  ordering, and no tag assignment of its own: the canonical member list is
+  computed from the resolved members either way (see
+  [`enums-and-pattern-matching.md`](enums-and-pattern-matching.md));
 - `alias plus = add;` calls `add`; no wrapper function or extra symbol exists;
 - an alias of an overloaded name forwards the complete candidate set visible at
   the alias declaration, and overload resolution still happens at the call

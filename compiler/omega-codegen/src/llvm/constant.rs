@@ -1,4 +1,5 @@
 use super::Codegen;
+use super::enum_view;
 use super::leaf;
 use super::place::PlaceStorage;
 use inkwell::types::BasicTypeEnum;
@@ -245,40 +246,38 @@ impl<'ctx> Codegen<'ctx> {
                 fields,
                 ..
             } => {
-                let cell = match r#type {
-                    ResolvedType::Enum { cell, .. } => cell,
-                    _ => unreachable!("an Enum constant's own type is always ResolvedType::Enum"),
-                };
+                let view = enum_view(r#type, "an Enum constant");
                 let pointer_bytes = self.pointer_bytes();
-                let (tag_type, header, dynamic, body) = {
-                    let enum_type = cell.borrow();
-                    let variant = &enum_type.variants[*variant_index];
-                    let header: Vec<(ResolvedType, ConstValue)> = enum_type
-                        .header
-                        .iter()
-                        .zip(&variant.header_values)
-                        .map(|(field, value)| (field.r#type.clone(), value.clone()))
-                        .collect();
-                    let dynamic: Vec<(u32, ResolvedType)> = (0..enum_type.dynamic_fields.len())
-                        .map(|i| {
-                            let offset =
-                                layout::enum_dynamic_field_offset(&enum_type, i, pointer_bytes);
-                            (offset, enum_type.dynamic_fields[i].r#type.clone())
-                        })
-                        .collect();
-                    let body: Vec<(u32, ResolvedType)> = (0..variant.fields.len())
-                        .map(|i| {
-                            let offset = layout::enum_body_field_offset(
-                                &enum_type,
-                                *variant_index,
-                                i,
-                                pointer_bytes,
-                            );
-                            (offset, variant.fields[i].r#type.clone())
-                        })
-                        .collect();
-                    (enum_type.tag_type.clone(), header, dynamic, body)
-                };
+                let variant = &view.variants[*variant_index];
+                let header: Vec<(ResolvedType, ConstValue)> = view
+                    .header
+                    .iter()
+                    .cloned()
+                    .zip(variant.header_values.iter().cloned())
+                    .collect();
+                let dynamic: Vec<(u32, ResolvedType)> = view
+                    .dynamic_fields
+                    .iter()
+                    .enumerate()
+                    .map(|(i, field_type)| {
+                        (
+                            layout::enum_dynamic_field_offset(&view, i, pointer_bytes),
+                            field_type.clone(),
+                        )
+                    })
+                    .collect();
+                let body: Vec<(u32, ResolvedType)> = variant
+                    .fields
+                    .iter()
+                    .enumerate()
+                    .map(|(i, field_type)| {
+                        (
+                            layout::enum_body_field_offset(&view, *variant_index, i, pointer_bytes),
+                            field_type.clone(),
+                        )
+                    })
+                    .collect();
+                let tag_type = view.tag_type.clone();
 
                 let shift = layout::stack_align_shift(layout::type_alignment(r#type));
                 let total = layout::total_bytes(r#type, pointer_bytes);
@@ -452,39 +451,37 @@ impl<'ctx> Codegen<'ctx> {
                 fields,
                 ..
             } => {
-                let cell = match r#type {
-                    ResolvedType::Enum { cell, .. } => cell,
-                    _ => unreachable!("an Enum constant's own type is always ResolvedType::Enum"),
-                };
-                let (tag_type, header, dynamic, body) = {
-                    let enum_type = cell.borrow();
-                    let variant = &enum_type.variants[*variant_index];
-                    let header: Vec<(ResolvedType, ConstValue)> = enum_type
-                        .header
-                        .iter()
-                        .zip(&variant.header_values)
-                        .map(|(field, value)| (field.r#type.clone(), value.clone()))
-                        .collect();
-                    let dynamic: Vec<(u32, ResolvedType)> = (0..enum_type.dynamic_fields.len())
-                        .map(|i| {
-                            let field_offset =
-                                layout::enum_dynamic_field_offset(&enum_type, i, pointer_bytes);
-                            (field_offset, enum_type.dynamic_fields[i].r#type.clone())
-                        })
-                        .collect();
-                    let body: Vec<(u32, ResolvedType)> = (0..variant.fields.len())
-                        .map(|i| {
-                            let field_offset = layout::enum_body_field_offset(
-                                &enum_type,
-                                *variant_index,
-                                i,
-                                pointer_bytes,
-                            );
-                            (field_offset, variant.fields[i].r#type.clone())
-                        })
-                        .collect();
-                    (enum_type.tag_type.clone(), header, dynamic, body)
-                };
+                let view = enum_view(r#type, "an Enum constant");
+                let variant = &view.variants[*variant_index];
+                let header: Vec<(ResolvedType, ConstValue)> = view
+                    .header
+                    .iter()
+                    .cloned()
+                    .zip(variant.header_values.iter().cloned())
+                    .collect();
+                let dynamic: Vec<(u32, ResolvedType)> = view
+                    .dynamic_fields
+                    .iter()
+                    .enumerate()
+                    .map(|(i, field_type)| {
+                        (
+                            layout::enum_dynamic_field_offset(&view, i, pointer_bytes),
+                            field_type.clone(),
+                        )
+                    })
+                    .collect();
+                let body: Vec<(u32, ResolvedType)> = variant
+                    .fields
+                    .iter()
+                    .enumerate()
+                    .map(|(i, field_type)| {
+                        (
+                            layout::enum_body_field_offset(&view, *variant_index, i, pointer_bytes),
+                            field_type.clone(),
+                        )
+                    })
+                    .collect();
+                let tag_type = view.tag_type.clone();
 
                 self.write_const_element(blob, offset, &ConstValue::Number(*tag), &tag_type);
                 let mut header_offset = offset + layout::total_bytes(&tag_type, pointer_bytes);
@@ -586,10 +583,7 @@ impl<'ctx> Codegen<'ctx> {
                 fields,
                 ..
             } => {
-                let cell = match r#type {
-                    ResolvedType::Enum { cell, .. } => cell,
-                    _ => unreachable!("an Enum constant's own type is always ResolvedType::Enum"),
-                };
+                let view = enum_view(r#type, "an Enum constant");
                 out.extend_from_slice(&(*variant_index as u32).to_le_bytes());
                 let tag_bits: u64 = match tag {
                     NumberValue::Signed(v) => *v as u64,
@@ -597,20 +591,8 @@ impl<'ctx> Codegen<'ctx> {
                     NumberValue::Float(v) => v.to_bits(),
                 };
                 out.extend_from_slice(&tag_bits.to_le_bytes());
-                let (dynamic_types, field_types) = {
-                    let enum_type = cell.borrow();
-                    let dynamic_types: Vec<ResolvedType> = enum_type
-                        .dynamic_fields
-                        .iter()
-                        .map(|field| field.r#type.clone())
-                        .collect();
-                    let field_types: Vec<ResolvedType> = enum_type.variants[*variant_index]
-                        .fields
-                        .iter()
-                        .map(|field| field.r#type.clone())
-                        .collect();
-                    (dynamic_types, field_types)
-                };
+                let dynamic_types = view.dynamic_fields.clone();
+                let field_types = view.variants[*variant_index].fields.clone();
                 for (value, field_type) in dynamic_fields.iter().zip(&dynamic_types) {
                     self.hash_const_element(out, value, field_type);
                 }

@@ -1,0 +1,9 @@
+# The member order here is the reverse of the caller's spelling. An anonymous
+# enum is structural, so both modules mean one type: same canonical members,
+# same tags, same layout, same symbol.
+exposed label(value: enum *str | i32) => *str {
+	match value {
+		i32 => "helper-int",
+		*str => value,
+	}
+}

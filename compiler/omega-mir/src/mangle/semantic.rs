@@ -121,6 +121,16 @@ pub(super) fn mangle_type(ty: &ResolvedType) -> MangleType {
                 .collect();
             MangleType::SpecObject(members, *mutable)
         }
+        ResolvedType::AnonymousEnum { shape, variant } => {
+            // Already canonically ordered by the analyzer; re-sorting here
+            // would be a second, competing notion of member order.
+            let members = shape.members().iter().map(mangle_type).collect();
+            let variant = (*variant).map(|index| {
+                u32::try_from(index)
+                    .expect("omega-mangle cannot represent member indices above u32::MAX")
+            });
+            MangleType::AnonymousEnum(members, variant)
+        }
     }
 }
 

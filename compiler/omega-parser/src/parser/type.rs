@@ -10,6 +10,7 @@ pub fn parse_type(p: &mut Parser) -> Option<Type> {
         TokenKind::LBracket => parse_bracket_type(p),
         TokenKind::LParen => parse_function_type(p),
         TokenKind::Spec => parse_spec_static_type(p),
+        TokenKind::Enum => parse_anonymous_enum_type(p),
         TokenKind::Foreign => parse_foreign_function_type(p),
         TokenKind::Ident(_) => parse_named_type(p),
         _ => {
@@ -36,6 +37,19 @@ fn parse_spec_static_type(p: &mut Parser) -> Option<Type> {
         members.push(parse_named_type(p)?);
     }
     Some(Type::SpecStatic(members))
+}
+
+/// `enum A | B | ...`. Members are full types, so `|` is consumed only by
+/// this production -- a member's own type syntax never contains a top-level
+/// `|`, and the list therefore ends at the first token that cannot continue a
+/// type.
+fn parse_anonymous_enum_type(p: &mut Parser) -> Option<Type> {
+    p.advance(); // 'enum'
+    let mut members = vec![parse_type(p)?];
+    while p.eat(&TokenKind::Pipe) {
+        members.push(parse_type(p)?);
+    }
+    Some(Type::AnonymousEnum(members))
 }
 
 fn parse_bracket_type(p: &mut Parser) -> Option<Type> {

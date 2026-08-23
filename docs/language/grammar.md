@@ -126,6 +126,7 @@ type = pointer-type
      | function-type
      | foreign-function-type
      | spec-type
+     | anonymous-enum-type
      | type-path ;
 
 pointer-type            = "*", [ "mut" ], type ;
@@ -134,9 +135,22 @@ inferred-array-type     = "[", "]", type ;
 unknown-size-array-type = "[", "?", "]", type ;
 
 spec-type = "spec", type-path, { "+", type-path } ;
+
+anonymous-enum-type = "enum", type, { "|", type } ;
 ```
 
 `spec-type` parses one static conjunction of members; there is no `spec *...` prefix-pointer spelling. `pointer-type = "*", ["mut"], type` already covers a dynamic spec object structurally: `*spec A + B` and `*mut spec A + B` are ordinary `pointer-type`s whose `type` is a `spec-type`. Semantic type resolution recognizes that specific immediate combination and turns it into a dynamic spec-object type; the grammar itself does not distinguish "static" from "dynamic" spec types. See [`specs-and-conformance.md`](specs-and-conformance.md).
+
+`anonymous-enum-type` is a structural sum type whose variants are its member
+types; one member (`enum A`) is legal. Each member is a full `type`, and `|`
+separates members at this production only -- so `enum (i32) => bool | i32` has
+the two members `(i32) => bool` and `i32`, and the member list ends at the first
+token that cannot continue a type (`,`, `>`, `)`, `;`, `{`, ...). A member that
+is itself an `anonymous-enum-type` therefore consumes the rest of the list:
+`enum A | enum B | C` has the two members `A` and `enum B | C`. `enum` is
+already a keyword, so this never collides with `type-path`. Member identity,
+canonical ordering, tags, and conversions are in
+[`enums-and-pattern-matching.md`](enums-and-pattern-matching.md).
 
 `[]T` is syntactically a type form used where array length is inferred; its legal semantic positions are restricted by [`types-and-primitives.md`](types-and-primitives.md). Slice values use pointer forms such as `*[]T`/`*mut []T`.
 
@@ -478,7 +492,7 @@ match-expression = "match", expression-no-leading-struct-literal,
 match-arm = pattern, "=>", expression ;
 ```
 
-Patterns are value patterns or ranges; bare `..` is a catch-all. Enum/refinement semantics are specified in [`enums-and-pattern-matching.md`](enums-and-pattern-matching.md).
+Patterns are value patterns or ranges; bare `..` is a catch-all. A `pattern` that parses completely as a `type` up to its `=>` may also be read as a type pattern, which is how an anonymous enum's members are matched; that reading is selected only when the scrutinee is an anonymous enum, so `Enum::Variant`, literal, range, and constant-value patterns keep their ordinary meaning everywhere else. Enum/refinement semantics are specified in [`enums-and-pattern-matching.md`](enums-and-pattern-matching.md).
 
 ### Range syntax
 

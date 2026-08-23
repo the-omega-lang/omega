@@ -30,6 +30,8 @@ pub const TAG_REFINED: u8 = b'R';
 pub const TAG_STR: u8 = b'T';
 pub const TAG_STR_MUT: u8 = b'U';
 pub const TAG_TYPE_PATH: u8 = b'X';
+pub const TAG_ANONYMOUS_ENUM: u8 = b'Y';
+pub const TAG_ANONYMOUS_ENUM_REFINED: u8 = b'Z';
 
 pub const VENDOR_SUFFIX_SEP: u8 = b'.';
 

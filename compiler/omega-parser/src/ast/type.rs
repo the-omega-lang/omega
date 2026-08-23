@@ -58,4 +58,8 @@ pub enum Type {
     SizedArray(Box<Type>, String),
     Generic(Path, Vec<Type>),
     SpecStatic(Vec<Type>),
+    /// `enum A | B | ...`: a structural sum whose variants are the member
+    /// types. Written order is preserved here; canonical ordering and
+    /// deduplication are semantic and happen during type resolution.
+    AnonymousEnum(Vec<Type>),
 }

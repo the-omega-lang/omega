@@ -117,6 +117,12 @@ impl<'a> Parser<'a> {
         self.errors.truncate(mark.error_count);
     }
 
+    /// Whether any diagnostic was recorded after `mark`. Speculative parses
+    /// use this to tell "this really parsed" from "this parsed with recovery".
+    pub fn errors_since(&self, mark: &Mark) -> bool {
+        self.errors.len() > mark.error_count
+    }
+
     pub fn check(&self, kind: &TokenKind) -> bool {
         self.peek() == kind
     }

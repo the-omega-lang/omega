@@ -5,7 +5,7 @@ pub use crate::ast::expression::{
     ByteStringExpr, CastExpr, CharExpr, CodeblockExpr, CompExpr, CompoundAssignExpr, DecrementExpr,
     DerefExpr, Expression, ExpressionNode, FieldAccessExpr, FunctionCallExpr, IfExpr,
     IncrementExpr, IndexExpr, LogicalExpr, LogicalOp, MacroInvocationExpr, MatchArm, MatchExpr,
-    NegateExpr, NotExpr, NumberBase, NumberExpr, Pattern, RevealExpr, SizeofExpr, SliceExpr,
+    NegateExpr, NotExpr, NumberBase, NumberExpr, Pattern, PatternValue, RevealExpr, SizeofExpr, SliceExpr,
     StringExpr, StructLiteralExpr, StructLiteralField,
 };
 pub use crate::ast::generics::GenericParam;

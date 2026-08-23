@@ -52,14 +52,24 @@ impl<'r> Analyzer<'r> {
                 (target, vec![decl, assign], None)
             };
 
-        let is_enum_scrutinee = matches!(&scrutinee_type, ResolvedType::Enum { .. })
-            || matches!(&scrutinee_type, ResolvedType::Pointer { pointee, .. } if matches!(**pointee, ResolvedType::Enum { .. }));
+        let matched = Self::matched_through_pointer(&scrutinee_type);
 
-        let (arms, else_branch, result_type) = if is_enum_scrutinee {
+        let (arms, else_branch, result_type) = if matches!(matched, ResolvedType::Enum { .. }) {
             self.analyze_enum_match(
                 node_id,
                 span,
                 m,
+                &scrutinee_type,
+                &scrutinee_place,
+                narrow_binding,
+            )?
+        } else if let ResolvedType::AnonymousEnum { shape, .. } = matched {
+            let shape = shape.clone();
+            self.analyze_anonymous_enum_match(
+                node_id,
+                span,
+                m,
+                &shape,
                 &scrutinee_type,
                 &scrutinee_place,
                 narrow_binding,
@@ -189,7 +199,7 @@ impl<'r> Analyzer<'r> {
         let mut checked_arms = Vec::with_capacity(m.arms.len());
         let mut catch_all: Option<&HirMatchArm> = None;
         for arm in &m.arms {
-            if matches!(&arm.pattern, HirPattern::Range(r) if r.is_catch_all()) {
+            if arm.pattern.catch_all_range().is_some() {
                 if let Some(previous) = catch_all {
                     self.error(
                         node_id,
@@ -203,7 +213,7 @@ impl<'r> Analyzer<'r> {
                 catch_all = Some(arm);
                 continue; // resolved separately below, once every other arm's coverage is known
             }
-            let HirPattern::Value(pattern_expr) = &arm.pattern else {
+            let Some(HirPatternValue::Value(pattern_expr)) = &arm.pattern.value else {
                 self.error(
                     node_id,
                     arm.pattern.span(),
@@ -310,6 +320,236 @@ impl<'r> Analyzer<'r> {
 
         let result_type = self.unify_match_arm_types(node_id, span, &checked_arms, &else_branch)?;
         Some((checked_arms, else_branch, result_type))
+    }
+
+    /// The type a `match` actually discriminates on: matching through a
+    /// pointer proves the pointee's variant, so both enum forms accept a
+    /// direct or a single-pointer scrutinee.
+    fn matched_through_pointer(scrutinee_type: &ResolvedType) -> &ResolvedType {
+        match scrutinee_type {
+            ResolvedType::Pointer { pointee, .. } => pointee,
+            other => other,
+        }
+    }
+
+    fn analyze_anonymous_enum_match(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        m: &HirMatch,
+        shape: &Rc<ResolvedAnonymousEnum>,
+        scrutinee_type: &ResolvedType,
+        scrutinee_place: &CheckedPlace,
+        narrow_binding: Option<(Ident, Origin, HirId, Storage, bool)>,
+    ) -> Option<(Vec<CheckedMatchArm>, Option<CheckedBlock>, ResolvedType)> {
+        let through_pointer = match scrutinee_type {
+            ResolvedType::Pointer { mutable, .. } => Some(*mutable),
+            _ => None,
+        };
+        let parent = ResolvedType::AnonymousEnum {
+            shape: shape.clone(),
+            variant: None,
+        };
+
+        // An anonymous enum has no declaration and therefore no `tag` field to
+        // look up by name; the projection is built from the type itself.
+        let tag_type = crate::layout::ANONYMOUS_ENUM_TAG_TYPE;
+        let mut tag_projections = Vec::new();
+        if through_pointer.is_some() {
+            tag_projections.push(CheckedProjection::Deref {
+                r#type: parent.clone(),
+            });
+        }
+        tag_projections.push(CheckedProjection::EnumTag {
+            r#type: tag_type.clone(),
+        });
+        let tag_place = CheckedPlace {
+            root: scrutinee_place.root.clone(),
+            projections: scrutinee_place
+                .projections
+                .iter()
+                .cloned()
+                .chain(tag_projections)
+                .collect(),
+            r#type: tag_type.clone(),
+        };
+
+        let mut covered: HashMap<usize, Span> = HashMap::new();
+        let mut checked_arms = Vec::with_capacity(m.arms.len());
+        let mut catch_all: Option<&HirMatchArm> = None;
+        for arm in &m.arms {
+            if arm.pattern.catch_all_range().is_some() {
+                if let Some(previous) = catch_all {
+                    self.error(
+                        node_id,
+                        arm.pattern.span(),
+                        AnalysisErrorKind::MultipleCatchAllPatterns {
+                            previous: previous.pattern.span(),
+                        },
+                    );
+                    return None;
+                }
+                catch_all = Some(arm);
+                continue; // resolved separately below, once every other arm's coverage is known
+            }
+            let member_index = self.resolve_anonymous_member_pattern(node_id, arm, shape, &parent)?;
+
+            if let Some(previous) = covered.insert(member_index, arm.pattern.span()) {
+                self.error(
+                    node_id,
+                    arm.pattern.span(),
+                    AnalysisErrorKind::OverlappingMatchArm { previous },
+                );
+                return None;
+            }
+
+            let condition =
+                self.member_tag_condition(&tag_place, &tag_type, member_index, arm.pattern.span());
+
+            let (body, _) = self.with_scope(|this| {
+                if let Some((ident, origin, decl_id, storage, mutable)) = &narrow_binding {
+                    let refined = ResolvedType::AnonymousEnum {
+                        shape: shape.clone(),
+                        variant: Some(member_index),
+                    };
+                    let narrowed = match through_pointer {
+                        Some(pointer_mutable) => ResolvedType::Pointer {
+                            pointee: Box::new(refined),
+                            mutable: pointer_mutable,
+                        },
+                        None => refined,
+                    };
+                    this.declare_narrowed_binding(
+                        *decl_id, arm.span, ident, *origin, narrowed, *storage, *mutable,
+                    );
+                }
+                this.analyze_match_arm_body(&arm.body)
+            });
+
+            checked_arms.push(CheckedMatchArm {
+                conditions: vec![vec![condition]],
+                body: body?,
+            });
+        }
+
+        let missing: Vec<usize> = (0..shape.members().len())
+            .filter(|index| !covered.contains_key(index))
+            .collect();
+
+        if let Some(arm) = catch_all {
+            if missing.is_empty() {
+                self.error(
+                    node_id,
+                    arm.pattern.span(),
+                    AnalysisErrorKind::CatchAllPatternRedundant,
+                );
+                return None;
+            }
+            let conditions = missing
+                .iter()
+                .map(|&index| {
+                    vec![self.member_tag_condition(
+                        &tag_place,
+                        &tag_type,
+                        index,
+                        arm.pattern.span(),
+                    )]
+                })
+                .collect();
+            let body = self.analyze_match_arm_body(&arm.body)?;
+            checked_arms.push(CheckedMatchArm { conditions, body });
+        }
+
+        let else_branch = match &m.else_branch {
+            Some(b) => Some(self.analyze_block(b, None)?),
+            None if catch_all.is_none() && !missing.is_empty() => {
+                self.error(
+                    node_id,
+                    span,
+                    AnalysisErrorKind::NonExhaustiveMatchAnonymousEnum {
+                        r#enum: parent.clone(),
+                        missing: missing
+                            .iter()
+                            .map(|&index| shape.members()[index].clone())
+                            .collect(),
+                    },
+                );
+                return None;
+            }
+            None => None,
+        };
+
+        let result_type = self.unify_match_arm_types(node_id, span, &checked_arms, &else_branch)?;
+        Some((checked_arms, else_branch, result_type))
+    }
+
+    /// An anonymous-enum arm names a member type. The parser kept a type
+    /// reading of the pattern only when the whole pattern parsed as one, so a
+    /// missing candidate here means the arm was never spelled as a type.
+    fn resolve_anonymous_member_pattern(
+        &mut self,
+        node_id: HirId,
+        arm: &HirMatchArm,
+        shape: &ResolvedAnonymousEnum,
+        parent: &ResolvedType,
+    ) -> Option<usize> {
+        let span = arm.pattern.span();
+        let Some(raw_type) = &arm.pattern.r#type else {
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::AnonymousEnumPatternNotAType {
+                    r#enum: parent.clone(),
+                },
+            );
+            return None;
+        };
+        let member = self.resolve_type_or_error(node_id, span, raw_type, false)?;
+        match shape.index_of(&member) {
+            Some(index) => Some(index),
+            None => {
+                self.error(
+                    node_id,
+                    span,
+                    AnalysisErrorKind::NotAnAnonymousEnumMember {
+                        found: member,
+                        r#enum: parent.clone(),
+                    },
+                );
+                None
+            }
+        }
+    }
+
+    fn member_tag_condition(
+        &mut self,
+        tag_place: &CheckedPlace,
+        tag_type: &ResolvedType,
+        member_index: usize,
+        span: Span,
+    ) -> CheckedExprNode {
+        let tag_read = CheckedExprNode {
+            id: self.resolver.fresh_synthetic_id(),
+            span,
+            r#type: tag_type.clone(),
+            kind: CheckedExpr::Place(tag_place.clone()),
+        };
+        let tag_const = CheckedExprNode {
+            id: self.resolver.fresh_synthetic_id(),
+            span,
+            r#type: tag_type.clone(),
+            kind: CheckedExpr::Number(NumberValue::Unsigned(member_index as u64)),
+        };
+        CheckedExprNode {
+            id: self.resolver.fresh_synthetic_id(),
+            span,
+            r#type: ResolvedType::Bool,
+            kind: CheckedExpr::BinaryOp(CheckedBinaryOp {
+                op: BinaryOp::Eq,
+                left: Box::new(tag_read),
+                right: Box::new(tag_const),
+            }),
+        }
     }
 
     fn tag_variant_condition(
@@ -431,7 +671,7 @@ impl<'r> Analyzer<'r> {
 
         let mut catch_all: Option<&HirMatchArm> = None;
         for arm in &m.arms {
-            if matches!(&arm.pattern, HirPattern::Range(r) if r.is_catch_all()) {
+            if arm.pattern.catch_all_range().is_some() {
                 if let Some(previous) = catch_all {
                     self.error(
                         node_id,
@@ -449,7 +689,7 @@ impl<'r> Analyzer<'r> {
         let mut checked_arms = Vec::with_capacity(m.arms.len());
         let mut intervals = Vec::with_capacity(m.arms.len());
         for arm in &m.arms {
-            if matches!(&arm.pattern, HirPattern::Range(r) if r.is_catch_all()) {
+            if arm.pattern.catch_all_range().is_some() {
                 continue; // resolved separately below, once every other arm's interval is known
             }
             let (lo, hi, conditions) =
@@ -556,8 +796,8 @@ impl<'r> Analyzer<'r> {
         scrutinee_type: &ResolvedType,
         scrutinee_place: &CheckedPlace,
     ) -> Option<(i128, i128, Vec<CheckedExprNode>)> {
-        match pattern {
-            HirPattern::Value(expr) => {
+        match pattern.value.as_ref()? {
+            HirPatternValue::Value(expr) => {
                 let value = self.const_eval_pattern(expr, scrutinee_type)?;
                 let n = Self::const_value_as_i128(&value);
                 let condition = self.value_cmp_condition(
@@ -569,7 +809,7 @@ impl<'r> Analyzer<'r> {
                 );
                 Some((n, n, vec![condition]))
             }
-            HirPattern::Range(range) => {
+            HirPatternValue::Range(range) => {
                 let domain = scrutinee_type
                     .integer_domain(self.target.pointer_bits())
                     .expect("caller already confirmed an integer domain");

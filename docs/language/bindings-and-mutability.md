@@ -53,6 +53,8 @@ Assignment, compound assignment, increment/decrement, `&mut`, and calls requirin
 
 When enum-variant refinement has narrowed a binding, taking `&mut` to that binding widens the binding and pointer pointee back to the enclosing enum type, because a mutable alias could replace the current variant. Immutable pointers may preserve safe refinement. A remaining aliasing limitation is tracked in [`../issues/language-limitations.md`](../issues/language-limitations.md).
 
+An anonymous enum narrowed to one of its members behaves the same way. Reading the binding, accessing a field, indexing, or calling a method uses the member's type, while the binding's storage remains the whole anonymous enum, and taking `&mut` to it widens back to the anonymous enum. As with a named enum, a narrowed binding is not itself an assignment target while the proof holds; it is one again outside the arm. Refinement is proof about the current value, never a change of representation.
+
 ## Compound assignment and increment/decrement
 
 The compound assignments are:

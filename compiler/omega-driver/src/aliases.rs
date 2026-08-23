@@ -281,7 +281,7 @@ impl Driver {
             | Type::SizedArray(inner, _) => {
                 self.validate_alias_target(module_path, declared, placeholders, inner)?
             }
-            Type::Generic(_, args) => {
+            Type::Generic(_, args) | Type::AnonymousEnum(args) => {
                 for arg in args {
                     self.validate_alias_target(module_path, declared, placeholders, arg)?;
                 }
@@ -961,6 +961,9 @@ impl Driver {
             }
             Type::SpecStatic(members) => {
                 Type::SpecStatic(members.iter().map(|m| recur(self, m)).collect())
+            }
+            Type::AnonymousEnum(members) => {
+                Type::AnonymousEnum(members.iter().map(|m| recur(self, m)).collect())
             }
             Type::Function(f) => Type::Function(FunctionType {
                 params: f

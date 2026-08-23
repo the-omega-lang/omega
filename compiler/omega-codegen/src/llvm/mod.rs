@@ -8,6 +8,8 @@ mod place;
 mod vtable;
 
 use crate::symbol::SymbolRegistry;
+use omega_analyzer::layout::EnumView;
+use omega_analyzer::resolved_type::ResolvedType;
 use crate::{CodegenRequest, EmitKind, EmitOutput, OptLevel};
 use inkwell::OptimizationLevel;
 use inkwell::builder::Builder;
@@ -221,4 +223,13 @@ impl<'ctx> Codegen<'ctx> {
 pub(crate) fn generate(request: CodegenRequest) -> Result<EmitOutput, String> {
     let context = Context::create();
     Codegen::generate(&context, request).and_then(Codegen::finish)
+}
+
+/// Both enum forms reach codegen through the same MIR nodes, and both get
+/// their tag/header/payload facts from the analyzer's shared layout view --
+/// LLVM never re-derives a representation of its own.
+fn enum_view(ty: &ResolvedType, projection: &str) -> EnumView {
+    EnumView::of(ty).unwrap_or_else(|| {
+        unreachable!("mir body guarantees {projection} is only built against an enum-like type")
+    })
 }

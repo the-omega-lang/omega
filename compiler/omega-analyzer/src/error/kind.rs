@@ -303,6 +303,23 @@ pub enum AnalysisErrorKind {
         r#enum: Ident,
         missing: Vec<Ident>,
     },
+    NonExhaustiveMatchAnonymousEnum {
+        r#enum: ResolvedType,
+        missing: Vec<ResolvedType>,
+    },
+    AnonymousEnumPatternNotAType {
+        r#enum: ResolvedType,
+    },
+    NotAnAnonymousEnumMember {
+        found: ResolvedType,
+        r#enum: ResolvedType,
+    },
+    AnonymousEnumNotRefined {
+        r#enum: ResolvedType,
+    },
+    AnonymousEnumConformTarget {
+        r#enum: ResolvedType,
+    },
     NonExhaustiveMatchValue {
         r#type: ResolvedType,
         gaps: Vec<String>,
@@ -977,6 +994,24 @@ impl fmt::Display for AnalysisErrorKind {
                     "match on '{}' does not cover every variant",
                     r#enum.as_ref()
                 )
+            }
+            Self::NonExhaustiveMatchAnonymousEnum { r#enum, .. } => {
+                write!(f, "match on '{enum}' does not cover every member")
+            }
+            Self::AnonymousEnumPatternNotAType { r#enum } => {
+                write!(
+                    f,
+                    "a match arm on '{enum}' must name one of its member types"
+                )
+            }
+            Self::NotAnAnonymousEnumMember { found, r#enum } => {
+                write!(f, "'{found}' is not a member of '{enum}'")
+            }
+            Self::AnonymousEnumNotRefined { r#enum } => {
+                write!(f, "'{enum}' has no members of its own")
+            }
+            Self::AnonymousEnumConformTarget { r#enum } => {
+                write!(f, "'{enum}' has no declaration to conform")
             }
             Self::NonExhaustiveMatchValue { r#type, .. } => {
                 write!(f, "match on '{type}' does not cover every value")

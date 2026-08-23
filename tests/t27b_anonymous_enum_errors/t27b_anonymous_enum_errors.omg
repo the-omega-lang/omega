@@ -1,0 +1,91 @@
+struct Failure {
+	exposed code: i32;
+}
+
+struct Other {
+	exposed value: i32;
+}
+
+spec Named {
+	name(*self) => *str;
+}
+
+alias Errors = enum Failure | *str;
+
+# A member must be a value type, under the same rules an aggregate field obeys.
+alias SpecMember = enum Failure | Named;
+
+alias NeverMember = enum Failure | never;
+
+member_restrictions() => void {
+	spec_member: SpecMember;
+	never_member: NeverMember;
+}
+
+# Injecting a value that is not a member of the shape.
+non_member() => Errors {
+	Other { value = 1; }
+}
+
+# An anonymous enum never implicitly widens to a superset: the canonical
+# member indices and the payload size can both differ.
+widen(value: Errors) => enum Failure | *str | Other {
+	value
+}
+
+# A match arm must name a member of the scrutinee.
+not_a_member(value: Errors) => i32 {
+	match value {
+		Failure => 0,
+		Other => 1,
+	}
+}
+
+# The same member may not be covered twice.
+duplicate_arm(value: Errors) => i32 {
+	match value {
+		Failure => 0,
+		*str => 1,
+		Failure => 2,
+	}
+}
+
+# Coverage must be complete.
+non_exhaustive(value: Errors) => i32 {
+	match value {
+		Failure => 0,
+	}
+}
+
+# An anonymous enum's arms are types, not values.
+value_pattern(value: Errors) => i32 {
+	match value {
+		0 => 0,
+		.. => 1,
+	}
+}
+
+# A catch-all with nothing left to cover is an error, as is a second one.
+redundant_catch_all(value: Errors) => i32 {
+	match value {
+		Failure => 0,
+		*str => 1,
+		.. => 2,
+	}
+}
+
+multiple_catch_alls(value: Errors) => i32 {
+	match value {
+		Failure => 0,
+		.. => 1,
+		.. => 2,
+	}
+}
+
+# The type has no fields, elements, or methods of its own.
+no_members(value: Errors) => i32 {
+	value.code
+}
+
+main() => void {
+}

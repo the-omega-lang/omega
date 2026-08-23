@@ -37,8 +37,8 @@ use crate::{
     },
     generics::{resolve_inferred_type_args, unify_generic_type},
     resolved_type::{
-        CastClass, ConformanceSource, ConstValue, NumericKind, RawSpecFunctionSig, ResolvedBound,
-        ResolvedEnumType, ResolvedEnumVariant, ResolvedField, ResolvedFunctionType, ResolvedMethod,
+        CastClass, ConformanceSource, ConstValue, NumericKind, RawSpecFunctionSig,
+        ResolvedAnonymousEnum, ResolvedBound, ResolvedEnumType, ResolvedEnumVariant, ResolvedField, ResolvedFunctionType, ResolvedMethod,
         ResolvedSpecType, ResolvedStructType, ResolvedType, ResolvedUnionType,
     },
     resolver::{
@@ -52,7 +52,8 @@ use omega_hir::{
     BinaryOp, HirAddressOf, HirAsmDescriptor, HirAsmDescriptorKind, HirBlock, HirCast,
     HirCompoundAssign, HirDeclaration, HirEnumDef, HirExpr, HirExprNode, HirField, HirFor,
     HirForIn, HirFunctionCall, HirFunctionDef, HirId, HirIf, HirInlineAsm, HirItem, HirMatch,
-    HirMatchArm, HirParam, HirPattern, HirPlace, HirPlaceRoot, HirProjection, HirRange,
+    HirMatchArm, HirParam, HirPattern, HirPatternValue, HirPlace, HirPlaceRoot, HirProjection,
+    HirRange,
     HirRangeEnd, HirSlice, HirSpecDef, HirStmt, HirStructDef, HirStructLiteral,
     HirStructLiteralField, HirUnionDef, HirWalrusDeclaration, LogicalOp,
 };
@@ -626,18 +627,31 @@ impl<'r> Analyzer<'r> {
         expected: Option<&ResolvedType>,
         value: CheckedExprNode,
     ) -> CheckedExprNode {
-        let Some(
-            target @ ResolvedType::SpecObject {
-                shape,
-                mutable: expected_mutable,
-            },
-        ) = expected
-        else {
+        let Some(target) = expected else {
             return value;
         };
         if target.accepts(&value.r#type) {
             return value;
         }
+        // Both anonymous-enum conversions are real representation changes, so
+        // they must leave an explicit node here rather than be spelled as an
+        // acceptance rule. Projection runs first so a refined member can also
+        // be injected into a *different* anonymous enum in one step.
+        let value = self.project_refined_anonymous(target, value);
+        if target.accepts(&value.r#type) {
+            return value;
+        }
+        let value = self.inject_anonymous_member(target, value);
+        if target.accepts(&value.r#type) {
+            return value;
+        }
+        let ResolvedType::SpecObject {
+            shape,
+            mutable: expected_mutable,
+        } = target
+        else {
+            return value;
+        };
         let ResolvedType::Pointer {
             pointee,
             mutable: value_mutable,
@@ -662,6 +676,153 @@ impl<'r> Analyzer<'r> {
             kind: CheckedExpr::SpecCoerce(CheckedSpecCoerce {
                 base: Box::new(base),
                 slots,
+            }),
+        }
+    }
+
+    /// What `coerce_to_expected` would have to do to make `found` acceptable
+    /// where `expected` is wanted, as a ranking penalty: `0` for plain
+    /// acceptance, higher for an anonymous-enum conversion, `None` when no
+    /// conversion exists. Overload viability asks this so it can never
+    /// disagree with the coercion that actually runs.
+    pub(crate) fn conversion_cost(expected: &ResolvedType, found: &ResolvedType) -> Option<u32> {
+        const ANONYMOUS: u32 = 2;
+
+        if expected.accepts(found) {
+            return Some(0);
+        }
+        if let Some((_, member)) = found.refined_anonymous_member()
+            && (expected.accepts(member) || Self::injects_into(expected, member))
+        {
+            return Some(ANONYMOUS);
+        }
+        Self::injects_into(expected, found).then_some(ANONYMOUS)
+    }
+
+    fn injects_into(expected: &ResolvedType, found: &ResolvedType) -> bool {
+        matches!(
+            expected,
+            ResolvedType::AnonymousEnum { shape, variant: None }
+                if Self::anonymous_member_index(shape, found).is_some()
+        )
+    }
+
+    /// The canonical member index an exact value type injects into.
+    /// Refinement is not part of a value's representation, so a refined
+    /// variant value injects as its parent member. Nothing else is tried: the
+    /// expected type is never solved as a disjunction of its members.
+    pub(crate) fn anonymous_member_index(
+        shape: &ResolvedAnonymousEnum,
+        value: &ResolvedType,
+    ) -> Option<usize> {
+        shape
+            .index_of(value)
+            .or_else(|| shape.index_of(&value.widened()))
+    }
+
+    /// Reads the payload of a refined anonymous binding when the site wants
+    /// the member rather than the whole enum. The binding's storage is
+    /// unchanged; this only adds the body projection that names the member
+    /// inside it.
+    fn project_refined_anonymous(
+        &mut self,
+        target: &ResolvedType,
+        value: CheckedExprNode,
+    ) -> CheckedExprNode {
+        let Some((index, member)) = value.r#type.refined_anonymous_member() else {
+            return value;
+        };
+        let member = member.clone();
+        let wanted = target.accepts(&member)
+            || matches!(
+                target,
+                ResolvedType::AnonymousEnum { shape, variant: None }
+                    if Self::anonymous_member_index(shape, &member).is_some()
+            );
+        if !wanted {
+            return value;
+        }
+
+        let id = value.id;
+        let span = value.span;
+        let projection = CheckedProjection::EnumBody {
+            variant_index: index,
+            field_index: 0,
+            r#type: member.clone(),
+        };
+        let place = match value.kind {
+            CheckedExpr::Place(mut place) => {
+                place.projections.push(projection);
+                place.r#type = member.clone();
+                place
+            }
+            _ => {
+                let mut base = value;
+                base.id = self.resolver.fresh_synthetic_id();
+                CheckedPlace {
+                    root: CheckedPlaceRoot::Expr(Box::new(base)),
+                    projections: vec![projection],
+                    r#type: member.clone(),
+                }
+            }
+        };
+        CheckedExprNode {
+            id,
+            span,
+            r#type: member,
+            kind: CheckedExpr::Place(place),
+        }
+    }
+
+    /// Packs an exact member value into the expected anonymous enum, tagged
+    /// with its canonical index.
+    fn inject_anonymous_member(
+        &mut self,
+        target: &ResolvedType,
+        value: CheckedExprNode,
+    ) -> CheckedExprNode {
+        let ResolvedType::AnonymousEnum {
+            shape,
+            variant: None,
+        } = target
+        else {
+            return value;
+        };
+        let Some(index) = Self::anonymous_member_index(shape, &value.r#type) else {
+            return value;
+        };
+        let id = value.id;
+        let span = value.span;
+        // Injecting a constant yields a constant: the tagged value is fully
+        // known, and folding it here keeps compile-time-only positions
+        // (globals, `comp` bindings) on the one shared enum constant
+        // representation instead of needing a second packer.
+        if let CheckedExpr::Const(member) = value.kind {
+            return CheckedExprNode {
+                id,
+                span,
+                r#type: target.clone(),
+                kind: CheckedExpr::Const(ConstValue::Enum {
+                    variant_index: index,
+                    tag: NumberValue::Unsigned(index as u64),
+                    header: Vec::new(),
+                    dynamic_fields: Vec::new(),
+                    fields: vec![member],
+                }),
+            };
+        }
+        let mut member = value;
+        member.id = self.resolver.fresh_synthetic_id();
+        CheckedExprNode {
+            id,
+            span,
+            r#type: target.clone(),
+            kind: CheckedExpr::EnumConstruct(CheckedEnumConstruct {
+                variant_index: index,
+                fields: vec![CheckedStructLiteralField {
+                    field_index: 0,
+                    value: member,
+                }],
             }),
         }
     }
@@ -1085,7 +1246,7 @@ impl<'r> Analyzer<'r> {
                         .iter()
                         .all(|a| Self::generic_refs_resolvable(a, generics, defaults, subst))
             }
-            Type::SpecStatic(members) => members
+            Type::SpecStatic(members) | Type::AnonymousEnum(members) => members
                 .iter()
                 .all(|m| Self::generic_refs_resolvable(m, generics, defaults, subst)),
             Type::Function(f) => {

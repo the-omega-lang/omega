@@ -405,3 +405,86 @@ fn structural_owners_of_different_shape_never_collide() {
         }
     }
 }
+
+fn anonymous_enum(members: Vec<MangleType>) -> MangleType {
+    MangleType::AnonymousEnum(members, None)
+}
+
+fn takes(ty: MangleType) -> Symbol {
+    Symbol {
+        path: nested(root("mymod"), Namespace::Value, "takes"),
+        signature: Some(sig(vec![ty], MangleType::Void)),
+        vendor_suffix: None,
+    }
+}
+
+#[test]
+fn anonymous_enum_round_trips_and_demangles() {
+    let sym = takes(anonymous_enum(vec![
+        MangleType::I32,
+        MangleType::Str(false),
+        named(nested(root("mymod"), Namespace::Type, "Failure")),
+    ]));
+    let mangled = assert_round_trips(&sym);
+    assert_eq!(
+        demangle(&mangled).unwrap(),
+        "mymod::takes(enum i32 | *str | mymod::Failure) -> void"
+    );
+}
+
+#[test]
+fn a_one_member_anonymous_enum_is_not_its_member() {
+    // The wrapper is a real tagged value with its own representation, so it
+    // must never share a symbol with the member type it carries.
+    let single = assert_round_trips(&takes(anonymous_enum(vec![MangleType::I32])));
+    let bare = assert_round_trips(&takes(MangleType::I32));
+    assert_ne!(single, bare);
+}
+
+#[test]
+fn member_order_reaching_the_mangler_is_the_symbol() {
+    // The analyzer canonicalizes members before mangling, so two spellings
+    // of one type arrive here already identical -- and two genuinely
+    // different member sets must not collide.
+    let members = vec![MangleType::I32, MangleType::Str(false)];
+    let once = assert_round_trips(&takes(anonymous_enum(members.clone())));
+    let again = assert_round_trips(&takes(anonymous_enum(members.clone())));
+    assert_eq!(once, again);
+
+    let mut wider = members;
+    wider.push(MangleType::Bool);
+    let superset = assert_round_trips(&takes(anonymous_enum(wider)));
+    assert_ne!(once, superset);
+}
+
+#[test]
+fn an_anonymous_enum_nests_inside_other_type_forms() {
+    let inner = anonymous_enum(vec![MangleType::I32, MangleType::Bool]);
+    let nested_member = anonymous_enum(vec![inner.clone(), MangleType::Char]);
+    let sym = Symbol {
+        path: generic(
+            nested(root("mymod"), Namespace::Value, "wrap"),
+            vec![nested_member.clone()],
+        ),
+        signature: Some(sig(
+            vec![MangleType::Pointer(Box::new(nested_member), false)],
+            inner,
+        )),
+        vendor_suffix: None,
+    };
+    let mangled = assert_round_trips(&sym);
+    assert_eq!(
+        demangle(&mangled).unwrap(),
+        "mymod::wrap<enum enum i32 | bool | char>(*enum enum i32 | bool | char) -> enum i32 | bool"
+    );
+}
+
+#[test]
+fn a_refined_anonymous_member_keeps_its_own_identity() {
+    let members = vec![MangleType::I32, MangleType::Bool];
+    let parent = assert_round_trips(&takes(MangleType::AnonymousEnum(members.clone(), None)));
+    let first = assert_round_trips(&takes(MangleType::AnonymousEnum(members.clone(), Some(0))));
+    let second = assert_round_trips(&takes(MangleType::AnonymousEnum(members, Some(1))));
+    assert_ne!(parent, first);
+    assert_ne!(first, second);
+}

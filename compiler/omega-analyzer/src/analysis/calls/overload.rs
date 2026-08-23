@@ -272,12 +272,13 @@ impl<'r> Analyzer<'r> {
                 fn_type.params.iter().zip(args.iter().zip(&fixed))
             {
                 match fixed_arg {
-                    Some(checked) => {
-                        if !param_type.accepts(&checked.r#type) {
+                    Some(checked) => match Self::conversion_cost(param_type, &checked.r#type) {
+                        Some(cost) => score += cost,
+                        None => {
                             ok = false;
                             break;
                         }
-                    }
+                    },
                     None => match Self::literal_overload_fit(
                         arg,
                         param_type,
@@ -285,10 +286,17 @@ impl<'r> Analyzer<'r> {
                     ) {
                         Some(true) => {}
                         Some(false) => score += 1,
-                        None => {
-                            ok = false;
-                            break;
-                        }
+                        // An adaptable literal that no candidate parameter
+                        // can adopt numerically still injects, using the
+                        // literal's ordinary default type -- the same type
+                        // analysis will give it once the winner is known.
+                        None => match Self::literal_injection_fit(arg, param_type) {
+                            Some(cost) => score += cost,
+                            None => {
+                                ok = false;
+                                break;
+                            }
+                        },
                     },
                 }
             }
@@ -328,20 +336,42 @@ impl<'r> Analyzer<'r> {
             }
         };
 
-        let winner_params = &candidates[winner].1.params;
+        let winner_params = candidates[winner].1.params.clone();
         let mut final_args = Vec::with_capacity(args.len());
         for (arg, fixed_arg) in args.iter().zip(fixed) {
+            let index = final_args.len();
+            let expected = &winner_params[index].1;
             let checked = match fixed_arg {
                 Some(checked) => checked,
-                None => {
-                    let index = final_args.len();
-                    self.analyze_expr(arg, Some(&winner_params[index].1))?
-                }
+                None => self.analyze_expr(arg, Some(expected))?,
             };
-            final_args.push(checked);
+            // Arguments picked before the winner was known were analyzed with
+            // no expected type, so the conversion the ranking counted still
+            // has to be applied -- through the same path an ordinary call
+            // uses.
+            final_args.push(self.coerce_to_expected(Some(expected), checked));
         }
 
         Some((winner, final_args))
+    }
+
+    /// The cost of injecting an adaptable numeric literal into an
+    /// anonymous-enum parameter, using the literal's ordinary default type.
+    fn literal_injection_fit(arg: &HirExprNode, param_type: &ResolvedType) -> Option<u32> {
+        let n = match &arg.expr {
+            HirExpr::Number(n) => n,
+            HirExpr::Negate(inner) => match &inner.expr {
+                HirExpr::Number(n) => n,
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let default = if n.fractional_part.is_some() {
+            ResolvedType::F32
+        } else {
+            ResolvedType::I32
+        };
+        Self::conversion_cost(param_type, &default).filter(|&cost| cost > 0)
     }
 
     fn literal_overload_fit(

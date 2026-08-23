@@ -180,6 +180,16 @@ impl Decoder<'_> {
                 self.pos += 1;
                 MangleType::SpecObject(self.parse_type_list()?, true)
             }
+            TAG_ANONYMOUS_ENUM => {
+                self.pos += 1;
+                MangleType::AnonymousEnum(self.parse_type_list()?, None)
+            }
+            TAG_ANONYMOUS_ENUM_REFINED => {
+                self.pos += 1;
+                let members = self.parse_type_list()?;
+                let index = u32::try_from(base62::decode(self.bytes, &mut self.pos)?).ok()?;
+                MangleType::AnonymousEnum(members, Some(index))
+            }
             TAG_FUNCTION => {
                 self.pos += 1;
                 let convention = self.parse_convention();

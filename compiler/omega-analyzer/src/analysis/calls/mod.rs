@@ -143,8 +143,16 @@ impl<'r> Analyzer<'r> {
             root: place.root.clone(),
             projections: place.projections[..place.projections.len() - 1].to_vec(),
         };
-        let (checked, r#type, mutable) =
+        let (mut checked, mut r#type, mut mutable) =
             self.analyze_place(callee.id, callee.span, &base_place, None)?;
+        // A method call names something on the member, so a refined
+        // anonymous receiver opens onto its payload before method lookup.
+        if let Some(member) =
+            Self::open_refined_anonymous(&mut checked.projections, &r#type, &mut mutable)
+        {
+            checked.r#type = member.clone();
+            r#type = member;
+        }
         // A method call reads its receiver, so `x` in `x.method()` is used.
         // Marked here rather than inside `analyze_place` (which also serves
         // assignment targets, where marking used would wrongly silence

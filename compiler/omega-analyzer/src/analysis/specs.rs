@@ -83,6 +83,14 @@ impl<'r> Analyzer<'r> {
             return None;
         }
         let resolved = self.resolve_type_or_error(id, span, target, true)?;
+        if matches!(resolved, ResolvedType::AnonymousEnum { .. }) {
+            self.error(
+                id,
+                span,
+                AnalysisErrorKind::AnonymousEnumConformTarget { r#enum: resolved },
+            );
+            return None;
+        }
         if !Self::is_conformable_target(&resolved) {
             self.error(id, span, AnalysisErrorKind::ConformTargetNotAType);
             return None;

@@ -253,8 +253,20 @@ pub struct MatchArm {
     pub span: Span,
 }
 
+/// A match arm's pattern carries both readings the syntax allows, because
+/// which one is meant depends on the scrutinee's semantic type. `value` is
+/// the ordinary value/range reading and `r#type` a complete type parse that
+/// reached the arm's `=>`; the analyzer selects `r#type` only for an
+/// anonymous-enum scrutinee. At least one of the two is always present.
 #[derive(Debug, Clone)]
-pub enum Pattern {
+pub struct Pattern {
+    pub value: Option<PatternValue>,
+    pub r#type: Option<Type>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub enum PatternValue {
     Value(ExpressionNode),
     Range(RangeExpr),
 }

@@ -303,18 +303,14 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
         node: &CheckedExprNode,
         variant_index: usize,
     ) -> CompResult<(NumberValue, Vec<ConstValue>, usize)> {
-        match &node.r#type {
-            ResolvedType::Enum { cell, .. } => {
-                let cell = cell.borrow();
-                let variant = &cell.variants[variant_index];
-                Ok((
-                    variant.tag,
-                    variant.header_values.clone(),
-                    cell.dynamic_fields.len(),
-                ))
-            }
-            _ => unreachable!("CheckedExpr::EnumConstruct's own type is always ResolvedType::Enum"),
-        }
+        let view = crate::layout::EnumView::of(&node.r#type)
+            .expect("CheckedExpr::EnumConstruct's own type is always an enum-like type");
+        let variant = &view.variants[variant_index];
+        Ok((
+            variant.tag,
+            variant.header_values.clone(),
+            view.dynamic_fields.len(),
+        ))
     }
 
     fn eval_negate(&mut self, inner: &CheckedExprNode, span: Span) -> CompResult<ConstValue> {

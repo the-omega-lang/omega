@@ -28,6 +28,7 @@ pub fn substitute_type_params(ty: &Type, subst: &[(Ident, Type)]) -> Type {
         Type::UnknownSizeArray(inner) => Type::UnknownSizeArray(Box::new(recur(inner))),
         Type::SizedArray(inner, size) => Type::SizedArray(Box::new(recur(inner)), size.clone()),
         Type::SpecStatic(members) => Type::SpecStatic(members.iter().map(recur).collect()),
+        Type::AnonymousEnum(members) => Type::AnonymousEnum(members.iter().map(recur).collect()),
         Type::Generic(path, args) => Type::Generic(path.clone(), args.iter().map(recur).collect()),
         Type::Function(f) => Type::Function(FunctionType {
             params: f
@@ -250,6 +251,13 @@ fn normalize_type(
                 normalized.push(recur(member, obligations)?);
             }
             Type::SpecStatic(normalized)
+        }
+        Type::AnonymousEnum(members) => {
+            let mut normalized = Vec::with_capacity(members.len());
+            for member in members {
+                normalized.push(recur(member, obligations)?);
+            }
+            Type::AnonymousEnum(normalized)
         }
         Type::Function(f) => {
             let mut params = Vec::with_capacity(f.params.len());

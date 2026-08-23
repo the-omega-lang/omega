@@ -1,4 +1,8 @@
-use crate::resolved_type::{ResolvedEnumType, ResolvedStructType, ResolvedType, ResolvedUnionType};
+use crate::checked::NumberValue;
+use crate::resolved_type::{
+    ConstValue, ResolvedAnonymousEnum, ResolvedEnumType, ResolvedStructType, ResolvedType,
+    ResolvedUnionType,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Leaf {
@@ -74,18 +78,17 @@ pub fn leaves_of(ty: &ResolvedType, pointer_bytes: u32) -> Vec<Leaf> {
         // respects the largest alignment any variant's body field demands
         // (see `enum_payload_alignment`), since every variant shares that
         // one starting offset.
-        ResolvedType::Enum { cell, .. } => {
-            let enum_type = cell.borrow();
-            let prefix = enum_prefix_layout(&enum_type, pointer_bytes);
+        ResolvedType::Enum { .. } | ResolvedType::AnonymousEnum { .. } => {
+            let view = EnumView::of(ty).expect("just matched an enum-like type");
+            let prefix = enum_prefix_layout(&view, pointer_bytes);
             let mut leaves = prefix.leaves;
 
-            let payload_align = enum_payload_alignment(&enum_type);
-            let payload_size = enum_payload_bytes(&enum_type, enum_type.layout.pack, pointer_bytes);
+            let payload_size = enum_payload_bytes(&view, pointer_bytes);
             let payload_offset = place_field(
                 prefix.packed_end,
-                payload_align,
+                enum_payload_alignment(&view),
                 payload_size,
-                enum_type.layout.pack,
+                view.pack,
             );
             leaves.extend(std::iter::repeat_n(
                 Leaf::I8,
@@ -93,7 +96,7 @@ pub fn leaves_of(ty: &ResolvedType, pointer_bytes: u32) -> Vec<Leaf> {
             ));
             leaves.extend(payload_chunks(payload_size));
 
-            let final_size = round_up(payload_offset + payload_size, enum_type.layout.align);
+            let final_size = round_up(payload_offset + payload_size, view.align);
             leaves.extend(std::iter::repeat_n(
                 Leaf::I8,
                 (final_size - (payload_offset + payload_size)) as usize,
@@ -148,6 +151,7 @@ pub fn type_alignment(ty: &ResolvedType) -> u32 {
     match ty {
         ResolvedType::Struct(cell) => cell.borrow().layout.align,
         ResolvedType::Enum { cell, .. } => cell.borrow().layout.align,
+        ResolvedType::AnonymousEnum { .. } => crate::annotations::Layout::default().align,
         _ => 1,
     }
 }
@@ -221,38 +225,119 @@ pub fn locals_layout(local_types: &[ResolvedType], pointer_bytes: u32) -> FieldL
     layout_fields(local_types, 1, pointer_bytes)
 }
 
-pub fn enum_payload_bytes(enum_type: &ResolvedEnumType, pack: u32, pointer_bytes: u32) -> u32 {
-    enum_type
-        .variants
+/// One variant of an enum-like type, reduced to what layout and emission
+/// actually need.
+#[derive(Debug, Clone)]
+pub struct EnumVariantView {
+    pub tag: NumberValue,
+    pub header_values: Vec<ConstValue>,
+    pub fields: Vec<ResolvedType>,
+}
+
+/// The layout-relevant shape shared by named and anonymous enums.
+///
+/// Every enum layout query below works from this view, and codegen reads
+/// tag/header/payload facts through it, so the two enum forms cannot acquire
+/// separate representation rules. An anonymous enum is simply the degenerate
+/// case: a `u16` tag, no header, no shared dynamic fields, and one body field
+/// per variant holding that canonical member.
+#[derive(Debug, Clone)]
+pub struct EnumView {
+    pub tag_type: ResolvedType,
+    pub header: Vec<ResolvedType>,
+    pub dynamic_fields: Vec<ResolvedType>,
+    pub variants: Vec<EnumVariantView>,
+    pub pack: u32,
+    pub align: u32,
+}
+
+impl EnumView {
+    pub fn of(ty: &ResolvedType) -> Option<Self> {
+        match ty {
+            ResolvedType::Enum { cell, .. } => Some(Self::of_named(&cell.borrow())),
+            ResolvedType::AnonymousEnum { shape, .. } => Some(Self::of_anonymous(shape)),
+            _ => None,
+        }
+    }
+
+    pub fn of_named(enum_type: &ResolvedEnumType) -> Self {
+        Self {
+            tag_type: enum_type.tag_type.clone(),
+            header: enum_type
+                .header
+                .iter()
+                .map(|field| field.r#type.clone())
+                .collect(),
+            dynamic_fields: enum_type
+                .dynamic_fields
+                .iter()
+                .map(|field| field.r#type.clone())
+                .collect(),
+            variants: enum_type
+                .variants
+                .iter()
+                .map(|variant| EnumVariantView {
+                    tag: variant.tag,
+                    header_values: variant.header_values.clone(),
+                    fields: variant
+                        .fields
+                        .iter()
+                        .map(|field| field.r#type.clone())
+                        .collect(),
+                })
+                .collect(),
+            pack: enum_type.layout.pack,
+            align: enum_type.layout.align,
+        }
+    }
+
+    pub fn of_anonymous(shape: &ResolvedAnonymousEnum) -> Self {
+        let layout = crate::annotations::Layout::default();
+        Self {
+            tag_type: ANONYMOUS_ENUM_TAG_TYPE,
+            header: Vec::new(),
+            dynamic_fields: Vec::new(),
+            variants: shape
+                .members()
+                .iter()
+                .enumerate()
+                .map(|(index, member)| EnumVariantView {
+                    tag: NumberValue::Unsigned(index as u64),
+                    header_values: Vec::new(),
+                    fields: vec![member.clone()],
+                })
+                .collect(),
+            pack: layout.pack,
+            align: layout.align,
+        }
+    }
+}
+
+/// Fixed by the language: an anonymous enum's tag is the canonical member
+/// index in a `u16`.
+pub const ANONYMOUS_ENUM_TAG_TYPE: ResolvedType = ResolvedType::U16;
+
+pub fn enum_payload_bytes(view: &EnumView, pointer_bytes: u32) -> u32 {
+    view.variants
         .iter()
-        .map(|v| {
-            let field_types: Vec<ResolvedType> =
-                v.fields.iter().map(|field| field.r#type.clone()).collect();
-            layout_fields(&field_types, pack, pointer_bytes).packed_end
-        })
+        .map(|v| layout_fields(&v.fields, view.pack, pointer_bytes).packed_end)
         .max()
         .unwrap_or(0)
 }
 
-pub fn enum_payload_alignment(enum_type: &ResolvedEnumType) -> u32 {
-    enum_type
-        .variants
+pub fn enum_payload_alignment(view: &EnumView) -> u32 {
+    view.variants
         .iter()
-        .flat_map(|v| v.fields.iter().map(|field| type_alignment(&field.r#type)))
+        .flat_map(|v| v.fields.iter().map(type_alignment))
         .max()
         .unwrap_or(1)
 }
 
-pub fn enum_prefix_layout(enum_type: &ResolvedEnumType, pointer_bytes: u32) -> FieldLayout {
-    let mut types = vec![enum_type.tag_type.clone()];
-    types.extend(enum_type.header.iter().map(|field| field.r#type.clone()));
-    types.extend(
-        enum_type
-            .dynamic_fields
-            .iter()
-            .map(|field| field.r#type.clone()),
-    );
-    layout_fields(&types, enum_type.layout.pack, pointer_bytes)
+pub fn enum_prefix_layout(view: &EnumView, pointer_bytes: u32) -> FieldLayout {
+    let mut types = vec![view.tag_type.clone()];
+    types.extend(view.header.iter().cloned());
+    types.extend(view.dynamic_fields.iter().cloned());
+    layout_fields(&types, view.pack, pointer_bytes)
 }
 
 pub fn union_bytes(union_type: &ResolvedUnionType, pointer_bytes: u32) -> u32 {
@@ -284,45 +369,39 @@ pub fn payload_chunks(mut bytes: u32) -> Vec<Leaf> {
     chunks
 }
 
-pub fn enum_header_offset(enum_type: &ResolvedEnumType, index: usize, pointer_bytes: u32) -> u32 {
-    enum_prefix_layout(enum_type, pointer_bytes).byte_offsets[1 + index]
+pub fn enum_header_offset(view: &EnumView, index: usize, pointer_bytes: u32) -> u32 {
+    enum_prefix_layout(view, pointer_bytes).byte_offsets[1 + index]
 }
 
-pub fn enum_dynamic_field_offset(
-    enum_type: &ResolvedEnumType,
-    index: usize,
-    pointer_bytes: u32,
-) -> u32 {
-    enum_prefix_layout(enum_type, pointer_bytes).byte_offsets[1 + enum_type.header.len() + index]
+pub fn enum_dynamic_field_offset(view: &EnumView, index: usize, pointer_bytes: u32) -> u32 {
+    enum_prefix_layout(view, pointer_bytes).byte_offsets[1 + view.header.len() + index]
 }
 
-pub fn enum_payload_offset(enum_type: &ResolvedEnumType, pointer_bytes: u32) -> u32 {
-    let prefix = enum_prefix_layout(enum_type, pointer_bytes);
-    let payload_size = enum_payload_bytes(enum_type, enum_type.layout.pack, pointer_bytes);
+pub fn enum_payload_offset(view: &EnumView, pointer_bytes: u32) -> u32 {
+    let prefix = enum_prefix_layout(view, pointer_bytes);
+    let payload_size = enum_payload_bytes(view, pointer_bytes);
     place_field(
         prefix.packed_end,
-        enum_payload_alignment(enum_type),
+        enum_payload_alignment(view),
         payload_size,
-        enum_type.layout.pack,
+        view.pack,
     )
 }
 
 pub fn enum_body_field_offset(
-    enum_type: &ResolvedEnumType,
+    view: &EnumView,
     variant_index: usize,
     field_index: usize,
     pointer_bytes: u32,
 ) -> u32 {
-    let field_types: Vec<ResolvedType> = enum_type.variants[variant_index]
-        .fields
-        .iter()
-        .map(|field| field.r#type.clone())
-        .collect();
-    enum_payload_offset(enum_type, pointer_bytes)
-        + layout_fields(&field_types, enum_type.layout.pack, pointer_bytes).byte_offsets
-            [field_index]
+    enum_payload_offset(view, pointer_bytes)
+        + layout_fields(&view.variants[variant_index].fields, view.pack, pointer_bytes)
+            .byte_offsets[field_index]
 }
 
 pub fn stack_align_shift(align: u32) -> u8 {
     align.max(1).ilog2().max(4) as u8
 }
+
+#[cfg(test)]
+mod tests;

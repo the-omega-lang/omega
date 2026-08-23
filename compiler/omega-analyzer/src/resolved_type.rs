@@ -258,27 +258,11 @@ impl ResolvedSpecApplication {
         Self { spec, spec_args }
     }
 
-    /// The deterministic ordering/dedup key: fully qualified final spec name
-    /// followed by a canonical rendering of the normalized arguments. Must
-    /// never depend on declaration/discovery order (`HirId`), since that can
-    /// vary across compilations.
+    /// The deterministic ordering/dedup key. Shared with anonymous-enum
+    /// canonicalization so one notion of structural identity orders every
+    /// unordered type set; see `crate::type_key`.
     fn canonical_key(&self) -> String {
-        let spec = self.spec.borrow();
-        let mut key = String::new();
-        for segment in &spec.module_path {
-            key.push_str(segment.as_ref());
-            key.push_str("::");
-        }
-        key.push_str(spec.name.as_ref());
-        key.push('<');
-        for (i, arg) in self.spec_args.iter().enumerate() {
-            if i > 0 {
-                key.push(',');
-            }
-            key.push_str(&arg.to_string());
-        }
-        key.push('>');
-        key
+        crate::type_key::spec_application_key(self)
     }
 }
 
@@ -339,6 +323,61 @@ impl std::fmt::Display for ResolvedSpecShape {
         for (i, member) in self.members.iter().enumerate() {
             if i > 0 {
                 write!(f, " + ")?;
+            }
+            write!(f, "{member}")?;
+        }
+        Ok(())
+    }
+}
+
+/// The canonical member list of an anonymous enum.
+///
+/// Members are ordered by `type_key::structural_key` and exact duplicates are
+/// removed, so `enum A | B`, `enum B | A`, and `enum A | B | A` are one type
+/// with one layout, one tag assignment, and one mangled symbol. Construction
+/// goes through `canonicalize` precisely so no later phase can observe source
+/// order.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ResolvedAnonymousEnum {
+    members: Vec<ResolvedType>,
+}
+
+impl ResolvedAnonymousEnum {
+    /// The tag is a `u16` holding the canonical member index, so a shape can
+    /// have at most this many distinct members.
+    pub const MAX_MEMBERS: usize = u16::MAX as usize + 1;
+
+    /// Callers must resolve every member to its final type first; ordering
+    /// and deduplication are meaningless on unresolved syntax.
+    pub fn canonicalize(mut members: Vec<ResolvedType>) -> Self {
+        members.sort_by_cached_key(crate::type_key::structural_key);
+        members.dedup();
+        Self { members }
+    }
+
+    pub fn members(&self) -> &[ResolvedType] {
+        &self.members
+    }
+
+    /// The canonical index -- and therefore the tag -- of an exact member.
+    pub fn index_of(&self, member: &ResolvedType) -> Option<usize> {
+        self.members.iter().position(|candidate| candidate == member)
+    }
+
+    /// Whether the canonical member list outgrew the fixed `u16` tag. Checked
+    /// once, at type resolution, so no later phase can meet a shape it cannot
+    /// tag.
+    pub fn exceeds_tag_domain(&self) -> bool {
+        self.members.len() > Self::MAX_MEMBERS
+    }
+}
+
+impl std::fmt::Display for ResolvedAnonymousEnum {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "enum ")?;
+        for (i, member) in self.members.iter().enumerate() {
+            if i > 0 {
+                write!(f, " | ")?;
             }
             write!(f, "{member}")?;
         }
@@ -457,6 +496,13 @@ pub enum ResolvedType {
         shape: ResolvedSpecShape,
         mutable: bool,
     },
+    /// A structural `enum A | B | ...`. `variant` mirrors `Enum`'s: it is a
+    /// lexical proof that the value currently holds that canonical member,
+    /// never a change of storage or ABI.
+    AnonymousEnum {
+        shape: Rc<ResolvedAnonymousEnum>,
+        variant: Option<usize>,
+    },
 }
 
 impl Hash for ResolvedType {
@@ -507,6 +553,10 @@ impl Hash for ResolvedType {
             Self::SpecObject { shape, mutable } => {
                 shape.hash(state);
                 mutable.hash(state);
+            }
+            Self::AnonymousEnum { shape, variant } => {
+                shape.hash(state);
+                variant.hash(state);
             }
         }
     }
@@ -586,6 +636,10 @@ impl std::fmt::Display for ResolvedType {
             Self::SpecObject { shape, mutable } => {
                 write!(f, "*{}spec {shape}", if *mutable { "mut " } else { "" })
             }
+            Self::AnonymousEnum { shape, variant } => match variant {
+                Some(index) => write!(f, "{} ({})", shape.members()[*index], shape),
+                None => write!(f, "{shape}"),
+            },
         }
     }
 }
@@ -690,7 +744,28 @@ impl ResolvedType {
                 cell: cell.clone(),
                 variant: None,
             },
+            Self::AnonymousEnum {
+                shape,
+                variant: Some(_),
+            } => Self::AnonymousEnum {
+                shape: shape.clone(),
+                variant: None,
+            },
             other => other.clone(),
+        }
+    }
+
+    /// The member an anonymous-enum refinement proves, if this type is one.
+    /// Reading a refined binding, projecting a field off it, or calling a
+    /// method on it all go through this view, while the value's storage stays
+    /// the whole anonymous enum.
+    pub fn refined_anonymous_member(&self) -> Option<(usize, &ResolvedType)> {
+        match self {
+            Self::AnonymousEnum {
+                shape,
+                variant: Some(index),
+            } => Some((*index, &shape.members()[*index])),
+            _ => None,
         }
     }
 
@@ -698,6 +773,10 @@ impl ResolvedType {
         match self {
             Self::Enum { cell, .. } => Self::Enum {
                 cell: cell.clone(),
+                variant: None,
+            },
+            Self::AnonymousEnum { shape, .. } => Self::AnonymousEnum {
+                shape: shape.clone(),
                 variant: None,
             },
             Self::Pointer { pointee, .. } => Self::Pointer {
@@ -728,6 +807,20 @@ impl ResolvedType {
                     variant: Some(_),
                 },
             ) => expected.borrow().id == found.borrow().id,
+            // Refinement is not part of the representation, so dropping it is
+            // a plain copy. Widening between *different* anonymous shapes is
+            // deliberately absent: canonical indices and payload size can both
+            // differ, so it would need real retagging/repacking work.
+            (
+                Self::AnonymousEnum {
+                    shape: expected,
+                    variant: None,
+                },
+                Self::AnonymousEnum {
+                    shape: found,
+                    variant: Some(_),
+                },
+            ) => expected == found,
             (
                 Self::Pointer {
                     pointee: expected,

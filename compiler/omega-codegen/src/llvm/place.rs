@@ -1,5 +1,6 @@
 use super::Codegen;
 use super::leaf;
+use super::enum_view;
 use inkwell::types::BasicTypeEnum;
 use inkwell::values::{BasicValue, BasicValueEnum, PointerValue};
 use omega_analyzer::layout;
@@ -221,17 +222,9 @@ impl<'ctx> Codegen<'ctx> {
                 }
 
                 MirProjection::EnumTag { r#type } => {
-                    let ResolvedType::Enum { cell, .. } = &current_type else {
-                        unreachable!(
-                            "mir body guarantees EnumTag projections are only built against an enum type"
-                        );
-                    };
-                    let tag_leaves = leaf::llvm_leaves(
-                        self.context,
-                        &cell.borrow().tag_type,
-                        self.pointer_bytes(),
-                    )
-                    .len();
+                    let view = enum_view(&current_type, "EnumTag");
+                    let tag_leaves =
+                        leaf::llvm_leaves(self.context, &view.tag_type, self.pointer_bytes()).len();
                     current = match current {
                         PlaceStorage::Values(values) => {
                             PlaceStorage::Values(values[..tag_leaves].to_vec())
@@ -242,21 +235,14 @@ impl<'ctx> Codegen<'ctx> {
                 }
 
                 MirProjection::EnumHeader { index, r#type, .. } => {
-                    let ResolvedType::Enum { cell, .. } = &current_type else {
-                        unreachable!(
-                            "mir body guarantees EnumHeader projections are only built against an enum type"
-                        );
-                    };
-                    let cell = cell.clone();
-                    let enum_type = cell.borrow();
+                    let view = enum_view(&current_type, "EnumHeader");
                     current = match current {
                         PlaceStorage::Values(values) => {
-                            let start =
-                                layout::enum_prefix_layout(&enum_type, self.pointer_bytes())
-                                    .leaf_starts[1 + *index];
+                            let start = layout::enum_prefix_layout(&view, self.pointer_bytes())
+                                .leaf_starts[1 + *index];
                             let len = leaf::llvm_leaves(
                                 self.context,
-                                &enum_type.header[*index].r#type,
+                                &view.header[*index],
                                 self.pointer_bytes(),
                             )
                             .len();
@@ -266,7 +252,7 @@ impl<'ctx> Codegen<'ctx> {
                             slot,
                             offset: offset
                                 + layout::enum_header_offset(
-                                    &enum_type,
+                                    &view,
                                     *index,
                                     self.pointer_bytes(),
                                 ),
@@ -275,7 +261,7 @@ impl<'ctx> Codegen<'ctx> {
                             base,
                             offset: offset
                                 + layout::enum_header_offset(
-                                    &enum_type,
+                                    &view,
                                     *index,
                                     self.pointer_bytes(),
                                 ),
@@ -285,21 +271,14 @@ impl<'ctx> Codegen<'ctx> {
                 }
 
                 MirProjection::EnumDynamicField { index, r#type, .. } => {
-                    let ResolvedType::Enum { cell, .. } = &current_type else {
-                        unreachable!(
-                            "mir body guarantees EnumDynamicField projections are only built against an enum type"
-                        );
-                    };
-                    let cell = cell.clone();
-                    let enum_type = cell.borrow();
+                    let view = enum_view(&current_type, "EnumDynamicField");
                     current = match current {
                         PlaceStorage::Values(values) => {
-                            let start =
-                                layout::enum_prefix_layout(&enum_type, self.pointer_bytes())
-                                    .leaf_starts[1 + enum_type.header.len() + *index];
+                            let start = layout::enum_prefix_layout(&view, self.pointer_bytes())
+                                .leaf_starts[1 + view.header.len() + *index];
                             let len = leaf::llvm_leaves(
                                 self.context,
-                                &enum_type.dynamic_fields[*index].r#type,
+                                &view.dynamic_fields[*index],
                                 self.pointer_bytes(),
                             )
                             .len();
@@ -309,7 +288,7 @@ impl<'ctx> Codegen<'ctx> {
                             slot,
                             offset: offset
                                 + layout::enum_dynamic_field_offset(
-                                    &enum_type,
+                                    &view,
                                     *index,
                                     self.pointer_bytes(),
                                 ),
@@ -318,7 +297,7 @@ impl<'ctx> Codegen<'ctx> {
                             base,
                             offset: offset
                                 + layout::enum_dynamic_field_offset(
-                                    &enum_type,
+                                    &view,
                                     *index,
                                     self.pointer_bytes(),
                                 ),
@@ -333,34 +312,28 @@ impl<'ctx> Codegen<'ctx> {
                     r#type,
                     ..
                 } => {
-                    let ResolvedType::Enum { cell, .. } = &current_type else {
-                        unreachable!(
-                            "mir body guarantees EnumBody projections are only built against an enum type"
-                        );
-                    };
-                    let cell = cell.clone();
-                    let enum_type = cell.borrow();
+                    let view = enum_view(&current_type, "EnumBody");
+                    // A body field lives in the payload, which is a union of
+                    // every variant's body and therefore has no typed leaf
+                    // list to slice: a register-held enum has to reach memory
+                    // before its byte offset means anything.
+                    if let PlaceStorage::Values(values) = &current {
+                        let shift =
+                            layout::stack_align_shift(layout::type_alignment(&current_type));
+                        let size = layout::total_bytes(&current_type, self.pointer_bytes());
+                        let slot = self.entry_alloca(size, 1u32 << shift, "enum_spill");
+                        self.store_scalars(&slot, 0, values, layout::type_alignment(&current_type));
+                        current = PlaceStorage::Slot { slot, offset: 0 };
+                    }
                     current = match current {
-                        PlaceStorage::Values(values) => {
-                            let start =
-                                layout::enum_prefix_layout(&enum_type, self.pointer_bytes())
-                                    .leaf_starts[1
-                                    + enum_type.header.len()
-                                    + enum_type.dynamic_fields.len()
-                                    + *field_index];
-                            let len = leaf::llvm_leaves(
-                                self.context,
-                                &enum_type.variants[*variant_index].fields[*field_index].r#type,
-                                self.pointer_bytes(),
-                            )
-                            .len();
-                            PlaceStorage::Values(values[start..start + len].to_vec())
+                        PlaceStorage::Values(_) => {
+                            unreachable!("just spilled every register-held enum to a slot")
                         }
                         PlaceStorage::Slot { slot, offset } => PlaceStorage::Slot {
                             slot,
                             offset: offset
                                 + layout::enum_body_field_offset(
-                                    &enum_type,
+                                    &view,
                                     *variant_index,
                                     *field_index,
                                     self.pointer_bytes(),
@@ -370,7 +343,7 @@ impl<'ctx> Codegen<'ctx> {
                             base,
                             offset: offset
                                 + layout::enum_body_field_offset(
-                                    &enum_type,
+                                    &view,
                                     *variant_index,
                                     *field_index,
                                     self.pointer_bytes(),

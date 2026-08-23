@@ -597,17 +597,31 @@ pub struct HirMatchArm {
     pub span: Span,
 }
 
+/// Both readings the pattern syntax allowed, carried unchanged from the AST.
+/// Choosing between them needs the scrutinee's resolved type, so it is the
+/// analyzer's decision, not lowering's.
 #[derive(Debug, Clone)]
-pub enum HirPattern {
+pub struct HirPattern {
+    pub value: Option<HirPatternValue>,
+    pub r#type: Option<Type>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub enum HirPatternValue {
     Value(HirExprNode),
     Range(HirRange),
 }
 
 impl HirPattern {
     pub fn span(&self) -> Span {
-        match self {
-            Self::Value(v) => v.span,
-            Self::Range(r) => r.span,
+        self.span
+    }
+
+    pub fn catch_all_range(&self) -> Option<&HirRange> {
+        match self.value.as_ref()? {
+            HirPatternValue::Range(range) if range.is_catch_all() => Some(range),
+            _ => None,
         }
     }
 }

@@ -3,13 +3,15 @@ use crate::ast::expression::{
     ByteStringExpr, CastExpr, CharExpr, CodeblockExpr, CompExpr, CompoundAssignExpr, DecrementExpr,
     DerefExpr, Expression, ExpressionNode, FieldAccessExpr, FunctionCallExpr, IfExpr,
     IncrementExpr, IndexExpr, LogicalExpr, LogicalOp, MatchArm, MatchExpr, NegateExpr, NotExpr,
-    Pattern, RevealExpr, SizeofExpr, SliceExpr, StringExpr, StructLiteralExpr, StructLiteralField,
+    Pattern, PatternValue, RevealExpr, SizeofExpr, SliceExpr, StringExpr, StructLiteralExpr,
+    StructLiteralField,
 };
+use crate::ast::r#type::Type;
 use crate::ast::range::{RangeEnd, RangeExpr};
 use crate::diagnostics::{ParseErrorKind, Span};
 use crate::lexer::TokenKind;
 use crate::parser::{
-    Parser, contextual, macro_syntax::parse_macro_invocation, statement::parse_statement,
+    Mark, Parser, contextual, macro_syntax::parse_macro_invocation, statement::parse_statement,
 };
 
 pub fn parse_expression(p: &mut Parser) -> Option<ExpressionNode> {
@@ -831,20 +833,83 @@ fn parse_match_arm(p: &mut Parser) -> Option<MatchArm> {
 }
 
 fn parse_pattern(p: &mut Parser) -> Option<Pattern> {
+    let start = p.peek_span();
+    let candidate = probe_type_pattern(p);
+    let value = parse_pattern_value(p, candidate.is_some());
+    if let (None, Some(candidate)) = (&value, &candidate) {
+        // Only a spelling with no value reading at all -- `[4]u8`,
+        // `Wrapper<i32>` -- consumes the type reading's tokens instead.
+        let end = candidate.end;
+        p.reset(end);
+    }
+    let span = start.to(p.last_span());
+    let r#type = candidate.map(|candidate| candidate.r#type);
+    if value.is_none() && r#type.is_none() {
+        return None;
+    }
+    Some(Pattern {
+        value,
+        r#type,
+        span,
+    })
+}
+
+struct TypePatternCandidate {
+    r#type: Type,
+    end: Mark,
+}
+
+/// A non-diagnostic probe for a pattern that could also be read as a type.
+/// The candidate is kept only when a complete type parse consumed everything
+/// up to the arm's `=>` and produced no diagnostics of its own, so an
+/// ambiguous path pattern such as `A` keeps both readings and the analyzer
+/// decides between them from the scrutinee's type.
+fn probe_type_pattern(p: &mut Parser) -> Option<TypePatternCandidate> {
+    let start = p.mark();
+    let parsed = crate::parser::r#type::parse_type(p);
+    let end = p.mark();
+    let candidate = match parsed {
+        Some(r#type) if p.check(&TokenKind::FatArrow) && !p.errors_since(&start) => {
+            Some(TypePatternCandidate { r#type, end })
+        }
+        _ => None,
+    };
+    p.reset(start);
+    candidate
+}
+
+/// `has_type_candidate` decides whether an unusable value reading may be
+/// abandoned. Without a type reading to fall back on there is nothing to
+/// abandon it *for*, so the parse and its diagnostics stay exactly what they
+/// were before type patterns existed.
+fn parse_pattern_value(p: &mut Parser, has_type_candidate: bool) -> Option<PatternValue> {
     if is_range_operator(p.peek()) {
         let op_span = p.peek_span();
         let range = p.allow_struct_literals(|p| parse_range_tail(p, None, op_span))?;
-        return Some(Pattern::Range(range));
+        return Some(PatternValue::Range(range));
     }
     // Keep range syntax structural in patterns; the general expression layer
     // would otherwise consume `a..<b` before this production sees it.
-    let value = p.allow_struct_literals(parse_assignment)?;
+    let mark = p.mark();
+    let Some(value) = p.allow_struct_literals(parse_assignment) else {
+        if has_type_candidate {
+            p.reset(mark);
+        }
+        return None;
+    };
     if is_range_operator(p.peek()) {
         let op_span = p.peek_span();
         let range = p.allow_struct_literals(|p| parse_range_tail(p, Some(value), op_span))?;
-        return Some(Pattern::Range(range));
+        return Some(PatternValue::Range(range));
     }
-    Some(Pattern::Value(value))
+    // A value reading that stalls before the arm's `=>` is not a pattern at
+    // all: `[4]u8` parses `[4]` and then stops. Handing the arm to the type
+    // reading avoids a spurious "expected '=>'".
+    if has_type_candidate && !p.check(&TokenKind::FatArrow) {
+        p.reset(mark);
+        return None;
+    }
+    Some(PatternValue::Value(value))
 }
 
 pub fn parse_codeblock(p: &mut Parser) -> Option<CodeblockExpr> {

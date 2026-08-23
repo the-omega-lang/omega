@@ -1,6 +1,42 @@
 use super::*;
 
 impl<'r> Analyzer<'r> {
+    /// Applies the ordinary argument conversions once a generic call's
+    /// concrete signature is known. Inference runs before the parameter
+    /// types are concrete, so these arguments were checked without an
+    /// expected type; routing them through `coerce_to_expected` is what makes
+    /// an already-resolved anonymous-enum parameter behave like any other.
+    fn coerce_call_arguments(
+        &mut self,
+        checked_args: Vec<CheckedExprNode>,
+        fn_type: &ResolvedFunctionType,
+    ) -> Option<Vec<CheckedExprNode>> {
+        let mut coerced = Vec::with_capacity(checked_args.len());
+        let mut ok = true;
+        for (index, arg) in checked_args.into_iter().enumerate() {
+            let Some((_, expected_type)) = fn_type.params.get(index) else {
+                coerced.push(arg);
+                continue;
+            };
+            let expected_type = expected_type.clone();
+            let arg = self.coerce_to_expected(Some(&expected_type), arg);
+            if !expected_type.accepts(&arg.r#type) {
+                self.error(
+                    arg.id,
+                    arg.span,
+                    AnalysisErrorKind::ArgumentTypeMismatch {
+                        expected: expected_type,
+                        found: arg.r#type.clone(),
+                    },
+                );
+                ok = false;
+                continue;
+            }
+            coerced.push(arg);
+        }
+        ok.then_some(coerced)
+    }
+
     pub(crate) fn resolve_generic_static_call(
         &mut self,
         node_id: HirId,
@@ -261,19 +297,7 @@ impl<'r> Analyzer<'r> {
             );
             return None;
         }
-        for (arg, (_, expected_type)) in checked_args.iter().zip(&fn_type.params) {
-            if !expected_type.accepts(&arg.r#type) {
-                self.error(
-                    arg.id,
-                    arg.span,
-                    AnalysisErrorKind::ArgumentTypeMismatch {
-                        expected: expected_type.clone(),
-                        found: arg.r#type.clone(),
-                    },
-                );
-                return None;
-            }
-        }
+        let checked_args = self.coerce_call_arguments(checked_args, &fn_type)?;
 
         Some(self.checked_call(
             node_id,
@@ -419,19 +443,7 @@ impl<'r> Analyzer<'r> {
             );
             return None;
         }
-        for (arg, (_, expected_type)) in checked_args.iter().zip(&fn_type.params) {
-            if !expected_type.accepts(&arg.r#type) {
-                self.error(
-                    arg.id,
-                    arg.span,
-                    AnalysisErrorKind::ArgumentTypeMismatch {
-                        expected: expected_type.clone(),
-                        found: arg.r#type.clone(),
-                    },
-                );
-                return None;
-            }
-        }
+        let checked_args = self.coerce_call_arguments(checked_args, &fn_type)?;
 
         Some(self.checked_call(
             node_id,

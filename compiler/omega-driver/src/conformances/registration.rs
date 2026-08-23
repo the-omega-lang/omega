@@ -40,7 +40,7 @@ impl Driver {
             _ => {}
         }
         match ty {
-            Type::Generic(_, args) | Type::SpecStatic(args) => {
+            Type::Generic(_, args) | Type::SpecStatic(args) | Type::AnonymousEnum(args) => {
                 for arg in args {
                     self.mark_type_import_dependencies(module, arg, seen);
                 }

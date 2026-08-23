@@ -1,4 +1,5 @@
 use super::Codegen;
+use super::enum_view;
 use super::leaf;
 use super::place::PlaceStorage;
 use inkwell::types::BasicTypeEnum;
@@ -523,48 +524,26 @@ impl<'ctx> Codegen<'ctx> {
                 variant_index,
                 fields,
             }) => {
-                let ResolvedType::Enum { cell, .. } = &node.r#type else {
-                    unreachable!("mir body guarantees a construction's own type is its enum");
-                };
-                let cell = cell.clone();
+                let view = enum_view(&node.r#type, "an EnumConstruct");
                 let pointer_bytes = self.pointer_bytes();
-                let (tag, tag_type, header, payload_offset, chunk_leaves, field_offsets) = {
-                    let enum_type = cell.borrow();
-                    let variant = &enum_type.variants[*variant_index];
-                    let header: Vec<(ResolvedType, ConstValue)> = enum_type
-                        .header
-                        .iter()
-                        .zip(&variant.header_values)
-                        .map(|(resolved_field, value)| {
-                            (resolved_field.r#type.clone(), value.clone())
-                        })
-                        .collect();
-                    let field_offsets: Vec<u32> = (0..enum_type.dynamic_fields.len())
-                        .map(|i| layout::enum_dynamic_field_offset(&enum_type, i, pointer_bytes))
-                        .chain((0..variant.fields.len()).map(|i| {
-                            layout::enum_body_field_offset(
-                                &enum_type,
-                                *variant_index,
-                                i,
-                                pointer_bytes,
-                            )
-                        }))
-                        .collect();
-                    let payload_offset = layout::enum_payload_offset(&enum_type, pointer_bytes);
-                    let chunk_leaves = layout::payload_chunks(layout::enum_payload_bytes(
-                        &enum_type,
-                        enum_type.layout.pack,
-                        pointer_bytes,
-                    ));
-                    (
-                        variant.tag,
-                        enum_type.tag_type.clone(),
-                        header,
-                        payload_offset,
-                        chunk_leaves,
-                        field_offsets,
-                    )
-                };
+                let variant = &view.variants[*variant_index];
+                let tag = variant.tag;
+                let tag_type = view.tag_type.clone();
+                let header: Vec<(ResolvedType, ConstValue)> = view
+                    .header
+                    .iter()
+                    .cloned()
+                    .zip(variant.header_values.iter().cloned())
+                    .collect();
+                let field_offsets: Vec<u32> = (0..view.dynamic_fields.len())
+                    .map(|i| layout::enum_dynamic_field_offset(&view, i, pointer_bytes))
+                    .chain((0..variant.fields.len()).map(|i| {
+                        layout::enum_body_field_offset(&view, *variant_index, i, pointer_bytes)
+                    }))
+                    .collect();
+                let payload_offset = layout::enum_payload_offset(&view, pointer_bytes);
+                let chunk_leaves =
+                    layout::payload_chunks(layout::enum_payload_bytes(&view, pointer_bytes));
 
                 let shift = layout::stack_align_shift(layout::type_alignment(&node.r#type));
                 let total = layout::total_bytes(&node.r#type, pointer_bytes);

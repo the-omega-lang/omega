@@ -13,6 +13,39 @@ struct EnumMember {
 }
 
 impl<'r> Analyzer<'r> {
+    /// Opens a refined anonymous binding onto the member it proves, so that
+    /// naming something *on* the member -- a field, an element, a method --
+    /// reaches the payload. Whole-value operations (assignment, `&mut`,
+    /// widening) deliberately never come through here and keep the anonymous
+    /// root, which is what makes refinement free of representation effects.
+    pub(crate) fn open_refined_anonymous(
+        projections: &mut Vec<CheckedProjection>,
+        current_type: &ResolvedType,
+        mutable: &mut bool,
+    ) -> Option<ResolvedType> {
+        let (base, pointer_mutable) = match current_type {
+            ResolvedType::Pointer {
+                pointee,
+                mutable: pointer_mutable,
+            } => (&**pointee, Some(*pointer_mutable)),
+            other => (other, None),
+        };
+        let (index, member) = base.refined_anonymous_member()?;
+        let member = member.clone();
+        if let Some(pointer_mutable) = pointer_mutable {
+            *mutable = pointer_mutable;
+            projections.push(CheckedProjection::Deref {
+                r#type: base.clone(),
+            });
+        }
+        projections.push(CheckedProjection::EnumBody {
+            variant_index: index,
+            field_index: 0,
+            r#type: member.clone(),
+        });
+        Some(member)
+    }
+
     pub(crate) fn resolve_field_projection(
         &mut self,
         node_id: HirId,
@@ -22,6 +55,9 @@ impl<'r> Analyzer<'r> {
         field: &Ident,
         mutable: &mut bool,
     ) -> Option<ResolvedType> {
+        if let Some(member) = Self::open_refined_anonymous(projections, current_type, mutable) {
+            return self.resolve_field_projection(node_id, span, projections, &member, field, mutable);
+        }
         let base = match current_type {
             ResolvedType::Pointer {
                 pointee,
@@ -53,6 +89,14 @@ impl<'r> Analyzer<'r> {
             ResolvedType::Struct(cell) => {
                 let cell = cell.clone();
                 self.project_struct_field(node_id, span, projections, &cell, &base, field)
+            }
+            ResolvedType::AnonymousEnum { .. } => {
+                self.error(
+                    node_id,
+                    span,
+                    AnalysisErrorKind::AnonymousEnumNotRefined { r#enum: base },
+                );
+                None
             }
             _ => {
                 self.error(node_id, span, AnalysisErrorKind::NotAStruct { found: base });
@@ -361,6 +405,8 @@ impl<'r> Analyzer<'r> {
         mutable: &mut bool,
     ) -> Option<ResolvedType> {
         let checked_index = self.analyze_expr(index, None)?;
+        let current_type = Self::open_refined_anonymous(projections, &current_type, mutable)
+            .unwrap_or(current_type);
         let item_type = match current_type {
             ResolvedType::SizedArray(item, _) => *item,
             ResolvedType::Array(item, array_mutable) => {

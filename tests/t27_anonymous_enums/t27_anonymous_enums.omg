@@ -1,0 +1,187 @@
+import std::io::println;
+import self::helper;
+
+struct Failure {
+	exposed code: i32;
+
+	exposed new(code: i32) => Self {
+		Self { code = code; }
+	}
+
+	exposed describe(*self) => *str {
+		"failure"
+	}
+}
+
+enum Kind {
+	Small,
+	Large;
+}
+
+# An alias adds no identity: `Errors` *is* the anonymous enum, in any spelling.
+alias Errors = enum Failure | *str;
+
+# A reordered spelling of the same type: same canonical members, same tags,
+# same layout, same symbol.
+reordered(value: enum *str | Failure) => i32 {
+	match value {
+		Failure => value.code,
+		*str => 0,
+	}
+}
+
+# Duplicates collapse, and a single-member anonymous enum is legal.
+one_member(value: enum i32 | i32) => i32 {
+	match value {
+		i32 => value,
+	}
+}
+
+# Nested anonymous members are members, not flattened away.
+alias Nested = enum Kind | Errors;
+
+pick(n: i32) => Errors {
+	if n < 0 {
+		# a struct value injects as the `Failure` member
+		Failure::new(n)
+	} else if n == 0 {
+		# an unsuffixed literal keeps its default type, so this one is not a
+		# member and needs the explicit member value instead
+		"zero"
+	} else {
+		"positive"
+	}
+}
+
+describe(value: Errors) => *str {
+	match value {
+		Failure => value.describe(),
+		*str => value,
+	}
+}
+
+# `..` covers what the explicit arms left.
+only_str(value: Errors) => *str {
+	match value {
+		*str => value,
+		.. => "not a string",
+	}
+}
+
+# `else` completes coverage the same way.
+tag_of(value: Errors) => i32 {
+	match value {
+		Failure => 1,
+	} else {
+		0
+	}
+}
+
+# Refinement works through a pointer to the anonymous enum.
+through_pointer(value: *Errors) => i32 {
+	match value {
+		Failure => value.code,
+		*str => <i32>(*value).size,
+	}
+}
+
+describe_nested(value: Nested) => *str {
+	match value {
+		Kind => "kind",
+		Errors => describe(value),
+	}
+}
+
+struct Holder {
+	exposed slot: Errors;
+}
+
+struct Box<T> {
+	exposed value: T;
+}
+
+wrap<T>(value: T) => Box<T> {
+	Box<T> { value = value; }
+}
+
+# Exact acceptance outranks a candidate that has to pack the argument.
+which(value: *str) => *str {
+	"exact"
+}
+
+which(value: Errors) => *str {
+	"injected"
+}
+
+exposed GLOBAL_ERROR: Errors = comp "global";
+
+# Injection and matching are both compile-time evaluable: an anonymous value
+# is an ordinary tagged enum constant.
+classify(value: enum i32 | bool) => i32 {
+	match value {
+		i32 => value,
+		bool => 100,
+	}
+}
+
+comp COMP_INT := comp classify(7);
+comp COMP_BOOL := comp classify(true);
+
+main() => void {
+	# --- injection at a local declaration, and matching by member type -----
+	failure: Errors = Failure::new(3);
+	text: Errors = "text";
+	println$("inject-and-match: ", describe(failure), " ", describe(text));
+
+	# --- the reordered spelling is the same type, with the same tags -------
+	println$("reordered-identity: ", reordered(failure), " ", reordered(text));
+
+	# --- duplicate members collapse; one member is enough -----------------
+	println$("dedup: ", one_member(41) + 1);
+
+	# --- injection at a return, a call argument, and a struct field -------
+	held := Holder { slot = Failure::new(9); };
+	println$("return-and-field: ", describe(pick(-5)), " ", describe(pick(1)), " ", describe(held.slot));
+
+	# --- catch-all and `else` complete coverage ---------------------------
+	println$("catch-all: ", only_str(text), " ", only_str(failure), " ", tag_of(failure), " ", tag_of(text));
+
+	# --- a refined binding reaches the member's own fields and methods ----
+	println$("member-access: ", describe(failure), " ", reordered(failure));
+
+	# --- pointer scrutinee, refined through the pointer -------------------
+	println$("pointer-match: ", through_pointer(&failure), " ", through_pointer(&text));
+
+	# --- a nested anonymous member stays one member -----------------------
+	kind: Nested = Kind::Large;
+	inner: Nested = failure;
+	println$("nested: ", describe_nested(kind), " ", describe_nested(inner));
+
+	# --- an array of the anonymous enum, injected element by element ------
+	items: [2]Errors = ["first", Failure::new(2)];
+	println$("array: ", describe(items[0]), " ", describe(items[1]));
+
+	# --- a global initialized by injection --------------------------------
+	println$("global: ", describe(GLOBAL_ERROR));
+
+	# --- injection at a call argument, including from a bare literal ------
+	println$("argument-injection: ", describe(Failure::new(4)), " ", describe("arg"));
+
+	# --- exact acceptance beats injection ---------------------------------
+	println$("overload-rank: ", which("s"), " ", which(Failure::new(5)));
+
+	# --- an anonymous enum as a generic argument --------------------------
+	boxed: Box<Errors> = Box<Errors> { value = Failure::new(6); };
+	rewrapped := wrap(boxed.value);
+	println$("generic-argument: ", describe(boxed.value), " ", reordered(rewrapped.value));
+
+	# --- another module's reversed spelling is the same type --------------
+	cross: enum i32 | *str = 5;
+	println$("cross-module: ", helper::label(cross), " ", helper::label("cross-str"));
+
+	# --- compile-time injection, matching, and size -----------------------
+	println$("comp: ", COMP_INT, " ", COMP_BOOL, " ", sizeof<enum i32 | bool>);
+
+	# --- identical spellings have identical size --------------------------
+	println$("sizeof-identity: ", sizeof<Errors> == sizeof<enum *str | Failure>, " ", sizeof<enum i32 | i32> == sizeof<enum i32>);
+}
