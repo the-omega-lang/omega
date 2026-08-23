@@ -420,6 +420,14 @@ println$("value = {}", value);
 
 Variadic macro parameters appear in runtime source as `$args: expr...`; see [`../language/macros.md`](../language/macros.md) for repetition syntax and hygiene.
 
+A `path` fragment captures a qualified name as one argument:
+
+```omega
+macro re_export($path: path, $ident: ident) => {
+    alias $ident = $path::$ident;
+}
+```
+
 ## Aliases
 
 `alias` gives an existing declaration a second name. It is top-level only, and

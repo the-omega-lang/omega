@@ -291,6 +291,103 @@ fn negative_macro_cases_report_the_new_diagnostics() {
 }
 
 #[test]
+fn path_fragment_accepts_ordinary_path_syntax_and_reparses_as_a_path() {
+    let module = expand(
+        r#"
+        macro re_export($path: path, $ident: ident) => { alias $ident = $path; }
+        struct Holder { x: i32; }
+        re_export$(root::a::b::Holder, Reexported);
+    "#,
+    );
+    let Item::Alias(alias) = &module.nodes[1].item else {
+        panic!("expected expanded alias item");
+    };
+    assert_eq!(alias.ident.0, "Reexported");
+    let omega_parser::prelude::AliasTarget::Path(path) = &alias.target else {
+        panic!("expected the substituted `$path` to reparse as a path alias target");
+    };
+    assert!(matches!(
+        path.anchor,
+        Some(omega_parser::prelude::PathAnchor::Root)
+    ));
+    assert_eq!(path.head.0, "a");
+    assert_eq!(path.tail.iter().map(|i| i.0.as_str()).collect::<Vec<_>>(), [
+        "b", "Holder"
+    ]);
+}
+
+#[test]
+fn path_fragment_accepts_every_path_anchor_form() {
+    for (arg, expected_anchor) in [
+        ("plain::segment", None),
+        ("root::a", Some("root")),
+        ("self::a", Some("self")),
+        ("super::super::a", Some("super")),
+    ] {
+        let source = format!(
+            r#"
+            macro id($p: path) => {{ alias Out = $p; }}
+            id$({arg});
+        "#
+        );
+        let module = expand(&source);
+        let Item::Alias(alias) = &module.nodes[0].item else {
+            panic!("expected expanded alias item for `{arg}`");
+        };
+        let omega_parser::prelude::AliasTarget::Path(path) = &alias.target else {
+            panic!("expected a path alias target for `{arg}`");
+        };
+        match expected_anchor {
+            Some("root") => assert!(matches!(
+                path.anchor,
+                Some(omega_parser::prelude::PathAnchor::Root)
+            )),
+            Some("self") => assert!(matches!(
+                path.anchor,
+                Some(omega_parser::prelude::PathAnchor::SelfModule)
+            )),
+            Some("super") => assert!(matches!(
+                path.anchor,
+                Some(omega_parser::prelude::PathAnchor::Super(2))
+            )),
+            _ => assert!(path.anchor.is_none(), "`{arg}` should be unanchored"),
+        }
+    }
+}
+
+#[test]
+fn path_fragment_rejects_non_path_trailing_syntax() {
+    let parsed = SourceModule::parse(
+        r#"
+        macro id($p: path) => { alias Out = $p; }
+        main() => void { id$(a::b + 1); }
+    "#,
+    )
+    .unwrap();
+    let text = macros::expand(parsed, &HashMap::new())
+        .unwrap_err()
+        .to_string();
+    assert!(text.contains("does not parse as Path"), "{text}");
+}
+
+#[test]
+fn path_fragment_supports_variadic_repetition() {
+    let module = expand(
+        r#"
+        macro touch($paths: path...) => { $...(){ $paths; } }
+        main() => void { touch$(a::b, root::c::d); }
+    "#,
+    );
+    let Item::FunctionDefinition(main) = &module.nodes[0].item else {
+        panic!("expected main")
+    };
+    assert_eq!(main.codeblock.statements.len(), 2);
+    for statement in &main.codeblock.statements {
+        assert!(matches!(statement.statement, Statement::Expression(_)));
+    }
+}
+
+#[test]
 fn import_in_a_macro_body_is_rejected_at_definition_time() {
     let errors = SourceModule::parse("macro m() => { import io::Write; }").unwrap_err();
     assert!(errors.iter().any(|error| {

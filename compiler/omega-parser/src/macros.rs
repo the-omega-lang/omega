@@ -370,6 +370,7 @@ fn validate_fragment(
         FragmentKind::Expr => crate::parser::expression::parse_expression(&mut p).map(|_| ()),
         FragmentKind::Type => crate::parser::r#type::parse_type(&mut p).map(|_| ()),
         FragmentKind::Ident => p.expect_ident().map(|_| ()),
+        FragmentKind::Path => crate::parser::parse_path(&mut p).map(|_| ()),
     };
     let fully_consumed = p.is_eof();
     let errors = p.into_errors();

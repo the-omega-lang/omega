@@ -33,8 +33,13 @@ statement; wrap it in a block: `defer { name$(...); }`.
 
 ## Parameters and repetition
 
-Parameters are `expr`, `type`, or `ident` fragments. `ident` accepts one
-bare identifier; it is useful for a called function or generated name.
+Parameters are `expr`, `type`, `ident`, or `path` fragments. `ident` accepts
+one bare identifier; it is useful for a called function or generated name.
+`path` accepts exactly the ordinary `path` grammar -- an optional
+`root::`/`self::`/chained `super::` anchor followed by `::`-separated
+identifiers -- so it captures a qualified name as one argument without
+splitting it into identifiers or widening it to `expr`/`type`. Its captured
+tokens keep the caller's origin like any other fragment.
 
 Macro parameter names are unique within a signature. A fixed parameter and the trailing variadic parameter may not use the same name.
 

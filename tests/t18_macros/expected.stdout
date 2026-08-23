@@ -7,3 +7,4 @@ print-each: 2
 print-each: 3
 call-with-args: 6
 read-secret: 7
+magic: 55

@@ -10,3 +10,17 @@ shared macro read_secret() => {
 exposed macro make_doubler($T: type, $name: ident) => {
 	$name(x: $T) => $T { x + x }
 }
+
+# Not imported by name anywhere else; only reachable through the alias
+# built by `re_export$` below.
+exposed magic() => i32 {
+	55
+}
+
+# `path`-fragment macro: builds a re-export alias from a captured module
+# path and item name, without splitting the path into identifiers. An
+# alias cannot name a global binding, so the target must be a function,
+# type, spec, macro, or module.
+exposed macro re_export($path: path, $ident: ident) => {
+	alias $ident = $path::$ident;
+}

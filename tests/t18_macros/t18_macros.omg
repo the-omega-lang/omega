@@ -1,8 +1,14 @@
 import std::io::println;
 import self::defs::read_secret;
 import self::defs::make_doubler;
+import self::defs::re_export;
 
 make_doubler$(i32, double_i32);
+
+# `$path` captures the anchored path `self::defs` as one argument and
+# `$ident` supplies both the alias's own name and the re-exported item's
+# final segment, producing `alias magic = self::defs::magic;`.
+re_export$(self::defs, magic);
 
 # Statement-position macro: splices zero or more statements.
 macro log_two($a: expr, $b: expr) => {
@@ -44,4 +50,9 @@ main() => void {
 	# reaches it: names written in a macro body resolve in the macro's own
 	# definition environment, not the caller's.
 	println$("read-secret: ", read_secret$());
+
+	# `magic` was never imported; the `re_export$` alias above is what
+	# makes it nameable here, proving path capture, substitution, reparse,
+	# and downstream resolution work together.
+	println$("magic: ", magic());
 }

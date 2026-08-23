@@ -237,6 +237,7 @@ pub enum FragmentKind {
     Expr,
     Type,
     Ident,
+    Path,
 }
 
 #[derive(Debug, Clone)]

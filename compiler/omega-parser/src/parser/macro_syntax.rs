@@ -130,7 +130,7 @@ fn parse_macro_signature(p: &mut Parser) -> Option<MacroSignature> {
 }
 
 fn parse_fragment_kind(p: &mut Parser) -> Option<FragmentKind> {
-    use crate::parser::contextual::{EXPR, IDENT, TYPE};
+    use crate::parser::contextual::{EXPR, IDENT, PATH, TYPE};
 
     if p.eat_contextual(EXPR) {
         Some(FragmentKind::Expr)
@@ -138,9 +138,11 @@ fn parse_fragment_kind(p: &mut Parser) -> Option<FragmentKind> {
         Some(FragmentKind::Type)
     } else if p.eat_contextual(IDENT) {
         Some(FragmentKind::Ident)
+    } else if p.eat_contextual(PATH) {
+        Some(FragmentKind::Path)
     } else {
         p.error(ParseErrorKind::Expected {
-            expected: "'expr', 'type' or 'ident'",
+            expected: "'expr', 'type', 'ident' or 'path'",
             found: p.peek().describe(),
         });
         None
