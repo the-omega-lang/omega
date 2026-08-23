@@ -29,6 +29,28 @@ pub enum Item {
     Import(ImportStmt),
     MacroDefinition(MacroDefinitionStmt),
     MacroInvocation(MacroInvocationExpr),
+    Alias(AliasItem),
+}
+
+/// `alias Name<G...> = <target>;` -- a compile-time-only second source name
+/// for an existing declaration. The parser never classifies the target; it
+/// only records whether it was written as a bare path (which may name any
+/// namespace) or as some other type syntax.
+#[derive(Debug, Clone)]
+pub struct AliasItem {
+    pub visibility: Visibility,
+    pub explicit_hidden_span: Option<Span>,
+    pub ident: Ident,
+    pub name_span: Span,
+    pub generics: Vec<GenericParam>,
+    pub target: AliasTarget,
+    pub target_span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub enum AliasTarget {
+    Path(Path),
+    Type(Type),
 }
 
 #[derive(Debug, Clone)]

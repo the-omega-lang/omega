@@ -1,0 +1,158 @@
+import std::io::println;
+import self::child;
+
+# --- ordinary type alias --------------------------------------------------
+alias Count = i32;
+
+# An alias chain keeps the final target's identity, not the spelling used.
+alias Tally = Count;
+
+# --- structural (non-path) targets ----------------------------------------
+alias Bytes = *[]u8;
+
+struct Pair<A, B> {
+	exposed a: A;
+	exposed b: B;
+
+	exposed new(a: A, b: B) => Self {
+		Self { a = a; b = b; }
+	}
+}
+
+# A fixed specialization is exactly that specialization, not a new type.
+alias IntPair = Pair<i32, i32>;
+
+# An alias template owns `V` and substitutes it into its right-hand side.
+alias Keyed<V> = Pair<*str, V>;
+
+# A bare alias of a generic declaration forwards its generic behavior.
+alias P = Pair;
+
+# --- function aliases -----------------------------------------------------
+add(a: i32, b: i32) => i32 {
+	a + b
+}
+
+identity<T>(value: T) => T {
+	value
+}
+
+show(value: i32) => *str {
+	"int"
+}
+
+show(value: bool) => *str {
+	"bool"
+}
+
+alias plus = add;
+alias same = identity;
+alias render = show;
+
+# --- module alias ---------------------------------------------------------
+alias kid = child;
+
+# --- macro alias ----------------------------------------------------------
+macro twice($x: expr) => {
+	($x) * 2
+}
+
+alias doubled = twice;
+
+# --- spec conjunction aliases ---------------------------------------------
+exposed spec A {
+	a(*self) => i32;
+}
+
+exposed spec B {
+	b(*self) => i32;
+}
+
+struct Foo {
+	exposed tally: i32;
+}
+
+conform Foo to A {
+	a(*self) => i32 { self.tally + 1 }
+}
+
+conform Foo to B {
+	b(*self) => i32 { self.tally + 2 }
+}
+
+alias AB = spec A + B;
+alias Dyn = *spec B + A;
+
+# `AB` as a generic bound is exactly `A + B` spelled at the bound.
+bounded<T: AB>(value: *T) => i32 {
+	A::a(value) + B::b(value)
+}
+
+# `AB` as a parameter type is the same anonymous bounded generic that a
+# literal `spec A + B` parameter produces.
+static_param(value: AB) => i32 {
+	value.a() + value.b()
+}
+
+# `Dyn` is a dynamic spec object; canonical shape ignores the written order.
+dynamic_param(value: Dyn) => i32 {
+	value.a() + value.b()
+}
+
+# The directly spelled type must accept an aliased argument with no
+# conversion, proving both spellings resolve to one identity.
+takes_direct_pair(p: Pair<i32, i32>) => i32 {
+	p.a + p.b
+}
+
+takes_alias_pair(p: IntPair) => i32 {
+	p.a + p.b
+}
+
+main() => void {
+	# --- alias chain and primitive alias ---------------------------------
+	total: Tally = 7;
+	same_size := sizeof<Count> == sizeof<i32>;
+	println$("chained-primitive-alias: ", total + 1, " ", same_size);
+
+	# --- structural target ------------------------------------------------
+	mut storage: [4]u8;
+	view: Bytes = &storage[0..];
+	println$("structural-target: ", view.length);
+
+	# --- specialized alias: construction and static method ----------------
+	pair := IntPair { a = 2; b = 3; };
+	made := IntPair::new(4, 5);
+	println$("specialized-alias: ", pair.a + pair.b, " ", made.a + made.b);
+	pair_size := sizeof<IntPair> == sizeof<Pair<i32, i32>>;
+	println$("alias-sizeof: ", pair_size);
+
+	# --- canonical equivalence with the directly spelled target -----------
+	println$("canonical-identity: ", takes_direct_pair(made), " ", takes_alias_pair(pair));
+
+	# --- alias template ---------------------------------------------------
+	keyed := Keyed<i32>::new("k", 9);
+	println$("alias-template: ", keyed.a, " ", keyed.b);
+
+	# --- bare forwarding of a generic declaration -------------------------
+	forwarded := P<i32, i32>::new(6, 7);
+	println$("forwarded-generic: ", forwarded.a + forwarded.b);
+
+	# --- function aliases: ordinary, generic, overloaded ------------------
+	println$("function-alias: ", plus(1, 2));
+	println$("generic-function-alias: ", same(41) + 1, " ", same("text"));
+	println$("overloaded-function-alias: ", render(1), " ", render(true));
+
+	# --- module alias and re-exported hidden declaration ------------------
+	item := kid::Public::new(3);
+	println$("module-alias: ", child::describe(&item), " ", item.reveal_secret());
+
+	# --- macro invocation through an alias --------------------------------
+	println$("macro-alias: ", doubled$(21));
+
+	# --- spec conjunction aliases -----------------------------------------
+	foo := Foo { tally = 10; };
+	println$("bound-alias: ", bounded(&foo));
+	println$("static-param-alias: ", static_param(foo));
+	println$("dynamic-alias: ", dynamic_param(&foo));
+}

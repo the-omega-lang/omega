@@ -22,7 +22,9 @@ pub struct ExpansionState {
 #[derive(Debug, Clone)]
 struct ExpansionOrigin {
     defining_module: Vec<Ident>,
-    macro_visibility: Visibility,
+    /// `None` for an origin that only records a definition module without
+    /// being a macro expansion, so macro dependency-leak checks skip it.
+    macro_visibility: Option<Visibility>,
 }
 
 impl ExpansionState {
@@ -37,7 +39,25 @@ impl ExpansionState {
     pub fn macro_visibility(&self, origin: Origin) -> Option<Visibility> {
         origin
             .0
-            .and_then(|id| self.origins.get(&id).map(|entry| entry.macro_visibility))
+            .and_then(|id| self.origins.get(&id))
+            .and_then(|entry| entry.macro_visibility)
+    }
+
+    /// Records a non-macro origin that only names the module a piece of
+    /// syntax must resolve in. Alias expansion uses it so an alias target
+    /// keeps resolving at the alias declaration site after it is substituted
+    /// into a use site in another module.
+    pub fn register_definition_module(&mut self, module: &[Ident]) -> Origin {
+        let id = ExpansionId(self.next_id);
+        self.next_id += 1;
+        self.origins.insert(
+            id,
+            ExpansionOrigin {
+                defining_module: module.to_vec(),
+                macro_visibility: None,
+            },
+        );
+        Origin(Some(id))
     }
 
     fn fresh_origin(&mut self, def: &MacroDefinitionStmt) -> Origin {
@@ -47,7 +67,7 @@ impl ExpansionState {
             id,
             ExpansionOrigin {
                 defining_module: def.defining_module.clone(),
-                macro_visibility: def.visibility,
+                macro_visibility: Some(def.visibility),
             },
         );
         Origin(Some(id))

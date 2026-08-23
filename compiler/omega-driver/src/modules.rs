@@ -9,7 +9,9 @@ use omega_analyzer::resolver::ResolveError;
 use omega_diagnostics::{SourceFile, Span};
 use omega_hir::{HirGenericParam, HirId, HirItem, HirModule, ModuleId};
 use omega_parser::macros::MacroError;
-use omega_parser::prelude::{Ident, ImportRoot, Item, ParseError, Path, SourceModule};
+use omega_parser::prelude::{
+    AliasItem, AliasTarget, Ident, ImportRoot, ImportStmt, Item, ParseError, Path, SourceModule,
+};
 use omega_parser::prelude::{MacroDefinitionStmt, Visibility};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -24,6 +26,10 @@ pub(crate) struct ModuleIndex {
     pub items: IndexMap<Ident, usize>,
     pub overloads: IndexMap<Ident, Vec<usize>>,
     pub imports: IndexMap<Ident, ImportEntry>,
+    /// Declared aliases, kept apart from `items` because an alias is a name
+    /// without a declaration: it must never reach item resolution, emission,
+    /// or any other concrete-item sweep.
+    pub aliases: IndexMap<Ident, usize>,
 }
 
 impl ModuleIndex {
@@ -58,6 +64,7 @@ pub(crate) struct ModuleStore {
     macro_expansions: omega_parser::macros::ExpansionState,
     sources: HashMap<ModulePath, Rc<SourceFile>>,
     failures: HashMap<ModulePath, LoadFailure>,
+    definition_origins: HashMap<ModulePath, omega_parser::prelude::Origin>,
     next_id: u32,
 }
 
@@ -93,6 +100,18 @@ impl ModuleStore {
         origin: omega_parser::prelude::Origin,
     ) -> Option<omega_parser::prelude::Visibility> {
         self.macro_expansions.macro_visibility(origin)
+    }
+
+    /// One shared origin per module naming that module as the place syntax
+    /// carrying it must resolve in. Alias expansion stamps it onto a target
+    /// type so the target keeps resolving at its declaration site.
+    pub fn definition_origin(&mut self, module: &[Ident]) -> omega_parser::prelude::Origin {
+        if let Some(origin) = self.definition_origins.get(module) {
+            return *origin;
+        }
+        let origin = self.macro_expansions.register_definition_module(module);
+        self.definition_origins.insert(module.to_vec(), origin);
+        origin
     }
 
     pub fn index(&self, path: &[Ident]) -> &ModuleIndex {
@@ -191,6 +210,7 @@ impl Driver {
                         definitions.insert(definition.name.clone(), definition);
                     }
                 }
+                self.bind_macro_aliases(path, &ast, &mut definitions);
                 definitions
             }
         };
@@ -202,6 +222,109 @@ impl Driver {
             .macro_defs
             .insert(path.to_vec(), definitions.clone());
         Ok(definitions)
+    }
+
+    /// Binds macro names reached through an `alias`. This runs before macro
+    /// expansion, so it works from raw AST rather than from the alias query,
+    /// which cannot exist yet: indexing a module requires its HIR, and its HIR
+    /// requires this environment. The expansion keeps the target macro's body
+    /// and defining module for hygiene, but takes the alias's name and
+    /// visibility so an `exposed` alias of a hidden macro is checked as the
+    /// exposed macro it now is.
+    fn bind_macro_aliases(
+        &mut self,
+        path: &[Ident],
+        ast: &SourceModule,
+        definitions: &mut HashMap<Ident, MacroDefinitionStmt>,
+    ) {
+        let declared: Vec<AliasItem> = ast
+            .nodes
+            .iter()
+            .filter_map(|node| match &node.item {
+                Item::Alias(declared) if declared.generics.is_empty() => Some(declared.clone()),
+                _ => None,
+            })
+            .collect();
+        if declared.is_empty() {
+            return;
+        }
+        let imports: Vec<ImportStmt> = ast
+            .nodes
+            .iter()
+            .filter_map(|node| match &node.item {
+                Item::Import(import) => Some(import.clone()),
+                _ => None,
+            })
+            .collect();
+
+        // A chain may be written in any order, so binding repeats until no
+        // further alias resolves. Each round binds at least one name, which
+        // bounds the loop by the number of aliases.
+        let mut remaining = declared;
+        loop {
+            let mut bound_any = false;
+            let mut deferred = Vec::with_capacity(remaining.len());
+            for declared in remaining {
+                let AliasTarget::Path(target) = &declared.target else {
+                    continue;
+                };
+                match self.raw_macro_target(path, &imports, target, definitions) {
+                    Some(definition) => {
+                        definitions.insert(
+                            declared.ident.clone(),
+                            MacroDefinitionStmt {
+                                name: declared.ident.clone(),
+                                visibility: declared.visibility,
+                                ..definition
+                            },
+                        );
+                        bound_any = true;
+                    }
+                    None => deferred.push(declared),
+                }
+            }
+            remaining = deferred;
+            if !bound_any || remaining.is_empty() {
+                return;
+            }
+        }
+    }
+
+    fn raw_macro_target(
+        &mut self,
+        path: &[Ident],
+        imports: &[ImportStmt],
+        target: &Path,
+        local: &HashMap<Ident, MacroDefinitionStmt>,
+    ) -> Option<MacroDefinitionStmt> {
+        if target.is_unqualified() {
+            return local.get(&target.head).cloned();
+        }
+        let (name, module) = target.segments().split_last().map(|(n, m)| (n.clone(), m.to_vec()))?;
+        let base = imports
+            .iter()
+            .find(|import| {
+                import.path.tail.last().unwrap_or(&import.path.head) == &target.head
+            })
+            .and_then(|import| self.import_absolute_path(path, import.root, &import.path).ok())
+            .or_else(|| {
+                self.roots
+                    .is_known_top_level(&target.head)
+                    .then(|| vec![target.head.clone()])
+            })?;
+        let absolute: Vec<Ident> = base
+            .into_iter()
+            .chain(module.into_iter().skip(1))
+            .collect();
+        if absolute == path {
+            return local.get(&name).cloned();
+        }
+        self.module_macros(&absolute).ok()?.get(&name).cloned()
+    }
+
+    pub(crate) fn module_has_macro(&mut self, module: &[Ident], name: &Ident) -> bool {
+        self.module_macros(module)
+            .is_ok_and(|definitions| definitions.contains_key(name))
     }
 
     fn prelude_macros(&mut self) -> Result<Rc<HashMap<Ident, MacroDefinitionStmt>>, CompileError> {
@@ -309,6 +432,15 @@ impl Driver {
                     .or_insert_with(|| definition.clone());
             }
         }
+
+        // A macro reached through this module's own aliases. Real definitions
+        // in the same map are re-collected (identically) by the expander from
+        // the AST; only the alias bindings actually depend on being here.
+        if let Ok(own) = self.module_macros(path) {
+            for (name, definition) in own.iter() {
+                environment.insert(name.clone(), definition.clone());
+            }
+        }
         Ok(environment)
     }
 
@@ -392,19 +524,12 @@ impl Driver {
             return Ok(());
         }
         let hir = self.parse_module(path)?;
-        let (items, overloads) = self.index_items(path, &hir);
+        let index = self.index_items(path, &hir);
         // Published before imports are indexed: indexing an import resolves
         // its annotations, which runs an `Analyzer` that could ask this same
         // module for a name again -- marking it indexed here makes that
         // re-entry return immediately instead of recursing forever.
-        self.modules.set_index(
-            path,
-            ModuleIndex {
-                items,
-                overloads,
-                imports: IndexMap::new(),
-            },
-        );
+        self.modules.set_index(path, index);
         let imports = self.index_imports(path, &hir);
         self.modules.set_imports(path, imports);
         Ok(())
@@ -414,12 +539,25 @@ impl Driver {
         &mut self,
         path: &[Ident],
         hir: &HirModule,
-    ) -> (IndexMap<Ident, usize>, IndexMap<Ident, Vec<usize>>) {
+    ) -> ModuleIndex {
         let mut items: IndexMap<Ident, usize> = IndexMap::new();
         let mut overloads: IndexMap<Ident, Vec<usize>> = IndexMap::new();
+        let mut aliases: IndexMap<Ident, usize> = IndexMap::new();
         let is_function = |i: usize| matches!(&hir.items[i], HirItem::FunctionDefinition(_));
 
         for (i, item) in hir.items.iter().enumerate() {
+            if let HirItem::Alias(declared) = item {
+                match aliases.entry(declared.name.clone()) {
+                    Entry::Vacant(entry) => {
+                        entry.insert(i);
+                    }
+                    Entry::Occupied(first) => {
+                        let (_, previous) = item_id_span(&hir.items[*first.get()]);
+                        self.report_redeclaration(path, item, declared.name.clone(), previous);
+                    }
+                }
+                continue;
+            }
             let Some(name) = item_name(item) else {
                 continue;
             };
@@ -436,22 +574,51 @@ impl Driver {
                     .or_insert_with(|| vec![first_index])
                     .push(i);
             } else {
-                let (id, span) = item_id_span(item);
                 let (_, previous) = item_id_span(&hir.items[first_index]);
-                self.diagnostics.error(
+                self.report_redeclaration(path, item, name, previous);
+            }
+        }
+
+        // An alias competes for the same top-level name space as ordinary
+        // declarations, so a collision is an ordinary redeclaration.
+        for (name, &alias_index) in &aliases {
+            if let Some(&item_index) = items.get(name) {
+                let (_, previous) = item_id_span(&hir.items[item_index]);
+                self.report_redeclaration(
                     path,
-                    AnalysisError::new(
-                        id,
-                        span,
-                        AnalysisErrorKind::Redeclaration {
-                            name,
-                            previous: Some(previous),
-                        },
-                    ),
+                    &hir.items[alias_index],
+                    name.clone(),
+                    previous,
                 );
             }
         }
-        (items, overloads)
+        ModuleIndex {
+            items,
+            overloads,
+            imports: IndexMap::new(),
+            aliases,
+        }
+    }
+
+    fn report_redeclaration(
+        &mut self,
+        path: &[Ident],
+        item: &HirItem,
+        name: Ident,
+        previous: Span,
+    ) {
+        let (id, span) = item_id_span(item);
+        self.diagnostics.error(
+            path,
+            AnalysisError::new(
+                id,
+                span,
+                AnalysisErrorKind::Redeclaration {
+                    name,
+                    previous: Some(previous),
+                },
+            ),
+        );
     }
 
     fn index_imports(&mut self, path: &[Ident], hir: &HirModule) -> IndexMap<Ident, ImportEntry> {
@@ -552,6 +719,12 @@ impl Driver {
         name: &Ident,
     ) -> Result<Vec<HirGenericParam>, ResolveError> {
         let index = self.local_item_index(module_path, name)?;
+        // A static-spec parameter contributes an anonymous bounded generic, so
+        // a function's generic arity is only known after normalization.
+        if let HirItem::FunctionDefinition(f) = &self.modules.parsed(module_path).hir.items[index] {
+            let f = f.clone();
+            return Ok(self.normalized_function(module_path, &f)?.generics);
+        }
         Ok(match &self.modules.parsed(module_path).hir.items[index] {
             HirItem::Struct(s) => s.generics.clone(),
             HirItem::Enum(e) => e.generics.clone(),
@@ -564,7 +737,11 @@ impl Driver {
             | HirItem::DeclarationWithInit { .. }
             | HirItem::ForeignBinding(_)
             | HirItem::Walrus { .. } => vec![],
-            HirItem::Glue(_) | HirItem::Conform(_) | HirItem::Primitive(_) | HirItem::Import(_) => {
+            HirItem::Glue(_)
+            | HirItem::Conform(_)
+            | HirItem::Primitive(_)
+            | HirItem::Import(_)
+            | HirItem::Alias(_) => {
                 unreachable!("unnamed items are never indexed into a module's items")
             }
         })

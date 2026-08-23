@@ -3,7 +3,7 @@ use crate::resolved_type::{
     ConstValue, ResolvedConformance, ResolvedFunctionType, ResolvedGap, ResolvedMethod,
     ResolvedSpecType, ResolvedType,
 };
-use omega_hir::HirId;
+use omega_hir::{HirGenericParam, HirId};
 use omega_parser::prelude::{Ident, Origin, Type, Visibility};
 use std::cell::RefCell;
 use std::fmt;
@@ -19,6 +19,27 @@ pub enum ResolvedItem {
         mutable: bool,
     },
     Gap(Rc<ResolvedGap>),
+}
+
+/// What a declared `alias` names. An alias has no identity of its own, so
+/// every variant is either the target's absolute path or the structural type
+/// syntax the target was written as.
+#[derive(Debug, Clone)]
+pub enum ResolvedAlias {
+    Module(Vec<Ident>),
+    /// A top-level declaration, named exactly as if its own path were written
+    /// at the use site. Covers types, specs, functions and overload sets, and
+    /// macros alike -- the use site decides which namespace it wanted.
+    Item(Vec<Ident>),
+    /// A structural target, expanded before the use site applies contextual
+    /// type semantics so that `spec A + B` behaves identically whether it was
+    /// written literally or reached through an alias. Every path in `r#type`
+    /// and `generics` already carries an origin naming the alias
+    /// declaration's module, so expansion needs no module threading.
+    Type {
+        generics: Vec<HirGenericParam>,
+        r#type: Type,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -82,6 +103,13 @@ pub enum ResolveError {
     AmbiguousAmbientName {
         name: Ident,
         candidates: Vec<Vec<Ident>>,
+    },
+    /// An `alias` whose target is a declaration kind an alias never names.
+    InvalidAliasTarget {
+        module: Vec<Ident>,
+        declared: Ident,
+        target: Vec<Ident>,
+        kind: &'static str,
     },
 }
 
@@ -198,6 +226,18 @@ impl fmt::Display for ResolveError {
                     spec.as_ref()
                 )
             }
+            Self::InvalidAliasTarget {
+                module,
+                declared,
+                target,
+                kind,
+            } => write!(
+                f,
+                "alias '{}::{}' cannot name {kind} '{}'",
+                join(module),
+                declared.as_ref(),
+                join(target)
+            ),
             Self::AmbiguousAmbientName { name, candidates } => write!(
                 f,
                 "'{}' is ambiguous: it's exposed by more than one core module ({})",
@@ -269,6 +309,14 @@ pub trait ModuleResolver {
         module_path: &[Ident],
         alias: &Ident,
     ) -> Result<Option<ImportTarget>, ResolveError>;
+
+    /// The `alias` declared under `name` in `module_path`, if there is one.
+    /// Follows alias chains and reports a cycle rather than recursing.
+    fn resolve_declared_alias(
+        &mut self,
+        module_path: &[Ident],
+        name: &Ident,
+    ) -> Result<Option<ResolvedAlias>, ResolveError>;
 
     fn ambient_core_candidates(
         &mut self,

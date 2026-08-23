@@ -81,6 +81,8 @@ A `Context` tracks nested `LexicalScope`s containing facts such as:
 
 Resolution order distinguishes lexical locals/types from module-level names. Module aliases and top-level declarations are not copied wholesale into every analyzer context; the resolver is queried when local scope lookup does not answer the question.
 
+Declared `alias` names are erased during this resolution rather than represented. `omega_analyzer::aliases` expands a type-form alias on written `Type` syntax at the top of `Context::resolve_type` (and again for a pointer's pointee, which is what decides pointer-versus-dynamic-object), so every contextual rule below sees the target spelling. Path-shaped aliases are instead canonicalized by the driver, which answers each query for the target's own identity. No `ResolvedType`, spec cell, `decl_id`, or checked node is ever created for an alias.
+
 ## Analysis sites and synthetic identity
 
 Top-level analyzer/query entry points carry an explicit `AnalysisSite { id, span }` rather than an untyped `(HirId, Span)` protocol. The site binds semantic ownership and diagnostic anchoring into one value while nested operations can still report against their own child IDs/spans.
@@ -218,7 +220,9 @@ Bounds are resolved/expanded and available to body checking. Conformance lookup 
 
 Specs have canonical declaration cells containing their own raw requirement information -- a spec declares only itself, with no alias/dependency mechanism. A concrete use substitutes spec arguments + `Self` and resolves effective member slots.
 
-A raw `spec A + B + ...` conjunction (`Type::SpecStatic`, parser/HIR-level) becomes semantic only at the point where `Context::resolve_pointer_type` sees it as an *immediate* pointer pointee: `Pointer(SpecStatic(members), mutable)` resolves to `ResolvedType::SpecObject { shape, mutable }`. A bare (non-pointer) `spec ...` in a supported static position instead desugars earlier, in HIR, into one fresh generic bounded by every member (see [`parsing-and-hir.md`](parsing-and-hir.md)); a bare `spec ...` anywhere else remains a `TypeResolutionError`. This is the one place static-vs-dynamic is decided -- MIR/codegen never see an unresolved `Type::SpecStatic`.
+A raw `spec A + B + ...` conjunction (`Type::SpecStatic`, parser/HIR-level) becomes semantic only at the point where `Context::resolve_pointer_type` sees it as an *immediate* pointer pointee: `Pointer(SpecStatic(members), mutable)` resolves to `ResolvedType::SpecObject { shape, mutable }`. A bare (non-pointer) `spec ...` in a supported static position is instead normalized into one fresh generic bounded by every member; a bare `spec ...` anywhere else remains a `TypeResolutionError`. This is the one place static-vs-dynamic is decided -- MIR/codegen never see an unresolved `Type::SpecStatic`.
+
+That static-parameter normalization is `omega_analyzer::generics::normalize_static_spec_params`, and it is the single owner of the rule. It expands type-form aliases first, so a literal `spec A + B` parameter and an aliased `AB` parameter produce the same anonymous bounded generic. Every query that reports a function's generic arity, generic signature, collected signature, or body works from its result, so those views cannot diverge.
 
 `shape` is a `ResolvedSpecShape`: a canonicalized list of `ResolvedSpecApplication { spec, spec_args }`. Canonicalization resolves every member to its final spec declaration, normalizes its generic arguments, removes exact duplicate applications, and sorts what remains by fully qualified spec name plus a canonical normalized-argument key -- never by declaration/discovery order, which can vary across compilations. Consequently `*spec A + B` and `*spec B + A` resolve to the same `ResolvedSpecShape` and compare/hash equal; reordering is not a coercion or cast, because there is nothing to convert.
 

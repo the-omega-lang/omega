@@ -1,6 +1,7 @@
 import std::io::println;
 
-# Each member is a real declaration -- there is no alias mechanism anymore.
+# Each member is a real declaration; a conjunction is spelled at the type that
+# needs it. Naming one with `alias` is covered by t26_aliases.
 exposed spec A {
 	a(*self) => i32;
 }

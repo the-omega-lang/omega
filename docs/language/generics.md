@@ -27,7 +27,9 @@ A parameter may have a spec bound and/or a default type. Bounds use `+` for conj
 f<T: A + B>(x: T) => void { ... }
 ```
 
-A concrete instantiation must satisfy every declared bound. Spec aliases in bounds mean the conjunction of their member specs; see [`specs-and-conformance.md`](specs-and-conformance.md).
+A concrete instantiation must satisfy every declared bound. A bound that names an alias of a spec conjunction means the conjunction of its member specs, exactly as if `A + B` had been spelled at the bound; see [`specs-and-conformance.md`](specs-and-conformance.md) and [`aliases.md`](aliases.md).
+
+An alias may also carry its own generic parameter list, making it a type alias template whose parameters are substituted into its right-hand side. Such parameters take bounds and defaults under the rules of this chapter, but they create no nominal identity: `Keyed<i32>` for `alias Keyed<V> = Pair<*str, V>;` *is* `Pair<*str, i32>`. A bare alias of a generic declaration forwards that declaration's arity, defaults, bounds, and inference unchanged.
 
 Unbounded generic code may call operations that successfully resolve for every concrete instantiation actually formed; this is Omega's current duck-typed behavior for unconstrained generics. Adding a spec bound makes the required capability nominal and validates the corresponding conformance.
 

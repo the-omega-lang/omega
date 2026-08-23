@@ -306,6 +306,11 @@ impl Context {
         module_path: &[Ident],
         options: ResolveItemOptions,
     ) -> Result<ResolvedType, TypeResolutionError> {
+        // Type-form aliases expand before any contextual rule below sees the
+        // type, so an aliased spelling and a literal one are indistinguishable
+        // from here on.
+        let typ = crate::aliases::expand_type_alias(resolver, module_path, typ)
+            .map_err(TypeResolutionError::ModuleResolution)?;
         match typ {
             Type::Named(path) => self.resolve_named_type(path, resolver, module_path, options),
             Type::Generic(path, args) => {
@@ -514,6 +519,10 @@ impl Context {
         module_path: &[Ident],
         options: ResolveItemOptions,
     ) -> Result<ResolvedType, TypeResolutionError> {
+        // The pointee decides between a pointer and a dynamic spec object, so
+        // it must be expanded here rather than on the recursive call below.
+        let pointee_type = crate::aliases::expand_type_alias(resolver, module_path, pointee_type)
+            .map_err(TypeResolutionError::ModuleResolution)?;
         match pointee_type {
             Type::InferredArray(item) => {
                 let item =

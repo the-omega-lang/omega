@@ -37,6 +37,7 @@ ModuleStore     source / AST / HIR / module index caches
 Diagnostics     accumulated structured findings
 ItemQueries     explicit item/spec query state + type cells + checked bodies
 ImportState     lazy import-alias resolution + ordered resolution stack + usage
+AliasState      declared-`alias` resolution + ordered resolution stack
 Primitives      primitive declarations/templates/instantiations
 Conformances    concrete + generic conformance registrations and solver goals
 prelude_macros  cached ambient exposed core macros
@@ -105,7 +106,13 @@ A namespace-only directory module has a valid empty `HirModule` and no own sourc
 
 - top-level name -> item position map;
 - overload-group indexes;
-- import alias table.
+- import alias table;
+- declared-`alias` table.
+
+Declared aliases are indexed separately from concrete items on purpose: an
+alias is a name without a declaration, so it must never enter item resolution,
+body checking, or an emission sweep. A collision between an alias name and a
+concrete declaration is an ordinary redeclaration.
 
 The local item index is published before imports are fully indexed, because resolving annotations/import metadata may re-enter lookup for the same module. This ordering prevents infinite recursive indexing.
 
@@ -122,6 +129,38 @@ Imports are stored structurally first and resolved lazily where possible.
 - ambient `core` fallback candidates.
 
 `core` is special only in well-defined places: exposed ambient names/macros and primitive ownership. Ordinary extern packages do not receive ambient lookup.
+
+## Alias resolution
+
+`AliasState` is a separate query with the same `InProgress / Resolved / Failed`
+discipline and ordered resolution stack as the item queries, because an alias
+chain can cycle. An alias never gets an `ItemKey`, a type cell, or a symbol.
+
+A resolved alias is one of three things:
+
+- a module path;
+- an absolute item path, which every path-shaped driver query (item resolution,
+  visibility, overload candidates, generic/literal/static signatures, spec
+  declarations) canonicalizes through before answering, so downstream phases
+  only ever see the target's identity;
+- a structural type target, expanded by `omega_analyzer::aliases` on written
+  `Type` syntax before contextual type rules apply.
+
+Structural targets are stamped with a per-module definition `Origin`, reusing
+the provenance mechanism macro expansion already uses, so an alias target keeps
+resolving at its declaration site after it is substituted into a use site in
+another module. Cycles hidden behind type constructors (`alias A = *A;`) are
+caught by forcing every alias a target mentions while the current one is still
+in progress.
+
+Re-export lives in exactly one place: the caller is gated on the alias's own
+visibility, and the target is then reached with the alias declaration module's
+rights.
+
+Macro aliases are bound earlier, while the pre-expansion macro environment is
+built, because indexing a module needs its HIR and its HIR needs that
+environment. That binding works from raw AST and reuses the target macro's body
+and defining module, taking only the alias's name and visibility.
 
 ## Item query identity
 
@@ -216,6 +255,7 @@ The analyzer asks for semantic/module facts such as:
 
 - resolve named item;
 - resolve import alias;
+- resolve a declared `alias`;
 - lookup overload candidates;
 - obtain raw generic signatures for inference;
 - obtain canonical spec declarations;

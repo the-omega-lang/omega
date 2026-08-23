@@ -557,6 +557,7 @@ impl<'r> Analyzer<'r> {
         ResolvedFunctionType,
         crate::annotations::ResolvedAnnotations,
     )> {
+        let f = &self.normalized_function(f)?;
         self.check_redundant_hidden(f.id, f.explicit_hidden_span);
         let params = self.analyze_all(&f.params, |this, p| {
             this.resolve_type_or_error(p.id, p.span, &p.r#type, true)

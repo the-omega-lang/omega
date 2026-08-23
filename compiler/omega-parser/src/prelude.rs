@@ -11,7 +11,7 @@ pub use crate::ast::expression::{
 pub use crate::ast::generics::GenericParam;
 pub use crate::ast::identifier::{ExpansionId, ExprPath, Ident, Origin, Path, QualifiedSpecPath};
 pub use crate::ast::item::{
-    ConformStmt, EnumHeaderField, EnumStmt, EnumVariantStmt, ForeignBindingItem,
+    AliasItem, AliasTarget, ConformStmt, EnumHeaderField, EnumStmt, EnumVariantStmt, ForeignBindingItem,
     ForeignBlockEntry, ForeignBlockItem, ForeignFunctionItem, FragmentKind, ImportRoot,
     ImportStmt, Item, ItemNode, MacroBodyPiece, MacroDefinitionStmt, MacroParam, MacroRepetition,
     MacroSignature, PrimitiveStmt, SpecFunctionStmt, SpecStmt, StructStmt, UnionStmt,

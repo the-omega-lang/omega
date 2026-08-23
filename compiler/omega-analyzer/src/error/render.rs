@@ -858,6 +858,9 @@ pub fn resolve_error_diagnostic(error: &ResolveError, span: Option<Span>) -> Dia
                 missing.iter().map(Ident::as_ref).collect::<Vec<_>>().join(", ")
             ))
         }
+        ResolveError::InvalidAliasTarget { .. } => with_label(d, "not a declaration an alias can name".to_string())
+            .with_note("an alias is a second source name, never a new declaration, so it cannot name storage or a compile-time value")
+            .with_help("alias a type, spec, function, macro, or module instead"),
         ResolveError::AmbiguousAmbientName { name: _, candidates } => with_label(d, "ambiguous name".to_string())
             .with_note(format!("exposed by: {}", candidates.iter().map(|c| join(c)).collect::<Vec<_>>().join(", ")))
             .with_help(format!(

@@ -7,7 +7,7 @@ use omega_analyzer::resolved_type::{
 use omega_analyzer::resolver::{
     GenericLiteralSignature, GenericSignature, GenericStaticFunctionSignature, ImportTarget,
     ItemNamespace, ModuleResolver, OverloadCandidate, OverloadCandidates, ResolveError,
-    ResolveItemOptions, ResolvedItem,
+    ResolveItemOptions, ResolvedAlias, ResolvedItem,
 };
 use omega_analyzer::similarity::best_match;
 use omega_hir::{HirFunctionDef, HirGenericParam, HirId, HirItem};
@@ -132,36 +132,10 @@ impl Driver {
         Ok(ImportTarget::Item(segments.to_vec(), item))
     }
 
-    pub(crate) fn import_entry(
-        &mut self,
-        module_path: &[Ident],
-        alias: &Ident,
-    ) -> Result<Option<(ModulePath, bool)>, ResolveError> {
-        self.ensure_module_indexed(module_path)?;
-        let Some(import) = self.modules.index(module_path).imports.get(alias) else {
-            return Ok(None);
-        };
-        let entry = (import.target.clone(), import.reveal);
-        self.imports.mark_used(module_path, alias);
-        Ok(Some(entry))
-    }
-}
-
-impl ModuleResolver for Driver {
-    fn macro_origin_module(&self, origin: omega_parser::prelude::Origin) -> Option<Vec<Ident>> {
-        self.modules.macro_origin_module(origin)
-    }
-
-    fn macro_origin_visibility(&self, origin: omega_parser::prelude::Origin) -> Option<Visibility> {
-        self.modules.macro_origin_visibility(origin)
-    }
-
-    fn declared_item_visibility(&mut self, absolute_path: &[Ident]) -> Option<Visibility> {
-        let (name, module) = absolute_path.split_last()?;
-        self.declared_visibility(module, name)
-    }
-
-    fn resolve_import_alias(
+    /// Import-alias lookup only. Declared aliases deliberately do not enter
+    /// here, so alias-target resolution can consult imports without looping
+    /// back through the alias query.
+    pub(crate) fn resolve_import_alias_entry(
         &mut self,
         module_path: &[Ident],
         alias: &Ident,
@@ -179,6 +153,175 @@ impl ModuleResolver for Driver {
         };
         self.resolve_alias(module_path, alias, &target, reveal)
             .map(Some)
+    }
+
+    pub(crate) fn import_entry(
+        &mut self,
+        module_path: &[Ident],
+        alias: &Ident,
+    ) -> Result<Option<(ModulePath, bool)>, ResolveError> {
+        self.ensure_module_indexed(module_path)?;
+        let Some(import) = self.modules.index(module_path).imports.get(alias) else {
+            return Ok(None);
+        };
+        let entry = (import.target.clone(), import.reveal);
+        self.imports.mark_used(module_path, alias);
+        Ok(Some(entry))
+    }
+}
+
+impl Driver {
+    /// The absolute path a query should really answer for. A plain-path alias
+    /// forwards to its target's own path so every downstream query keeps
+    /// working on the target's identity; anything else answers for itself.
+    fn canonical_query_path(&mut self, absolute_path: &[Ident]) -> ModulePath {
+        let Some((name, module)) = absolute_path.split_last() else {
+            return absolute_path.to_vec();
+        };
+        match self.declared_alias(module, name) {
+            Ok(Some(ResolvedAlias::Item(target))) => target,
+            _ => absolute_path.to_vec(),
+        }
+    }
+
+    /// Re-export in one place: the caller is gated on the alias, and the
+    /// target is then reached with the alias declaration module's own rights.
+    fn resolve_through_alias(
+        &mut self,
+        accessor: &[Ident],
+        alias_module: &[Ident],
+        alias_name: &Ident,
+        target: ResolvedAlias,
+        type_args: &[ResolvedType],
+        options: ResolveItemOptions,
+    ) -> Result<ResolvedItem, ResolveError> {
+        let visibility = self
+            .alias_visibility(alias_module, alias_name)
+            .expect("the alias was just resolved from this module");
+        if !options.bypasses_visibility()
+            && !Self::visibility_allows(visibility, alias_module, accessor)
+        {
+            return Err(ResolveError::NotVisible {
+                module: alias_module.to_vec(),
+                item: alias_name.clone(),
+            });
+        }
+        match target {
+            ResolvedAlias::Module(path) => Err(ResolveError::UnknownItem {
+                module: path,
+                item: alias_name.clone(),
+            }),
+            ResolvedAlias::Item(path) => {
+                let (name, module) = path
+                    .split_last()
+                    .expect("an alias item target is never empty");
+                self.ensure_item(alias_module, module, name, type_args, options)
+            }
+            ResolvedAlias::Type { generics, r#type } => {
+                self.resolve_alias_type(alias_module, alias_name, &generics, &r#type, type_args)
+            }
+        }
+    }
+
+    /// Resolves a structural alias target reached through item resolution
+    /// rather than through type-syntax expansion -- `Alias::static_fn()` and
+    /// `Alias { .. }` name a type without ever passing a `Type` down.
+    fn resolve_alias_type(
+        &mut self,
+        alias_module: &[Ident],
+        alias_name: &Ident,
+        generics: &[HirGenericParam],
+        r#type: &Type,
+        type_args: &[ResolvedType],
+    ) -> Result<ResolvedItem, ResolveError> {
+        if type_args.len() != generics.len() {
+            return Err(ResolveError::GenericArgCountMismatch {
+                module: alias_module.to_vec(),
+                item: alias_name.clone(),
+                expected: generics.len(),
+                found: type_args.len(),
+            });
+        }
+        let index = self
+            .alias_index(alias_module, alias_name)?
+            .expect("the alias was just resolved from this module");
+        let owner = omega_analyzer::analysis::item_site(
+            &self.modules.parsed(alias_module).hir.items[index],
+        );
+        let substitution: Vec<(Ident, ResolvedType)> = generics
+            .iter()
+            .map(|g| g.ident.clone())
+            .zip(type_args.iter().cloned())
+            .collect();
+        match self.check_generic_bounds(alias_module, owner, generics, type_args) {
+            Some(Ok(_)) => {}
+            Some(Err(error)) => return Err(error),
+            None => {
+                return Err(ResolveError::ItemFailed {
+                    module: alias_module.to_vec(),
+                    item: alias_name.clone(),
+                });
+            }
+        }
+        let written = r#type.clone();
+        let run = self.with_analyzer(alias_module, &substitution, owner, |analyzer| {
+            analyzer.resolve_under_substitution(owner.id, owner.span, &written, &[])
+        });
+        match (run.failed, run.result) {
+            (false, Some(resolved)) => Ok(ResolvedItem::Type(resolved)),
+            _ => Err(ResolveError::ItemFailed {
+                module: alias_module.to_vec(),
+                item: alias_name.clone(),
+            }),
+        }
+    }
+}
+
+impl ModuleResolver for Driver {
+    fn macro_origin_module(&self, origin: omega_parser::prelude::Origin) -> Option<Vec<Ident>> {
+        self.modules.macro_origin_module(origin)
+    }
+
+    fn macro_origin_visibility(&self, origin: omega_parser::prelude::Origin) -> Option<Visibility> {
+        self.modules.macro_origin_visibility(origin)
+    }
+
+    /// An alias is its own visibility gate: the caller is checked against the
+    /// alias, never against the declaration it forwards to.
+    fn declared_item_visibility(&mut self, absolute_path: &[Ident]) -> Option<Visibility> {
+        let (name, module) = absolute_path.split_last()?;
+        self.alias_visibility(module, name)
+            .or_else(|| self.declared_visibility(module, name))
+    }
+
+    /// A declared alias binds a name in the same position an import alias
+    /// does, so path heads reach both through this one query. Only the two
+    /// path-shaped alias targets appear here; a structural type target has no
+    /// absolute path and is expanded by `aliases::expand_type_alias` instead.
+    fn resolve_import_alias(
+        &mut self,
+        module_path: &[Ident],
+        alias: &Ident,
+    ) -> Result<Option<ImportTarget>, ResolveError> {
+        match self.declared_alias(module_path, alias)? {
+            Some(ResolvedAlias::Module(target)) => return Ok(Some(ImportTarget::Module(target))),
+            // `GenericItem` is the lazily-resolved item-path form: it carries
+            // no eagerly resolved snapshot, which is what an alias needs.
+            Some(ResolvedAlias::Item(target)) => {
+                return Ok(Some(ImportTarget::GenericItem(target)));
+            }
+            Some(ResolvedAlias::Type { .. }) => return Ok(None),
+            None => {}
+        }
+        self.resolve_import_alias_entry(module_path, alias)
+    }
+
+    fn resolve_declared_alias(
+        &mut self,
+        module_path: &[Ident],
+        name: &Ident,
+    ) -> Result<Option<ResolvedAlias>, ResolveError> {
+        self.declared_alias(module_path, name)
     }
 
     fn ambient_core_candidates(
@@ -251,6 +394,16 @@ impl ModuleResolver for Driver {
         let Some((item_name, module_path)) = absolute_path.split_last() else {
             return Err(ResolveError::UnknownModule(absolute_path.to_vec()));
         };
+        if let Some(target) = self.declared_alias(module_path, item_name)? {
+            return self.resolve_through_alias(
+                accessor_module_path,
+                module_path,
+                item_name,
+                target,
+                type_args,
+                options,
+            );
+        }
         self.ensure_item(
             accessor_module_path,
             module_path,
@@ -261,12 +414,13 @@ impl ModuleResolver for Driver {
     }
 
     fn is_item_visible(&mut self, accessor_module_path: &[Ident], absolute_path: &[Ident]) -> bool {
-        let Some((item_name, module_path)) = absolute_path.split_last() else {
+        let Some((_, module_path)) = absolute_path.split_last() else {
             return false;
         };
-        self.declared_visibility(module_path, item_name)
+        let module_path = module_path.to_vec();
+        self.declared_item_visibility(absolute_path)
             .is_some_and(|visibility| {
-                Self::visibility_allows(visibility, module_path, accessor_module_path)
+                Self::visibility_allows(visibility, &module_path, accessor_module_path)
             })
     }
 
@@ -278,6 +432,7 @@ impl ModuleResolver for Driver {
         &mut self,
         absolute_path: &[Ident],
     ) -> Result<Option<GenericSignature>, ResolveError> {
+        let absolute_path = self.canonical_query_path(absolute_path);
         let Some((name, module_path)) = absolute_path.split_last() else {
             return Err(ResolveError::UnknownModule(absolute_path.to_vec()));
         };
@@ -288,6 +443,8 @@ impl ModuleResolver for Driver {
         else {
             return Ok(None);
         };
+        let f = f.clone();
+        let f = self.normalized_function(module_path, &f)?;
         if f.generics.is_empty() {
             return Ok(None);
         }
@@ -304,6 +461,7 @@ impl ModuleResolver for Driver {
         absolute_path: &[Ident],
         variant: Option<&Ident>,
     ) -> Result<Option<GenericLiteralSignature>, ResolveError> {
+        let absolute_path = self.canonical_query_path(absolute_path);
         let Some((name, module_path)) = absolute_path.split_last() else {
             return Err(ResolveError::UnknownModule(absolute_path.to_vec()));
         };
@@ -355,6 +513,7 @@ impl ModuleResolver for Driver {
         owner_absolute: &[Ident],
         function_name: &Ident,
     ) -> Result<Option<GenericStaticFunctionSignature>, ResolveError> {
+        let owner_absolute = self.canonical_query_path(owner_absolute);
         let Some((name, module_path)) = owner_absolute.split_last() else {
             return Err(ResolveError::UnknownModule(owner_absolute.to_vec()));
         };
@@ -404,7 +563,8 @@ impl ModuleResolver for Driver {
         &mut self,
         absolute_path: &[Ident],
     ) -> Result<Option<Rc<RefCell<ResolvedSpecType>>>, ResolveError> {
-        self.resolve_spec_declaration(absolute_path)
+        let absolute_path = self.canonical_query_path(absolute_path);
+        self.resolve_spec_declaration(&absolute_path)
     }
 
     fn function_overload_signatures(
@@ -412,6 +572,18 @@ impl ModuleResolver for Driver {
         module_path: &[Ident],
         name: &Ident,
     ) -> Result<Option<OverloadCandidates>, ResolveError> {
+        let canonical = self.canonical_query_path(
+            &module_path
+                .iter()
+                .cloned()
+                .chain(std::iter::once(name.clone()))
+                .collect::<Vec<_>>(),
+        );
+        let (name, module_path) = canonical
+            .split_last()
+            .expect("the query path always carries a name");
+        let module_path = module_path.to_vec();
+        let module_path = module_path.as_slice();
         if self.ensure_module_indexed(module_path).is_err() {
             return Ok(None);
         }
@@ -442,6 +614,9 @@ impl ModuleResolver for Driver {
         if self.ensure_module_indexed(module_path).is_err() {
             return None;
         }
+        // An alias's namespace is only known once its target resolves, so
+        // alias names are offered as candidates in either namespace.
+        let declared_aliases = self.alias_names(module_path);
         let module = self.modules.get(module_path)?;
         let index = module.index.as_ref()?;
         let candidates = index
@@ -461,9 +636,11 @@ impl ModuleResolver for Driver {
                 HirItem::Glue(_)
                 | HirItem::Conform(_)
                 | HirItem::Primitive(_)
-                | HirItem::Import(_) => false,
+                | HirItem::Import(_)
+                | HirItem::Alias(_) => false,
             })
-            .map(|(name, _)| name);
+            .map(|(name, _)| name)
+            .chain(declared_aliases.iter());
         best_match(target, candidates)
     }
 

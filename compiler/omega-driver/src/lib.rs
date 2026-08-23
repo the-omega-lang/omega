@@ -1,3 +1,4 @@
+mod aliases;
 mod bodies;
 pub(crate) mod compile;
 mod conformances;
@@ -14,6 +15,7 @@ pub use error::{CompileError, CompiledProgram};
 pub use fs_resolve::basename;
 pub use roots::ExternRoot;
 
+use aliases::AliasState;
 use conformances::Conformances;
 use diagnostics::Diagnostics;
 use items::ItemQueries;
@@ -36,6 +38,7 @@ pub struct Driver {
     diagnostics: Diagnostics,
     items: ItemQueries,
     imports: ImportState,
+    aliases: AliasState,
     primitives: Primitives,
     conformances: Conformances,
     prelude_macros: Option<Rc<HashMap<Ident, MacroDefinitionStmt>>>,
@@ -55,6 +58,7 @@ impl Driver {
             diagnostics: Diagnostics::default(),
             items: ItemQueries::default(),
             imports: ImportState::default(),
+            aliases: AliasState::default(),
             primitives: Primitives::default(),
             conformances: Conformances::default(),
             prelude_macros: None,

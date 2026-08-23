@@ -8,6 +8,7 @@ impl<'r> Analyzer<'r> {
         id: HirId,
         annotations: &crate::annotations::ResolvedAnnotations,
     ) -> Option<CheckedFunctionDef> {
+        let f = &self.normalized_function(f)?;
         if annotations.naked {
             return self.check_naked_function_body(f, fn_type, id, annotations);
         }

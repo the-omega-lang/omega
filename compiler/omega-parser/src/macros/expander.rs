@@ -96,7 +96,10 @@ impl<'a> Expander<'a> {
                         span: node.span,
                     });
                 }
-                other @ (Item::Declaration(_) | Item::ForeignBinding(_) | Item::Import(_)) => {
+                other @ (Item::Declaration(_)
+                | Item::ForeignBinding(_)
+                | Item::Import(_)
+                | Item::Alias(_)) => {
                     result.push(ItemNode {
                         item: other,
                         span: node.span,

@@ -1,5 +1,5 @@
 use crate::ids::HirId;
-pub use omega_parser::prelude::{BinaryOp, ImportRoot, LogicalOp};
+pub use omega_parser::prelude::{AliasTarget, BinaryOp, ImportRoot, LogicalOp};
 use omega_parser::prelude::{
     ByteStringExpr, ExprPath, FunctionType, Ident, NumberExpr, Origin, Param, Path, RawConvention,
     SelfMode, Span, StringExpr, Type, Visibility,
@@ -58,6 +58,24 @@ pub enum HirItem {
     Conform(HirConformDef),
     Primitive(HirPrimitiveDef),
     Import(HirImport),
+    Alias(HirAlias),
+}
+
+/// A compile-time-only second name for an existing declaration. The target is
+/// kept structurally unresolved: only semantic analysis can tell whether a
+/// path names a module, type, function, or macro, and only the use site can
+/// tell a static spec bound from a dynamic spec object.
+#[derive(Debug, Clone)]
+pub struct HirAlias {
+    pub id: HirId,
+    pub span: Span,
+    pub name_span: Span,
+    pub target_span: Span,
+    pub name: Ident,
+    pub visibility: Visibility,
+    pub explicit_hidden_span: Option<Span>,
+    pub generics: Vec<HirGenericParam>,
+    pub target: AliasTarget,
 }
 
 #[derive(Debug, Clone)]

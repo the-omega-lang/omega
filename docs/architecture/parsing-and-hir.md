@@ -136,12 +136,15 @@ HIR lowering may perform structural transforms that require no semantic facts, b
 
 ### Current HIR desugarings
 
-HIR lowering owns four important source-shape normalizations:
+HIR lowering owns three important source-shape normalizations:
 
 1. **Synthetic `self` insertion.** Member functions receive the parameter shape implied by `SelfMode`.
 2. **By-value `mut self` shadowing.** It becomes an implicit mutable local shadow at the beginning of the body, avoiding a separate downstream “mutable parameter” concept.
-3. **`spec T` parameter lowering.** Only when a parameter's *outermost* type is `Type::SpecStatic(members)` (a raw `spec A + B + ...` conjunction) does it become one fresh generic parameter bounded by every member, so later phases reason through one generic mechanism. This does not recurse: `*spec A + B` (or a `spec ...` behind an array/generic argument/function type) stays structurally untouched, because only semantic analysis can tell a static bound from a dynamic-object pointee -- see [`semantic-analysis.md`](semantic-analysis.md).
-4. **Place-chain flattening.** Nested field/index/deref AST expressions that form an assignable/addressable place become `HirPlace { root, projections }`.
+3. **Place-chain flattening.** Nested field/index/deref AST expressions that form an assignable/addressable place become `HirPlace { root, projections }`.
+
+Static-spec parameter normalization (`f(x: spec A + B)` becoming one fresh bounded generic) is deliberately **not** here. It has to run after alias expansion, so that `f(x: AB)` and the literal spelling normalize identically, and expanding an alias needs cross-module resolution HIR does not have. It now lives at the analyzer/driver seam -- see [`semantic-analysis.md`](semantic-analysis.md).
+
+An `alias` lowers one-for-one to `HirAlias` with its target left structurally unresolved: only semantic analysis can tell whether a path names a module, type, function, or macro, and only the use site can tell a static spec bound from a dynamic-object pointee.
 
 These transforms are deliberately centralized so the analyzer, MIR and backends do not each recognize the same sugar independently.
 
@@ -243,4 +246,4 @@ Synthetic nodes may have no independently retained source site. For example, the
 
 ### HIR structural lowering
 
-HIR lowering may normalize source structure only when no semantic knowledge is required. Current examples include synthetic `self`, by-value `mut self` shadowing, static-spec parameter desugaring to fresh bound generics, and flattening place-shaped field/index/deref chains. If a chain is rooted in a non-place expression (for example `make().field`), that expression remains the place root and projections are appended in source order.
+HIR lowering may normalize source structure only when no semantic knowledge is required. Current examples include synthetic `self`, by-value `mut self` shadowing, and flattening place-shaped field/index/deref chains. If a chain is rooted in a non-place expression (for example `make().field`), that expression remains the place root and projections are appended in source order.

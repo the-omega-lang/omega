@@ -33,6 +33,7 @@ item = import
      | glue-block
      | macro-definition
      | macro-invocation, ";"
+     | alias-declaration
      | global-declaration, ";"
      | global-binding, ";" ;
 
@@ -233,7 +234,7 @@ spec-parameters = function-parameters, [ ",", "..." ]
                 | "..." ;
 ```
 
-A spec member does not introduce its own generic-parameter list. A body supplies a default implementation. A spec declaration never carries a dependency/alias list: `spec X : A, B { ... }` and `spec X = A + B;` are both invalid Omega syntax; express requirements as generic bounds and/or blanket conformances, and spell a conjunction directly at the type where it is needed (`spec A + B`, `*spec A + B`) rather than naming it separately.
+A spec member does not introduce its own generic-parameter list. A body supplies a default implementation. A spec declaration never carries a dependency/composition list: `spec X : A, B { ... }` and `spec X = A + B;` are both invalid Omega syntax; express requirements as generic bounds and/or blanket conformances, and spell a conjunction directly at the type where it is needed (`spec A + B`, `*spec A + B`), optionally giving that conjunction a name with an `alias-declaration`.
 
 A spec member's visibility modifier, when given, must not exceed the declaring spec's own visibility; when omitted, it defaults to the spec's own visibility rather than to hidden (see [`visibility.md`](visibility.md)).
 
@@ -280,6 +281,19 @@ glue-function = identifier,
 ```
 
 Gap/glue functions do not have receiver or generic syntax. See [`gaps-and-glue.md`](gaps-and-glue.md).
+
+## Aliases
+
+```ebnf
+alias-declaration = [ visibility ], "alias", identifier,
+                    [ "<", generic-parameter-list, ">" ], "=", type, ";" ;
+```
+
+An alias is a top-level item only; it is not a statement, takes no annotations,
+and its right-hand side is type syntax, never an expression. A right-hand side
+that is a bare `type-path` may name any namespace (module, type, spec, function
+or overload set, macro, or another alias); the parser does not classify it. See
+[`aliases.md`](aliases.md).
 
 ## Macros
 

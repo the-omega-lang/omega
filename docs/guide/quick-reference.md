@@ -17,6 +17,7 @@ This is **not** the normative language definition. For exact rules, follow the l
 | implementation | `conform T to S { ... }` | `impl S for T` |
 | cast | `<u64>x` | `x as u64` |
 | macro invocation | `println$("hi");` | `println!("hi")` |
+| type/name alias | `alias Short = Long;` | `type Short = Long;` |
 | fixed array type | `[64]u8` | `[u8; 64]` |
 | struct literal field | `x = 1;` | `x: 1,` |
 
@@ -418,6 +419,24 @@ println$("value = {}", value);
 ```
 
 Variadic macro parameters appear in runtime source as `$args: expr...`; see [`../language/macros.md`](../language/macros.md) for repetition syntax and hygiene.
+
+## Aliases
+
+`alias` gives an existing declaration a second name. It is top-level only, and
+never creates a new type, function, or symbol:
+
+```omega
+alias Count = i32;
+alias IntPair = Pair<i32, i32>;
+alias Keyed<V> = Pair<*str, V>;
+alias AB = spec A + B;
+alias Dyn = *spec B + A;
+alias plus = add;             # functions, overload sets, macros, modules too
+exposed alias Public = Hidden;   # deliberate re-export
+```
+
+The right-hand side is type syntax (never an expression) and is resolved in the
+module where the alias is written. See [`../language/aliases.md`](../language/aliases.md).
 
 ## Visibility
 

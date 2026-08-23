@@ -1,0 +1,36 @@
+import std::io::println;
+
+# Hidden by default: nothing outside this module may name `Hidden` directly.
+struct Hidden {
+	exposed value: i32;
+	secret: i32;
+
+	exposed new(value: i32) => Self {
+		Self { value = value; secret = value * 10; }
+	}
+
+	# A member's own visibility is unaffected by any alias of its owner.
+	peek(*self) => i32 {
+		self.secret
+	}
+
+	exposed reveal_secret(*self) => i32 {
+		self.peek()
+	}
+}
+
+# Deliberate capability transfer: the alias is its own visibility gate, so
+# external users may name the hidden declaration through this name.
+exposed alias Public = Hidden;
+
+exposed spec Named {
+	name(*self) => *str;
+}
+
+conform Hidden to Named {
+	name(*self) => *str { "hidden" }
+}
+
+exposed describe(item: *Public) => i32 {
+	item.value
+}

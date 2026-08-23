@@ -115,3 +115,9 @@ module's imports are not re-exported. A nested invocation emitted by a macro
 resolves in that macro's definition environment. Macro bodies cannot contain
 `import`: their own paths already use the definition module, while mutating
 the caller's import namespace would be incoherent.
+
+An `alias` may name a macro. The alias is a compile-time name binding only:
+expansion still uses the original macro's body and definition environment, so
+hygiene is unchanged. The alias's own visibility is the effective visibility of
+the aliased macro, both for who may invoke it and for the dependency rule
+above. See [`aliases.md`](aliases.md).

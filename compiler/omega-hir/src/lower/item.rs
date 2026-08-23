@@ -1,6 +1,6 @@
 use super::Lowerer;
 use crate::hir::{
-    HirAnnotation, HirAnnotationArg, HirAnnotationValue, HirBlock, HirConformDef, HirDeclaration,
+    HirAlias, HirAnnotation, HirAnnotationArg, HirAnnotationValue, HirBlock, HirConformDef, HirDeclaration,
     HirEnumDef, HirEnumVariant, HirExpr, HirExprNode, HirField, HirForeignBinding,
     HirForeignFunction, HirFunctionDef, HirGapDef, HirGapFunction, HirGenericParam, HirGlueDef,
     HirImport, HirItem, HirParam, HirPlace, HirPlaceRoot, HirPrimitiveDef, HirSpecDef,
@@ -118,6 +118,17 @@ impl Lowerer {
                     .map(|f| self.lower_function_def(f, FunctionKind::Member))
                     .collect(),
             }),
+            Item::Alias(alias) => HirItem::Alias(HirAlias {
+                id: self.ids.next(),
+                span: node.span,
+                name_span: alias.name_span,
+                target_span: alias.target_span,
+                name: alias.ident.clone(),
+                visibility: alias.visibility,
+                explicit_hidden_span: alias.explicit_hidden_span,
+                generics: Self::lower_generics(&alias.generics),
+                target: alias.target.clone(),
+            }),
             Item::Import(import) => HirItem::Import(HirImport {
                 id: self.ids.next(),
                 span: node.span,
@@ -211,7 +222,7 @@ impl Lowerer {
         kind: FunctionKind,
     ) -> HirFunctionDef {
         let span = f.signature_span.to(f.codeblock.span);
-        let mut params = self.lower_callable_params(&f.params, f.self_mode, span, kind);
+        let params = self.lower_callable_params(&f.params, f.self_mode, span, kind);
         let mut body = self.lower_block(&f.codeblock);
         // A naked function's body must stay exactly the user-authored `asm`
         // statement for later naked-body validation; the synthetic `mut self`
@@ -221,8 +232,7 @@ impl Lowerer {
             self.prepend_mut_self_shadow(&mut body, f.self_mode, span);
         }
 
-        let mut generics = Self::lower_generics(&f.generics);
-        Self::desugar_spec_static_params(&mut params, &mut generics);
+        let generics = Self::lower_generics(&f.generics);
 
         HirFunctionDef {
             id: self.ids.next(),
@@ -239,27 +249,6 @@ impl Lowerer {
             params,
             return_type: f.return_type.clone(),
             body,
-        }
-    }
-
-    // Only a parameter's outermost type desugars: `value: spec A + B` becomes
-    // one fresh generic bound by every member. `*spec A + B` (or a spec
-    // buried in an array/generic/function type) stays structural -- it
-    // survives into semantic analysis, which is the only layer that can tell
-    // a static bound from a dynamic-object pointee.
-    fn desugar_spec_static_params(params: &mut [HirParam], generics: &mut Vec<HirGenericParam>) {
-        let mut next = 0usize;
-        for param in params.iter_mut() {
-            if let Type::SpecStatic(members) = &param.r#type {
-                let fresh = Ident(format!("$Param{next}"));
-                next += 1;
-                generics.push(HirGenericParam {
-                    ident: fresh.clone(),
-                    bounds: members.clone(),
-                    default: None,
-                });
-                param.r#type = Type::Named(fresh.into());
-            }
         }
     }
 

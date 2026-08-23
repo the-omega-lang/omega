@@ -195,7 +195,11 @@ impl Driver {
 
         let mut declared = Vec::new();
         for (param, concrete) in generic_params.iter().zip(type_args) {
-            for bound in &param.bounds {
+            let bounds = match omega_analyzer::aliases::expand_bounds(self, module, &param.bounds) {
+                Ok(bounds) => bounds,
+                Err(error) => return Some(Err(error)),
+            };
+            for bound in &bounds {
                 let run = self.with_analyzer(module, &substitution, owner, |analyzer| {
                     analyzer.check_generic_bound(owner.id, owner.span, bound, concrete)
                 });
@@ -474,6 +478,9 @@ impl Driver {
                 unreachable!("unnamed blocks have no item key")
             }
             HirItem::Import(_) => unreachable!("imports are never indexed into a module's items"),
+            HirItem::Alias(_) => {
+                unreachable!("aliases are indexed separately and never become an item key")
+            }
         };
 
         resolved.ok_or_else(|| key.failed())

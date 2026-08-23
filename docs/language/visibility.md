@@ -53,9 +53,15 @@ The bypass applies only to the syntactic use wrapped by `reveal`; it does not ch
 
 An implementation may warn when a `reveal` was unnecessary. Known current edge cases in propagation through complex place expressions are tracked in [`../issues/design-debt.md`](../issues/design-debt.md).
 
+## Aliases and re-export
+
+An `alias` carries its own visibility and is its own gate. A caller must be allowed to see the alias; the target is then resolved with the alias declaration module's rights, and the caller does not have to satisfy the target declaration's visibility again. `exposed alias Public = Hidden;` is therefore a deliberate capability transfer, while a hidden alias of an exposed declaration stays hidden.
+
+An alias changes nothing about its target: the target declaration's own visibility, its members' visibility, its spec members' visibility, and its symbol identity are unaffected. An alias whose target is not visible from the alias declaration's own module is invalid. Full rules are in [`aliases.md`](aliases.md).
+
 ## Macros
 
-A macro body may not use declarations less visible than the macro itself in a way that would expose them to callers. In particular, an `exposed` macro cannot smuggle a `shared` or hidden dependency across package boundaries. Caller-side `reveal` does not retroactively weaken the macro definition's own visibility obligations.
+A macro body may not use declarations less visible than the macro itself in a way that would expose them to callers. In particular, an `exposed` macro cannot smuggle a `shared` or hidden dependency across package boundaries. Caller-side `reveal` does not retroactively weaken the macro definition's own visibility obligations. An alias of a macro is checked with the **alias's** visibility, so an `exposed` alias of a hidden macro carries the same obligation.
 
 ## Specs and conformance
 

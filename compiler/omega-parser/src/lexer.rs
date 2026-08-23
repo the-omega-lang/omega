@@ -35,6 +35,7 @@ pub enum TokenKind {
     Continue,
     Defer,
     Macro,
+    Alias,
 
     // Multi-char punctuation, maximal-munch (tried longest-first during
     // lexing so e.g. `...` is never mistaken for `..` followed by `.`).
@@ -176,6 +177,7 @@ const FIXED_TOKENS: &[FixedToken] = &[
     keyword("continue", TokenKind::Continue),
     keyword("defer", TokenKind::Defer),
     keyword("macro", TokenKind::Macro),
+    keyword("alias", TokenKind::Alias),
     punctuation("...", TokenKind::DotDotDot),
     punctuation("..=", TokenKind::DotDotEq),
     punctuation("..<", TokenKind::DotDotLt),

@@ -1,0 +1,15 @@
+chained-primitive-alias: 8 true
+structural-target: 4
+specialized-alias: 5 9
+alias-sizeof: true
+canonical-identity: 9 5
+alias-template: k 9
+forwarded-generic: 13
+function-alias: 3
+generic-function-alias: 42 text
+overloaded-function-alias: int bool
+module-alias: 3 30
+macro-alias: 42
+bound-alias: 23
+static-param-alias: 23
+dynamic-alias: 23

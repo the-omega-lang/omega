@@ -21,7 +21,9 @@ A function without a body is required. A function with a body is a default imple
 
 `Self` denotes the concrete implementing type. Spec receiver parameters must use `*self` or `*mut self`; by-value `self`/`mut self` is invalid in a spec declaration.
 
-A spec declares only its own requirements. There is no alias mechanism: `spec AB = A + B;` is not valid Omega syntax, and a spec declaration never carries a dependency list (`spec X : A, B { ... }` is also invalid). A conjunction of specs is written directly at the type where it is needed -- see [Spec conjunctions in type syntax](#spec-conjunctions-in-type-syntax) below -- and is satisfied by conforming to each member separately; there is nothing to `conform T to` for a conjunction itself.
+A spec declares only its own requirements. There is no spec-composition declaration: `spec AB = A + B;` is not valid Omega syntax, and a spec declaration never carries a dependency list (`spec X : A, B { ... }` is also invalid). A conjunction of specs is written directly at the type where it is needed -- see [Spec conjunctions in type syntax](#spec-conjunctions-in-type-syntax) below -- and is satisfied by conforming to each member separately; there is nothing to `conform T to` for a conjunction itself.
+
+A conjunction may be given a name with an `alias` (`alias AB = spec A + B;`). That names the conjunction without declaring a spec: no conformance target `AB` exists, and the alias expands to the written conjunction before any of the rules below apply, so a named and a literal conjunction are indistinguishable. See [`aliases.md`](aliases.md).
 
 ## Requirement identity
 

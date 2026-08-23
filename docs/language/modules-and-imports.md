@@ -67,7 +67,9 @@ An import's source path is anchored by one of four mutually exclusive forms:
 
 Importing an item binds its final name in the importing module. Importing a module makes that module path/name available according to normal resolution rules.
 
-Imports do not automatically re-export what they import. Omega currently has no `pub use`-style re-export mechanism; see [`visibility.md`](visibility.md).
+Imports do not automatically re-export what they import. Re-export is a separate, deliberate act: an `alias` declaration binds a name of its own, with its own visibility, to an existing declaration or module, and an `exposed alias` therefore makes its target nameable from outside the declaring module. An alias target resolves at the alias declaration site, so it does not need a matching import. See [`aliases.md`](aliases.md) and [`visibility.md`](visibility.md).
+
+A **module** alias re-exports only the module name; traversing it still checks each named item's own visibility.
 
 `import reveal ...` applies the visibility-bypass semantics defined in [`visibility.md`](visibility.md).
 

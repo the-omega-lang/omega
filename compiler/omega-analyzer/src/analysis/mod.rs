@@ -99,6 +99,9 @@ pub fn item_name(item: &HirItem) -> Option<Ident> {
         HirItem::Gap(gap) => Some(gap.name.clone()),
         HirItem::Glue(_) | HirItem::Conform(_) | HirItem::Primitive(_) => None,
         HirItem::Import(_) => None,
+        // An alias declares a name but never a concrete item; the driver
+        // indexes aliases in their own namespace-transparent table.
+        HirItem::Alias(_) => None,
     }
 }
 
@@ -115,6 +118,7 @@ pub fn item_visibility(item: &HirItem) -> Visibility {
         HirItem::Union(u) => u.visibility,
         HirItem::Spec(sp) => sp.visibility,
         HirItem::Gap(_) => Visibility::Exposed,
+        HirItem::Alias(alias) => alias.visibility,
         HirItem::Glue(_) | HirItem::Conform(_) | HirItem::Primitive(_) => {
             unreachable!("unnamed blocks have no item visibility")
         }
@@ -164,6 +168,7 @@ pub fn item_id_span(item: &HirItem) -> (HirId, Span) {
         HirItem::Conform(conform) => (conform.id, conform.span),
         HirItem::Primitive(primitive) => (primitive.id, primitive.span),
         HirItem::Import(i) => (i.id, i.span),
+        HirItem::Alias(alias) => (alias.id, alias.span),
     }
 }
 
@@ -601,6 +606,23 @@ impl<'r> Analyzer<'r> {
         }
     }
 
+    /// The function's signature after static-spec parameter normalization.
+    /// Every signature and body query works from this shape, so a literal
+    /// `spec A + B` parameter and an aliased one cannot diverge.
+    pub(crate) fn normalized_function(&mut self, f: &HirFunctionDef) -> Option<HirFunctionDef> {
+        match crate::generics::normalize_static_spec_params(
+            &mut *self.resolver,
+            &self.module_path,
+            f,
+        ) {
+            Ok(normalized) => Some(normalized),
+            Err(error) => {
+                self.error(f.id, f.span, AnalysisErrorKind::ModuleResolution(error));
+                None
+            }
+        }
+    }
+
     pub(crate) fn resolve_type_or_error(
         &mut self,
         id: HirId,
@@ -702,6 +724,66 @@ impl<'r> Analyzer<'r> {
         self.resolve_type_or_error_in(id, span, typ, indirect, &module)
     }
 
+    /// Checks the bounds an alias template declares on its own generic
+    /// parameters. Expansion is structural and cannot do this itself: whether
+    /// an argument satisfies a bound is a conformance question, and the
+    /// expanded target no longer mentions the alias's parameter list.
+    fn check_alias_generic_bounds(
+        &mut self,
+        id: HirId,
+        span: Span,
+        typ: &Type,
+        module: &[Ident],
+    ) {
+        let applied =
+            match crate::aliases::applied_alias_bounds(&mut *self.resolver, module, typ) {
+                Ok(applied) => applied,
+                Err(error) => {
+                    self.error(id, span, AnalysisErrorKind::ModuleResolution(error));
+                    return;
+                }
+            };
+        for (bound, argument) in applied {
+            let Some(concrete) = self.resolve_type_or_error_in(id, span, &argument, true, module)
+            else {
+                continue;
+            };
+            if let Some(Err((spec, missing))) =
+                self.check_generic_bound(id, span, &bound, &concrete)
+            {
+                self.error(
+                    id,
+                    span,
+                    AnalysisErrorKind::ModuleResolution(ResolveError::SpecNotImplemented {
+                        type_name: concrete.to_string(),
+                        spec,
+                        missing,
+                    }),
+                );
+            }
+        }
+        for inner in Self::type_arguments(typ) {
+            self.check_alias_generic_bounds(id, span, inner, module);
+        }
+    }
+
+    fn type_arguments(typ: &Type) -> Vec<&Type> {
+        match typ {
+            Type::Pointer(inner, _)
+            | Type::InferredArray(inner)
+            | Type::UnknownSizeArray(inner)
+            | Type::SizedArray(inner, _) => vec![inner],
+            Type::Generic(_, args) | Type::SpecStatic(args) => args.iter().collect(),
+            Type::Function(f) => f
+                .params
+                .iter()
+                .map(|p| &p.r#type)
+                .chain(std::iter::once(f.return_type.as_ref()))
+                .collect(),
+            Type::Named(_) => vec![],
+        }
+    }
+
     pub(crate) fn resolve_type_or_error_in(
         &mut self,
         id: HirId,
@@ -710,6 +792,7 @@ impl<'r> Analyzer<'r> {
         indirect: bool,
         module: &[Ident],
     ) -> Option<ResolvedType> {
+        self.check_alias_generic_bounds(id, span, typ, module);
         let bypass = self.reveals.active();
         match self.context.resolve_type(
             typ.to_owned(),

@@ -29,6 +29,14 @@ impl ModuleResolver for NoResolver {
         unreachable!("test never triggers import resolution")
     }
 
+    fn resolve_declared_alias(
+        &mut self,
+        _module_path: &[Ident],
+        _name: &Ident,
+    ) -> Result<Option<crate::resolver::ResolvedAlias>, ResolveError> {
+        Ok(None)
+    }
+
     fn ambient_core_candidates(
         &mut self,
         _accessor: &[Ident],

@@ -1,6 +1,40 @@
 use crate::resolved_type::ResolvedType;
+use crate::resolver::{ModuleResolver, ResolveError};
+use omega_hir::{HirFunctionDef, HirGenericParam};
 use omega_parser::prelude::{Ident, Type};
 use std::collections::HashMap;
+
+/// Rewrites each outermost static `spec ...` parameter into the anonymous
+/// bounded generic the rest of the compiler already understands, after
+/// expanding aliases so that `f(x: spec A + B)` and `f(x: AB)` normalize
+/// identically. Only a parameter's outermost type participates: `*spec A + B`
+/// is a dynamic object, and a spec buried in an array, generic argument, or
+/// function type is not a parameter bound at all.
+///
+/// This is the one place the rule lives; every query that reports a function's
+/// generics, signature, or body works from the result.
+pub fn normalize_static_spec_params(
+    resolver: &mut dyn ModuleResolver,
+    module_path: &[Ident],
+    f: &HirFunctionDef,
+) -> Result<HirFunctionDef, ResolveError> {
+    let mut normalized: Option<HirFunctionDef> = None;
+    for (index, param) in f.params.iter().enumerate() {
+        let expanded = crate::aliases::expand_type_alias(resolver, module_path, param.r#type.clone())?;
+        let Type::SpecStatic(members) = expanded else {
+            continue;
+        };
+        let target = normalized.get_or_insert_with(|| f.clone());
+        let fresh = Ident(format!("$Param{index}"));
+        target.generics.push(HirGenericParam {
+            ident: fresh.clone(),
+            bounds: members,
+            default: None,
+        });
+        target.params[index].r#type = Type::Named(fresh.into());
+    }
+    Ok(normalized.unwrap_or_else(|| f.clone()))
+}
 
 pub fn unify_generic_type(
     generics: &[Ident],

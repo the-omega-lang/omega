@@ -232,6 +232,8 @@ impl Driver {
                 self.mark_bound_type_imports(module, generics);
             }
 
+            self.validate_aliases(path);
+
             for (name, _) in self.modules.index(path).plain_items() {
                 if self.is_generic_template(path, &name).map_err(fatal)? {
                     continue;

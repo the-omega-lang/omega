@@ -62,20 +62,21 @@ fn plain_by_value_self_gets_no_shadow() {
 }
 
 #[test]
-fn each_spec_parameter_becomes_its_own_bound_generic() {
+fn a_static_spec_parameter_stays_structural() {
+    // Static-spec parameter normalization is a semantic rule (it must run
+    // after alias expansion, which HIR cannot do), so lowering must leave the
+    // written `spec ...` type untouched.
     let module = lower(
         "spec Foo { f(*self) => i32; }\n\
          takes(a: spec Foo, b: spec Foo) => i32 { 0 }",
     );
     let f = only_function(&module);
-    assert_eq!(
-        f.generics.len(),
-        2,
-        "two `spec Foo` parameters must not share one generic"
-    );
-    for g in &f.generics {
-        assert!(g.ident.as_ref().starts_with('$'), "synthesized name");
-        assert_eq!(g.bounds.len(), 1, "each carries its spec as a bound");
+    assert!(f.generics.is_empty(), "no generic is synthesized in HIR");
+    for param in &f.params {
+        assert!(matches!(
+            &param.r#type,
+            omega_parser::prelude::Type::SpecStatic(members) if members.len() == 1
+        ));
     }
 }
 
@@ -98,15 +99,52 @@ fn pointer_to_spec_static_creates_no_synthetic_generic() {
 }
 
 #[test]
-fn top_level_spec_conjunction_becomes_one_generic_with_every_bound() {
+fn a_static_spec_conjunction_parameter_keeps_every_member() {
     let module = lower(
         "spec Foo { f(*self) => i32; }\n\
          spec Bar { g(*self) => i32; }\n\
          takes(a: spec Foo + Bar) => i32 { 0 }",
     );
     let f = only_function(&module);
-    assert_eq!(f.generics.len(), 1, "one fresh generic for the conjunction");
-    assert_eq!(f.generics[0].bounds.len(), 2, "both members become bounds");
+    let omega_parser::prelude::Type::SpecStatic(members) = &f.params[0].r#type else {
+        panic!("expected a structural `spec Foo + Bar` parameter type");
+    };
+    assert_eq!(members.len(), 2, "both members survive lowering");
+}
+
+#[test]
+fn an_alias_lowers_one_for_one_with_an_unresolved_target() {
+    let module = lower(
+        "struct Pair<A, B> { a: A; b: B; }\n\
+         exposed alias Keyed<V> = Pair<*str, V>;\n\
+         alias Same = Pair;",
+    );
+    let aliases: Vec<&omega_hir::HirAlias> = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            HirItem::Alias(alias) => Some(alias),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(aliases.len(), 2);
+
+    assert_eq!(aliases[0].name.as_ref(), "Keyed");
+    assert_eq!(aliases[0].visibility, omega_parser::prelude::Visibility::Exposed);
+    assert_eq!(aliases[0].generics.len(), 1);
+    let omega_hir::AliasTarget::Type(omega_parser::prelude::Type::Generic(path, args)) =
+        &aliases[0].target
+    else {
+        panic!("a structural target keeps its written type syntax");
+    };
+    assert_eq!(path.head.as_ref(), "Pair");
+    assert_eq!(args.len(), 2);
+
+    assert_eq!(aliases[1].name.as_ref(), "Same");
+    let omega_hir::AliasTarget::Path(path) = &aliases[1].target else {
+        panic!("a bare path target stays a path, not a type");
+    };
+    assert_eq!(path.head.as_ref(), "Pair");
 }
 
 #[test]

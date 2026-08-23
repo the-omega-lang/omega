@@ -1,5 +1,6 @@
 use crate::ast::annotation::AnnotationNode;
-use crate::ast::item::{ImportRoot, ImportStmt, Item, ItemNode};
+use crate::ast::item::{AliasItem, AliasTarget, ImportRoot, ImportStmt, Item, ItemNode};
+use crate::ast::r#type::Type;
 use crate::ast::visibility::Visibility;
 use crate::diagnostics::{ParseErrorKind, Span};
 use crate::lexer::TokenKind;
@@ -50,7 +51,10 @@ pub use definitions::{
 };
 use foreign::parse_foreign_item;
 pub use functions::parse_function_definition;
-use functions::{parse_declaration_or_function_definition, parse_item_declaration_or_walrus};
+use functions::{
+    parse_declaration_or_function_definition, parse_item_declaration_or_walrus,
+    parse_optional_generics,
+};
 pub fn parse_source_module(p: &mut Parser) -> Vec<ItemNode> {
     let mut nodes = Vec::new();
     while !p.is_eof() {
@@ -176,6 +180,14 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
             reject_annotations(p, &annotations);
             Item::MacroDefinition(parse_macro_definition(p, visibility)?)
         }
+        TokenKind::Alias => {
+            reject_annotations(p, &annotations);
+            Item::Alias(parse_alias_def(
+                p,
+                visibility,
+                parsed_visibility.explicit_hidden_span(),
+            )?)
+        }
         TokenKind::Ident(_) if matches!(p.peek_at(1), TokenKind::Dollar) => {
             reject_annotations(p, &annotations);
             reject_visibility(p, parsed_visibility);
@@ -200,6 +212,39 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
     };
     let span = start.to(p.last_span());
     Some(ItemNode { item, span })
+}
+
+/// `alias Name<G...> = <type or path>;`. The right-hand side is parsed with
+/// the ordinary type grammar, which is what rejects expression-shaped targets
+/// without the parser needing to know what any name denotes. A bare
+/// `Type::Named` is kept as `AliasTarget::Path` because a path may name a
+/// module, macro, or function, none of which is a type.
+fn parse_alias_def(
+    p: &mut Parser,
+    visibility: Visibility,
+    explicit_hidden_span: Option<Span>,
+) -> Option<AliasItem> {
+    p.expect(&TokenKind::Alias, "'alias'");
+    let ident = p.expect_ident()?;
+    let name_span = p.last_span();
+    let generics = parse_optional_generics(p)?;
+    p.expect(&TokenKind::Eq, "'='");
+    let target_start = p.peek_span();
+    let target = crate::parser::r#type::parse_type(p)?;
+    let target_span = target_start.to(p.last_span());
+    p.expect_terminator(&TokenKind::Semi, "';'");
+    Some(AliasItem {
+        visibility,
+        explicit_hidden_span,
+        ident,
+        name_span,
+        generics,
+        target: match target {
+            Type::Named(path) => AliasTarget::Path(path),
+            other => AliasTarget::Type(other),
+        },
+        target_span,
+    })
 }
 
 fn parse_import(p: &mut Parser, annotations: Vec<AnnotationNode>) -> Option<ImportStmt> {

@@ -32,18 +32,19 @@ The word `spec` in Omega source means the interface-like language construct. “
 9. [`enums-and-pattern-matching.md`](enums-and-pattern-matching.md) — enum representation-visible semantics, construction, narrowing, matching.
 10. [`marker-types.md`](marker-types.md) — zero-sized `marker` declarations and values.
 11. [`generics.md`](generics.md) — generic declarations, bounds, inference, defaults, monomorphization semantics.
-12. [`specs-and-conformance.md`](specs-and-conformance.md) — `spec`, aliases, `conform`, blanket conformance, static/dynamic dispatch.
-13. [`gaps-and-glue.md`](gaps-and-glue.md) — platform/runtime capability declarations and implementations.
-14. [`foreign-function-interface.md`](foreign-function-interface.md) — `foreign` bindings/functions/blocks, calling conventions, variadics, symbol control, C-facing entry/linkage contracts.
+12. [`specs-and-conformance.md`](specs-and-conformance.md) — `spec`, `conform`, blanket conformance, static/dynamic dispatch.
+13. [`aliases.md`](aliases.md) — `alias` declarations, generic alias templates, re-export, macro/module aliases.
+14. [`gaps-and-glue.md`](gaps-and-glue.md) — platform/runtime capability declarations and implementations.
+15. [`foreign-function-interface.md`](foreign-function-interface.md) — `foreign` bindings/functions/blocks, calling conventions, variadics, symbol control, C-facing entry/linkage contracts.
 
 ### Expressions and execution
 
-15. [`control-flow-and-operators.md`](control-flow-and-operators.md) — `if`, `match`, loops, boolean/operators, precedence and inference.
-16. [`iteration-and-ranges.md`](iteration-and-ranges.md) — ranges and `for .. in` iteration protocol.
-17. [`strings-casts-arrays-and-slices.md`](strings-casts-arrays-and-slices.md) — string/byte-string semantics, casts, fixed arrays and slices.
-18. [`compile-time-evaluation.md`](compile-time-evaluation.md) — `comp` bindings/expressions and compile-time evaluator semantics.
-19. [`annotations-and-sizeof.md`](annotations-and-sizeof.md) — annotations and `sizeof<Type>`.
-20. [`macros.md`](macros.md) — declarative token macros, parameters, repetition, hygiene and visibility.
+16. [`control-flow-and-operators.md`](control-flow-and-operators.md) — `if`, `match`, loops, boolean/operators, precedence and inference.
+17. [`iteration-and-ranges.md`](iteration-and-ranges.md) — ranges and `for .. in` iteration protocol.
+18. [`strings-casts-arrays-and-slices.md`](strings-casts-arrays-and-slices.md) — string/byte-string semantics, casts, fixed arrays and slices.
+19. [`compile-time-evaluation.md`](compile-time-evaluation.md) — `comp` bindings/expressions and compile-time evaluator semantics.
+20. [`annotations-and-sizeof.md`](annotations-and-sizeof.md) — annotations and `sizeof<Type>`.
+21. [`macros.md`](macros.md) — declarative token macros, parameters, repetition, hygiene and visibility.
 
 ## Completeness rule
 

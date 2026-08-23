@@ -68,6 +68,9 @@ impl ParseError {
             ParseErrorKind::SpecNotAllowedHere => Diagnostic::error("specs can only be declared at the top level of a module")
                 .with_label(self.span, "not allowed inside a function body")
                 .with_help("move this `spec` to the module's top level"),
+            ParseErrorKind::AliasNotAllowedHere => Diagnostic::error("aliases can only be declared at the top level of a module")
+                .with_label(self.span, "not allowed inside a function body")
+                .with_help("move this `alias` to the module's top level"),
             ParseErrorKind::RangeMissingEnd => Diagnostic::error("an inclusive ('..=') or exclusive ('..<') range must have an end bound")
                 .with_label(self.span, "this range has no end bound")
                 .with_help("give it an end (`..<end`/`..=end`), or use `..` if you mean an inferred, open-ended range"),
@@ -176,6 +179,7 @@ pub enum ParseErrorKind {
     StructNotAllowedHere,
     UnionNotAllowedHere,
     SpecNotAllowedHere,
+    AliasNotAllowedHere,
     RangeMissingEnd,
     OpenRangeHasEnd,
     ChainedComparison,

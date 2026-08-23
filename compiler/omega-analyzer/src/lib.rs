@@ -1,5 +1,6 @@
 #![allow(clippy::too_many_arguments, clippy::large_enum_variant)]
 
+pub mod aliases;
 pub mod analysis;
 pub mod annotations;
 pub mod checked;
@@ -8,7 +9,7 @@ mod context;
 pub mod dead_code;
 pub mod error;
 mod exhaustiveness;
-mod generics;
+pub mod generics;
 pub mod layout;
 pub mod resolved_type;
 pub mod resolver;

@@ -26,7 +26,7 @@ These words are always tokenized as keywords:
 true false if else match foreign import return
 struct enum union spec
 while loop for break continue defer
-macro
+macro alias
 ```
 
 ### Contextual keywords

@@ -172,7 +172,13 @@ impl Driver {
                 else {
                     unreachable!("a function's own resolved item is always ResolvedType::Function");
                 };
-                let substitution = Self::substitution(&f.generics, &key.type_args);
+                // The body is checked against the normalized signature, so its
+                // substitution must be keyed by the normalized generics.
+                let generics = self
+                    .normalized_function(&key.module, f)
+                    .map(|f| f.generics)
+                    .unwrap_or_else(|_| f.generics.clone());
+                let substitution = Self::substitution(&generics, &key.type_args);
                 let declared = self
                     .items
                     .declared_bounds
@@ -255,6 +261,7 @@ impl Driver {
                 None
             }
             HirItem::Import(_) => unreachable!("imports are filtered out before this is called"),
+            HirItem::Alias(_) => unreachable!("aliases never get an item key, so never a body"),
         }
     }
 
