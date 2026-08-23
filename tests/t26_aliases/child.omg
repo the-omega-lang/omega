@@ -41,3 +41,19 @@ hidden_pair_sum(a: i32, b: i32) => i32 { a + b }
 hidden_pair_sum(a: *str, b: *str) => i32 { 0 }
 
 exposed alias public_pair_sum = hidden_pair_sum;
+
+# A mixed-visibility overload group: the alias forwards exactly the
+# candidates this module can name, which here is all of them.
+exposed mixed(value: i32) => *str { "exposed-int" }
+
+mixed(value: bool) => *str { "hidden-bool" }
+
+exposed alias public_mixed = mixed;
+
+exposed struct Held<T> {
+	exposed value: T;
+}
+
+exposed macro shout($x: expr) => {
+	($x) + 1
+}

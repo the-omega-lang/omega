@@ -4,6 +4,41 @@ import self::mymodule;
 import self::mymodule::thing::something;
 import self::mymodule::other::other_greeting;
 
+# Declarations the anchored-path section below names through `root::` and
+# `self::` from this module, and through `super::super::` from a nested one.
+exposed ANCHOR_VALUE: i32 = 7;
+
+exposed struct Point {
+	exposed x: i32;
+	exposed y: i32;
+
+	exposed origin() => Point {
+		Point { x = 0; y = 0; }
+	}
+
+	# Two statics under one name, so the anchored call below also exercises
+	# overloaded static-member resolution.
+	exposed at(x: i32) => Point {
+		Point { x = x; y = 0; }
+	}
+
+	exposed at(x: i32, y: i32) => Point {
+		Point { x = x; y = y; }
+	}
+}
+
+exposed struct Boxed<T> {
+	exposed value: T;
+}
+
+exposed alias LocalPoint = self::Point;
+
+exposed identity<T>(value: T) => T { value }
+
+exposed pick(value: i32) => *str { "int" }
+
+exposed pick(value: bool) => *str { "bool" }
+
 main() => void {
 	# `import self::helper;` -- an explicit same-package sibling import from
 	# the package root; unprefixed `import helper;` is no longer legal since
@@ -26,4 +61,22 @@ main() => void {
 	match value {
 		Option::Some => { println$("ambient-option: ", value.value); },
 	} else {}
+
+	# `root::`, `self::` and `super::` are ordinary path syntax, not an
+	# import-only feature: each one means the same thing in a value
+	# position, a generic call, an overload call, an aggregate literal, a
+	# static-member access, and an alias target.
+	println$("anchored-value: ", self::ANCHOR_VALUE, " ", root::ANCHOR_VALUE);
+	anchored_generic := self::identity(3);
+	println$("anchored-generic: ", anchored_generic);
+	println$("anchored-overload: ", self::pick(1), " ", root::pick(true));
+	anchored_literal := root::Point { x = 1; y = 2; };
+	println$("anchored-literal: ", anchored_literal.x, " ", anchored_literal.y);
+	anchored_boxed := self::Boxed<i32> { value = 5; };
+	println$("anchored-generic-literal: ", anchored_boxed.value);
+	anchored_alias := self::LocalPoint { x = 9; y = 0; };
+	println$("anchored-alias: ", anchored_alias.x);
+	println$("anchored-static: ", root::Point::origin().x);
+	println$("anchored-super: ", mymodule::other::anchored_from_nested());
+	println$("anchored-static-super: ", mymodule::other::anchored_static_from_nested());
 }

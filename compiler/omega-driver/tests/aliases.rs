@@ -1402,3 +1402,1116 @@ fn an_alias_produces_no_symbol_of_its_own() {
         "no alias name may survive into the checked tree"
     );
 }
+
+#[test]
+fn a_revealed_import_of_a_hidden_alias_resolves_lazily() {
+    // The import gate is passed by `reveal`; the alias's own gate must not
+    // then reject the very same reference when the lazy path is finally
+    // resolved.
+    TestPackage::with_modules(
+        r#"
+        import reveal self::helper::Secret;
+
+        entry_fn() => i32 {
+            value: Secret = Secret { field = 1; };
+            value.field
+        }
+        "#,
+        &[(
+            "helper",
+            r#"
+            exposed struct Hidden {
+                exposed field: i32;
+            }
+
+            alias Secret = Hidden;
+            "#,
+        )],
+    )
+    .expect_ok();
+}
+
+#[test]
+fn a_revealed_import_of_a_hidden_structural_alias_resolves_lazily() {
+    TestPackage::with_modules(
+        r#"
+        import reveal self::helper::Counted;
+
+        entry_fn() => i32 {
+            value: Counted<i32> = Counted<i32> { value = 3; };
+            value.value
+        }
+        "#,
+        &[(
+            "helper",
+            r#"
+            exposed struct Holder<T> {
+                exposed value: T;
+            }
+
+            alias Counted<T> = Holder<T>;
+            "#,
+        )],
+    )
+    .expect_ok();
+}
+
+#[test]
+fn a_hidden_structural_alias_cannot_be_imported_without_reveal() {
+    let errors = TestPackage::with_modules(
+        r#"
+        import self::helper::Counted;
+
+        entry_fn() => i32 {
+            value: Counted<i32> = Counted<i32> { value = 3; };
+            value.value
+        }
+        "#,
+        &[(
+            "helper",
+            r#"
+            exposed struct Holder<T> {
+                exposed value: T;
+            }
+
+            alias Counted<T> = Holder<T>;
+            "#,
+        )],
+    )
+    .expect_errors();
+    assert!(
+        resolve_errors(&errors).iter().any(|error| matches!(
+            error,
+            ResolveError::NotVisible { item, .. } if item.as_ref() == "Counted"
+        )),
+        "a hidden structural alias must not be importable: {}",
+        rendered(&errors)
+    );
+}
+
+#[test]
+fn a_revealed_import_of_a_hidden_generic_template_resolves_lazily() {
+    // Not an alias at all: the same lazy import path carries the same
+    // authorization for an ordinary generic template.
+    TestPackage::with_modules(
+        r#"
+        import reveal self::helper::Holder;
+
+        entry_fn() => i32 {
+            value: Holder<i32> = Holder<i32> { value = 3; };
+            value.value
+        }
+        "#,
+        &[(
+            "helper",
+            r#"
+            struct Holder<T> {
+                exposed value: T;
+            }
+            "#,
+        )],
+    )
+    .expect_ok();
+}
+
+#[test]
+fn a_qualified_reference_to_a_hidden_structural_alias_is_rejected() {
+    let errors = TestPackage::with_modules(
+        r#"
+        import self::helper;
+
+        entry_fn() => i32 {
+            value: helper::Counted<i32> = helper::Counted<i32> { value = 3; };
+            value.value
+        }
+        "#,
+        &[(
+            "helper",
+            r#"
+            exposed struct Holder<T> {
+                exposed value: T;
+            }
+
+            alias Counted<T> = Holder<T>;
+            "#,
+        )],
+    )
+    .expect_errors();
+    assert!(
+        resolve_errors(&errors).iter().any(|error| matches!(
+            error,
+            ResolveError::NotVisible { item, .. } if item.as_ref() == "Counted"
+        )),
+        "a hidden structural alias is not nameable from another module: {}",
+        rendered(&errors)
+    );
+}
+
+#[test]
+fn a_structural_alias_whose_rhs_names_an_inaccessible_structural_alias_is_rejected() {
+    let errors = TestPackage::with_modules(
+        r#"
+        import self::outer;
+
+        entry_fn() => i32 {
+            value: outer::Visible<i32> = outer::Visible<i32> { value = 3; };
+            value.value
+        }
+        "#,
+        &[
+            (
+                "outer",
+                r#"
+                import super::inner;
+
+                exposed alias Visible<T> = inner::Secret<T>;
+                "#,
+            ),
+            (
+                "inner",
+                r#"
+                exposed struct Holder<T> {
+                    exposed value: T;
+                }
+
+                alias Secret<T> = Holder<T>;
+                "#,
+            ),
+        ],
+    )
+    .expect_errors();
+    assert!(
+        resolve_errors(&errors).iter().any(|error| matches!(
+            error,
+            ResolveError::NotVisible { item, .. } if item.as_ref() == "Secret"
+        )),
+        "an outer alias may not smuggle a hidden structural alias: {}",
+        rendered(&errors)
+    );
+}
+
+#[test]
+fn a_visible_structural_alias_chain_re_exports_without_exposing_the_final_target() {
+    // Each link is visible from the module that names it; `main` never has
+    // to be able to see `inner::Holder` itself.
+    TestPackage::with_modules(
+        r#"
+        import self::outer::Visible;
+
+        entry_fn() => i32 {
+            value: Visible<i32> = Visible<i32> { value = 3; };
+            value.value
+        }
+        "#,
+        &[
+            (
+                "outer",
+                r#"
+                import super::inner;
+
+                exposed alias Visible<T> = inner::Shared<T>;
+                "#,
+            ),
+            (
+                "inner",
+                r#"
+                struct Holder<T> {
+                    exposed value: T;
+                }
+
+                exposed alias Shared<T> = Holder<T>;
+                "#,
+            ),
+        ],
+    )
+    .expect_ok();
+}
+
+#[test]
+fn an_alias_bound_reached_only_through_another_alias_rhs_is_enforced() {
+    // `Inner`'s own bound is never written at the use site: it appears only
+    // inside `Outer`'s right-hand side, and must still be checked against
+    // the argument `Outer` was actually given.
+    let errors = TestPackage::new(
+        r#"
+        exposed spec Countable {
+            count(*self) => i32;
+        }
+
+        struct Pair<A, B> {
+            exposed first: A;
+            exposed second: B;
+        }
+
+        struct Holder<T> {
+            exposed value: T;
+        }
+
+        struct Plain {
+            exposed field: i32;
+        }
+
+        alias Inner<T: Countable> = Holder<T>;
+        alias Outer<T> = Pair<Inner<T>, T>;
+
+        take(value: *Outer<Plain>) => i32 { 0 }
+
+        entry_fn() => i32 { 0 }
+        "#,
+    )
+    .expect_errors();
+    assert!(
+        resolve_errors(&errors).iter().any(|error| matches!(
+            error,
+            ResolveError::SpecNotImplemented { spec, .. } if spec.as_ref() == "Countable"
+        )),
+        "a bound owned by an alias nested in another alias's RHS must be checked: {}",
+        rendered(&errors)
+    );
+}
+
+#[test]
+fn an_alias_bound_reached_only_through_a_default_is_enforced() {
+    let errors = TestPackage::new(
+        r#"
+        exposed spec Countable {
+            count(*self) => i32;
+        }
+
+        struct Holder<T> {
+            exposed value: T;
+        }
+
+        struct Plain {
+            exposed field: i32;
+        }
+
+        alias Inner<T: Countable> = Holder<T>;
+        alias Defaulted<T = Inner<Plain>> = Holder<T>;
+
+        take(value: *Defaulted) => i32 { 0 }
+
+        entry_fn() => i32 { 0 }
+        "#,
+    )
+    .expect_errors();
+    assert!(
+        resolve_errors(&errors).iter().any(|error| matches!(
+            error,
+            ResolveError::SpecNotImplemented { spec, .. } if spec.as_ref() == "Countable"
+        )),
+        "an alias introduced by a default still owns its bounds: {}",
+        rendered(&errors)
+    );
+}
+
+#[test]
+fn an_alias_bound_referring_to_an_earlier_alias_parameter_is_enforced() {
+    let errors = TestPackage::new(
+        r#"
+        exposed spec Convert<T> {
+            convert(*self) => i32;
+        }
+
+        struct Pair<A, B> {
+            exposed first: A;
+            exposed second: B;
+        }
+
+        struct Plain {
+            exposed field: i32;
+        }
+
+        alias Linked<A, B: Convert<A>> = Pair<A, B>;
+
+        take(value: *Linked<i32, Plain>) => i32 { 0 }
+
+        entry_fn() => i32 { 0 }
+        "#,
+    )
+    .expect_errors();
+    assert!(
+        resolve_errors(&errors).iter().any(|error| matches!(
+            error,
+            ResolveError::SpecNotImplemented { spec, .. } if spec.as_ref() == "Convert"
+        )),
+        "a bound naming an earlier alias parameter must be checked against it: {}",
+        rendered(&errors)
+    );
+}
+
+#[test]
+fn an_argument_substituted_twice_reports_its_bound_failure_once() {
+    // `Duo<T> = Pair<T, T>` substitutes the same argument into two
+    // positions. The argument is normalized once, before substitution, so
+    // its own alias-owned bound failure is reported once rather than once
+    // per occurrence.
+    let errors = TestPackage::new(
+        r#"
+        exposed spec Countable {
+            count(*self) => i32;
+        }
+
+        struct Pair<A, B> {
+            exposed first: A;
+            exposed second: B;
+        }
+
+        struct Holder<T> {
+            exposed value: T;
+        }
+
+        struct Plain {
+            exposed field: i32;
+        }
+
+        alias Inner<T: Countable> = Holder<T>;
+        alias Duo<T> = Pair<T, T>;
+
+        take(value: *Duo<Inner<Plain>>) => i32 { 0 }
+
+        entry_fn() => i32 { 0 }
+        "#,
+    )
+    .expect_errors();
+    let failures: Vec<_> = resolve_errors(&errors)
+        .into_iter()
+        .filter(|error| {
+            matches!(error, ResolveError::SpecNotImplemented { spec, .. } if spec.as_ref() == "Countable")
+        })
+        .collect();
+    assert_eq!(
+        failures.len(),
+        1,
+        "one written argument must produce one bound diagnostic: {}",
+        rendered(&errors)
+    );
+}
+
+#[test]
+fn an_unused_alias_with_too_few_generic_arguments_is_rejected_at_declaration() {
+    let errors = TestPackage::new(
+        r#"
+        struct Pair<A, B> {
+            exposed first: A;
+            exposed second: B;
+        }
+
+        alias Halved<T> = Pair<T>;
+
+        entry_fn() => i32 { 0 }
+        "#,
+    )
+    .expect_errors();
+    assert!(
+        resolve_errors(&errors).iter().any(|error| matches!(
+            error,
+            ResolveError::GenericArgCountMismatch { item, expected: 2, found: 1, .. }
+                if item.as_ref() == "Pair"
+        )),
+        "a malformed application must be reported even in an unused alias: {}",
+        rendered(&errors)
+    );
+}
+
+#[test]
+fn an_unused_alias_with_too_many_generic_arguments_is_rejected_at_declaration() {
+    let errors = TestPackage::new(
+        r#"
+        struct Holder<T> {
+            exposed value: T;
+        }
+
+        alias Overfull<T> = Holder<T, T>;
+
+        entry_fn() => i32 { 0 }
+        "#,
+    )
+    .expect_errors();
+    assert!(
+        resolve_errors(&errors).iter().any(|error| matches!(
+            error,
+            ResolveError::GenericArgCountMismatch { item, expected: 1, found: 2, .. }
+                if item.as_ref() == "Holder"
+        )),
+        "too many arguments must be reported at the alias declaration: {}",
+        rendered(&errors)
+    );
+}
+
+#[test]
+fn a_function_inside_structural_alias_syntax_is_not_a_type() {
+    let errors = TestPackage::new(
+        r#"
+        helper() => i32 { 0 }
+
+        alias Bad<T> = *helper;
+
+        entry_fn() => i32 { 0 }
+        "#,
+    )
+    .expect_errors();
+    assert!(
+        resolve_errors(&errors).iter().any(|error| matches!(
+            error,
+            ResolveError::InvalidAliasTarget { kind, .. } if *kind == "the function"
+        )),
+        "a function is not a type, even where a bare alias could name it: {}",
+        rendered(&errors)
+    );
+}
+
+#[test]
+fn a_module_inside_structural_alias_syntax_is_not_a_type() {
+    let errors = TestPackage::with_modules(
+        r#"
+        import self::helper;
+
+        alias Bad<T> = *helper;
+
+        entry_fn() => i32 { 0 }
+        "#,
+        &[(
+            "helper",
+            r#"
+            exposed struct Remote {
+                exposed field: i32;
+            }
+            "#,
+        )],
+    )
+    .expect_errors();
+    assert!(
+        resolve_errors(&errors).iter().any(|error| matches!(
+            error,
+            ResolveError::InvalidAliasTarget { kind, .. } if *kind == "the module"
+        )),
+        "a module is not a type: {}",
+        rendered(&errors)
+    );
+}
+
+#[test]
+fn a_non_spec_member_of_a_conjunction_alias_is_rejected_at_declaration() {
+    let errors = TestPackage::new(
+        r#"
+        exposed spec Countable {
+            count(*self) => i32;
+        }
+
+        struct Plain {
+            exposed field: i32;
+        }
+
+        alias Conjoined = spec Countable + Plain;
+
+        entry_fn() => i32 { 0 }
+        "#,
+    )
+    .expect_errors();
+    assert!(
+        resolve_errors(&errors).iter().any(|error| matches!(
+            error,
+            ResolveError::InvalidAliasTarget { kind, .. } if *kind == "the non-spec declaration"
+        )),
+        "a conjunction member must be a spec: {}",
+        rendered(&errors)
+    );
+}
+
+#[test]
+fn an_unused_alias_naming_an_inaccessible_qualified_target_is_rejected() {
+    let errors = TestPackage::with_modules(
+        r#"
+        import self::helper;
+
+        alias Bad<T> = helper::Hidden<T>;
+
+        entry_fn() => i32 { 0 }
+        "#,
+        &[(
+            "helper",
+            r#"
+            struct Hidden<T> {
+                exposed value: T;
+            }
+            "#,
+        )],
+    )
+    .expect_errors();
+    assert!(
+        resolve_errors(&errors).iter().any(|error| matches!(
+            error,
+            ResolveError::NotVisible { item, .. } if item.as_ref() == "Hidden"
+        )),
+        "an inaccessible target must be rejected at the declaration: {}",
+        rendered(&errors)
+    );
+}
+
+#[test]
+fn an_unused_alias_with_an_invalid_nested_generic_application_is_rejected() {
+    let errors = TestPackage::new(
+        r#"
+        struct Pair<A, B> {
+            exposed first: A;
+            exposed second: B;
+        }
+
+        struct Holder<T> {
+            exposed value: T;
+        }
+
+        alias Bad<T> = Holder<Pair<T>>;
+
+        entry_fn() => i32 { 0 }
+        "#,
+    )
+    .expect_errors();
+    assert!(
+        resolve_errors(&errors).iter().any(|error| matches!(
+            error,
+            ResolveError::GenericArgCountMismatch { item, expected: 2, found: 1, .. }
+                if item.as_ref() == "Pair"
+        )),
+        "a nested application is validated too: {}",
+        rendered(&errors)
+    );
+}
+
+#[test]
+fn an_unused_alias_whose_unqualified_target_comes_from_an_import_validates() {
+    // `Remote` is not declared in `main`; it is bound there by the import.
+    // Declaration validation must use the same binding rules a use site
+    // would, rather than assuming an unqualified target is local.
+    TestPackage::with_modules(
+        r#"
+        import self::helper::Remote;
+
+        alias Local<T> = Remote<T>;
+
+        entry_fn() => i32 { 0 }
+        "#,
+        &[(
+            "helper",
+            r#"
+            exposed struct Remote<T> {
+                exposed value: T;
+            }
+            "#,
+        )],
+    )
+    .expect_ok();
+}
+
+#[test]
+fn a_structural_alias_may_name_a_fully_qualified_top_level_path_without_importing_it() {
+    // Naming `main::helper::Holder` must not also require importing
+    // `main`, and the target must still resolve at every use site.
+    TestPackage::with_modules(
+        r#"
+        alias Wrapped<T> = main::helper::Holder<T>;
+
+        entry_fn() => i32 {
+            value: Wrapped<i32> = Wrapped<i32> { value = 3; };
+            value.value
+        }
+        "#,
+        &[(
+            "helper",
+            r#"
+            exposed struct Holder<T> {
+                exposed value: T;
+            }
+            "#,
+        )],
+    )
+    .expect_ok();
+}
+
+#[test]
+fn an_overload_alias_forwards_only_the_candidates_its_declaration_site_can_name() {
+    // `provider` exposes one `show` and hides the other. `exporter`'s alias
+    // freezes exactly what `exporter` can name, and `main` gets that set --
+    // never the hidden candidate, and never less than the exposed one.
+    TestPackage::with_modules(
+        r#"
+        import self::exporter::render;
+
+        entry_fn() => i32 {
+            render(2)
+        }
+        "#,
+        &[
+            (
+                "exporter",
+                r#"
+                import super::provider;
+
+                exposed alias render = provider::show;
+                "#,
+            ),
+            (
+                "provider",
+                r#"
+                exposed show(value: i32) => i32 { value }
+
+                show(value: bool) => i32 { 1 }
+                "#,
+            ),
+        ],
+    )
+    .expect_ok();
+}
+
+#[test]
+fn an_overload_alias_never_forwards_a_candidate_its_declaration_site_cannot_name() {
+    let errors = TestPackage::with_modules(
+        r#"
+        import self::exporter::render;
+
+        entry_fn() => i32 {
+            render(true)
+        }
+        "#,
+        &[
+            (
+                "exporter",
+                r#"
+                import super::provider;
+
+                exposed alias render = provider::show;
+                "#,
+            ),
+            (
+                "provider",
+                r#"
+                exposed show(value: i32) => i32 { value }
+
+                show(value: bool) => i32 { 1 }
+                "#,
+            ),
+        ],
+    )
+    .expect_errors();
+    assert!(
+        analysis_errors(&errors)
+            .iter()
+            .any(|kind| matches!(kind, AnalysisErrorKind::NoMatchingOverload { name, .. } if name.as_ref() == "show")),
+        "the hidden candidate must not be reachable through the alias: {}",
+        rendered(&errors)
+    );
+}
+
+#[test]
+fn an_overload_alias_chain_does_not_reintroduce_hidden_candidates() {
+    let errors = TestPackage::with_modules(
+        r#"
+        import self::relay::again;
+
+        entry_fn() => i32 {
+            again(true)
+        }
+        "#,
+        &[
+            (
+                "relay",
+                r#"
+                import super::exporter;
+
+                exposed alias again = exporter::render;
+                "#,
+            ),
+            (
+                "exporter",
+                r#"
+                import super::provider;
+
+                exposed alias render = provider::show;
+                "#,
+            ),
+            (
+                "provider",
+                r#"
+                exposed show(value: i32) => i32 { value }
+
+                show(value: bool) => i32 { 1 }
+                "#,
+            ),
+        ],
+    )
+    .expect_errors();
+    assert!(
+        analysis_errors(&errors)
+            .iter()
+            .any(|kind| matches!(kind, AnalysisErrorKind::NoMatchingOverload { name, .. } if name.as_ref() == "show")),
+        "an alias chain must forward the already-frozen set, not reopen the group: {}",
+        rendered(&errors)
+    );
+}
+
+#[test]
+fn a_direct_import_of_an_overload_set_keeps_caller_side_filtering() {
+    let errors = TestPackage::with_modules(
+        r#"
+        import self::provider::show;
+
+        entry_fn() => i32 {
+            show(2) + show(true)
+        }
+        "#,
+        &[(
+            "provider",
+            r#"
+            exposed show(value: i32) => i32 { value }
+
+            show(value: bool) => i32 { 1 }
+            "#,
+        )],
+    )
+    .expect_errors();
+    assert!(
+        analysis_errors(&errors)
+            .iter()
+            .any(|kind| matches!(kind, AnalysisErrorKind::NoMatchingOverload { name, .. } if name.as_ref() == "show")),
+        "a plain import still filters candidates against the caller: {}",
+        rendered(&errors)
+    );
+}
+
+#[test]
+fn a_revealed_import_of_an_overload_set_bypasses_candidate_visibility() {
+    TestPackage::with_modules(
+        r#"
+        import reveal self::provider::show;
+
+        entry_fn() => i32 {
+            show(2) + show(true)
+        }
+        "#,
+        &[(
+            "provider",
+            r#"
+            exposed show(value: i32) => i32 { value }
+
+            show(value: bool) => i32 { 1 }
+            "#,
+        )],
+    )
+    .expect_ok();
+}
+
+#[test]
+fn an_overload_selected_as_a_value_uses_the_same_frozen_set_as_a_call() {
+    // Selecting a candidate by expected function type must see exactly the
+    // candidates a call through the same alias would see.
+    TestPackage::with_modules(
+        r#"
+        import self::exporter::render;
+
+        entry_fn() => i32 {
+            chosen: (value: i32) => i32 = render;
+            chosen(2)
+        }
+        "#,
+        &[
+            (
+                "exporter",
+                r#"
+                import super::provider;
+
+                exposed alias render = provider::show;
+                "#,
+            ),
+            (
+                "provider",
+                r#"
+                exposed show(value: i32) => i32 { value }
+
+                show(value: bool) => i32 { 1 }
+                "#,
+            ),
+        ],
+    )
+    .expect_ok();
+}
+
+#[test]
+fn an_alias_may_name_a_macro_reached_through_an_import() {
+    // The import binds `shout` in `main` exactly as a local definition
+    // would, so a bare alias target may name it; expansion still uses the
+    // original definition module for hygiene.
+    TestPackage::with_modules(
+        r#"
+        import self::helper::shout;
+
+        alias echo = shout;
+
+        entry_fn() => i32 {
+            echo$(5)
+        }
+        "#,
+        &[(
+            "helper",
+            r#"
+            exposed macro shout($extra: expr) => {
+                $extra
+            }
+            "#,
+        )],
+    )
+    .expect_ok();
+}
+
+#[test]
+fn an_alias_cannot_name_a_hidden_macro_imported_without_reveal() {
+    let errors = TestPackage::with_modules(
+        r#"
+        import self::helper::whisper;
+
+        alias echo = whisper;
+
+        entry_fn() => i32 {
+            echo$(5)
+        }
+        "#,
+        &[(
+            "helper",
+            r#"
+            macro whisper($extra: expr) => {
+                $extra
+            }
+            "#,
+        )],
+    )
+    .expect_errors();
+    assert!(
+        !rendered(&errors).is_empty(),
+        "a hidden imported macro must not become nameable through an alias"
+    );
+}
+
+#[test]
+fn a_revealed_import_makes_a_hidden_macro_aliasable() {
+    TestPackage::with_modules(
+        r#"
+        import reveal self::helper::whisper;
+
+        alias echo = whisper;
+
+        entry_fn() => i32 {
+            echo$(5)
+        }
+        "#,
+        &[(
+            "helper",
+            r#"
+            macro whisper($extra: expr) => {
+                $extra
+            }
+            "#,
+        )],
+    )
+    .expect_ok();
+}
+
+#[test]
+fn an_import_used_only_by_a_static_spec_parameter_is_not_reported_unused() {
+    // `f(x: spec S)` normalizes into a generic bound, and that bound is the
+    // only consumer of the import. Import accounting must follow the
+    // normalized signature, not the written generics.
+    let program = TestPackage::with_modules(
+        r#"
+        import self::helper;
+
+        take(value: spec helper::Countable) => i32 { 0 }
+
+        entry_fn() => i32 { 0 }
+        "#,
+        &[(
+            "helper",
+            r#"
+            exposed spec Countable {
+                count(*self) => i32;
+            }
+            "#,
+        )],
+    )
+    .expect_ok();
+    assert!(
+        !program.warnings.iter().any(|(_, warning)| matches!(
+            warning.kind,
+            omega_analyzer::error::AnalysisWarningKind::UnusedImport { .. }
+        )),
+        "a static-spec parameter consumes its import: {:?}",
+        program
+            .warnings
+            .iter()
+            .map(|(_, w)| &w.kind)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn an_import_used_only_by_an_aliased_static_spec_parameter_is_not_reported_unused() {
+    let program = TestPackage::with_modules(
+        r#"
+        import self::helper;
+
+        alias Bound = spec helper::Countable;
+
+        take(value: Bound) => i32 { 0 }
+
+        entry_fn() => i32 { 0 }
+        "#,
+        &[(
+            "helper",
+            r#"
+            exposed spec Countable {
+                count(*self) => i32;
+            }
+            "#,
+        )],
+    )
+    .expect_ok();
+    assert!(
+        !program.warnings.iter().any(|(_, warning)| matches!(
+            warning.kind,
+            omega_analyzer::error::AnalysisWarningKind::UnusedImport { .. }
+        )),
+        "the aliased spelling must consume the import the same way: {:?}",
+        program
+            .warnings
+            .iter()
+            .map(|(_, w)| &w.kind)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn an_aliased_static_spec_parameter_reports_the_real_spec_not_a_synthesized_parameter() {
+    // Static-spec normalization introduces a synthesized parameter name.
+    // It is an internal identity and must never reach a source-facing
+    // diagnostic, whether the parameter was written literally or through an
+    // alias.
+    let errors = TestPackage::new(
+        r#"
+        exposed spec Countable {
+            count(*self) => i32;
+        }
+
+        struct Plain {
+            exposed field: i32;
+        }
+
+        alias Bound = spec Countable;
+
+        take(value: Bound) => i32 { 0 }
+
+        entry_fn() => i32 {
+            take(Plain { field = 1; })
+        }
+        "#,
+    )
+    .expect_errors();
+    let rendered = rendered(&errors);
+    assert!(
+        resolve_errors(&errors).iter().any(|error| matches!(
+            error,
+            ResolveError::SpecNotImplemented { spec, .. } if spec.as_ref() == "Countable"
+        )),
+        "the real spec must be named: {rendered}"
+    );
+    assert!(
+        !rendered.contains("$Param"),
+        "a synthesized generic parameter must not appear in a diagnostic: {rendered}"
+    );
+}
+
+#[test]
+fn an_alias_carries_its_authorization_into_a_generic_call() {
+    // A locally declared alias resolves to its target's own absolute path,
+    // so the authorization the alias chain established travels with that
+    // path: the generic-call route must not re-gate the hidden target
+    // against this module, which could never name it directly.
+    TestPackage::with_modules(
+        r#"
+        import self::helper;
+
+        alias same = helper::exported;
+
+        entry_fn() => i32 {
+            same(41) + 1
+        }
+        "#,
+        &[(
+            "helper",
+            r#"
+            identity<T>(value: T) => T { value }
+
+            exposed alias exported = identity;
+            "#,
+        )],
+    )
+    .expect_ok();
+}
+
+#[test]
+fn an_alias_carries_its_authorization_into_aggregate_construction() {
+    TestPackage::with_modules(
+        r#"
+        import self::helper;
+
+        alias Counted = helper::exported;
+
+        entry_fn() => i32 {
+            explicit := Counted<i32> { value = 3; };
+            inferred := Counted { value = 4; };
+            explicit.value + inferred.value
+        }
+        "#,
+        &[(
+            "helper",
+            r#"
+            struct Holder<T> {
+                exposed value: T;
+            }
+
+            exposed alias exported = Holder;
+            "#,
+        )],
+    )
+    .expect_ok();
+}
+
+#[test]
+fn an_alias_carries_its_authorization_into_a_static_member_call() {
+    TestPackage::with_modules(
+        r#"
+        import self::helper;
+
+        alias Counted = helper::exported;
+
+        entry_fn() => i32 {
+            explicit := Counted<i32>::make(4);
+            inferred := Counted::make(5);
+            explicit.value + inferred.value
+        }
+        "#,
+        &[(
+            "helper",
+            r#"
+            struct Holder<T> {
+                exposed value: T;
+
+                exposed make(value: T) => Self {
+                    Self { value = value; }
+                }
+            }
+
+            exposed alias exported = Holder;
+            "#,
+        )],
+    )
+    .expect_ok();
+}

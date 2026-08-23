@@ -6,8 +6,8 @@ use omega_analyzer::resolved_type::{
 };
 use omega_analyzer::resolver::{
     GenericLiteralSignature, GenericSignature, GenericStaticFunctionSignature, ImportTarget,
-    ItemNamespace, ModuleResolver, OverloadCandidate, OverloadCandidates, ResolveError,
-    ResolveItemOptions, ResolvedAlias, ResolvedItem,
+    ItemAccess, ItemNamespace, ModuleResolver, OverloadCandidate, OverloadCandidates, ResolveError,
+    ResolveItemOptions, ResolvedAlias, ResolvedItem, ResolvedOverloadSet,
 };
 use omega_analyzer::similarity::best_match;
 use omega_hir::{HirFunctionDef, HirGenericParam, HirId, HirItem};
@@ -135,11 +135,30 @@ impl Driver {
                     });
                 }
             }
-            return Ok(ImportTarget::ItemPath(segments.to_vec()));
+            return Ok(ImportTarget::ItemPath(ItemAccess {
+                absolute: segments.to_vec(),
+                bypass_visibility: reveal,
+            }));
         }
 
-        if self.is_generic_template(module_path, item_name)? {
-            return Ok(ImportTarget::ItemPath(segments.to_vec()));
+        // An overload group is likewise lazy: which candidate a name means
+        // is a use-site question, and the candidates may differ in
+        // visibility. The import still gates eagerly on there being at least
+        // one candidate this accessor can name.
+        if !reveal {
+            self.visible_overload_decls(accessor, module_path, item_name)?;
+        }
+        if self
+            .modules
+            .index(module_path)
+            .overloads
+            .contains_key(item_name)
+            || self.is_generic_template(module_path, item_name)?
+        {
+            return Ok(ImportTarget::ItemPath(ItemAccess {
+                absolute: segments.to_vec(),
+                bypass_visibility: reveal,
+            }));
         }
 
         let item = self.ensure_item(
@@ -191,6 +210,36 @@ impl Driver {
 }
 
 impl Driver {
+    /// Every candidate declared under `name`, with no visibility filtering:
+    /// the source `resolve_overload_set` gates. Nothing else should consume
+    /// it, since an unfiltered candidate set is not an answer to any
+    /// caller's question.
+    fn raw_overload_signatures(
+        &mut self,
+        module_path: &[Ident],
+        name: &Ident,
+    ) -> Result<Option<OverloadCandidates>, ResolveError> {
+        if self.ensure_module_indexed(module_path).is_err() {
+            return Ok(None);
+        }
+        let Some(indices) = self.modules.index(module_path).overloads.get(name).cloned() else {
+            return Ok(None);
+        };
+        let hir = self.modules.hir(module_path);
+        let mut candidates = Vec::with_capacity(indices.len());
+        for index in indices {
+            let HirItem::FunctionDefinition(f) = &hir.items[index] else {
+                unreachable!("only a function is ever recorded as an overload candidate");
+            };
+            candidates.push(OverloadCandidate {
+                decl_id: f.id,
+                fn_type: self.ensure_overload_signature(module_path, index)?,
+                visibility: f.visibility,
+            });
+        }
+        Ok(Some(candidates))
+    }
+
     /// The absolute path a query should really answer for. A plain-path alias
     /// forwards to its target's own path so every downstream query keeps
     /// working on the target's identity; anything else answers for itself.
@@ -200,6 +249,7 @@ impl Driver {
         };
         match self.declared_alias(module, name) {
             Ok(Some(ResolvedAlias::Item(target))) => target,
+            Ok(Some(ResolvedAlias::Overloads { absolute, .. })) => absolute,
             _ => absolute_path.to_vec(),
         }
     }
@@ -231,7 +281,7 @@ impl Driver {
                 module: path,
                 item: alias_name.clone(),
             }),
-            ResolvedAlias::Item(path) => {
+            ResolvedAlias::Overloads { absolute: path, .. } | ResolvedAlias::Item(path) => {
                 let (name, module) = path
                     .split_last()
                     .expect("an alias item target is never empty");
@@ -330,6 +380,10 @@ impl ModuleResolver for Driver {
 
     /// An alias is its own visibility gate: the caller is checked against the
     /// alias, never against the declaration it forwards to.
+    fn module_exists(&mut self, absolute_path: &[Ident]) -> bool {
+        self.roots.module_exists(absolute_path)
+    }
+
     fn declared_item_visibility(&mut self, absolute_path: &[Ident]) -> Option<Visibility> {
         let (name, module) = absolute_path.split_last()?;
         self.alias_visibility(module, name)
@@ -351,8 +405,11 @@ impl ModuleResolver for Driver {
             // its own visibility is trivially satisfied (a declaration
             // always sees itself); its target is fully chain-validated, so
             // consuming it is deliberately not re-gated against an accessor.
-            Some(ResolvedAlias::Item(target)) => {
-                return Ok(Some(ImportTarget::AliasedItemPath(target)));
+            Some(ResolvedAlias::Item(target))
+            | Some(ResolvedAlias::Overloads {
+                absolute: target, ..
+            }) => {
+                return Ok(Some(ImportTarget::ItemPath(ItemAccess::authorized(target))));
             }
             Some(ResolvedAlias::Type { .. }) => return Ok(None),
             None => {}
@@ -360,12 +417,14 @@ impl ModuleResolver for Driver {
         self.resolve_import_alias_entry(module_path, alias)
     }
 
-    fn resolve_declared_alias(
+    fn resolve_visible_alias(
         &mut self,
-        module_path: &[Ident],
+        accessor: &[Ident],
+        alias_module: &[Ident],
         name: &Ident,
+        bypass_visibility: bool,
     ) -> Result<Option<ResolvedAlias>, ResolveError> {
-        self.declared_alias(module_path, name)
+        self.visible_alias(accessor, alias_module, name, bypass_visibility)
     }
 
     fn ambient_core_candidates(
@@ -418,14 +477,6 @@ impl ModuleResolver for Driver {
             .keys()
             .cloned()
             .collect()
-    }
-
-    fn raw_import_absolute_path(
-        &mut self,
-        module_path: &[Ident],
-        alias: &Ident,
-    ) -> Result<Option<(ModulePath, bool)>, ResolveError> {
-        self.import_entry(module_path, alias)
     }
 
     fn resolve_item(
@@ -611,42 +662,63 @@ impl ModuleResolver for Driver {
         self.resolve_spec_declaration(&absolute_path)
     }
 
-    fn function_overload_signatures(
+    fn resolve_overload_set(
         &mut self,
-        module_path: &[Ident],
-        name: &Ident,
-    ) -> Result<Option<OverloadCandidates>, ResolveError> {
-        let canonical = self.canonical_query_path(
-            &module_path
-                .iter()
-                .cloned()
-                .chain(std::iter::once(name.clone()))
-                .collect::<Vec<_>>(),
-        );
-        let (name, module_path) = canonical
-            .split_last()
-            .expect("the query path always carries a name");
-        let module_path = module_path.to_vec();
-        let module_path = module_path.as_slice();
-        if self.ensure_module_indexed(module_path).is_err() {
-            return Ok(None);
-        }
-        let Some(indices) = self.modules.index(module_path).overloads.get(name).cloned() else {
+        accessor: &[Ident],
+        access: &ItemAccess,
+    ) -> Result<Option<ResolvedOverloadSet>, ResolveError> {
+        let Some((name, module)) = access.absolute.split_last() else {
             return Ok(None);
         };
-        let hir = self.modules.hir(module_path);
-        let mut candidates = Vec::with_capacity(indices.len());
-        for index in indices {
-            let HirItem::FunctionDefinition(f) = &hir.items[index] else {
-                unreachable!("only a function is ever recorded as an overload candidate");
-            };
-            candidates.push(OverloadCandidate {
-                decl_id: f.id,
-                fn_type: self.ensure_overload_signature(module_path, index)?,
-                visibility: f.visibility,
-            });
+        let (name, module) = (name.clone(), module.to_vec());
+        // A path whose prefix is not a module simply is not an overload set
+        // here; that is a question for whichever reading of the path does
+        // apply, not a failure of this one.
+        if self.ensure_module_indexed(&module).is_err() {
+            return Ok(None);
         }
-        Ok(Some(candidates))
+
+        if let Some(target) =
+            self.visible_alias(accessor, &module, &name, access.bypass_visibility)?
+        {
+            let ResolvedAlias::Overloads {
+                absolute,
+                candidates,
+            } = target
+            else {
+                return Ok(None);
+            };
+            let (target_name, target_module) = absolute
+                .split_last()
+                .expect("an overload alias target is never empty");
+            let Some(raw) = self.raw_overload_signatures(target_module, target_name)? else {
+                return Ok(None);
+            };
+            return Ok(Some(ResolvedOverloadSet {
+                candidates: raw
+                    .into_iter()
+                    .filter(|candidate| candidates.contains(&candidate.decl_id))
+                    .collect(),
+                absolute,
+            }));
+        }
+
+        let Some(raw) = self.raw_overload_signatures(&module, &name)? else {
+            return Ok(None);
+        };
+        let candidates = if access.bypass_visibility {
+            raw
+        } else {
+            raw.into_iter()
+                .filter(|candidate| {
+                    Self::visibility_allows(candidate.visibility, &module, accessor)
+                })
+                .collect()
+        };
+        Ok(Some(ResolvedOverloadSet {
+            absolute: access.absolute.clone(),
+            candidates,
+        }))
     }
 
     fn similar_item_name(

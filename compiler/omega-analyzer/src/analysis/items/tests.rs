@@ -37,10 +37,12 @@ impl ModuleResolver for NoResolver {
         unreachable!("test never triggers import resolution")
     }
 
-    fn resolve_declared_alias(
+    fn resolve_visible_alias(
         &mut self,
-        _module_path: &[Ident],
+        _accessor: &[Ident],
+        _alias_module: &[Ident],
         _name: &Ident,
+        _bypass_visibility: bool,
     ) -> Result<Option<crate::resolver::ResolvedAlias>, ResolveError> {
         Ok(None)
     }
@@ -57,12 +59,8 @@ impl ModuleResolver for NoResolver {
         vec![]
     }
 
-    fn raw_import_absolute_path(
-        &mut self,
-        _module_path: &[Ident],
-        _alias: &Ident,
-    ) -> Result<Option<(Vec<Ident>, bool)>, ResolveError> {
-        unreachable!("test never triggers import resolution")
+    fn module_exists(&mut self, _absolute_path: &[Ident]) -> bool {
+        false
     }
 
     fn resolve_item(
@@ -106,11 +104,11 @@ impl ModuleResolver for NoResolver {
         unreachable!("test never triggers generic resolution")
     }
 
-    fn function_overload_signatures(
+    fn resolve_overload_set(
         &mut self,
-        _module_path: &[Ident],
-        _name: &Ident,
-    ) -> Result<Option<OverloadCandidates>, ResolveError> {
+        _accessor: &[Ident],
+        _access: &crate::resolver::ItemAccess,
+    ) -> Result<Option<crate::resolver::ResolvedOverloadSet>, ResolveError> {
         unreachable!("test never triggers overload resolution")
     }
 

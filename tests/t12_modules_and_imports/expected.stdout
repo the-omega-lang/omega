@@ -3,3 +3,12 @@ mymodule-label: mymodule root
 something-import: hello from helper
 chained-super-import: hello from helper
 ambient-option: 7
+anchored-value: 7 7
+anchored-generic: 3
+anchored-overload: int bool
+anchored-literal: 1 2
+anchored-generic-literal: 5
+anchored-alias: 9
+anchored-static: 0
+anchored-super: 14
+anchored-static-super: 4

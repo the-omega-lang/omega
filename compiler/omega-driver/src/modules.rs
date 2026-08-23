@@ -308,15 +308,27 @@ impl Driver {
             return self.gate_macro_target(path, module, name, local);
         }
         if target.is_unqualified() {
-            return local.get(&target.head).cloned();
+            if let Some(definition) = local.get(&target.head) {
+                return Some(definition.clone());
+            }
+            // An import binds the same name a local definition would, so a
+            // bare target may name an imported macro. The import's own
+            // `reveal` decides whether that binding is usable here, exactly
+            // as it does when the macro is invoked directly instead.
+            let import = Self::binding_import(imports, &target.head)?;
+            let absolute = self.import_absolute_path(path, &import.path).ok()?;
+            let (name, module) = absolute.split_last()?;
+            let (name, module) = (name.clone(), module.to_vec());
+            if import.reveal {
+                return self.module_macros(&module).ok()?.get(&name).cloned();
+            }
+            return self.gate_macro_target(path, &module, &name, local);
         }
         let (name, module) = target
             .segments()
             .split_last()
             .map(|(n, m)| (n.clone(), m.to_vec()))?;
-        let base = imports
-            .iter()
-            .find(|import| import.path.tail.last().unwrap_or(&import.path.head) == &target.head)
+        let base = Self::binding_import(imports, &target.head)
             .and_then(|import| self.import_absolute_path(path, &import.path).ok())
             .or_else(|| {
                 self.roots
@@ -325,6 +337,13 @@ impl Driver {
             })?;
         let absolute: Vec<Ident> = base.into_iter().chain(module.into_iter().skip(1)).collect();
         self.gate_macro_target(path, &absolute, &name, local)
+    }
+
+    /// The import that binds `name` in the importing module, if any.
+    fn binding_import<'i>(imports: &'i [ImportStmt], name: &Ident) -> Option<&'i ImportStmt> {
+        imports
+            .iter()
+            .find(|import| import.path.tail.last().unwrap_or(&import.path.head) == name)
     }
 
     /// The named macro binding in `module`, visible from `accessor`, or
@@ -349,6 +368,14 @@ impl Driver {
     pub(crate) fn module_has_macro(&mut self, module: &[Ident], name: &Ident) -> bool {
         self.module_macros(module)
             .is_ok_and(|definitions| definitions.contains_key(name))
+    }
+
+    pub(crate) fn macro_visibility(
+        &mut self,
+        module: &[Ident],
+        name: &Ident,
+    ) -> Option<Visibility> {
+        Some(self.module_macros(module).ok()?.get(name)?.visibility)
     }
 
     fn prelude_macros(&mut self) -> Result<Rc<HashMap<Ident, MacroDefinitionStmt>>, CompileError> {
@@ -447,9 +474,10 @@ impl Driver {
             let Some(definition) = definitions.get(&name) else {
                 continue;
             };
-            let visible = definition.visibility == Visibility::Exposed
-                || (definition.visibility == Visibility::Shared && path.first() == module.first());
-            if visible {
+            // The same rule the alias-target lookup applies, so `reveal`
+            // cannot mean one thing when the macro is invoked and another
+            // when it is immediately aliased.
+            if import.reveal || Self::visibility_allows(definition.visibility, &module, path) {
                 environment
                     .entry(name)
                     .or_insert_with(|| definition.clone());

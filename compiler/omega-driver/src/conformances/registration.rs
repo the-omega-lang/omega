@@ -1,4 +1,5 @@
 use super::*;
+use omega_analyzer::resolver::ImportTarget;
 
 impl Driver {
     pub(crate) fn mark_bound_type_imports(
@@ -28,9 +29,13 @@ impl Driver {
         seen: &mut HashSet<(ModulePath, Ident)>,
     ) {
         match ty {
-            Type::Named(path) | Type::Generic(path, _) if path.is_unqualified() => {
+            // An anchored path names its target directly and consumes no
+            // import; every other head is a binding this module owns.
+            Type::Named(path) | Type::Generic(path, _) if path.anchor.is_none() => {
                 let _ = self.import_entry(module, &path.head);
-                self.mark_alias_declaration_import_dependencies(module, &path.head, seen);
+                if path.tail.is_empty() {
+                    self.mark_alias_declaration_import_dependencies(module, &path.head, seen);
+                }
             }
             _ => {}
         }
@@ -67,19 +72,33 @@ impl Driver {
         name: &Ident,
         seen: &mut HashSet<(ModulePath, Ident)>,
     ) {
-        let (alias_module, index) = if let Ok(Some(index)) = self.alias_index(module, name) {
-            (module.to_vec(), index)
-        } else if let Ok(Some((target, _))) = self.raw_import_absolute_path(module, name)
-            && let Some((alias_name, alias_module)) = target.split_last()
-            && let Ok(Some(index)) = self.alias_index(alias_module, alias_name)
-        {
-            (alias_module.to_vec(), index)
+        let (alias_module, alias_name) = if matches!(self.alias_index(module, name), Ok(Some(_))) {
+            (module.to_vec(), name.clone())
         } else {
-            return;
+            let imported = self.resolve_import_alias_entry(module, name);
+            let Ok(Some(ImportTarget::ItemPath(access))) = imported else {
+                return;
+            };
+            let Some((alias_name, alias_module)) = access.absolute.split_last() else {
+                return;
+            };
+            (alias_module.to_vec(), alias_name.clone())
         };
-        if !seen.insert((alias_module.clone(), name.clone())) {
+        // Keyed by the alias's own declaration rather than by the name a use
+        // site happened to bind it to, so a chain that revisits a link stops
+        // here instead of recursing forever.
+        if !seen.insert((alias_module.clone(), alias_name.clone())) {
             return;
         }
+        // An alias this module may not name, or one whose own declaration is
+        // invalid, contributes no dependency: a reference that will be
+        // rejected must not make the alias module's imports count as used.
+        let Ok(Some(_)) = self.visible_alias(module, &alias_module, &alias_name, false) else {
+            return;
+        };
+        let Ok(Some(index)) = self.alias_index(&alias_module, &alias_name) else {
+            return;
+        };
         let HirItem::Alias(declared) = &self.modules.parsed(&alias_module).hir.items[index] else {
             return;
         };

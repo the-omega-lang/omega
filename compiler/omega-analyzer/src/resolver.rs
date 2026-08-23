@@ -40,26 +40,78 @@ pub enum ResolvedAlias {
         generics: Vec<HirGenericParam>,
         r#type: Type,
     },
+    /// An overload set, whose candidates are frozen to exactly those the
+    /// alias declaration site could name. Candidates are identified by their
+    /// own `decl_id`s: an alias re-exports the functions that already exist,
+    /// so it must not invent a wrapper, a new signature, or a new identity
+    /// for them -- and it must not widen the set later either, which is what
+    /// re-deriving visibility at each caller would do.
+    Overloads {
+        absolute: Vec<Ident>,
+        candidates: Vec<HirId>,
+    },
+}
+
+/// The overload candidates a written name offers one caller, together with
+/// the group's own absolute path -- never an alias's path, since an alias
+/// forwards its target's identity.
+#[derive(Debug, Clone)]
+pub struct ResolvedOverloadSet {
+    pub absolute: Vec<Ident>,
+    pub candidates: OverloadCandidates,
+}
+
+/// An absolute item path together with whether the eventual `resolve_item`
+/// is already authorized to reach it without re-checking the accessor's own
+/// visibility.
+///
+/// The bypass bit is a capability that was granted once, at the binding that
+/// produced this path, and must survive every hop between that binding and
+/// the item query: a validated declared-alias chain (whose every link was
+/// gated at its own declaration site) and an `import reveal` both grant it.
+/// Losing it silently turns an authorized reference back into an
+/// unauthorized one.
+#[derive(Debug, Clone)]
+pub struct ItemAccess {
+    pub absolute: Vec<Ident>,
+    pub bypass_visibility: bool,
+}
+
+impl ItemAccess {
+    /// A path the accessor must still be allowed to name for itself.
+    pub fn gated(absolute: Vec<Ident>) -> Self {
+        Self {
+            absolute,
+            bypass_visibility: false,
+        }
+    }
+
+    /// A path whose target the accessor has already been authorized to reach.
+    pub fn authorized(absolute: Vec<Ident>) -> Self {
+        Self {
+            absolute,
+            bypass_visibility: true,
+        }
+    }
+
+    /// `options` with this access's authorization folded in. An already-set
+    /// bypass is never cleared: authorization only accumulates.
+    pub fn options(&self, options: ResolveItemOptions) -> ResolveItemOptions {
+        options.bypassing_visibility(self.bypass_visibility || options.bypasses_visibility())
+    }
 }
 
 #[derive(Debug, Clone)]
 pub enum ImportTarget {
     Module(Vec<Ident>),
     Item(Vec<Ident>, ResolvedItem),
-    /// An ordinary (non-alias) generic template imported by name: arity and
-    /// contents are not known until a real use site supplies concrete
-    /// arguments, so resolution is deferred -- but the *accessor's own*
-    /// visibility to the target still applies then, exactly as it would for
-    /// a concrete import. No capability transfer happens here.
-    ItemPath(Vec<Ident>),
-    /// The fully-validated end of a declared-alias chain: every intermediate
-    /// alias's own declaration-site visibility to its own immediate target
-    /// was already checked when the chain was built (see
-    /// `forward_alias_path`), and the caller was already gated against the
-    /// alias itself. Consuming this path is deliberately not re-gated
-    /// against the accessor -- that is the whole point of an alias
-    /// forwarding capability to whoever may see the alias.
-    AliasedItemPath(Vec<Ident>),
+    /// A name bound to a path whose item is resolved later: an ordinary
+    /// (non-alias) generic template, whose arity and contents are unknown
+    /// until a use site supplies arguments, or a declared alias, which never
+    /// flattens into its target. The binding's own authorization travels
+    /// with the path (see [`ItemAccess`]) so the deferred item query applies
+    /// exactly the rights this binding established.
+    ItemPath(ItemAccess),
 }
 
 #[derive(Debug, Clone)]
@@ -129,6 +181,10 @@ pub enum ResolveError {
         declared: Ident,
         target: Vec<Ident>,
         kind: &'static str,
+        /// The target was written inside type syntax, where the legal alias
+        /// namespace is narrower: only a type or spec belongs there, even
+        /// though a bare alias may forward a function, macro or module.
+        type_position: bool,
     },
 }
 
@@ -250,6 +306,7 @@ impl fmt::Display for ResolveError {
                 declared,
                 target,
                 kind,
+                ..
             } => write!(
                 f,
                 "alias '{}::{}' cannot name {kind} '{}'",
@@ -331,6 +388,11 @@ pub trait ModuleResolver {
         path: &Path,
     ) -> Option<Result<Vec<Ident>, ResolveError>>;
 
+    /// Whether `absolute_path` names a module rather than a declaration.
+    /// An unanchored path answers this through its head's import binding;
+    /// an anchored one has no binding to ask, so it asks here.
+    fn module_exists(&mut self, absolute_path: &[Ident]) -> bool;
+
     fn declared_item_visibility(&mut self, absolute_path: &[Ident]) -> Option<Visibility>;
 
     fn resolve_import_alias(
@@ -339,12 +401,22 @@ pub trait ModuleResolver {
         alias: &Ident,
     ) -> Result<Option<ImportTarget>, ResolveError>;
 
-    /// The `alias` declared under `name` in `module_path`, if there is one.
-    /// Follows alias chains and reports a cycle rather than recursing.
-    fn resolve_declared_alias(
+    /// The `alias` declared under `name` in `alias_module`, if there is one,
+    /// gated on `accessor` being allowed to name the alias itself.
+    ///
+    /// This is the only alias query semantic resolution uses: an alias is
+    /// always its own visibility gate, and deciding that from the outside --
+    /// by asking whether an alias merely exists -- is what let equivalent
+    /// spellings disagree. `bypass_visibility` says the gate was already
+    /// passed elsewhere (see [`ItemAccess`]); it never means "no gate".
+    /// Alias chains are followed and a cycle is reported rather than
+    /// recursed.
+    fn resolve_visible_alias(
         &mut self,
-        module_path: &[Ident],
+        accessor: &[Ident],
+        alias_module: &[Ident],
         name: &Ident,
+        bypass_visibility: bool,
     ) -> Result<Option<ResolvedAlias>, ResolveError>;
 
     fn ambient_core_candidates(
@@ -354,12 +426,6 @@ pub trait ModuleResolver {
     ) -> Result<Option<Vec<Ident>>, ResolveError>;
 
     fn import_alias_names(&mut self, module_path: &[Ident]) -> Vec<Ident>;
-
-    fn raw_import_absolute_path(
-        &mut self,
-        module_path: &[Ident],
-        alias: &Ident,
-    ) -> Result<Option<(Vec<Ident>, bool)>, ResolveError>;
 
     fn resolve_item(
         &mut self,
@@ -388,11 +454,20 @@ pub trait ModuleResolver {
         function_name: &Ident,
     ) -> Result<Option<GenericStaticFunctionSignature>, ResolveError>;
 
-    fn function_overload_signatures(
+    /// The overload candidates `accessor` may choose between when it writes
+    /// the name bound by `access`. `Ok(None)` means the name is not an
+    /// overload set at all.
+    ///
+    /// A declared overload alias is gated once, here, and then forwards the
+    /// candidate set frozen at its own declaration site unchanged. A direct
+    /// (non-alias) name is filtered against `accessor`, since nothing gated
+    /// it earlier. Either way the caller receives an already-authorized set
+    /// and never re-filters it.
+    fn resolve_overload_set(
         &mut self,
-        module_path: &[Ident],
-        name: &Ident,
-    ) -> Result<Option<OverloadCandidates>, ResolveError>;
+        accessor: &[Ident],
+        access: &ItemAccess,
+    ) -> Result<Option<ResolvedOverloadSet>, ResolveError>;
 
     fn fresh_synthetic_id(&mut self) -> HirId;
 

@@ -1,6 +1,7 @@
 import std::io::println;
 import self::child;
 import self::child::Public;
+import self::child::shout;
 
 # --- ordinary type alias --------------------------------------------------
 alias Count = i32;
@@ -59,6 +60,14 @@ alias render = show;
 
 # --- module alias ---------------------------------------------------------
 alias kid = child;
+
+# A fully qualified top-level path needs no import of its own head, and must
+# keep meaning the same thing wherever the alias is later expanded.
+alias Boxed<T> = t26_aliases::child::Held<T>;
+
+# An alias may name a macro reached through an import, exactly as it may name
+# a locally defined one.
+alias echoed = shout;
 
 # --- macro alias ----------------------------------------------------------
 macro twice($x: expr) => {
@@ -170,8 +179,16 @@ main() => void {
 	# --- an exposed alias re-exporting a hidden cross-module overload set --
 	println$("cross-module-overload-alias: ", child::public_pair_sum(2, 5));
 
+	# --- an alias forwarding a mixed-visibility overload group -------------
+	println$("mixed-visibility-alias: ", child::public_mixed(1), " ", child::public_mixed(true));
+
+	# --- a fully qualified top-level alias target --------------------------
+	boxed := Boxed<i32> { value = 12; };
+	println$("top-level-alias-target: ", boxed.value);
+
 	# --- macro invocation through an alias --------------------------------
 	println$("macro-alias: ", doubled$(21));
+	println$("imported-macro-alias: ", echoed$(41));
 
 	# --- spec conjunction aliases -----------------------------------------
 	foo := Foo { tally = 10; };

@@ -15,36 +15,64 @@ impl<'r> Analyzer<'r> {
             return Intercepted::Declined;
         };
 
+        // An explicit anchor names the owner directly; nothing below applies
+        // to it. Silent probe throughout -- a real resolution failure isn't
+        // this function's to report, and is left to whichever fallback path
+        // needs the same name to surface it.
+        let accessor = self.path_module(path);
+        let anchored =
+            match self.anchored_prefix(node_id, span, path, std::slice::from_ref(&path.head)) {
+                AnchoredPath::Failed => return Intercepted::Claimed(None),
+                AnchoredPath::Absolute(absolute) => Some(absolute),
+                AnchoredPath::Unanchored => None,
+            };
+        if let Some(absolute) = &anchored
+            && self.resolver.module_exists(absolute)
+        {
+            return Intercepted::Declined;
+        }
+
         // A module alias wins over a type interpretation whenever both could
         // apply, so a genuine `module::function` shape is never misread as
-        // `Type::function` here. Silent probe -- a real resolution failure
-        // isn't this function's to report; left for whichever fallback path
-        // needs this same alias to surface it.
-        let accessor = self.path_module(path);
-        let alias = self
-            .resolver
-            .resolve_import_alias(&accessor, &path.head)
-            .ok()
-            .flatten();
+        // `Type::function` here.
+        let alias = match anchored {
+            Some(_) => None,
+            None => self
+                .resolver
+                .resolve_import_alias(&accessor, &path.head)
+                .ok()
+                .flatten(),
+        };
         if matches!(alias, Some(ImportTarget::Module(_))) {
             return Intercepted::Declined;
         }
 
-        let r#type = if let Some(t) = self.context.find_defined_type(&path.head) {
-            t.clone()
-        } else if let Some(ImportTarget::Item(_, ResolvedItem::Type(t))) = alias {
-            t
-        } else {
-            let absolute: Vec<Ident> = self
-                .module_path
-                .iter()
-                .cloned()
-                .chain(std::iter::once(path.head.clone()))
-                .collect();
-            match self.resolve_item_checked(&absolute, &[], true) {
+        let owner = match anchored {
+            Some(absolute) => Some(ItemAccess::gated(absolute)),
+            None if self.context.find_defined_type(&path.head).is_some() => None,
+            None => match &alias {
+                Some(ImportTarget::Item(_, ResolvedItem::Type(_))) => None,
+                _ => Some(ItemAccess::gated(
+                    self.module_path
+                        .iter()
+                        .cloned()
+                        .chain(std::iter::once(path.head.clone()))
+                        .collect(),
+                )),
+            },
+        };
+        let r#type = match owner {
+            Some(access) => match self.resolve_item_checked(&access, &[], true) {
                 Ok(ResolvedItem::Type(t)) => t,
                 _ => return Intercepted::Declined,
-            }
+            },
+            None => match self.context.find_defined_type(&path.head) {
+                Some(t) => t.clone(),
+                None => match alias {
+                    Some(ImportTarget::Item(_, ResolvedItem::Type(t))) => t,
+                    _ => return Intercepted::Declined,
+                },
+            },
         };
 
         let Some(all_methods) = r#type.declared_methods() else {
@@ -96,72 +124,56 @@ impl<'r> Analyzer<'r> {
         )))
     }
 
+    /// The candidate set a written overload name offers this caller. A
+    /// use-site `reveal` is an explicit local bypass, so it joins whatever
+    /// authorization the binding already carried; everything else about
+    /// which candidates exist is the resolver's answer, not a rule
+    /// reconstructed here.
+    pub(crate) fn overload_set(
+        &mut self,
+        accessor: &[Ident],
+        access: &ItemAccess,
+    ) -> Result<Option<ResolvedOverloadSet>, ResolveError> {
+        let revealed = self.reveals.active();
+        let access = ItemAccess {
+            absolute: access.absolute.clone(),
+            bypass_visibility: access.bypass_visibility || revealed,
+        };
+        let set = self.resolver.resolve_overload_set(accessor, &access)?;
+        if revealed
+            && let Some(set) = &set
+            && let Some((_, module)) = set.absolute.split_last()
+            && set.candidates.iter().any(|candidate| {
+                !Self::visibility_allows(candidate.visibility, module, &self.module_path)
+            })
+        {
+            self.reveals.mark_used();
+        }
+        Ok(set)
+    }
+
     pub(crate) fn resolve_bare_overload_candidates(
         &mut self,
         ident: &Ident,
-    ) -> Option<(Vec<Ident>, OverloadCandidates)> {
-        // A declared alias (local or reached through an import) is its own
-        // visibility gate, already checked by `resolve_import_alias`: the
-        // candidate set frozen at its declaration site is forwarded as-is,
-        // not re-filtered against this external caller. An ordinary
-        // (non-alias) import of an overloaded name has no such gate, so each
-        // individual candidate's own visibility -- which may differ between
-        // overloads of the same name -- is still checked against this
-        // caller, exactly as an ordinary import always has.
+    ) -> Option<ResolvedOverloadSet> {
         let alias = self
             .resolver
             .resolve_import_alias(&self.module_path, ident)
             .ok()
             .flatten();
-        let (absolute, import_reveal) = match alias {
-            Some(ImportTarget::AliasedItemPath(absolute))
-            | Some(ImportTarget::ItemPath(absolute))
-            | Some(ImportTarget::Item(absolute, _)) => {
-                let reveal = self
-                    .resolver
-                    .raw_import_absolute_path(&self.module_path, ident)
-                    .ok()
-                    .flatten()
-                    .is_some_and(|(_, reveal)| reveal);
-                (absolute, reveal)
-            }
-            _ => (
+        let access = match alias {
+            Some(ImportTarget::ItemPath(access)) => access,
+            Some(ImportTarget::Item(absolute, _)) => ItemAccess::gated(absolute),
+            _ => ItemAccess::gated(
                 self.module_path
                     .iter()
                     .cloned()
                     .chain(std::iter::once(ident.clone()))
                     .collect(),
-                false,
             ),
         };
-        let (name, module_path) = absolute.split_last()?;
-        // `absolute`'s last segment may still literally be a declared
-        // alias's own name (an import forwards it unflattened): check
-        // directly, rather than trusting only how `ident` itself resolved,
-        // so an imported alias of an overload set gets the same frozen,
-        // ungated-against-the-caller treatment a local one does.
-        let via_alias = self
-            .resolver
-            .resolve_declared_alias(module_path, name)
-            .ok()
-            .flatten()
-            .is_some();
-        let raw_candidates = self
-            .resolver
-            .function_overload_signatures(module_path, name)
-            .ok()
-            .flatten()?;
-        let candidates = if via_alias || import_reveal {
-            raw_candidates
-        } else {
-            raw_candidates
-                .into_iter()
-                .filter(|candidate| {
-                    Self::visibility_allows(candidate.visibility, module_path, &self.module_path)
-                })
-                .collect()
-        };
-        Some((absolute, candidates))
+        let accessor = self.module_path.clone();
+        self.overload_set(&accessor, &access).ok().flatten()
     }
 
     pub(crate) fn resolve_overloaded_call(
@@ -184,59 +196,49 @@ impl<'r> Analyzer<'r> {
             return Intercepted::Declined;
         }
 
-        // Unqualified (possibly aliased) and module-qualified names take
-        // different paths: an alias's candidate set is fixed and
-        // visibility-filtered at resolution time (see
-        // `resolve_bare_overload_candidates`), while a module-qualified
-        // reference has no alias to fix anything through, so every
-        // candidate is considered and `reveal` at the call site can still
-        // bypass the winner's visibility.
-        let (name, module_path, candidates, needs_visibility_check): (Ident, Vec<Ident>, _, bool) =
-            if path.is_unqualified() {
-                let Some((absolute, candidates)) =
-                    self.resolve_bare_overload_candidates(&path.head)
-                else {
-                    return Intercepted::Declined;
-                };
-                let Some((name, module_path)) = Self::split_item_path(&absolute) else {
-                    return Intercepted::Declined;
-                };
-                (name, module_path, candidates, false)
-            } else {
-                let absolute: Vec<Ident> = match self.resolve_alias(&path.head).ok().flatten() {
-                    Some(ImportTarget::Module(target)) => target
-                        .into_iter()
-                        .chain(path.tail.iter().cloned())
-                        .collect(),
-                    _ => return Intercepted::Declined,
-                };
-                let Some((name, module_path)) = Self::split_item_path(&absolute) else {
-                    return Intercepted::Declined;
-                };
-                let candidates = match self
-                    .resolver
-                    .function_overload_signatures(&module_path, &name)
-                {
-                    Ok(Some(candidates)) => candidates,
-                    Ok(None) => return Intercepted::Declined,
-                    Err(e) => {
-                        self.error(node_id, span, AnalysisErrorKind::ModuleResolution(e));
-                        return Intercepted::Claimed(None);
-                    }
-                };
-                // The final segment itself may name a declared alias (a
-                // module-qualified reference to an aliased overload set,
-                // `module::alias_name(...)`), which has already gated the
-                // caller against the alias and frozen its candidate set --
-                // that set is not re-filtered against this caller either.
-                let via_alias = self
-                    .resolver
-                    .resolve_declared_alias(&module_path, &name)
-                    .ok()
-                    .flatten()
-                    .is_some();
-                (name, module_path, candidates, !via_alias)
+        // Every spelling reaches the same already-authorized candidate set:
+        // a bare (possibly aliased) name, an explicitly anchored path, and a
+        // module-qualified path differ only in how the absolute path is
+        // found, never in which candidates the caller may then choose
+        // between.
+        let set = if path.is_unqualified() {
+            let Some(set) = self.resolve_bare_overload_candidates(&path.head) else {
+                return Intercepted::Declined;
             };
+            set
+        } else {
+            let accessor = self.path_module(path);
+            let absolute: Vec<Ident> = match self.anchored_path(node_id, span, path) {
+                AnchoredPath::Failed => return Intercepted::Claimed(None),
+                AnchoredPath::Absolute(absolute) => absolute,
+                AnchoredPath::Unanchored => {
+                    match self
+                        .resolver
+                        .resolve_import_alias(&accessor, &path.head)
+                        .ok()
+                        .flatten()
+                    {
+                        Some(ImportTarget::Module(target)) => target
+                            .into_iter()
+                            .chain(path.tail.iter().cloned())
+                            .collect(),
+                        _ => return Intercepted::Declined,
+                    }
+                }
+            };
+            match self.overload_set(&accessor, &ItemAccess::gated(absolute)) {
+                Ok(Some(set)) => set,
+                Ok(None) => return Intercepted::Declined,
+                Err(e) => {
+                    self.error(node_id, span, AnalysisErrorKind::ModuleResolution(e));
+                    return Intercepted::Claimed(None);
+                }
+            }
+        };
+        let Some((name, _)) = Self::split_item_path(&set.absolute) else {
+            return Intercepted::Declined;
+        };
+        let candidates = set.candidates;
 
         let signatures: Vec<(HirId, ResolvedFunctionType)> = candidates
             .iter()
@@ -249,18 +251,6 @@ impl<'r> Analyzer<'r> {
             return Intercepted::Claimed(None);
         };
         let winner = candidates[winner].clone();
-
-        if needs_visibility_check && !self.check_visibility(winner.visibility, &module_path) {
-            self.error(
-                node_id,
-                span,
-                AnalysisErrorKind::ModuleResolution(ResolveError::NotVisible {
-                    module: module_path.clone(),
-                    item: name.clone(),
-                }),
-            );
-            return Intercepted::Claimed(None);
-        }
 
         Intercepted::Claimed(Some(self.checked_call(
             node_id,

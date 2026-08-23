@@ -7,7 +7,7 @@
 //! Turning the alias into a `ResolvedType` first would erase that distinction
 //! and force each of those positions to learn a second, alias-only format.
 
-use crate::resolver::{ImportTarget, ModuleResolver, ResolveError, ResolvedAlias};
+use crate::resolver::{ImportTarget, ItemAccess, ModuleResolver, ResolveError, ResolvedAlias};
 use omega_parser::prelude::{FunctionType, Ident, Param, Type};
 
 /// Replaces alias-owned generic parameter names with the types written for
@@ -46,12 +46,17 @@ pub fn substitute_type_params(ty: &Type, subst: &[(Ident, Type)]) -> Type {
     }
 }
 
-/// The alias a written type names, if any, together with the arguments the use
-/// site supplied for it.
+/// The alias a written type names, if any: where it is declared, the
+/// arguments the use site supplied, and the authorization the binding it was
+/// reached through already established. The accessor is the module the type
+/// was written in, which is the module the alias's own visibility is judged
+/// against.
 struct AliasReference {
+    accessor: Vec<Ident>,
     module: Vec<Ident>,
     name: Ident,
     args: Vec<Type>,
+    bypass_visibility: bool,
 }
 
 fn alias_reference(
@@ -64,136 +69,205 @@ fn alias_reference(
         Type::Generic(path, args) => (path, args.clone()),
         _ => return Ok(None),
     };
-    let resolution_module = resolver
+    let accessor = resolver
         .macro_origin_module(path.origin)
         .unwrap_or_else(|| module_path.to_vec());
-    let (module, name) = if let Some(anchored) =
-        resolver.resolve_explicit_anchor(&resolution_module, path)
-    {
-        let absolute = anchored?;
-        let (name, module) = absolute
-            .split_last()
-            .expect("an anchored path is never empty");
-        (module.to_vec(), name.clone())
+    let access = if let Some(anchored) = resolver.resolve_explicit_anchor(&accessor, path) {
+        ItemAccess::gated(anchored?)
     } else if path.tail.is_empty() {
         // An import binds the same name a local declaration would, so a bare
         // reference to an imported structural alias must resolve at the
-        // alias's own declaration module, not `resolution_module` itself.
-        match resolver.resolve_import_alias(&resolution_module, &path.head)? {
-            Some(ImportTarget::ItemPath(absolute)) => {
-                let (name, module) = absolute.split_last().expect("an item path is never empty");
-                (module.to_vec(), name.clone())
-            }
-            _ => (resolution_module, path.head.clone()),
+        // alias's own declaration module, not `accessor` itself.
+        match resolver.resolve_import_alias(&accessor, &path.head)? {
+            Some(ImportTarget::ItemPath(access)) => access,
+            _ => ItemAccess::gated(
+                accessor
+                    .iter()
+                    .cloned()
+                    .chain(std::iter::once(path.head.clone()))
+                    .collect(),
+            ),
         }
     } else {
         let Some(ImportTarget::Module(base)) =
-            resolver.resolve_import_alias(&resolution_module, &path.head)?
+            resolver.resolve_import_alias(&accessor, &path.head)?
         else {
             return Ok(None);
         };
-        let mut absolute = base;
-        absolute.extend(path.tail.iter().cloned());
-        let (name, module) = absolute
-            .split_last()
-            .expect("a qualified path has at least two segments");
-        (module.to_vec(), name.clone())
+        ItemAccess::gated(base.into_iter().chain(path.tail.iter().cloned()).collect())
     };
-    Ok(Some(AliasReference { module, name, args }))
-}
-
-/// One full alias-template application: the RHS with every alias parameter
-/// bound (explicit argument or default) and substituted, together with the
-/// `(bound, argument)` obligations that binding places on its arguments.
-/// Bounds are substituted the same way defaults are, so a bound referring to
-/// an earlier alias parameter sees that parameter's own bound argument.
-struct AliasApplication {
-    expanded: Type,
-    obligations: Vec<(Type, Type)>,
-}
-
-/// One layer of type-form alias application. `Ok(None)` means `ty` does not
-/// name a structural alias, which includes naming an ordinary declaration
-/// through a plain-path alias -- that case is forwarding, not expansion, and
-/// is handled by ordinary item resolution.
-fn apply_alias_once(
-    resolver: &mut dyn ModuleResolver,
-    module_path: &[Ident],
-    ty: &Type,
-) -> Result<Option<AliasApplication>, ResolveError> {
-    let Some(reference) = alias_reference(resolver, module_path, ty)? else {
-        return Ok(None);
-    };
-    let Some(ResolvedAlias::Type { generics, r#type }) =
-        resolver.resolve_declared_alias(&reference.module, &reference.name)?
-    else {
-        return Ok(None);
-    };
-    if reference.args.len() > generics.len() {
-        return Err(ResolveError::GenericArgCountMismatch {
-            module: reference.module,
-            item: reference.name,
-            expected: generics.len(),
-            found: reference.args.len(),
-        });
-    }
-    let mut subst: Vec<(Ident, Type)> = Vec::with_capacity(generics.len());
-    let mut obligations = Vec::new();
-    for (index, param) in generics.iter().enumerate() {
-        let argument = match (reference.args.get(index), &param.default) {
-            (Some(argument), _) => argument.clone(),
-            (None, Some(default)) => substitute_type_params(default, &subst),
-            (None, None) => {
-                return Err(ResolveError::GenericArgCountMismatch {
-                    module: reference.module,
-                    item: reference.name,
-                    expected: generics.len(),
-                    found: reference.args.len(),
-                });
-            }
-        };
-        for bound in &param.bounds {
-            obligations.push((substitute_type_params(bound, &subst), argument.clone()));
-        }
-        subst.push((param.ident.clone(), argument));
-    }
-    Ok(Some(AliasApplication {
-        expanded: substitute_type_params(&r#type, &subst),
-        obligations,
+    let (name, module) = access
+        .absolute
+        .split_last()
+        .expect("an alias reference path is never empty");
+    Ok(Some(AliasReference {
+        accessor,
+        module: module.to_vec(),
+        name: name.clone(),
+        args,
+        bypass_visibility: access.bypass_visibility,
     }))
 }
 
-/// Repeats [`apply_alias_once`] until the type no longer names a structural
-/// alias, accumulating every layer's obligations. Cycles are impossible here:
-/// the alias query itself reports a cycle before returning a target that
-/// could close the loop.
-fn apply_alias(
+/// One alias template applied to one written reference: the alias's
+/// right-hand side with every parameter bound (explicit argument or default)
+/// and substituted. `Ok(None)` means the reference does not name a
+/// structural alias -- which includes naming an ordinary declaration through
+/// a plain-path alias, since that is forwarding rather than expansion, and
+/// is handled by ordinary item resolution.
+///
+/// Every argument is normalized *before* it is substituted, and the template
+/// body is normalized *before* the arguments are substituted into it. That
+/// ordering is what makes each obligation appear exactly once: an argument
+/// used twice in a body (`alias Duo<T> = Pair<T, T>`) is checked once, while
+/// an alias written in the body (`alias Outer<T> = Pair<Inner<T>, T>`) still
+/// contributes `Inner`'s own obligation against the real argument.
+///
+/// `placeholders` are the enclosing template's own parameters, which are
+/// opaque here: they name nothing resolvable until they are substituted.
+fn apply_alias_once(
     resolver: &mut dyn ModuleResolver,
     module_path: &[Ident],
-    ty: Type,
-) -> Result<AliasApplication, ResolveError> {
-    let mut current = ty;
-    let mut obligations = Vec::new();
-    while let Some(application) = apply_alias_once(resolver, module_path, &current)? {
-        obligations.extend(application.obligations);
-        current = application.expanded;
+    placeholders: &[Ident],
+    ty: &Type,
+    obligations: &mut Vec<(Type, Type)>,
+) -> Result<Option<Type>, ResolveError> {
+    if let Type::Named(path) | Type::Generic(path, _) = ty
+        && path.is_unqualified()
+        && placeholders.contains(&path.head)
+    {
+        return Ok(None);
     }
-    Ok(AliasApplication {
-        expanded: current,
-        obligations,
+    let Some(reference) = alias_reference(resolver, module_path, ty)? else {
+        return Ok(None);
+    };
+    let Some(ResolvedAlias::Type { generics, r#type }) = resolver.resolve_visible_alias(
+        &reference.accessor,
+        &reference.module,
+        &reference.name,
+        reference.bypass_visibility,
+    )?
+    else {
+        return Ok(None);
+    };
+    let arity_mismatch = || ResolveError::GenericArgCountMismatch {
+        module: reference.module.clone(),
+        item: reference.name.clone(),
+        expected: generics.len(),
+        found: reference.args.len(),
+    };
+    if reference.args.len() > generics.len() {
+        return Err(arity_mismatch());
+    }
+
+    let mut subst: Vec<(Ident, Type)> = Vec::with_capacity(generics.len());
+    for (index, param) in generics.iter().enumerate() {
+        let written = match (reference.args.get(index), &param.default) {
+            (Some(argument), _) => argument.clone(),
+            (None, Some(default)) => substitute_type_params(default, &subst),
+            (None, None) => return Err(arity_mismatch()),
+        };
+        let argument = normalize_type(resolver, module_path, placeholders, &written, obligations)?;
+        for bound in &param.bounds {
+            // A bound sees the parameters declared before it, exactly as a
+            // default does. It stays unexpanded in the obligation: a bound
+            // naming `spec A + B` is a bound *list*, and flattening it is the
+            // bound checker's own job.
+            let bound = substitute_type_params(bound, &subst);
+            normalize_type(resolver, module_path, placeholders, &bound, obligations)?;
+            obligations.push((bound, argument.clone()));
+        }
+        subst.push((param.ident.clone(), argument));
+    }
+
+    let own: Vec<Ident> = generics.iter().map(|g| g.ident.clone()).collect();
+    let mut body_obligations = Vec::new();
+    let body = normalize_type(resolver, module_path, &own, &r#type, &mut body_obligations)?;
+    obligations.extend(body_obligations.into_iter().map(|(bound, argument)| {
+        (
+            substitute_type_params(&bound, &subst),
+            substitute_type_params(&argument, &subst),
+        )
+    }));
+    Ok(Some(substitute_type_params(&body, &subst)))
+}
+
+/// Normalizes a whole written type: every alias application anywhere in it
+/// is expanded, and every alias-owned obligation the applications create is
+/// appended to `obligations`. Aliases reached only through another alias's
+/// right-hand side, default, or bound are reached here too, which a
+/// root-only expansion loop could not do.
+fn normalize_type(
+    resolver: &mut dyn ModuleResolver,
+    module_path: &[Ident],
+    placeholders: &[Ident],
+    ty: &Type,
+    obligations: &mut Vec<(Type, Type)>,
+) -> Result<Type, ResolveError> {
+    // An expansion is already normalized: its body and arguments were
+    // normalized before they were joined, so re-walking it would report
+    // every obligation inside it a second time.
+    if let Some(expanded) = apply_alias_once(resolver, module_path, placeholders, ty, obligations)?
+    {
+        return Ok(expanded);
+    }
+    let mut recur = |inner: &Type, obligations: &mut Vec<(Type, Type)>| {
+        normalize_type(resolver, module_path, placeholders, inner, obligations)
+    };
+    Ok(match ty {
+        Type::Named(_) => ty.clone(),
+        Type::Pointer(inner, mutable) => {
+            Type::Pointer(Box::new(recur(inner, obligations)?), *mutable)
+        }
+        Type::InferredArray(inner) => Type::InferredArray(Box::new(recur(inner, obligations)?)),
+        Type::UnknownSizeArray(inner) => {
+            Type::UnknownSizeArray(Box::new(recur(inner, obligations)?))
+        }
+        Type::SizedArray(inner, size) => {
+            Type::SizedArray(Box::new(recur(inner, obligations)?), size.clone())
+        }
+        Type::Generic(path, args) => {
+            let mut normalized = Vec::with_capacity(args.len());
+            for arg in args {
+                normalized.push(recur(arg, obligations)?);
+            }
+            Type::Generic(path.clone(), normalized)
+        }
+        Type::SpecStatic(members) => {
+            let mut normalized = Vec::with_capacity(members.len());
+            for member in members {
+                normalized.push(recur(member, obligations)?);
+            }
+            Type::SpecStatic(normalized)
+        }
+        Type::Function(f) => {
+            let mut params = Vec::with_capacity(f.params.len());
+            for param in &f.params {
+                params.push(Param {
+                    r#type: recur(&param.r#type, obligations)?,
+                    ..param.clone()
+                });
+            }
+            Type::Function(FunctionType {
+                params,
+                return_type: Box::new(recur(&f.return_type, obligations)?),
+                is_variadic: f.is_variadic,
+                self_mode: f.self_mode,
+                convention: f.convention.clone(),
+            })
+        }
     })
 }
 
-/// Expands `ty` through every layer of structural alias application,
-/// discarding the obligations: the caller either does not need them (plain
-/// resolution) or has already collected them separately via
-/// [`applied_alias_bounds`].
+/// Expands `ty` through every alias application in it, discarding the
+/// obligations: the caller either does not need them (plain resolution) or
+/// collects them separately via [`applied_alias_bounds`].
 pub fn expand_type_alias(
     resolver: &mut dyn ModuleResolver,
     module_path: &[Ident],
     ty: Type,
 ) -> Result<Type, ResolveError> {
-    Ok(apply_alias(resolver, module_path, ty)?.expanded)
+    normalize_type(resolver, module_path, &[], &ty, &mut Vec::new())
 }
 
 /// Flattens a written bound list. A bound naming an alias of `spec A + B`
@@ -214,13 +288,15 @@ pub fn expand_bounds(
     Ok(expanded)
 }
 
-/// The alias-owned generic bounds a written type applies across its whole
-/// alias chain, paired with the (possibly defaulted) argument bound to each.
-/// The caller resolves and checks them; expansion itself stays syntactic.
+/// Every alias-owned generic bound a written type applies, anywhere in it,
+/// paired with the (possibly defaulted) argument bound to each. The caller
+/// resolves and checks them; normalization itself stays syntactic.
 pub fn applied_alias_bounds(
     resolver: &mut dyn ModuleResolver,
     module_path: &[Ident],
     ty: &Type,
 ) -> Result<Vec<(Type, Type)>, ResolveError> {
-    Ok(apply_alias(resolver, module_path, ty.clone())?.obligations)
+    let mut obligations = Vec::new();
+    normalize_type(resolver, module_path, &[], ty, &mut obligations)?;
+    Ok(obligations)
 }

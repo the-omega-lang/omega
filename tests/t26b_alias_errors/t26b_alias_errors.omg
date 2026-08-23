@@ -14,4 +14,27 @@ alias UnusedBadBound<T: NoSuchSpec> = Holder<T>;
 # through, even though its own target is otherwise reachable.
 alias Rewrapped = helper::Secret;
 
+# An unused alias's generic applications are validated too: arity is checked
+# without materializing anything.
+alias UnusedBadArity<T> = Pair<T>;
+
+struct Pair<A, B> {
+	exposed a: A;
+	exposed b: B;
+}
+
+# Type syntax is narrower than the bare-path alias namespace: a function is a
+# legal bare alias target but never a type.
+takes_nothing() => i32 { 0 }
+
+alias UnusedFunctionAsType<T> = *takes_nothing;
+
+# Every member of a conjunction is a spec reference, not merely a name that
+# happens to exist.
+exposed spec Countable {
+	count(*self) => i32;
+}
+
+alias UnusedBadConjunction = spec Countable + Holder;
+
 main() => void {}

@@ -23,25 +23,43 @@ impl<'r> Analyzer<'r> {
                 ),
             HirPlaceRoot::Path(expr_path) => {
                 let path = &expr_path.path;
-                let alias = self.resolve_path_alias_or_error(node_id, span, path)?;
-                let (root, r#type, mutable) = match alias {
-                    Some(ImportTarget::Module(target)) => {
-                        let absolute: Vec<Ident> = target
-                            .into_iter()
-                            .chain(path.tail.iter().cloned())
-                            .collect();
-                        self.resolve_qualified_value(
-                            node_id,
-                            span,
-                            path,
-                            &self.path_module(path),
-                            absolute,
-                            None,
-                            false,
-                            expected,
-                        )?
+                // Module-qualified and type-qualified readings split on
+                // whether the head names a module. An unanchored head answers
+                // that through its import binding; an anchored one names its
+                // module directly, so it is asked directly. An anchored path
+                // with no tail names its item outright -- the anchored
+                // counterpart of a bare unqualified name, which never reaches
+                // the type-member reading either.
+                let module_qualified = match self.anchored_path(node_id, span, path) {
+                    AnchoredPath::Failed => return None,
+                    AnchoredPath::Absolute(absolute) => {
+                        let head_absolute = &absolute[..absolute.len() - path.tail.len()];
+                        (path.tail.is_empty() || self.resolver.module_exists(head_absolute))
+                            .then_some(absolute)
                     }
-                    _ => {
+                    AnchoredPath::Unanchored => {
+                        match self.resolve_path_alias_or_error(node_id, span, path)? {
+                            Some(ImportTarget::Module(target)) => Some(
+                                target
+                                    .into_iter()
+                                    .chain(path.tail.iter().cloned())
+                                    .collect(),
+                            ),
+                            _ => None,
+                        }
+                    }
+                };
+                let (root, r#type, mutable) = match module_qualified {
+                    Some(absolute) => self.resolve_qualified_value(
+                        node_id,
+                        span,
+                        path,
+                        &self.path_module(path),
+                        ItemAccess::gated(absolute),
+                        None,
+                        expected,
+                    )?,
+                    None => {
                         let (root, r#type) =
                             self.resolve_type_qualified_value(node_id, span, path, expected)?;
                         (root, r#type, false)
@@ -75,10 +93,9 @@ impl<'r> Analyzer<'r> {
         }
 
         if origin.0.is_none()
-            && let Some((absolute, candidates)) = self.resolve_bare_overload_candidates(ident)
+            && let Some(set) = self.resolve_bare_overload_candidates(ident)
         {
-            let (root, r#type) =
-                self.resolve_bare_overload_root(node_id, span, &absolute, candidates, expected)?;
+            let (root, r#type) = self.resolve_bare_overload_root(node_id, span, set, expected)?;
             return Some((root, r#type, false));
         }
 
@@ -125,29 +142,19 @@ impl<'r> Analyzer<'r> {
             };
             return Some((root, r#type, mutable));
         }
-        let (absolute, unqualified) = match alias {
-            Some(ImportTarget::ItemPath(absolute))
-            | Some(ImportTarget::AliasedItemPath(absolute)) => (absolute, None),
-            _ => {
-                let absolute = resolution_module
-                    .iter()
-                    .cloned()
-                    .chain(std::iter::once(ident.clone()))
-                    .collect();
-                (absolute, Some(ident))
-            }
+        let (access, unqualified) = match alias {
+            Some(ImportTarget::ItemPath(access)) => (access, None),
+            _ => (
+                ItemAccess::gated(
+                    resolution_module
+                        .iter()
+                        .cloned()
+                        .chain(std::iter::once(ident.clone()))
+                        .collect(),
+                ),
+                Some(ident),
+            ),
         };
-        // `absolute`'s last segment may still literally be a declared
-        // alias's own name (an import forwards it unflattened): check
-        // directly, so an imported alias gets the same frozen,
-        // ungated-against-the-caller treatment a local one does.
-        let via_alias = absolute.split_last().is_some_and(|(name, module)| {
-            self.resolver
-                .resolve_declared_alias(module, name)
-                .ok()
-                .flatten()
-                .is_some()
-        });
         self.resolve_qualified_value(
             node_id,
             span,
@@ -158,9 +165,8 @@ impl<'r> Analyzer<'r> {
                 origin,
             },
             &resolution_module,
-            absolute,
+            access,
             unqualified,
-            via_alias,
             expected,
         )
     }
@@ -169,11 +175,11 @@ impl<'r> Analyzer<'r> {
         &mut self,
         node_id: HirId,
         span: Span,
-        absolute: &[Ident],
-        candidates: OverloadCandidates,
+        set: ResolvedOverloadSet,
         expected: Option<&ResolvedType>,
     ) -> Option<(CheckedPlaceRoot, ResolvedType)> {
-        let signatures: Vec<(HirId, ResolvedFunctionType)> = candidates
+        let signatures: Vec<(HirId, ResolvedFunctionType)> = set
+            .candidates
             .iter()
             .map(|candidate| (candidate.decl_id, candidate.fn_type.clone()))
             .collect();
@@ -184,7 +190,8 @@ impl<'r> Analyzer<'r> {
             _ => None,
         };
         let Some((decl_id, fn_type)) = winner else {
-            let name = absolute
+            let name = set
+                .absolute
                 .last()
                 .expect("an absolute item path always ends in the item's own name");
             self.error(
@@ -192,9 +199,10 @@ impl<'r> Analyzer<'r> {
                 span,
                 AnalysisErrorKind::AmbiguousOverload {
                     name: name.clone(),
-                    candidates: candidates
-                        .into_iter()
-                        .map(|candidate| candidate.fn_type)
+                    candidates: set
+                        .candidates
+                        .iter()
+                        .map(|candidate| candidate.fn_type.clone())
                         .collect(),
                 },
             );

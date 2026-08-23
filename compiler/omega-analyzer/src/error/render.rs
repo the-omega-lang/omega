@@ -858,6 +858,9 @@ pub fn resolve_error_diagnostic(error: &ResolveError, span: Option<Span>) -> Dia
                 missing.iter().map(Ident::as_ref).collect::<Vec<_>>().join(", ")
             ))
         }
+        ResolveError::InvalidAliasTarget { type_position: true, .. } => with_label(d, "not a type or spec".to_string())
+            .with_note("this path sits inside type syntax, where an alias names a type or spec -- the wider bare-path alias namespace does not reach here")
+            .with_help("name a type or spec, or forward the declaration with a bare non-generic alias instead"),
         ResolveError::InvalidAliasTarget { .. } => with_label(d, "not a declaration an alias can name".to_string())
             .with_note("an alias is a second source name, never a new declaration, so it cannot name storage or a compile-time value")
             .with_help("alias a type, spec, function, macro, or module instead"),

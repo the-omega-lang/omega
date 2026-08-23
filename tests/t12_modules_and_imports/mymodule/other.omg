@@ -6,3 +6,15 @@ import super::super::helper;
 exposed other_greeting() => *str {
 	helper::greeting()
 }
+
+# Chained `super::` in an ordinary value path, not an import: two hops from
+# `mymodule::other` reach the package root, exactly as the import above does.
+exposed anchored_from_nested() => i32 {
+	super::super::ANCHOR_VALUE + root::ANCHOR_VALUE
+}
+
+# An anchored path reaches a static member and an overloaded static member
+# from a nested module too, with no import of the package root.
+exposed anchored_static_from_nested() => i32 {
+	root::Point::origin().x + super::super::Point::at(3, 4).y
+}

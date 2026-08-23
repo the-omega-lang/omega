@@ -382,27 +382,27 @@ impl<'r> Analyzer<'r> {
             }
             let type_args = self.resolve_generic_arg_list(node_id, span, path)?;
             let prefix = &segments[..=path.args_at];
-            let absolute = self.generic_prefix_absolute(node_id, span, &path.path, prefix)?;
+            let access = self.generic_prefix_absolute(node_id, span, &path.path, prefix)?;
+            let absolute = access.absolute.clone();
             let accessor = self.path_module(&path.path);
-            let resolved = match self
-                .resolve_item_with_ambient_from(&accessor, prefix, &absolute, &type_args)
-            {
-                Ok(ResolvedItem::Type(t)) => t,
-                Ok(ResolvedItem::Value { .. }) | Ok(ResolvedItem::Gap(_)) => {
-                    self.error(
-                        node_id,
-                        span,
-                        AnalysisErrorKind::UnresolvedType(
-                            crate::error::TypeResolutionError::NotAType(absolute),
-                        ),
-                    );
-                    return None;
-                }
-                Err(e) => {
-                    self.error(node_id, span, AnalysisErrorKind::ModuleResolution(e));
-                    return None;
-                }
-            };
+            let resolved =
+                match self.resolve_item_with_ambient_from(&accessor, prefix, &access, &type_args) {
+                    Ok(ResolvedItem::Type(t)) => t,
+                    Ok(ResolvedItem::Value { .. }) | Ok(ResolvedItem::Gap(_)) => {
+                        self.error(
+                            node_id,
+                            span,
+                            AnalysisErrorKind::UnresolvedType(
+                                crate::error::TypeResolutionError::NotAType(absolute),
+                            ),
+                        );
+                        return None;
+                    }
+                    Err(e) => {
+                        self.error(node_id, span, AnalysisErrorKind::ModuleResolution(e));
+                        return None;
+                    }
+                };
             return self.literal_target_from_type(node_id, span, resolved, &rest);
         }
 
@@ -413,18 +413,20 @@ impl<'r> Analyzer<'r> {
                 return self.literal_target_from_type(node_id, span, local, &[]);
             }
             let alias = self.resolve_alias_or_error(node_id, span, &plain.head)?;
-            let absolute: Vec<Ident> = match &alias {
-                Some(ImportTarget::Item(absolute, _))
-                | Some(ImportTarget::ItemPath(absolute))
-                | Some(ImportTarget::AliasedItemPath(absolute))
-                | Some(ImportTarget::Module(absolute)) => absolute.clone(),
-                None => self
-                    .module_path
-                    .iter()
-                    .cloned()
-                    .chain(std::iter::once(plain.head.clone()))
-                    .collect(),
+            let access = match &alias {
+                Some(ImportTarget::Item(absolute, _)) | Some(ImportTarget::Module(absolute)) => {
+                    ItemAccess::gated(absolute.clone())
+                }
+                Some(ImportTarget::ItemPath(access)) => access.clone(),
+                None => ItemAccess::gated(
+                    self.module_path
+                        .iter()
+                        .cloned()
+                        .chain(std::iter::once(plain.head.clone()))
+                        .collect(),
+                ),
             };
+            let absolute = access.absolute.clone();
             if let Some((real_absolute, sig)) = self.generic_literal_signature_with_ambient(
                 std::slice::from_ref(&plain.head),
                 &absolute,
@@ -434,7 +436,10 @@ impl<'r> Analyzer<'r> {
                     node_id,
                     span,
                     std::slice::from_ref(&plain.head),
-                    &real_absolute,
+                    &ItemAccess {
+                        bypass_visibility: access.bypass_visibility && real_absolute == absolute,
+                        absolute: real_absolute.clone(),
+                    },
                     &sig,
                     &lit.fields,
                     expected,
@@ -469,24 +474,42 @@ impl<'r> Analyzer<'r> {
             return self.literal_target_from_type(node_id, span, resolved, &[]);
         }
 
-        let alias = self.resolve_alias_or_error(node_id, span, &plain.head)?;
-        if let Some(ImportTarget::Module(target)) = &alias {
-            let absolute: Vec<Ident> = target
-                .iter()
-                .cloned()
-                .chain(plain.tail.iter().cloned())
-                .collect();
+        // An explicit anchor already names the whole path, so it takes the
+        // same two readings a module-qualified path does -- the whole path as
+        // a type, then its prefix as a type with a trailing variant -- rather
+        // than looking its head up as an import.
+        let anchored = match self.anchored_path(node_id, span, plain) {
+            AnchoredPath::Failed => return None,
+            AnchoredPath::Absolute(absolute) => Some(absolute),
+            AnchoredPath::Unanchored => None,
+        };
+        let alias = match anchored {
+            Some(_) => None,
+            None => self.resolve_alias_or_error(node_id, span, &plain.head)?,
+        };
+        let module_qualified = match (anchored, &alias) {
+            (Some(absolute), _) => Some(absolute),
+            (None, Some(ImportTarget::Module(target))) => Some(
+                target
+                    .iter()
+                    .cloned()
+                    .chain(plain.tail.iter().cloned())
+                    .collect(),
+            ),
+            _ => None,
+        };
+        if let Some(absolute) = module_qualified {
             let whole_result = match self.resolver.generic_literal_signature(&absolute, None) {
                 Ok(Some(sig)) => self.resolve_generic_literal(
                     node_id,
                     span,
                     &absolute,
-                    &absolute,
+                    &ItemAccess::gated(absolute.clone()),
                     &sig,
                     &lit.fields,
                     expected,
                 )?,
-                _ => self.resolve_item_checked(&absolute, &[], true),
+                _ => self.resolve_item_checked(&ItemAccess::gated(absolute.clone()), &[], true),
             };
             let first_error = match whole_result {
                 Ok(ResolvedItem::Type(t)) => {
@@ -514,12 +537,12 @@ impl<'r> Analyzer<'r> {
                         node_id,
                         span,
                         prefix,
-                        prefix,
+                        &ItemAccess::gated(prefix.to_vec()),
                         &sig,
                         &lit.fields,
                         expected,
                     )?,
-                    _ => self.resolve_item_checked(prefix, &[], true),
+                    _ => self.resolve_item_checked(&ItemAccess::gated(prefix.to_vec()), &[], true),
                 };
                 if let Ok(ResolvedItem::Type(t)) = variant_result {
                     return self.literal_target_from_type(
@@ -544,16 +567,17 @@ impl<'r> Analyzer<'r> {
         if let Some(ImportTarget::Item(_, ResolvedItem::Type(t))) = alias {
             return self.literal_target_from_type(node_id, span, t, &plain.tail);
         }
-        let absolute: Vec<Ident> = match alias {
-            Some(ImportTarget::ItemPath(absolute))
-            | Some(ImportTarget::AliasedItemPath(absolute)) => absolute,
-            _ => self
-                .module_path
-                .iter()
-                .cloned()
-                .chain(std::iter::once(plain.head.clone()))
-                .collect(),
+        let access = match alias {
+            Some(ImportTarget::ItemPath(access)) => access,
+            _ => ItemAccess::gated(
+                self.module_path
+                    .iter()
+                    .cloned()
+                    .chain(std::iter::once(plain.head.clone()))
+                    .collect(),
+            ),
         };
+        let absolute = access.absolute.clone();
         let variant = (plain.tail.len() == 1).then(|| &plain.tail[0]);
         let result = match self.generic_literal_signature_with_ambient(
             std::slice::from_ref(&plain.head),
@@ -564,14 +588,17 @@ impl<'r> Analyzer<'r> {
                 node_id,
                 span,
                 std::slice::from_ref(&plain.head),
-                &real_absolute,
+                &ItemAccess {
+                    bypass_visibility: access.bypass_visibility && real_absolute == absolute,
+                    absolute: real_absolute,
+                },
                 &sig,
                 &lit.fields,
                 expected,
             )?,
             None => self.resolve_item_checked_with_ambient_fallback(
                 std::slice::from_ref(&plain.head),
-                &absolute,
+                &access,
                 &[],
             ),
         };
@@ -629,14 +656,20 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         prefix: &[Ident],
-        absolute: &[Ident],
+        access: &ItemAccess,
         sig: &GenericLiteralSignature,
         lit_fields: &[HirStructLiteralField],
         expected: Option<&ResolvedType>,
     ) -> Option<Result<ResolvedItem, ResolveError>> {
-        let type_args =
-            self.infer_literal_type_args(node_id, span, absolute, sig, lit_fields, expected)?;
-        Some(self.resolve_item_checked_with_ambient_fallback(prefix, absolute, &type_args))
+        let type_args = self.infer_literal_type_args(
+            node_id,
+            span,
+            &access.absolute,
+            sig,
+            lit_fields,
+            expected,
+        )?;
+        Some(self.resolve_item_checked_with_ambient_fallback(prefix, access, &type_args))
     }
 
     pub(super) fn infer_literal_type_args(

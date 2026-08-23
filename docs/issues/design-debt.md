@@ -63,9 +63,9 @@ around that single fact:
   `(module, declaration index)` instead of by `ItemKey`;
 - its own duplicate-declaration check (`check_overload_duplicates`), separate
   from the one the module index already does for every other name;
-- its own `ModuleResolver` method (`function_overload_signatures`), plus a
-  second one (`raw_import_absolute_path`) that exists *only* so an import
-  alias to an overloaded name isn't eagerly collapsed to one winner;
+- its own `ModuleResolver` method (`resolve_overload_set`), and a lazy
+  `ImportTarget::ItemPath` binding that exists *only* so an import of an
+  overloaded name isn't eagerly collapsed to one winner;
 - an explicit skip in **both** whole-program sweeps, and a separate sweep
   right after each of them.
 

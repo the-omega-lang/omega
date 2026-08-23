@@ -127,10 +127,22 @@ Imports are stored structurally first and resolved lazily where possible.
 `ImportState` memoizes what an alias means and whether it was used. The analyzer can ask the driver for:
 
 - resolved import target;
-- raw absolute import path (important for overload resolution);
 - candidate import alias names for diagnostics;
 - visibility facts;
-- ambient `core` fallback candidates.
+- ambient `core` fallback candidates;
+- whether an absolute path names a module (the anchored counterpart of asking
+  an import binding).
+
+A name whose meaning depends on its use site is bound lazily as
+`ImportTarget::ItemPath(ItemAccess)`: a declared alias, an ordinary generic
+template, and an overload group all take that form. `ItemAccess` carries the
+absolute path *and* whether the eventual `resolve_item` is already authorized
+to reach it. That bit is a capability granted once -- by `import reveal`, or
+by a declared-alias chain whose every link was gated at its own declaration
+site -- and it must survive every hop to the item query. There is deliberately
+no second, alias-only path variant and no side-channel `reveal` lookup:
+splitting the state is what previously let `import reveal module::HiddenAlias;`
+pass the import gate and then fail at the alias gate.
 
 `core` is special only in well-defined places: exposed ambient names/macros and primitive ownership. Ordinary extern packages do not receive ambient lookup.
 
@@ -140,43 +152,82 @@ Imports are stored structurally first and resolved lazily where possible.
 discipline and ordered resolution stack as the item queries, because an alias
 chain can cycle. An alias never gets an `ItemKey`, a type cell, or a symbol.
 
-A resolved alias is one of three things:
+`Driver::declared_alias` is the **raw** query: it exists to build and cache the
+alias graph and to detect cycles, and it answers *what* an alias names.
+`Driver::visible_alias`, exposed to the analyzer as
+`ModuleResolver::resolve_visible_alias`, is the accessor-aware query: it
+answers whether a given module may ask at all. Every semantic use site --
+structural expansion, forwarding chains, imports, overload lookup -- goes
+through the accessor-aware one. Deciding an alias's visibility from the
+outside, by asking whether an alias merely exists, is what previously let
+equivalent spellings disagree.
+
+A resolved alias is one of four things:
 
 - a module path;
 - an absolute item path, which every path-shaped driver query (item resolution,
-  visibility, overload candidates, generic/literal/static signatures, spec
-  declarations) canonicalizes through before answering, so downstream phases
-  only ever see the target's identity;
+  visibility, generic/literal/static signatures, spec declarations)
+  canonicalizes through before answering, so downstream phases only ever see
+  the target's identity;
+- an overload set: the target group's absolute path plus the `decl_id`s of
+  exactly the candidates the alias declaration site could name;
 - a structural type target, expanded by `omega_analyzer::aliases` on written
   `Type` syntax before contextual type rules apply.
 
 Structural targets are stamped with a per-module definition `Origin`, reusing
 the provenance mechanism macro expansion already uses, so an alias target keeps
 resolving at its declaration site after it is substituted into a use site in
-another module.
+another module. `rebind_alias_target` does the stamping, and additionally
+rewrites any path that was admitted as a bare **top-level package identity**
+(`alias W<T> = main::helper::H<T>;`) so it names its target from the target's
+own module. That admission is an alias-declaration rule with no use-site
+counterpart, so without the rewrite such a target would validate and then fail
+at every use with `ModuleNotImported`. Both declaration validation and this
+rewrite go through one operation, `alias_target_site`.
 
 `Driver::validate_alias_target` symbolically validates a structural target --
 including every generic bound and default -- at declaration time, even if the
-alias is never used: an alias-owned generic parameter is a legal opaque
-placeholder, but every other named reference must resolve and be visible from
-the declaration site, and forbidden target kinds are rejected. Every nested
-alias the target mentions is forced (via the same ordered resolution stack),
-which is what turns a cycle hidden behind a type constructor (`alias A = *A;`)
-into a diagnostic here instead of unbounded expansion at a use site.
+alias is never used. An alias-owned generic parameter is a legal opaque
+placeholder and is never given a fabricated `ResolvedType`; everything else is
+checked:
+
+- every named reference resolves under the same anchor/import/declaration-site
+  rules semantic alias lookup uses, so an unqualified target bound by an import
+  is validated against the imported path rather than assumed local;
+- type syntax is a narrower namespace than a bare path. A bare non-generic
+  alias may forward a module, type, spec, function or overload set, macro, or
+  another alias; a path inside `AliasTarget::Type`, or anywhere in an
+  explicitly generic alias, names a type or spec and nothing else;
+- every member of a `spec` conjunction is validated as a spec, not merely as an
+  existing name;
+- generic arity and default availability are checked for every application,
+  including a named template used with zero arguments, without materializing
+  any item.
+
+Every nested alias the target mentions is forced (via the same ordered
+resolution stack), which is what turns a cycle hidden behind a type
+constructor (`alias A = *A;`) into a diagnostic here instead of unbounded
+expansion at a use site.
 
 Re-export applies the same rule at **every** link of a chain, not just the
-outermost alias. `forward_alias_path` checks each intermediate alias's own
-visibility from the module naming it before following that alias's target;
-`ModuleResolver::resolve_import_alias` returns `ImportTarget::AliasedItemPath`
-for the fully chain-validated end of a declared alias, distinct from the
-ordinary `ItemPath` a plain import-of-a-generic-template lazily returns, so a
-consumer (item resolution, overload-candidate collection, value/place
-resolution) knows the accessor's own visibility to the final target has
-already been established transitively and is not re-checked. An overload
-alias applies the identical rule to a whole candidate set: the caller is gated
-once against the alias, and the full set of overloads visible from the
-alias's own declaration site is forwarded frozen, never re-filtered against
-the external caller.
+outermost alias: `forward_alias_path` gates each intermediate alias through
+`visible_alias` from the module naming it before following that alias's
+target. Once the chain is validated, `ModuleResolver::resolve_import_alias`
+hands the caller an authorized `ItemAccess`, so a consumer (item resolution,
+overload lookup, value/place resolution) knows the accessor's visibility to
+the final target was established transitively and is not re-checked.
+
+An overload alias applies the identical rule to a whole candidate set, but has
+to freeze it: the group's candidates may differ in visibility, so
+`forward_alias_path` filters them once, at the alias declaration site, and
+stores that subset. A group with no candidate the aliasing module can name is
+`NotVisible`. `ModuleResolver::resolve_overload_set` is the single query the
+analyzer uses for every spelling -- bare, anchored, module-qualified, aliased:
+a declared alias is gated once and then forwards its frozen subset unchanged
+(an alias chain never reopens the raw group), while a direct name is filtered
+against the accessor unless `reveal` bypasses. The analyzer receives an
+already-authorized set and never re-filters or re-checks the winner, so
+calling an overload and selecting one as a value cannot disagree.
 
 An alias target's explicit anchor (`root::`/`self::`/`super::`) is resolved
 through the same `Driver::resolve_explicit_anchor` helper ordinary paths,
@@ -186,10 +237,14 @@ alias-specific reimplementation.
 Macro aliases are bound earlier, while the pre-expansion macro environment is
 built, because indexing a module needs its HIR and its HIR needs that
 environment. That binding works from raw AST -- `raw_macro_target` resolves an
-anchored target through `Driver::resolve_explicit_anchor` and rejects a target
-macro binding not visible from the alias declaration module -- and reuses the
-target macro's body and defining module for hygiene, taking only the alias's
-name and visibility as the effective re-export visibility.
+anchored target through `Driver::resolve_explicit_anchor`, resolves a bare
+target against this module's own definitions and then its imports, and rejects
+a target macro binding not visible from the alias declaration module. `reveal`
+on the import is honoured identically there and in `macro_env`, so it cannot
+mean one thing when a macro is invoked and another when it is immediately
+aliased. Expansion reuses the target macro's body and defining module for
+hygiene, taking only the alias's name and visibility as the effective
+re-export visibility.
 
 ## Item query identity
 

@@ -7,18 +7,19 @@ impl<'r> Analyzer<'r> {
         span: Span,
         path: &Path,
     ) -> Option<std::rc::Rc<crate::resolved_type::ResolvedGap>> {
-        let absolute = match self.context.resolve_absolute_item_path(
+        let access = match self.context.resolve_absolute_item_path(
             &mut *self.resolver,
             path,
             &self.module_path,
         ) {
-            Ok((absolute, _bypass)) => absolute,
+            Ok(access) => access,
             Err(error) => {
                 self.error(id, span, AnalysisErrorKind::UnresolvedType(error));
                 return None;
             }
         };
-        match self.resolve_item_checked(&absolute, &[], true) {
+        let absolute = access.absolute.clone();
+        match self.resolve_item_checked(&access, &[], true) {
             Ok(ResolvedItem::Gap(gap)) => Some(gap),
             Ok(_) => {
                 self.error(
@@ -90,20 +91,20 @@ impl<'r> Analyzer<'r> {
         span: Span,
         written_path: &Path,
         accessor: &[Ident],
-        absolute: Vec<Ident>,
+        access: ItemAccess,
         unqualified: Option<&Ident>,
-        via_alias: bool,
         expected: Option<&ResolvedType>,
     ) -> Option<(CheckedPlaceRoot, ResolvedType, bool)> {
+        let absolute = access.absolute.clone();
         if !self.check_macro_dependency_visibility(node_id, span, written_path, &absolute) {
             return None;
         }
-        if let Some((name, module_path)) = absolute.split_last()
-            && let Ok(Some(candidates)) = self
-                .resolver
-                .function_overload_signatures(module_path, name)
-        {
-            let signatures: Vec<(HirId, ResolvedFunctionType)> = candidates
+        // Selecting one overload as a value uses the same authorized
+        // candidate set calling it does, so the two cannot disagree about
+        // which candidates exist.
+        if let Ok(Some(set)) = self.overload_set(accessor, &access) {
+            let signatures: Vec<(HirId, ResolvedFunctionType)> = set
+                .candidates
                 .iter()
                 .map(|candidate| (candidate.decl_id, candidate.fn_type.clone()))
                 .collect();
@@ -111,27 +112,6 @@ impl<'r> Analyzer<'r> {
                 && let Some((decl_id, fn_type)) =
                     Self::unique_overload_signature_match(expected_fn, &signatures)
             {
-                let visibility = candidates
-                    .iter()
-                    .find(|candidate| candidate.decl_id == decl_id)
-                    .map(|candidate| candidate.visibility)
-                    .expect("decl_id came from this same candidates list");
-                // A declared alias is its own visibility gate, already
-                // checked before this candidate set was frozen -- the
-                // winning candidate's own visibility is not re-checked
-                // against this external caller, exactly as for a whole
-                // overload set reached the same way.
-                if !via_alias && !self.check_visibility(visibility, module_path) {
-                    self.error(
-                        node_id,
-                        span,
-                        AnalysisErrorKind::ModuleResolution(ResolveError::NotVisible {
-                            module: module_path.to_vec(),
-                            item: name.clone(),
-                        }),
-                    );
-                    return None;
-                }
                 let r#type = ResolvedType::Function(fn_type);
                 let root = CheckedPlaceRoot::Variable {
                     decl_id,
@@ -140,12 +120,18 @@ impl<'r> Analyzer<'r> {
                 };
                 return Some((root, r#type, false));
             }
+            let name = set
+                .absolute
+                .last()
+                .cloned()
+                .expect("an overload set path always ends in the group's name");
             self.error(
                 node_id,
                 span,
                 AnalysisErrorKind::AmbiguousOverload {
-                    name: name.clone(),
-                    candidates: candidates
+                    name,
+                    candidates: set
+                        .candidates
                         .into_iter()
                         .map(|candidate| candidate.fn_type)
                         .collect(),
@@ -153,10 +139,12 @@ impl<'r> Analyzer<'r> {
             );
             return None;
         }
-        match self
-            .resolver
-            .resolve_item(accessor, &absolute, &[], ResolveItemOptions::INDIRECT)
-        {
+        match self.resolver.resolve_item(
+            accessor,
+            &absolute,
+            &[],
+            access.options(ResolveItemOptions::INDIRECT),
+        ) {
             Ok(ResolvedItem::Value {
                 r#type,
                 storage,
@@ -194,7 +182,7 @@ impl<'r> Analyzer<'r> {
             Err(ResolveError::UnknownModule(missing))
                 if missing.len() + 1 == absolute.len() && missing == absolute[..missing.len()] =>
             {
-                match self.resolve_item_checked(&missing, &[], true) {
+                match self.resolve_item_checked(&ItemAccess::gated(missing.clone()), &[], true) {
                     Ok(ResolvedItem::Type(t)) => self
                         .resolve_type_member(node_id, span, &t, &absolute[missing.len()..])
                         .map(|(root, r#type)| (root, r#type, false)),
@@ -259,36 +247,56 @@ impl<'r> Analyzer<'r> {
         path: &omega_parser::prelude::Path,
         expected: Option<&ResolvedType>,
     ) -> Option<(CheckedPlaceRoot, ResolvedType)> {
-        if path.head.as_ref() == "str" {
-            return self.resolve_type_member(
-                node_id,
-                span,
-                &ResolvedType::Str { mutable: false },
-                &path.tail,
-            );
-        }
-        if let Some(head_type) = self.context.find_defined_type(&path.head).cloned() {
-            return self.resolve_type_member(node_id, span, &head_type, &path.tail);
+        // An explicit anchor names the head directly, so none of the
+        // unanchored lexical/import readings below apply to it.
+        let anchored = match self.anchored_path(node_id, span, path) {
+            AnchoredPath::Failed => return None,
+            AnchoredPath::Absolute(absolute) => Some(absolute),
+            AnchoredPath::Unanchored => None,
+        };
+        if anchored.is_none() {
+            if path.head.as_ref() == "str" {
+                return self.resolve_type_member(
+                    node_id,
+                    span,
+                    &ResolvedType::Str { mutable: false },
+                    &path.tail,
+                );
+            }
+            if let Some(head_type) = self.context.find_defined_type(&path.head).cloned() {
+                return self.resolve_type_member(node_id, span, &head_type, &path.tail);
+            }
         }
 
-        let alias = self.resolve_path_alias_or_error(node_id, span, path)?;
-        if let Some(ImportTarget::Item(_, ResolvedItem::Type(t))) = alias {
-            return self.resolve_type_member(node_id, span, &t, &path.tail);
-        }
-        if let Some(ImportTarget::Item(_, ResolvedItem::Gap(gap))) = alias {
-            return self.resolve_gap_member(node_id, span, &gap, &path.tail);
-        }
-        let absolute: Vec<Ident> = match alias {
-            Some(ImportTarget::ItemPath(absolute))
-            | Some(ImportTarget::AliasedItemPath(absolute))
-            | Some(ImportTarget::Module(absolute)) => absolute,
-            _ => self
-                .path_module(path)
-                .iter()
-                .cloned()
-                .chain(std::iter::once(path.head.clone()))
-                .collect(),
+        let access = match anchored {
+            // The anchor resolves the whole written path, so the head alone
+            // is its own absolute path and `path.tail` stays the member
+            // chain, exactly as for an unanchored head.
+            Some(absolute) => {
+                ItemAccess::gated(absolute[..absolute.len() - path.tail.len()].to_vec())
+            }
+            None => {
+                let alias = self.resolve_path_alias_or_error(node_id, span, path)?;
+                if let Some(ImportTarget::Item(_, ResolvedItem::Type(t))) = alias {
+                    return self.resolve_type_member(node_id, span, &t, &path.tail);
+                }
+                if let Some(ImportTarget::Item(_, ResolvedItem::Gap(gap))) = alias {
+                    return self.resolve_gap_member(node_id, span, &gap, &path.tail);
+                }
+                match alias {
+                    Some(ImportTarget::ItemPath(access)) => access,
+                    Some(ImportTarget::Module(absolute)) => ItemAccess::gated(absolute),
+                    _ => ItemAccess::gated(
+                        self.path_module(path)
+                            .iter()
+                            .cloned()
+                            .chain(std::iter::once(path.head.clone()))
+                            .collect(),
+                    ),
+                }
+            }
         };
+        let absolute = access.absolute.clone();
         let variant = path.tail.first();
         let result = match self.generic_literal_signature_with_ambient(
             std::slice::from_ref(&path.head),
@@ -306,13 +314,16 @@ impl<'r> Analyzer<'r> {
                 )?;
                 self.resolve_item_checked_with_ambient_fallback(
                     std::slice::from_ref(&path.head),
-                    &real_absolute,
+                    &ItemAccess {
+                        absolute: real_absolute,
+                        bypass_visibility: access.bypass_visibility,
+                    },
                     &type_args,
                 )
             }
             None => self.resolve_item_checked_with_ambient_fallback(
                 std::slice::from_ref(&path.head),
-                &absolute,
+                &access,
                 &[],
             ),
         };
@@ -364,9 +375,10 @@ impl<'r> Analyzer<'r> {
 
         let type_args = self.resolve_generic_arg_list(node_id, span, expr_path)?;
         let prefix = &segments[..=expr_path.args_at];
-        let absolute = self.generic_prefix_absolute(node_id, span, &expr_path.path, prefix)?;
+        let access = self.generic_prefix_absolute(node_id, span, &expr_path.path, prefix)?;
+        let absolute = access.absolute.clone();
         let accessor = self.path_module(&expr_path.path);
-        match self.resolve_item_with_ambient_from(&accessor, prefix, &absolute, &type_args) {
+        match self.resolve_item_with_ambient_from(&accessor, prefix, &access, &type_args) {
             Ok(ResolvedItem::Type(_)) if rest.is_empty() => {
                 self.error(node_id, span, AnalysisErrorKind::NotAValue(absolute));
                 None
@@ -423,27 +435,32 @@ impl<'r> Analyzer<'r> {
         span: Span,
         written_path: &Path,
         prefix: &[Ident],
-    ) -> Option<Vec<Ident>> {
+    ) -> Option<ItemAccess> {
+        match self.anchored_prefix(node_id, span, written_path, prefix) {
+            AnchoredPath::Failed => return None,
+            AnchoredPath::Absolute(absolute) => return Some(ItemAccess::gated(absolute)),
+            AnchoredPath::Unanchored => {}
+        }
         let module = self.path_module(written_path);
         if let [single] = prefix {
-            if let Some(
-                ImportTarget::ItemPath(absolute) | ImportTarget::AliasedItemPath(absolute),
-            ) = match self.resolver.resolve_import_alias(&module, single) {
-                Ok(alias) => Some(alias),
-                Err(error) => {
-                    self.error(node_id, span, AnalysisErrorKind::ModuleResolution(error));
-                    None
-                }
-            }? {
-                return Some(absolute);
+            if let Some(ImportTarget::ItemPath(access)) =
+                match self.resolver.resolve_import_alias(&module, single) {
+                    Ok(alias) => Some(alias),
+                    Err(error) => {
+                        self.error(node_id, span, AnalysisErrorKind::ModuleResolution(error));
+                        None
+                    }
+                }?
+            {
+                return Some(access);
             }
-            return Some(
+            return Some(ItemAccess::gated(
                 module
                     .iter()
                     .cloned()
                     .chain(std::iter::once(single.clone()))
                     .collect(),
-            );
+            ));
         }
         let head = &prefix[0];
         match self.resolver.resolve_import_alias(&module, head) {
@@ -451,12 +468,12 @@ impl<'r> Analyzer<'r> {
                 self.error(node_id, span, AnalysisErrorKind::ModuleResolution(error));
                 None
             }
-            Ok(Some(ImportTarget::Module(target))) => Some(
+            Ok(Some(ImportTarget::Module(target))) => Some(ItemAccess::gated(
                 target
                     .into_iter()
                     .chain(prefix[1..].iter().cloned())
                     .collect(),
-            ),
+            )),
             Ok(_) => {
                 let similar_module =
                     best_match(head, self.resolver.import_alias_names(&module).iter());

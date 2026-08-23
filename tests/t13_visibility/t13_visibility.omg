@@ -3,6 +3,8 @@ import self::child;
 import self::child::Mammal;
 import self::child::Greeter;
 import self::child::Dog;
+import reveal self::child::HiddenAlias;
+import reveal self::child::HiddenTemplate;
 
 main() => void {
 	# `exposed` and `shared` are both reachable across modules within the
@@ -47,4 +49,11 @@ main() => void {
 		" ",
 		reveal Greeter::double_name(&dog)
 	);
+
+	# `reveal` on an import is the whole gate: the alias's own visibility is
+	# not checked a second time when the lazily-bound name is finally
+	# resolved, and the same holds for a hidden alias template.
+	revealed := HiddenAlias { data = 11; };
+	revealed_template := HiddenTemplate<i32> { value = 12; };
+	println$("revealed-alias-import: ", revealed.data, " ", revealed_template.value);
 }

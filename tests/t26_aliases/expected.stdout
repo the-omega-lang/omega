@@ -13,7 +13,10 @@ overloaded-function-alias: int bool
 module-alias: 3 30
 direct-alias-import: 9
 cross-module-overload-alias: 7
+mixed-visibility-alias: exposed-int hidden-bool
+top-level-alias-target: 12
 macro-alias: 42
+imported-macro-alias: 42
 bound-alias: 23
 static-param-alias: 23
 dynamic-alias: 23

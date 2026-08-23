@@ -43,7 +43,11 @@ impl<'r> Analyzer<'r> {
         };
 
         let ResolvedItem::Type(ResolvedType::Struct(cell)) = self
-            .resolve_item_checked(&Self::core_range_path("Range"), &[element], true)
+            .resolve_item_checked(
+                &ItemAccess::gated(Self::core_range_path("Range")),
+                &[element],
+                true,
+            )
             .ok()?
         else {
             return None;
@@ -109,7 +113,11 @@ impl<'r> Analyzer<'r> {
         name: &str,
     ) -> Option<CheckedExprNode> {
         let ResolvedItem::Type(ResolvedType::Spec(spec)) = self
-            .resolve_item_checked(&Self::core_range_path("Bounded"), &[], true)
+            .resolve_item_checked(
+                &ItemAccess::gated(Self::core_range_path("Bounded")),
+                &[],
+                true,
+            )
             .ok()?
         else {
             return None;

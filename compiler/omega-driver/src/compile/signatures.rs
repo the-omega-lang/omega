@@ -209,27 +209,44 @@ impl Driver {
         for path in local {
             self.ensure_module_indexed(path).map_err(fatal)?;
 
-            let generic_bounds: Vec<(Vec<Ident>, Vec<HirGenericParam>)> = self
+            // A function's *effective* generics, not its written ones: a
+            // static-spec parameter (`f(x: spec S)`) normalizes into a
+            // generic bound, and that bound is the only place the import of
+            // `S` is used. The eager item sweep below skips the resulting
+            // lazy template entirely, so nothing else would ever record it.
+            let functions: Vec<omega_hir::HirFunctionDef> = self
                 .modules
                 .parsed(path)
                 .hir
                 .items
                 .iter()
-                .filter_map(|item| {
-                    let generics = match item {
-                        HirItem::FunctionDefinition(f) => Some(&f.generics),
-                        HirItem::Struct(s) => Some(&s.generics),
-                        HirItem::Enum(e) => Some(&e.generics),
-                        HirItem::Union(u) => Some(&u.generics),
-                        HirItem::Spec(sp) => Some(&sp.generics),
-                        HirItem::Primitive(p) => Some(&p.generics),
-                        _ => None,
-                    };
-                    Some((path.clone(), generics?.clone()))
+                .filter_map(|item| match item {
+                    HirItem::FunctionDefinition(f) => Some(f.clone()),
+                    _ => None,
                 })
                 .collect();
-            for (module, generics) in &generic_bounds {
-                self.mark_bound_type_imports(module, generics);
+            for f in &functions {
+                let normalized = self.normalized_function(path, f).map_err(fatal)?;
+                self.mark_bound_type_imports(path, &normalized.generics);
+            }
+
+            let declared_generics: Vec<Vec<HirGenericParam>> = self
+                .modules
+                .parsed(path)
+                .hir
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    HirItem::Struct(s) => Some(s.generics.clone()),
+                    HirItem::Enum(e) => Some(e.generics.clone()),
+                    HirItem::Union(u) => Some(u.generics.clone()),
+                    HirItem::Spec(sp) => Some(sp.generics.clone()),
+                    HirItem::Primitive(p) => Some(p.generics.clone()),
+                    _ => None,
+                })
+                .collect();
+            for generics in &declared_generics {
+                self.mark_bound_type_imports(path, generics);
             }
 
             self.validate_aliases(path);

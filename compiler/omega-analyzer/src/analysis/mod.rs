@@ -43,8 +43,8 @@ use crate::{
     },
     resolver::{
         GenericLiteralSignature, GenericSignature, GenericStaticFunctionSignature, ImportTarget,
-        ItemNamespace, ModuleResolver, OverloadCandidates, ResolveError, ResolveItemOptions,
-        ResolvedItem,
+        ItemAccess, ItemNamespace, ModuleResolver, ResolveError, ResolveItemOptions, ResolvedItem,
+        ResolvedOverloadSet,
     },
     similarity::best_match,
 };
@@ -171,11 +171,67 @@ pub fn item_id_span(item: &HirItem) -> (HirId, Span) {
     }
 }
 
+/// What a written path's explicit `root::`/`self::`/`super::` anchor says,
+/// resolved from the path's own resolution module.
+pub(super) enum AnchoredPath {
+    Absolute(Vec<Ident>),
+    /// No explicit anchor: the caller's own unanchored rules apply.
+    Unanchored,
+    /// The anchor itself is illegal (`super::` above the package root); the
+    /// diagnostic is already reported.
+    Failed,
+}
+
 impl<'r> Analyzer<'r> {
     pub(super) fn path_module(&self, path: &Path) -> Vec<Ident> {
         self.resolver
             .macro_origin_module(path.origin)
             .unwrap_or_else(|| self.module_path.clone())
+    }
+
+    /// Resolves `path`'s explicit anchor, if it has one. Every item-like
+    /// path consults this *before* asking whether its head is an import, so
+    /// an anchored spelling never degrades into an import lookup for a name
+    /// that was never meant to be one.
+    pub(super) fn anchored_path(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        path: &Path,
+    ) -> AnchoredPath {
+        let module = self.path_module(path);
+        match self.resolver.resolve_explicit_anchor(&module, path) {
+            None => AnchoredPath::Unanchored,
+            Some(Ok(absolute)) => AnchoredPath::Absolute(absolute),
+            Some(Err(error)) => {
+                self.error(node_id, span, AnalysisErrorKind::ModuleResolution(error));
+                AnchoredPath::Failed
+            }
+        }
+    }
+
+    /// The same question for a leading *prefix* of an anchored path, used
+    /// where generic arguments or a trailing member split the path in two.
+    pub(super) fn anchored_prefix(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        path: &Path,
+        prefix: &[Ident],
+    ) -> AnchoredPath {
+        let Some((head, tail)) = prefix.split_first() else {
+            return AnchoredPath::Unanchored;
+        };
+        self.anchored_path(
+            node_id,
+            span,
+            &Path {
+                anchor: path.anchor,
+                head: head.clone(),
+                tail: tail.to_vec(),
+                origin: path.origin,
+            },
+        )
     }
 
     pub(super) fn check_macro_dependency_visibility(
@@ -545,18 +601,22 @@ impl<'r> Analyzer<'r> {
 
     fn resolve_item_checked(
         &mut self,
-        absolute: &[Ident],
+        access: &ItemAccess,
         type_args: &[ResolvedType],
         indirect: bool,
     ) -> Result<ResolvedItem, ResolveError> {
         let bypass = self.reveals.active();
-        let result = self.resolver.resolve_item(
-            &self.module_path,
-            absolute,
-            type_args,
-            ResolveItemOptions::with_indirection(indirect).bypassing_visibility(bypass),
-        );
-        if bypass && result.is_ok() && !self.resolver.is_item_visible(&self.module_path, absolute) {
+        let options = access
+            .options(ResolveItemOptions::with_indirection(indirect).bypassing_visibility(bypass));
+        let result =
+            self.resolver
+                .resolve_item(&self.module_path, &access.absolute, type_args, options);
+        if bypass
+            && result.is_ok()
+            && !self
+                .resolver
+                .is_item_visible(&self.module_path, &access.absolute)
+        {
             self.reveals.mark_used();
         }
         result
@@ -565,17 +625,19 @@ impl<'r> Analyzer<'r> {
     fn resolve_item_checked_with_ambient_fallback(
         &mut self,
         prefix: &[Ident],
-        absolute: &[Ident],
+        access: &ItemAccess,
         type_args: &[ResolvedType],
     ) -> Result<ResolvedItem, ResolveError> {
-        let result = self.resolve_item_checked(absolute, type_args, true);
+        let result = self.resolve_item_checked(access, type_args, true);
         match (prefix, &result) {
             ([single], Err(ResolveError::UnknownItem { .. })) => {
                 match self
                     .resolver
                     .ambient_core_candidates(&self.module_path, single)?
                 {
-                    Some(ambient) => self.resolve_item_checked(&ambient, type_args, true),
+                    Some(ambient) => {
+                        self.resolve_item_checked(&ItemAccess::gated(ambient), type_args, true)
+                    }
                     None => result,
                 }
             }
@@ -587,12 +649,13 @@ impl<'r> Analyzer<'r> {
         &mut self,
         accessor: &[Ident],
         prefix: &[Ident],
-        absolute: &[Ident],
+        access: &ItemAccess,
         type_args: &[ResolvedType],
     ) -> Result<ResolvedItem, ResolveError> {
-        let result =
-            self.resolver
-                .resolve_item(accessor, absolute, type_args, ResolveItemOptions::INDIRECT);
+        let options = access.options(ResolveItemOptions::INDIRECT);
+        let result = self
+            .resolver
+            .resolve_item(accessor, &access.absolute, type_args, options);
         match (prefix, &result) {
             ([single], Err(ResolveError::UnknownItem { .. })) => {
                 match self.resolver.ambient_core_candidates(accessor, single)? {
@@ -727,10 +790,11 @@ impl<'r> Analyzer<'r> {
         self.resolve_type_or_error_in(id, span, typ, indirect, &module)
     }
 
-    /// Checks the bounds an alias template declares on its own generic
-    /// parameters. Expansion is structural and cannot do this itself: whether
-    /// an argument satisfies a bound is a conformance question, and the
-    /// expanded target no longer mentions the alias's parameter list.
+    /// Checks the bounds every alias template applied by `typ` declares on
+    /// its own generic parameters. Normalization is structural and cannot do
+    /// this itself: whether an argument satisfies a bound is a conformance
+    /// question, and the expanded target no longer mentions the alias's
+    /// parameter list.
     fn check_alias_generic_bounds(&mut self, id: HirId, span: Span, typ: &Type, module: &[Ident]) {
         let applied = match crate::aliases::applied_alias_bounds(&mut *self.resolver, module, typ) {
             Ok(applied) => applied,
@@ -757,26 +821,6 @@ impl<'r> Analyzer<'r> {
                     }),
                 );
             }
-        }
-        for inner in Self::type_arguments(typ) {
-            self.check_alias_generic_bounds(id, span, inner, module);
-        }
-    }
-
-    fn type_arguments(typ: &Type) -> Vec<&Type> {
-        match typ {
-            Type::Pointer(inner, _)
-            | Type::InferredArray(inner)
-            | Type::UnknownSizeArray(inner)
-            | Type::SizedArray(inner, _) => vec![inner],
-            Type::Generic(_, args) | Type::SpecStatic(args) => args.iter().collect(),
-            Type::Function(f) => f
-                .params
-                .iter()
-                .map(|p| &p.r#type)
-                .chain(std::iter::once(f.return_type.as_ref()))
-                .collect(),
-            Type::Named(_) => vec![],
         }
     }
 

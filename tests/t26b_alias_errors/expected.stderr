@@ -16,4 +16,28 @@ error: 't26b_alias_errors::helper::Secret' is not visible here
 15 | alias Rewrapped = helper::Secret;
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not visible from this module
 
-error: could not compile the program due to 3 previous errors
+error: 't26b_alias_errors::Pair' expects 2 type argument(s), found 1
+  --> tests/t26b_alias_errors/t26b_alias_errors.omg:19:1
+   |
+19 | alias UnusedBadArity<T> = Pair<T>;
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected 2 type arguments
+
+error: alias 't26b_alias_errors::UnusedFunctionAsType' cannot name the function 't26b_alias_errors::takes_nothing'
+  --> tests/t26b_alias_errors/t26b_alias_errors.omg:30:1
+   |
+30 | alias UnusedFunctionAsType<T> = *takes_nothing;
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not a type or spec
+   |
+   = note: this path sits inside type syntax, where an alias names a type or spec -- the wider bare-path alias namespace does not reach here
+   = help: name a type or spec, or forward the declaration with a bare non-generic alias instead
+
+error: alias 't26b_alias_errors::UnusedBadConjunction' cannot name the non-spec declaration 't26b_alias_errors::Holder'
+  --> tests/t26b_alias_errors/t26b_alias_errors.omg:38:1
+   |
+38 | alias UnusedBadConjunction = spec Countable + Holder;
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not a type or spec
+   |
+   = note: this path sits inside type syntax, where an alias names a type or spec -- the wider bare-path alias namespace does not reach here
+   = help: name a type or spec, or forward the declaration with a bare non-generic alias instead
+
+error: could not compile the program due to 6 previous errors

@@ -19,22 +19,33 @@ impl<'r> Analyzer<'r> {
         }
 
         let accessor = self.path_module(path);
-        let alias = self
-            .resolver
-            .resolve_import_alias(&accessor, &path.head)
-            .ok()
-            .flatten();
-        let absolute: Vec<Ident> = match &alias {
-            Some(ImportTarget::Item(absolute, _))
-            | Some(ImportTarget::ItemPath(absolute))
-            | Some(ImportTarget::AliasedItemPath(absolute)) => absolute.clone(),
-            Some(ImportTarget::Module(_)) => return Intercepted::Declined,
-            None => accessor
-                .iter()
-                .cloned()
-                .chain(std::iter::once(path.head.clone()))
-                .collect(),
-        };
+        // The owner is `path.head` alone; an explicit anchor names it
+        // directly, so it is never looked up as an import binding.
+        let access =
+            match self.anchored_prefix(node_id, span, path, std::slice::from_ref(&path.head)) {
+                AnchoredPath::Failed => return Intercepted::Claimed(None),
+                AnchoredPath::Absolute(absolute) => ItemAccess::gated(absolute),
+                AnchoredPath::Unanchored => {
+                    let alias = self
+                        .resolver
+                        .resolve_import_alias(&accessor, &path.head)
+                        .ok()
+                        .flatten();
+                    match alias {
+                        Some(ImportTarget::Item(absolute, _)) => ItemAccess::gated(absolute),
+                        Some(ImportTarget::ItemPath(access)) => access,
+                        Some(ImportTarget::Module(_)) => return Intercepted::Declined,
+                        None => ItemAccess::gated(
+                            accessor
+                                .iter()
+                                .cloned()
+                                .chain(std::iter::once(path.head.clone()))
+                                .collect(),
+                        ),
+                    }
+                }
+            };
+        let absolute = access.absolute.clone();
 
         let Some((real_absolute, sig)) = self.generic_static_function_signature_with_ambient(
             &accessor,
@@ -48,13 +59,20 @@ impl<'r> Analyzer<'r> {
             return Intercepted::Declined;
         }
 
+        // The authorization the binding carried belongs to the path it named:
+        // the ambient-`core` fallback below found a different owner, which
+        // this reference was never authorized for.
+        let owner = ItemAccess {
+            bypass_visibility: access.bypass_visibility && real_absolute == absolute,
+            absolute: real_absolute,
+        };
         Intercepted::Claimed(self.finish_generic_static_call(
             node_id,
             span,
             call,
             &accessor,
             std::slice::from_ref(&path.head),
-            &real_absolute,
+            &owner,
             member,
             &sig,
             expected,
@@ -139,7 +157,7 @@ impl<'r> Analyzer<'r> {
         call: &HirFunctionCall,
         accessor: &[Ident],
         prefix: &[Ident],
-        owner_absolute: &[Ident],
+        owner: &ItemAccess,
         member: &Ident,
         sig: &GenericStaticFunctionSignature,
         expected: Option<&ResolvedType>,
@@ -179,7 +197,8 @@ impl<'r> Analyzer<'r> {
                             node_id,
                             span,
                             AnalysisErrorKind::UnresolvedLiteralGeneric {
-                                r#type: owner_absolute
+                                r#type: owner
+                                    .absolute
                                     .last()
                                     .cloned()
                                     .expect("an absolute path always has a last segment"),
@@ -192,8 +211,7 @@ impl<'r> Analyzer<'r> {
             };
 
         let owner_type =
-            match self.resolve_item_with_ambient_from(accessor, prefix, owner_absolute, &type_args)
-            {
+            match self.resolve_item_with_ambient_from(accessor, prefix, owner, &type_args) {
                 Ok(ResolvedItem::Type(t)) => t,
                 Ok(ResolvedItem::Value { .. }) | Ok(ResolvedItem::Gap(_)) => {
                     self.error(node_id, span, AnalysisErrorKind::UnresolvedCallee);
@@ -289,44 +307,53 @@ impl<'r> Analyzer<'r> {
         }
 
         let accessor = self.path_module(path);
-        let absolute: Vec<Ident> = if path.is_unqualified() {
-            match self
-                .resolver
-                .resolve_import_alias(&accessor, &path.head)
-                .ok()
-                .flatten()
-            {
-                Some(ImportTarget::ItemPath(absolute))
-                | Some(ImportTarget::AliasedItemPath(absolute)) => absolute,
-                _ => accessor
-                    .iter()
-                    .cloned()
-                    .chain(std::iter::once(path.head.clone()))
-                    .collect(),
+        let access: ItemAccess = match self.anchored_path(node_id, span, path) {
+            AnchoredPath::Failed => return Intercepted::Claimed(None),
+            AnchoredPath::Absolute(absolute) => ItemAccess::gated(absolute),
+            AnchoredPath::Unanchored if path.is_unqualified() => {
+                match self
+                    .resolver
+                    .resolve_import_alias(&accessor, &path.head)
+                    .ok()
+                    .flatten()
+                {
+                    Some(ImportTarget::ItemPath(access)) => access,
+                    _ => ItemAccess::gated(
+                        accessor
+                            .iter()
+                            .cloned()
+                            .chain(std::iter::once(path.head.clone()))
+                            .collect(),
+                    ),
+                }
             }
-        } else {
-            match self
-                .resolver
-                .resolve_import_alias(&accessor, &path.head)
-                .ok()
-                .flatten()
-            {
-                Some(ImportTarget::Module(target)) => target
-                    .into_iter()
-                    .chain(path.tail.iter().cloned())
-                    .collect(),
-                _ => return Intercepted::Declined,
+            AnchoredPath::Unanchored => {
+                match self
+                    .resolver
+                    .resolve_import_alias(&accessor, &path.head)
+                    .ok()
+                    .flatten()
+                {
+                    Some(ImportTarget::Module(target)) => ItemAccess::gated(
+                        target
+                            .into_iter()
+                            .chain(path.tail.iter().cloned())
+                            .collect(),
+                    ),
+                    _ => return Intercepted::Declined,
+                }
             }
         };
 
-        let sig: GenericSignature = match self.resolver.generic_function_signature(&absolute) {
+        let sig: GenericSignature = match self.resolver.generic_function_signature(&access.absolute)
+        {
             Ok(Some(sig)) => sig,
             Ok(None) => return Intercepted::Declined,
             Err(_) => return Intercepted::Declined,
         };
 
         Intercepted::Claimed(
-            self.finish_generic_call(node_id, span, call, &accessor, &absolute, &sig, expected),
+            self.finish_generic_call(node_id, span, call, &accessor, &access, &sig, expected),
         )
     }
 
@@ -336,7 +363,7 @@ impl<'r> Analyzer<'r> {
         span: Span,
         call: &HirFunctionCall,
         accessor: &[Ident],
-        absolute: &[Ident],
+        access: &ItemAccess,
         sig: &GenericSignature,
         expected: Option<&ResolvedType>,
     ) -> Option<CheckedExprNode> {
@@ -375,9 +402,9 @@ impl<'r> Analyzer<'r> {
 
         let (fn_type, storage, decl_id) = match self.resolver.resolve_item(
             accessor,
-            absolute,
+            &access.absolute,
             &type_args,
-            ResolveItemOptions::INDIRECT,
+            access.options(ResolveItemOptions::INDIRECT),
         ) {
             Ok(ResolvedItem::Value {
                 r#type: ResolvedType::Function(fn_type),
