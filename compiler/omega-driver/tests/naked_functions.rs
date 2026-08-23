@@ -77,9 +77,7 @@ fn has_analysis_error(
     })
 }
 
-fn mir_functions(
-    program: omega_driver::CompiledProgram,
-) -> Vec<omega_mir::MirFunctionDef> {
+fn mir_functions(program: omega_driver::CompiledProgram) -> Vec<omega_mir::MirFunctionDef> {
     let entry = program.entry.clone();
     let mir = omega_mir::lower_program(program.modules, &entry);
     mir.into_iter()
@@ -168,13 +166,10 @@ fn naked_params_are_kept_in_signature_but_produce_no_unused_warning() {
     .expect_ok();
 
     assert!(
-        !program
-            .warnings
-            .iter()
-            .any(|(_, warning)| matches!(
-                warning.kind,
-                AnalysisWarningKind::UnusedParameter { .. }
-            )),
+        !program.warnings.iter().any(|(_, warning)| matches!(
+            warning.kind,
+            AnalysisWarningKind::UnusedParameter { .. }
+        )),
         "a naked function's ABI-only parameter must not be warned as unused"
     );
 
@@ -337,7 +332,10 @@ fn naked_on_a_non_function_item_is_rejected() {
 
 // -- Codegen shape --
 
-fn codegen_ir(program: omega_driver::CompiledProgram, opt_level: omega_codegen::OptLevel) -> String {
+fn codegen_ir(
+    program: omega_driver::CompiledProgram,
+    opt_level: omega_codegen::OptLevel,
+) -> String {
     let extern_functions = program.extern_functions.clone();
     let entry = program.entry.clone();
     let modules = omega_mir::lower_program(program.modules, &entry);
@@ -426,7 +424,8 @@ fn naked_function_x86_64_asm_has_no_compiler_generated_frame_setup() {
             "expected the naked body's literal to survive emission at {opt_level:?}:\n{asm}"
         );
         assert!(
-            !asm.lines().any(|line| line.trim_start().starts_with("push")),
+            !asm.lines()
+                .any(|line| line.trim_start().starts_with("push")),
             "no compiler-generated 'push' is expected around a naked body at {opt_level:?}:\n{asm}"
         );
         assert!(

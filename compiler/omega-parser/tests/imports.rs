@@ -10,7 +10,12 @@ fn import(source: &str) -> ImportStmt {
 }
 
 fn path_segments(import: &ImportStmt) -> Vec<String> {
-    import.path.segments().iter().map(ToString::to_string).collect()
+    import
+        .path
+        .segments()
+        .iter()
+        .map(ToString::to_string)
+        .collect()
 }
 
 #[test]
@@ -73,10 +78,7 @@ fn extern_is_an_ordinary_identifier_in_import_paths() {
     // `extern` was removed as a keyword in favor of `foreign`; it now parses
     // like any other identifier, including as an import path segment.
     let module = import("import extern::std::io::println;");
-    assert_eq!(
-        path_segments(&module),
-        ["extern", "std", "io", "println"]
-    );
+    assert_eq!(path_segments(&module), ["extern", "std", "io", "println"]);
 }
 
 #[test]
@@ -118,7 +120,14 @@ fn named_path(ty: &omega_parser::prelude::Type) -> &omega_parser::prelude::Path 
 fn anchored_ordinary_type_path_parses() {
     let ty = parse_type("self::T");
     assert_eq!(named_path(&ty).anchor, Some(PathAnchor::SelfModule));
-    assert_eq!(named_path(&ty).segments().iter().map(ToString::to_string).collect::<Vec<_>>(), ["T"]);
+    assert_eq!(
+        named_path(&ty)
+            .segments()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        ["T"]
+    );
 
     let ty = parse_type("root::pkg::T");
     assert_eq!(named_path(&ty).anchor, Some(PathAnchor::Root));

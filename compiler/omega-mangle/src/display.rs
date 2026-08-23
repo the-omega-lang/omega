@@ -1,5 +1,5 @@
 use crate::decode::decode;
-use crate::symbol::{ManglePath, MangleConvention, MangleType, Symbol};
+use crate::symbol::{MangleConvention, ManglePath, MangleType, Symbol};
 
 pub fn demangle(mangled: &str) -> Option<String> {
     decode(mangled).map(|symbol| render(&symbol))

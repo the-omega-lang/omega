@@ -20,9 +20,9 @@ use literals::parse_number_literal;
 use crate::target::Target;
 use crate::{
     checked::{
-        CastKind, CheckedAddressOf, CheckedArrayLiteral, CheckedAssignment, CheckedBinaryOp,
-        CheckedBlock, CheckedBreak, CheckedCast, CheckedCompoundAssign, CheckedContinue,
-        CheckedAsmDescriptor, CheckedAsmDescriptorKind, CheckedDeclaration, CheckedDefer,
+        CastKind, CheckedAddressOf, CheckedArrayLiteral, CheckedAsmDescriptor,
+        CheckedAsmDescriptorKind, CheckedAssignment, CheckedBinaryOp, CheckedBlock, CheckedBreak,
+        CheckedCast, CheckedCompoundAssign, CheckedContinue, CheckedDeclaration, CheckedDefer,
         CheckedDynamicCall, CheckedEnumConstruct, CheckedEnumDef, CheckedExpr, CheckedExprNode,
         CheckedField, CheckedFor, CheckedForeignFunctionDef, CheckedFunctionCall,
         CheckedFunctionDef, CheckedIf, CheckedInlineAsm, CheckedLoop, CheckedMatch,
@@ -51,11 +51,10 @@ use crate::{
 use omega_hir::{
     BinaryOp, HirAddressOf, HirAsmDescriptor, HirAsmDescriptorKind, HirBlock, HirCast,
     HirCompoundAssign, HirDeclaration, HirEnumDef, HirExpr, HirExprNode, HirField, HirFor,
-    HirForIn, HirFunctionCall, HirFunctionDef, HirId,
-    HirIf, HirInlineAsm, HirItem, HirMatch, HirMatchArm, HirParam, HirPattern, HirPlace,
-    HirPlaceRoot, HirProjection, HirRange, HirRangeEnd, HirSlice, HirSpecDef, HirStmt,
-    HirStructDef, HirStructLiteral, HirStructLiteralField, HirUnionDef, HirWalrusDeclaration,
-    LogicalOp,
+    HirForIn, HirFunctionCall, HirFunctionDef, HirId, HirIf, HirInlineAsm, HirItem, HirMatch,
+    HirMatchArm, HirParam, HirPattern, HirPlace, HirPlaceRoot, HirProjection, HirRange,
+    HirRangeEnd, HirSlice, HirSpecDef, HirStmt, HirStructDef, HirStructLiteral,
+    HirStructLiteralField, HirUnionDef, HirWalrusDeclaration, LogicalOp,
 };
 use omega_parser::prelude::{
     ExprPath, Ident, NumberBase, NumberExpr, Origin, Path, QualifiedSpecPath, SelfMode, Span, Type,
@@ -307,7 +306,11 @@ impl<'r> Analyzer<'r> {
     /// (which default to their spec's own visibility) -- callers checking a
     /// spec member must gate this on the member's default separately rather
     /// than calling it unconditionally.
-    pub(crate) fn check_redundant_hidden(&mut self, node_id: HirId, explicit_hidden_span: Option<Span>) {
+    pub(crate) fn check_redundant_hidden(
+        &mut self,
+        node_id: HirId,
+        explicit_hidden_span: Option<Span>,
+    ) {
         if let Some(span) = explicit_hidden_span {
             self.warn(node_id, span, AnalysisWarningKind::RedundantHiddenModifier);
         }
@@ -728,21 +731,14 @@ impl<'r> Analyzer<'r> {
     /// parameters. Expansion is structural and cannot do this itself: whether
     /// an argument satisfies a bound is a conformance question, and the
     /// expanded target no longer mentions the alias's parameter list.
-    fn check_alias_generic_bounds(
-        &mut self,
-        id: HirId,
-        span: Span,
-        typ: &Type,
-        module: &[Ident],
-    ) {
-        let applied =
-            match crate::aliases::applied_alias_bounds(&mut *self.resolver, module, typ) {
-                Ok(applied) => applied,
-                Err(error) => {
-                    self.error(id, span, AnalysisErrorKind::ModuleResolution(error));
-                    return;
-                }
-            };
+    fn check_alias_generic_bounds(&mut self, id: HirId, span: Span, typ: &Type, module: &[Ident]) {
+        let applied = match crate::aliases::applied_alias_bounds(&mut *self.resolver, module, typ) {
+            Ok(applied) => applied,
+            Err(error) => {
+                self.error(id, span, AnalysisErrorKind::ModuleResolution(error));
+                return;
+            }
+        };
         for (bound, argument) in applied {
             let Some(concrete) = self.resolve_type_or_error_in(id, span, &argument, true, module)
             else {

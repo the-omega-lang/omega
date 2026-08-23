@@ -126,7 +126,7 @@ impl Driver {
         )
     }
 
-    fn pad_generic_defaults(
+    pub(crate) fn pad_generic_defaults(
         &mut self,
         module_path: &[Ident],
         name: &Ident,
@@ -346,7 +346,9 @@ impl Driver {
                     |a| a.analyze_foreign_binding(binding),
                 )
                 .map(|(r#type, annotations)| {
-                    self.items.function_annotations.insert(binding.id, annotations);
+                    self.items
+                        .function_annotations
+                        .insert(binding.id, annotations);
                     let storage = match r#type {
                         ResolvedType::Function(_) => Storage::Function,
                         _ => Storage::Global,

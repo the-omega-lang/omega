@@ -32,9 +32,14 @@ impl TestPackage {
     }
 
     fn compile(&self) -> Result<omega_driver::CompiledProgram, Vec<CompileError>> {
-        Driver::new(self.0.clone(), None, Vec::<ExternRoot>::new(), Target::DEFAULT)
-            .expect("construct driver")
-            .compile(&[Ident("main".to_string())], Target::DEFAULT)
+        Driver::new(
+            self.0.clone(),
+            None,
+            Vec::<ExternRoot>::new(),
+            Target::DEFAULT,
+        )
+        .expect("construct driver")
+        .compile(&[Ident("main".to_string())], Target::DEFAULT)
     }
 
     fn expect_ok(&self) -> omega_driver::CompiledProgram {

@@ -15,10 +15,8 @@ impl<'ctx> Codegen<'ctx> {
             .iter()
             .map(|member| (member.spec.borrow().name.clone(), member.spec_args.clone()))
             .collect();
-        let symbol = omega_mir::mangle::encode(&omega_mir::mangle::vtable_symbol(
-            concrete,
-            &shape_members,
-        ));
+        let symbol =
+            omega_mir::mangle::encode(&omega_mir::mangle::vtable_symbol(concrete, &shape_members));
         // Keyed by concrete type + canonical shape identity (via the stable
         // mangled symbol) rather than slots alone: a slot-only key can
         // collide across distinct shapes, most easily for a zero-method

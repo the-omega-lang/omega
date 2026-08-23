@@ -415,7 +415,8 @@ impl<'r> Analyzer<'r> {
             let alias = self.resolve_alias_or_error(node_id, span, &plain.head)?;
             let absolute: Vec<Ident> = match &alias {
                 Some(ImportTarget::Item(absolute, _))
-                | Some(ImportTarget::GenericItem(absolute))
+                | Some(ImportTarget::ItemPath(absolute))
+                | Some(ImportTarget::AliasedItemPath(absolute))
                 | Some(ImportTarget::Module(absolute)) => absolute.clone(),
                 None => self
                     .module_path
@@ -544,7 +545,8 @@ impl<'r> Analyzer<'r> {
             return self.literal_target_from_type(node_id, span, t, &plain.tail);
         }
         let absolute: Vec<Ident> = match alias {
-            Some(ImportTarget::GenericItem(absolute)) => absolute,
+            Some(ImportTarget::ItemPath(absolute))
+            | Some(ImportTarget::AliasedItemPath(absolute)) => absolute,
             _ => self
                 .module_path
                 .iter()

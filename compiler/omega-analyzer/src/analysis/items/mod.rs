@@ -328,9 +328,11 @@ impl<'r> Analyzer<'r> {
                     .map(|(_, ty)| ty)
                     .chain(std::iter::once(&*fn_type.return_type)),
             ),
-            other => {
-                self.reject_foreign_aggregate_by_value(binding.id, binding.span, std::iter::once(other))
-            }
+            other => self.reject_foreign_aggregate_by_value(
+                binding.id,
+                binding.span,
+                std::iter::once(other),
+            ),
         };
         if !ok {
             return None;
@@ -370,7 +372,11 @@ impl<'r> Analyzer<'r> {
     )> {
         self.check_redundant_hidden(f.id, f.explicit_hidden_span);
         if !f.generics.is_empty() {
-            self.error(f.id, f.span, AnalysisErrorKind::GenericForeignFunctionUnsupported);
+            self.error(
+                f.id,
+                f.span,
+                AnalysisErrorKind::GenericForeignFunctionUnsupported,
+            );
             return None;
         }
         let params = self.analyze_all(&f.params, |this, p| {
@@ -378,28 +384,35 @@ impl<'r> Analyzer<'r> {
                 .map(|t| (p.ident.clone(), t))
         })?;
         let return_type = self.resolve_return_type_or_error(f.id, f.span, &f.return_type, true)?;
-        let calling_convention =
-            match self.context.resolve_convention(f.convention.as_ref().map(|c| &c.name)) {
-                Ok(cc) => cc,
-                Err(e) => {
-                    self.error(f.id, f.span, AnalysisErrorKind::UnresolvedType(e));
-                    return None;
-                }
-            };
+        let calling_convention = match self
+            .context
+            .resolve_convention(f.convention.as_ref().map(|c| &c.name))
+        {
+            Ok(cc) => cc,
+            Err(e) => {
+                self.error(f.id, f.span, AnalysisErrorKind::UnresolvedType(e));
+                return None;
+            }
+        };
         if f.is_variadic && !calling_convention.supports_variadic() {
             self.error(
                 f.id,
                 f.span,
-                AnalysisErrorKind::UnresolvedType(TypeResolutionError::VariadicNotSupportedByConvention {
-                    convention: calling_convention,
-                }),
+                AnalysisErrorKind::UnresolvedType(
+                    TypeResolutionError::VariadicNotSupportedByConvention {
+                        convention: calling_convention,
+                    },
+                ),
             );
             return None;
         }
         if !self.reject_foreign_aggregate_by_value(
             f.id,
             f.span,
-            params.iter().map(|(_, t)| t).chain(std::iter::once(&return_type)),
+            params
+                .iter()
+                .map(|(_, t)| t)
+                .chain(std::iter::once(&return_type)),
         ) {
             return None;
         }
@@ -462,7 +475,12 @@ impl<'r> Analyzer<'r> {
         self.warn_unused_bindings(scope, true);
         let params = params?;
         let checked_body = checked_body?;
-        self.check_function_return(f.id, f.return_type_span, &fn_type.return_type, &checked_body)?;
+        self.check_function_return(
+            f.id,
+            f.return_type_span,
+            &fn_type.return_type,
+            &checked_body,
+        )?;
         Some(CheckedForeignFunctionDef {
             id: f.id,
             span: f.span,

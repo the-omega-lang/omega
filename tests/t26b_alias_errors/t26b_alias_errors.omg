@@ -1,0 +1,17 @@
+import self::helper;
+
+# An unused alias's target must still be validated.
+alias UnusedBadTarget = NoSuchType;
+
+# An unused generic alias's own bound must still be validated.
+struct Holder<T> {
+	exposed value: T;
+}
+
+alias UnusedBadBound<T: NoSuchSpec> = Holder<T>;
+
+# A hidden intermediate alias in a cross-module chain may not be forwarded
+# through, even though its own target is otherwise reachable.
+alias Rewrapped = helper::Secret;
+
+main() => void {}

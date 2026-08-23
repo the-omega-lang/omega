@@ -431,7 +431,8 @@ fn a_leading_open_range_is_valid_with_an_explicit_operator() {
 
 #[test]
 fn an_end_may_not_follow_bare_dotdot_in_a_pattern() {
-    let package = TestPackage::new("entry_fn() => i32 { x := 5; match x { ..5 => { 1 } } else { 0 } }");
+    let package =
+        TestPackage::new("entry_fn() => i32 { x := 5; match x { ..5 => { 1 } } else { 0 } }");
     assert!(has_parse_error(
         &package.expect_errors(),
         &ParseErrorKind::OpenRangeHasEnd
@@ -440,7 +441,8 @@ fn an_end_may_not_follow_bare_dotdot_in_a_pattern() {
 
 #[test]
 fn an_end_may_not_follow_bare_dotdot_in_a_slice() {
-    let package = TestPackage::new("entry_fn() => i32 { arr : [4]i32 = [1,2,3,4]; s := &arr[..2]; 0 }");
+    let package =
+        TestPackage::new("entry_fn() => i32 { arr : [4]i32 = [1,2,3,4]; s := &arr[..2]; 0 }");
     assert!(has_parse_error(
         &package.expect_errors(),
         &ParseErrorKind::OpenRangeHasEnd

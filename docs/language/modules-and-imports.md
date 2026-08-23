@@ -56,7 +56,12 @@ import = "import", [ "reveal" ],
          ";" ;
 ```
 
-An import's source path is anchored by one of four mutually exclusive forms:
+`root::`, `self::`, and chained `super::` are not import-only syntax: they are
+explicit anchors of the ordinary `Path` grammar itself, and so are legal
+wherever a path is legal -- a type position (including nested inside pointer,
+array, or generic-argument syntax), an expression, a function type, an alias
+target, or a macro body. An import's source path is one such anchored path,
+anchored by one of four mutually exclusive forms:
 
 - **Unprefixed (top-level).** The path is already an absolute logical path whose first segment must be a known top-level package identity: either the package that owns the importing module, or a dependency registered with the compilation. There is no relative fallback -- a missing head is an unknown-top-level-package error, not an invitation to search locally.
 - **`root::`.** Starts at the root of the package that owns the importing module, independent of how deeply the importing module is nested. When source belonging to a registered dependency is itself being analyzed, `root::` refers to that dependency's own root, never the consuming package's root.
@@ -65,9 +70,11 @@ An import's source path is anchored by one of four mutually exclusive forms:
 
 `root`, `self`, and `super` are reserved only in these anchor positions; as ordinary path segments (including the final item name) or in any other identifier position, they remain the same contextual identifiers described in [`lexical-structure.md`](lexical-structure.md).
 
+The **unprefixed, top-level-by-default** reading above is specific to imports. An unanchored path written anywhere else (a type position, an expression, an alias target) keeps its own ordinary relative lookup rules instead -- it is not implicitly top-level. Only a path that actually writes `root::`, `self::`, or `super::` gets the anchored meaning described here, in any position.
+
 Importing an item binds its final name in the importing module. Importing a module makes that module path/name available according to normal resolution rules.
 
-Imports do not automatically re-export what they import. Re-export is a separate, deliberate act: an `alias` declaration binds a name of its own, with its own visibility, to an existing declaration or module, and an `exposed alias` therefore makes its target nameable from outside the declaring module. An alias target resolves at the alias declaration site, so it does not need a matching import. See [`aliases.md`](aliases.md) and [`visibility.md`](visibility.md).
+Imports do not automatically re-export what they import. Re-export is a separate, deliberate act: an `alias` declaration binds a name of its own, with its own visibility, to an existing declaration or module, and an `exposed alias` therefore makes its target nameable from outside the declaring module. An alias target resolves at the alias declaration site, so it does not need a matching import. An alias name may itself be imported directly (`import module::SomeAlias;`), exactly like an ordinary declaration; the alias's own visibility gates the import, and the imported name still resolves through the alias's own semantics. See [`aliases.md`](aliases.md) and [`visibility.md`](visibility.md).
 
 A **module** alias re-exports only the module name; traversing it still checks each named item's own visibility.
 

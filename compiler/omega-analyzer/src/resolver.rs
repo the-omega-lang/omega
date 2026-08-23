@@ -46,7 +46,20 @@ pub enum ResolvedAlias {
 pub enum ImportTarget {
     Module(Vec<Ident>),
     Item(Vec<Ident>, ResolvedItem),
-    GenericItem(Vec<Ident>),
+    /// An ordinary (non-alias) generic template imported by name: arity and
+    /// contents are not known until a real use site supplies concrete
+    /// arguments, so resolution is deferred -- but the *accessor's own*
+    /// visibility to the target still applies then, exactly as it would for
+    /// a concrete import. No capability transfer happens here.
+    ItemPath(Vec<Ident>),
+    /// The fully-validated end of a declared-alias chain: every intermediate
+    /// alias's own declaration-site visibility to its own immediate target
+    /// was already checked when the chain was built (see
+    /// `forward_alias_path`), and the caller was already gated against the
+    /// alias itself. Consuming this path is deliberately not re-gated
+    /// against the accessor -- that is the whole point of an alias
+    /// forwarding capability to whoever may see the alias.
+    AliasedItemPath(Vec<Ident>),
 }
 
 #[derive(Debug, Clone)]
@@ -57,7 +70,10 @@ pub enum ResolveError {
     UnknownTopLevelPackage(Ident),
     /// A `super::` chain removed more segments than the importing
     /// module's package-relative depth allows.
-    SuperAboveRoot { depth: u32, importer: Vec<Ident> },
+    SuperAboveRoot {
+        depth: u32,
+        importer: Vec<Ident>,
+    },
     UnknownItem {
         module: Vec<Ident>,
         item: Ident,
@@ -72,7 +88,10 @@ pub enum ResolveError {
     /// segment is not a spelling the parser can tokenize as an identifier.
     /// `path` is the valid ancestor prefix; `invalid` is the raw offending
     /// segment (not wrapped in `Ident`, since it is by definition not one).
-    InvalidModuleName { path: Vec<Ident>, invalid: String },
+    InvalidModuleName {
+        path: Vec<Ident>,
+        invalid: String,
+    },
     LoadFailed {
         path: Vec<Ident>,
         message: String,

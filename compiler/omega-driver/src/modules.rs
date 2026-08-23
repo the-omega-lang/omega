@@ -290,6 +290,11 @@ impl Driver {
         }
     }
 
+    /// Resolves a macro alias's raw target, rejecting a target macro binding
+    /// not visible from `path` -- the alias declaration module. An anchored
+    /// target (`root::`/`self::`/`super::`) goes through the same shared
+    /// anchor-resolution machinery ordinary paths and imports use, rather
+    /// than reimplementing it here.
     fn raw_macro_target(
         &mut self,
         path: &[Ident],
@@ -297,29 +302,48 @@ impl Driver {
         target: &Path,
         local: &HashMap<Ident, MacroDefinitionStmt>,
     ) -> Option<MacroDefinitionStmt> {
+        if let Some(anchored) = Driver::resolve_explicit_anchor(path, target) {
+            let absolute = anchored.ok()?;
+            let (name, module) = absolute.split_last()?;
+            return self.gate_macro_target(path, module, name, local);
+        }
         if target.is_unqualified() {
             return local.get(&target.head).cloned();
         }
-        let (name, module) = target.segments().split_last().map(|(n, m)| (n.clone(), m.to_vec()))?;
+        let (name, module) = target
+            .segments()
+            .split_last()
+            .map(|(n, m)| (n.clone(), m.to_vec()))?;
         let base = imports
             .iter()
-            .find(|import| {
-                import.path.tail.last().unwrap_or(&import.path.head) == &target.head
-            })
+            .find(|import| import.path.tail.last().unwrap_or(&import.path.head) == &target.head)
             .and_then(|import| self.import_absolute_path(path, &import.path).ok())
             .or_else(|| {
                 self.roots
                     .is_known_top_level(&target.head)
                     .then(|| vec![target.head.clone()])
             })?;
-        let absolute: Vec<Ident> = base
-            .into_iter()
-            .chain(module.into_iter().skip(1))
-            .collect();
-        if absolute == path {
-            return local.get(&name).cloned();
-        }
-        self.module_macros(&absolute).ok()?.get(&name).cloned()
+        let absolute: Vec<Ident> = base.into_iter().chain(module.into_iter().skip(1)).collect();
+        self.gate_macro_target(path, &absolute, &name, local)
+    }
+
+    /// The named macro binding in `module`, visible from `accessor`, or
+    /// `None` if it does not exist or is not visible from there. A hidden or
+    /// shared intermediate binding may not be smuggled through an alias any
+    /// more than a hidden item may.
+    fn gate_macro_target(
+        &mut self,
+        accessor: &[Ident],
+        module: &[Ident],
+        name: &Ident,
+        local: &HashMap<Ident, MacroDefinitionStmt>,
+    ) -> Option<MacroDefinitionStmt> {
+        let definition = if module == accessor {
+            local.get(name).cloned()?
+        } else {
+            self.module_macros(module).ok()?.get(name).cloned()?
+        };
+        Self::visibility_allows(definition.visibility, module, accessor).then_some(definition)
     }
 
     pub(crate) fn module_has_macro(&mut self, module: &[Ident], name: &Ident) -> bool {
@@ -424,8 +448,7 @@ impl Driver {
                 continue;
             };
             let visible = definition.visibility == Visibility::Exposed
-                || (definition.visibility == Visibility::Shared
-                    && path.first() == module.first());
+                || (definition.visibility == Visibility::Shared && path.first() == module.first());
             if visible {
                 environment
                     .entry(name)
@@ -456,14 +479,14 @@ impl Driver {
             Some(file) => {
                 let ast = self.ensure_ast(path, &file)?;
                 let macros = self.macro_env(path).map_err(|e| {
-                        self.modules
-                            .failures
-                            .insert(path.to_vec(), LoadFailure::Compile(e));
-                        ResolveError::LoadFailed {
-                            path: path.to_vec(),
-                            message: "building macro environment failed".into(),
-                        }
-                    })?;
+                    self.modules
+                        .failures
+                        .insert(path.to_vec(), LoadFailure::Compile(e));
+                    ResolveError::LoadFailed {
+                        path: path.to_vec(),
+                        message: "building macro environment failed".into(),
+                    }
+                })?;
                 let ast = omega_parser::macros::expand_with_origins(
                     (*ast).clone(),
                     &macros,
@@ -535,11 +558,7 @@ impl Driver {
         Ok(())
     }
 
-    fn index_items(
-        &mut self,
-        path: &[Ident],
-        hir: &HirModule,
-    ) -> ModuleIndex {
+    fn index_items(&mut self, path: &[Ident], hir: &HirModule) -> ModuleIndex {
         let mut items: IndexMap<Ident, usize> = IndexMap::new();
         let mut overloads: IndexMap<Ident, Vec<usize>> = IndexMap::new();
         let mut aliases: IndexMap<Ident, usize> = IndexMap::new();
@@ -584,12 +603,7 @@ impl Driver {
         for (name, &alias_index) in &aliases {
             if let Some(&item_index) = items.get(name) {
                 let (_, previous) = item_id_span(&hir.items[item_index]);
-                self.report_redeclaration(
-                    path,
-                    &hir.items[alias_index],
-                    name.clone(),
-                    previous,
-                );
+                self.report_redeclaration(path, &hir.items[alias_index], name.clone(), previous);
             }
         }
         ModuleIndex {

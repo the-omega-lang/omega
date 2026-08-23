@@ -346,10 +346,16 @@ mod tests {
     #[test]
     fn root_self_and_super_are_invalid_module_names_but_other_contextual_words_are_not() {
         for reserved in ["root", "self", "super"] {
-            assert!(!is_valid_module_name(reserved), "{reserved} should be rejected");
+            assert!(
+                !is_valid_module_name(reserved),
+                "{reserved} should be rejected"
+            );
         }
         for ordinary in ["mut", "comp", "reveal", "helper", "std"] {
-            assert!(is_valid_module_name(ordinary), "{ordinary} should be accepted");
+            assert!(
+                is_valid_module_name(ordinary),
+                "{ordinary} should be accepted"
+            );
         }
     }
 
@@ -406,7 +412,11 @@ mod tests {
             Some(Err(ResolveError::InvalidModuleName { invalid, .. })) if invalid == "foo-bar"
         ));
         // The subtree under an unreachable prefix is not separately walked.
-        assert!(!tree.contains_key(&vec![name, Ident("foo-bar".to_string()), Ident("baz".to_string())]));
+        assert!(!tree.contains_key(&vec![
+            name,
+            Ident("foo-bar".to_string()),
+            Ident("baz".to_string())
+        ]));
     }
 
     #[test]
@@ -420,7 +430,11 @@ mod tests {
             .expect("write non-omega file");
 
         let tree = discover_tree(&root.0);
-        assert!(!tree.keys().any(|path| path.iter().any(|i| i.as_ref() == ".git")));
+        assert!(
+            !tree
+                .keys()
+                .any(|path| path.iter().any(|i| i.as_ref() == ".git"))
+        );
     }
 
     #[test]

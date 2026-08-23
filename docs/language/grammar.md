@@ -56,22 +56,32 @@ Omitted visibility means hidden, except on a spec member, where it means the dec
 ## Paths
 
 ```ebnf
-path         = identifier, { "::", identifier } ;
+path-anchor  = "root", "::" | "self", "::" | { "super", "::" } ;
+path         = [ path-anchor ], identifier, { "::", identifier } ;
 type-path    = path, [ generic-arguments ] ;
 
 generic-arguments = "<", type, { ",", type }, ">" ;
 ```
+
+`path-anchor` is a general part of `path`, legal wherever a path is legal --
+a type position (including nested inside pointer, array, or
+generic-argument syntax), an expression, a function type, an alias target, an
+import, or a macro body -- not import-only syntax. `root`, `self`, and
+`super` are contextual: only a leading anchor form followed by `::` is
+navigation; elsewhere (including the final segment of an unanchored path)
+they remain ordinary identifiers. Anchor meaning is specified in
+[`modules-and-imports.md`](modules-and-imports.md).
 
 Expression-path generic arguments are only syntactically committed where the following syntax makes them unambiguous (for example `Type<T>::member` or `Type<T> { ... }`). Ordinary function calls rely on inference rather than Rust-style turbofish syntax.
 
 ## Imports
 
 ```ebnf
-import      = "import", [ "reveal" ], import-anchor, ";" ;
-import-anchor = [ "root", "::" | "self", "::" | { "super", "::" } ], path ;
+import      = "import", [ "reveal" ], path, ";" ;
 ```
 
-Module/import meaning is specified in [`modules-and-imports.md`](modules-and-imports.md).
+An import's `path` is an ordinary anchored or unanchored path; an unanchored
+import is top-level-by-default, unlike an unanchored path elsewhere. Module/import meaning is specified in [`modules-and-imports.md`](modules-and-imports.md).
 
 ## Foreign items
 

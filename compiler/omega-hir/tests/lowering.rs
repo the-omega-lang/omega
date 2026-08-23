@@ -130,7 +130,10 @@ fn an_alias_lowers_one_for_one_with_an_unresolved_target() {
     assert_eq!(aliases.len(), 2);
 
     assert_eq!(aliases[0].name.as_ref(), "Keyed");
-    assert_eq!(aliases[0].visibility, omega_parser::prelude::Visibility::Exposed);
+    assert_eq!(
+        aliases[0].visibility,
+        omega_parser::prelude::Visibility::Exposed
+    );
     assert_eq!(aliases[0].generics.len(), 1);
     let omega_hir::AliasTarget::Type(omega_parser::prelude::Type::Generic(path, args)) =
         &aliases[0].target

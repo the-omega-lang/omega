@@ -43,7 +43,7 @@ impl<'r> Analyzer<'r> {
             &spec_path,
             &self.module_path,
         ) {
-            Ok(absolute) => absolute,
+            Ok((absolute, _bypass)) => absolute,
             Err(_) => return Intercepted::Declined,
         };
         let spec = match self.resolver.spec_declaration(&absolute) {

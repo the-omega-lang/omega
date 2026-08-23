@@ -184,7 +184,9 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
             CheckedExpr::CompoundAssign(compound) => {
                 let read = self.read_place(&compound.place, node.span)?;
                 let read = match &compound.read_cast {
-                    Some((kind, target_type)) => self.apply_cast(*kind, target_type, read, node.span)?,
+                    Some((kind, target_type)) => {
+                        self.apply_cast(*kind, target_type, read, node.span)?
+                    }
                     None => read,
                 };
                 let rhs = self.eval_expr(&compound.value)?;
@@ -201,7 +203,9 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
                     _ => {
                         return Err(self.err(
                             node.span,
-                            CompErrorKind::Unsupported("compound-assign operator on this comp value shape"),
+                            CompErrorKind::Unsupported(
+                                "compound-assign operator on this comp value shape",
+                            ),
                         ));
                     }
                 };

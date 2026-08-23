@@ -230,7 +230,12 @@ fn lower_compound_assign(
     // write, so any dynamic index/root expression it contains executes
     // exactly once (see `lower_place_evaluated_once`).
     let target = lowerer.lower_place_evaluated_once(compound.place);
-    let mut read = mir_node(id, span, target.r#type.clone(), MirExpr::Place(target.clone()));
+    let mut read = mir_node(
+        id,
+        span,
+        target.r#type.clone(),
+        MirExpr::Place(target.clone()),
+    );
     if let Some((kind, target_type)) = compound.read_cast {
         read = mir_node(
             id,

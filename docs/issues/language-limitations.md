@@ -78,10 +78,12 @@ Normative chapter: [`../language/enums-and-pattern-matching.md`](../language/enu
 
 Normative chapter: [`../language/visibility.md`](../language/visibility.md)
 
-- **No re-export / `pub use`-equivalent.** `import reveal lib::x;` only
+- **`import reveal` is not a re-export.** `import reveal lib::x;` only
   lets *this* module's own references bypass `x`'s visibility — it doesn't
-  change what a third module sees through this module's own alias. Matches
-  the language having no re-export concept at all today.
+  change what a third module sees. Deliberate re-export is `alias`'s job: an
+  `exposed alias Public = lib::x;` makes `x` reachable from outside `lib` as
+  `Public`, without changing `x`'s own visibility. See
+  [`aliases.md`](../language/aliases.md).
 - **A named import alias's overload candidate set is fixed at import
   time**, deliberately not reachable by a later call-site `reveal`: `import
   lib::pick;` (no `reveal`) permanently excludes any overload of `pick`

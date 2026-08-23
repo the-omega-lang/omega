@@ -1,5 +1,6 @@
 import std::io::println;
 import self::child;
+import self::child::Public;
 
 # --- ordinary type alias --------------------------------------------------
 alias Count = i32;
@@ -27,6 +28,13 @@ alias Keyed<V> = Pair<*str, V>;
 
 # A bare alias of a generic declaration forwards its generic behavior.
 alias P = Pair;
+
+# Explicit anchors are ordinary path syntax, legal in an alias target too.
+alias SelfTally = self::Tally;
+
+# A generic alias's own default is bound the same way in an item position
+# (aggregate construction) as it is in an ordinary type position.
+alias Keyed2<V = i32> = Pair<*str, V>;
 
 # --- function aliases -----------------------------------------------------
 add(a: i32, b: i32) => i32 {
@@ -115,6 +123,14 @@ main() => void {
 	same_size := sizeof<Count> == sizeof<i32>;
 	println$("chained-primitive-alias: ", total + 1, " ", same_size);
 
+	# --- self-anchored alias reference ------------------------------------
+	self_same_size := sizeof<SelfTally> == sizeof<i32>;
+	println$("self-anchored-alias: ", self_same_size);
+
+	# --- defaulted alias generic argument in item position -----------------
+	defaulted := Keyed2 { a = "kk"; b = 99; };
+	println$("defaulted-alias-generic: ", defaulted.b);
+
 	# --- structural target ------------------------------------------------
 	mut storage: [4]u8;
 	view: Bytes = &storage[0..];
@@ -146,6 +162,13 @@ main() => void {
 	# --- module alias and re-exported hidden declaration ------------------
 	item := kid::Public::new(3);
 	println$("module-alias: ", child::describe(&item), " ", item.reveal_secret());
+
+	# --- an alias imported directly, used bare ------------------------------
+	direct := Public::new(9);
+	println$("direct-alias-import: ", direct.value);
+
+	# --- an exposed alias re-exporting a hidden cross-module overload set --
+	println$("cross-module-overload-alias: ", child::public_pair_sum(2, 5));
 
 	# --- macro invocation through an alias --------------------------------
 	println$("macro-alias: ", doubled$(21));

@@ -1,0 +1,19 @@
+error: cannot find 'NoSuchType' in module 't26b_alias_errors'
+ --> tests/t26b_alias_errors/t26b_alias_errors.omg:4:1
+  |
+4 | alias UnusedBadTarget = NoSuchType;
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not found in `t26b_alias_errors`
+
+error: cannot find 'NoSuchSpec' in module 't26b_alias_errors'
+  --> tests/t26b_alias_errors/t26b_alias_errors.omg:11:1
+   |
+11 | alias UnusedBadBound<T: NoSuchSpec> = Holder<T>;
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not found in `t26b_alias_errors`
+
+error: 't26b_alias_errors::helper::Secret' is not visible here
+  --> tests/t26b_alias_errors/t26b_alias_errors.omg:15:1
+   |
+15 | alias Rewrapped = helper::Secret;
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not visible from this module
+
+error: could not compile the program due to 3 previous errors

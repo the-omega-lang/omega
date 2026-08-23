@@ -1,0 +1,6 @@
+exposed struct Hidden {
+	exposed field: i32;
+}
+
+# Not exposed: `Secret` is hidden outside `helper`.
+alias Secret = Hidden;

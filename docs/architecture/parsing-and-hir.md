@@ -81,6 +81,10 @@ A construct that can be diagnosed carries a span appropriate to that construct, 
 
 Spans are byte offsets into the retained source text; rendering is handled by `omega-diagnostics` above the parser.
 
+### `Path` owns its explicit anchor
+
+`root::`, `self::`, and chained `super::` are a field on `ast::identifier::Path` itself (`PathAnchor`), not a separate representation `ImportStmt` owns. `parse_path`/`parse_expr_path` share one `parse_path_anchor` helper that looks ahead for a contextual `root`/`self`/`super` keyword immediately followed by `::` before committing to the anchored reading -- elsewhere (including the final segment of an unanchored path) those spellings remain ordinary identifiers. This is what lets an anchor appear anywhere a path is legal (a type, an expression, a generic argument, an alias target, an import, a macro body) through one shared production instead of import-only syntax. `Path` equality/hash include the anchor, since `self::T` and `T` are not the same path even though `Origin` continues to be excluded from both.
+
 ## Macro expansion boundary
 
 Macro expansion happens **after an initial parse** and **before HIR lowering**.

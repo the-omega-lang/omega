@@ -54,6 +54,15 @@ impl LexicalScope {
     }
 }
 
+/// The ambiently-bound primitive type names every scope carries, independent
+/// of any import or declaration. Shared with callers outside this crate
+/// (structural alias-declaration validation) that need to recognize a
+/// primitive name without constructing a full `Context`.
+pub const BUILTIN_TYPE_NAMES: &[&str] = &[
+    "void", "never", "bool", "char", "i8", "i16", "i32", "i64", "isize", "u8", "u16", "u32", "u64",
+    "usize", "f32", "f64",
+];
+
 #[derive(Debug, Clone)]
 pub struct Context {
     scopes: Vec<LexicalScope>,
@@ -82,6 +91,7 @@ impl Context {
             (Ident("f32".into()), ResolvedType::F32),
             (Ident("f64".into()), ResolvedType::F64),
         ]);
+        debug_assert_eq!(global_scope.defined_types.len(), BUILTIN_TYPE_NAMES.len());
         Self {
             scopes: vec![global_scope],
             comp_values: std::collections::HashMap::new(),
@@ -103,9 +113,7 @@ impl Context {
             "c" => CallingConvention::C,
             "sysv64" => CallingConvention::SysV64,
             _ => {
-                return Err(TypeResolutionError::UnknownCallingConvention {
-                    name: name.clone(),
-                });
+                return Err(TypeResolutionError::UnknownCallingConvention { name: name.clone() });
             }
         };
         if !resolved.is_available_on(self.target) {
@@ -252,17 +260,27 @@ impl Context {
         })
     }
 
+    /// Resolves `path` to an absolute item path, together with whether the
+    /// caller's subsequent `resolve_item` must bypass its own accessor-based
+    /// visibility check. That is true only for `AliasedItemPath`: the fully
+    /// chain-validated end of a declared alias, whose every link's own
+    /// visibility to its own immediate target was already checked when the
+    /// chain was built, and whose caller was already gated against the alias
+    /// itself -- consuming its target is deliberately not re-gated against
+    /// this accessor.
     pub(crate) fn resolve_absolute_item_path(
         &self,
         resolver: &mut dyn ModuleResolver,
         path: &Path,
         module_path: &[Ident],
-    ) -> Result<Vec<Ident>, TypeResolutionError> {
+    ) -> Result<(Vec<Ident>, bool), TypeResolutionError> {
         let resolution_module = resolver
             .macro_origin_module(path.origin)
             .unwrap_or_else(|| module_path.to_vec());
         if let Some(anchored) = resolver.resolve_explicit_anchor(&resolution_module, path) {
-            return anchored.map_err(TypeResolutionError::ModuleResolution);
+            return anchored
+                .map(|absolute| (absolute, false))
+                .map_err(TypeResolutionError::ModuleResolution);
         }
         if path.is_unqualified() {
             // `ImportTarget::Item`'s eagerly-resolved snapshot is ignored
@@ -273,24 +291,31 @@ impl Context {
                 .resolve_import_alias(&resolution_module, &path.head)
                 .map_err(TypeResolutionError::ModuleResolution)?
             {
-                Some(ImportTarget::GenericItem(absolute)) => return Ok(absolute),
-                Some(ImportTarget::Item(absolute, _)) => return Ok(absolute),
+                Some(ImportTarget::AliasedItemPath(absolute)) => return Ok((absolute, true)),
+                Some(ImportTarget::ItemPath(absolute)) => return Ok((absolute, false)),
+                Some(ImportTarget::Item(absolute, _)) => return Ok((absolute, false)),
                 _ => {}
             }
-            Ok(resolution_module
-                .iter()
-                .cloned()
-                .chain(std::iter::once(path.head.clone()))
-                .collect())
+            Ok((
+                resolution_module
+                    .iter()
+                    .cloned()
+                    .chain(std::iter::once(path.head.clone()))
+                    .collect(),
+                false,
+            ))
         } else {
             match resolver
                 .resolve_import_alias(&resolution_module, &path.head)
                 .map_err(TypeResolutionError::ModuleResolution)?
             {
-                Some(ImportTarget::Module(target)) => Ok(target
-                    .into_iter()
-                    .chain(path.tail.iter().cloned())
-                    .collect()),
+                Some(ImportTarget::Module(target)) => Ok((
+                    target
+                        .into_iter()
+                        .chain(path.tail.iter().cloned())
+                        .collect(),
+                    false,
+                )),
                 _ => Err(TypeResolutionError::ModuleNotImported {
                     name: path.head.clone(),
                     similar: best_match(
@@ -381,15 +406,28 @@ impl Context {
                     if let Some(ImportTarget::Item(_, ResolvedItem::Value { .. })) = alias {
                         return Err(TypeResolutionError::NotAType(vec![path.head.clone()]));
                     }
-                    let absolute = match alias {
+                    // `AliasedItemPath` is the fully chain-validated end of a
+                    // declared alias: every link's own visibility to its own
+                    // immediate target was already checked when the chain
+                    // was built, and this reference was already gated
+                    // against the alias itself above, so consuming its
+                    // target is deliberately not re-gated against this
+                    // accessor.
+                    let (absolute, options) = match alias {
+                        Some(ImportTarget::AliasedItemPath(absolute)) => {
+                            (absolute, options.bypassing_visibility(true))
+                        }
                         Some(ImportTarget::Item(absolute, _))
-                        | Some(ImportTarget::GenericItem(absolute))
-                        | Some(ImportTarget::Module(absolute)) => absolute,
-                        None => resolution_module
-                            .iter()
-                            .cloned()
-                            .chain(std::iter::once(path.head.clone()))
-                            .collect(),
+                        | Some(ImportTarget::ItemPath(absolute))
+                        | Some(ImportTarget::Module(absolute)) => (absolute, options),
+                        None => (
+                            resolution_module
+                                .iter()
+                                .cloned()
+                                .chain(std::iter::once(path.head.clone()))
+                                .collect(),
+                            options,
+                        ),
                     };
                     match resolver.resolve_item(&resolution_module, &absolute, &[], options) {
                         Ok(ResolvedItem::Type(t)) => t,
@@ -453,9 +491,15 @@ impl Context {
                     }
                 }
             } else {
-                let absolute = self.resolve_absolute_item_path(resolver, &path, module_path)?;
+                let (absolute, bypass) =
+                    self.resolve_absolute_item_path(resolver, &path, module_path)?;
                 match resolver
-                    .resolve_item(&resolution_module, &absolute, &[], options)
+                    .resolve_item(
+                        &resolution_module,
+                        &absolute,
+                        &[],
+                        options.bypassing_visibility(bypass || options.bypasses_visibility()),
+                    )
                     .map_err(TypeResolutionError::ModuleResolution)?
                 {
                     ResolvedItem::Type(t) => t,
@@ -486,7 +530,9 @@ impl Context {
                     self.resolve_type(arg, resolver, module_path, options.through_indirection())
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            let absolute = self.resolve_absolute_item_path(resolver, &path, module_path)?;
+            let (absolute, bypass) =
+                self.resolve_absolute_item_path(resolver, &path, module_path)?;
+            let options = options.bypassing_visibility(bypass || options.bypasses_visibility());
             let result =
                 resolver.resolve_item(&resolution_module, &absolute, &resolved_args, options);
             let result = match (&result, path.is_unqualified()) {

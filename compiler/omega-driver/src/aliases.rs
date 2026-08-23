@@ -26,7 +26,8 @@ pub(crate) struct AliasState {
 
 impl AliasState {
     fn begin(&mut self, key: &AliasKey) {
-        self.resolved.insert(key.clone(), AliasQueryState::InProgress);
+        self.resolved
+            .insert(key.clone(), AliasQueryState::InProgress);
         self.resolution_stack.push(key.clone());
     }
 
@@ -195,12 +196,25 @@ impl Driver {
             AliasTarget::Path(path) => Type::Named(path.clone()),
             AliasTarget::Type(r#type) => r#type.clone(),
         };
-        // An alias creates no nominal cell, so a cycle behind a pointer or any
-        // other type constructor has nothing to point at. Forcing every alias
-        // the target mentions -- while this one is still in progress -- is what
-        // turns `alias A = *A;` into a cycle diagnostic instead of unbounded
-        // expansion at the use site.
-        self.force_nested_aliases(module_path, &written)?;
+        // An alias-owned generic parameter is a legal opaque placeholder
+        // everywhere in the target, its bounds, and its defaults; every other
+        // referenced type/spec/path must resolve and be visible from this
+        // declaration site, and every nested alias is forced -- while this
+        // one is still in progress -- so a cycle (direct or behind a pointer
+        // or any other type constructor) is reported here instead of causing
+        // unbounded expansion at a use site. This runs even if the alias is
+        // never used: an alias declaration is not just a lazy forwarding
+        // rule, its target must be legal on its own.
+        let placeholders: Vec<Ident> = declared.generics.iter().map(|g| g.ident.clone()).collect();
+        for param in &declared.generics {
+            for bound in &param.bounds {
+                self.validate_alias_target(module_path, &declared, &placeholders, bound)?;
+            }
+            if let Some(default) = &param.default {
+                self.validate_alias_target(module_path, &declared, &placeholders, default)?;
+            }
+        }
+        self.validate_alias_target(module_path, &declared, &placeholders, &written)?;
         Ok(Some(ResolvedAlias::Type {
             generics: declared
                 .generics
@@ -215,28 +229,74 @@ impl Driver {
         }))
     }
 
-    fn force_nested_aliases(
+    /// Symbolically validates every type/spec/path a structural alias target
+    /// (or one of its own generic bounds/defaults) mentions. A name in
+    /// `placeholders` is the alias's own generic parameter and is always a
+    /// legal opaque reference; nothing is ever fabricated to give it a
+    /// concrete resolution. Every other named reference must exist and be
+    /// visible from `module_path` -- the declaration site -- and every
+    /// nested alias is forced so a cycle is reported here rather than
+    /// silently deferred to first use.
+    fn validate_alias_target(
         &mut self,
         module_path: &[Ident],
+        declared: &HirAlias,
+        placeholders: &[Ident],
         r#type: &Type,
     ) -> Result<(), ResolveError> {
         match r#type {
+            Type::Named(path) | Type::Generic(path, _)
+                if path.is_unqualified() && placeholders.contains(&path.head) => {}
             Type::Named(path) | Type::Generic(path, _) => {
-                let (module, name) = if path.is_unqualified() {
-                    (module_path.to_vec(), path.head.clone())
-                } else {
-                    match self.alias_path_base(module_path, &path.head)? {
-                        Some(mut absolute) => {
-                            absolute.extend(path.tail.iter().cloned());
-                            let (name, module) = absolute
-                                .split_last()
-                                .expect("a qualified path has at least two segments");
-                            (module.to_vec(), name.clone())
+                let (module, name) =
+                    if let Some(anchored) = Driver::resolve_explicit_anchor(module_path, path) {
+                        let absolute = anchored?;
+                        let (name, module) = absolute
+                            .split_last()
+                            .expect("an anchored path is never empty");
+                        (module.to_vec(), name.clone())
+                    } else if path.tail.is_empty() {
+                        (module_path.to_vec(), path.head.clone())
+                    } else {
+                        match self.alias_path_base(module_path, &path.head)? {
+                            Some(mut absolute) => {
+                                absolute.extend(path.tail.iter().cloned());
+                                let (name, module) = absolute
+                                    .split_last()
+                                    .expect("a qualified path has at least two segments");
+                                (module.to_vec(), name.clone())
+                            }
+                            None => {
+                                return Err(ResolveError::UnknownModule(
+                                    std::iter::once(path.head.clone())
+                                        .chain(path.tail.iter().cloned())
+                                        .collect(),
+                                ));
+                            }
                         }
-                        None => return Ok(()),
+                    };
+                // `str` is a builtin name too, legal only directly behind a
+                // pointer (`*str`) -- that pointer-position rule is enforced
+                // by ordinary type resolution at every use site, exactly as
+                // it is for a literal (non-aliased) `*str`; this validation
+                // pass only needs to recognize the name as never a missing
+                // declaration.
+                let is_builtin = path.is_unqualified()
+                    && (omega_analyzer::BUILTIN_TYPE_NAMES.contains(&name.as_ref())
+                        || name.as_ref() == "str");
+                if !is_builtin && self.declared_alias(&module, &name)?.is_none() {
+                    if self.optional_item_index(&module, &name)?.is_some() {
+                        self.check_alias_target_declaration(module_path, declared, &module, &name)?;
+                    } else if path
+                        .is_unqualified()
+                        .then(|| self.ambient_core_candidates(module_path, &path.head))
+                        .transpose()?
+                        .flatten()
+                        .is_none()
+                    {
+                        return Err(ResolveError::UnknownItem { module, item: name });
                     }
-                };
-                self.declared_alias(&module, &name)?;
+                }
             }
             _ => {}
         }
@@ -244,17 +304,19 @@ impl Driver {
             Type::Pointer(inner, _)
             | Type::InferredArray(inner)
             | Type::UnknownSizeArray(inner)
-            | Type::SizedArray(inner, _) => self.force_nested_aliases(module_path, inner)?,
+            | Type::SizedArray(inner, _) => {
+                self.validate_alias_target(module_path, declared, placeholders, inner)?
+            }
             Type::SpecStatic(members) | Type::Generic(_, members) => {
                 for member in members {
-                    self.force_nested_aliases(module_path, member)?;
+                    self.validate_alias_target(module_path, declared, placeholders, member)?;
                 }
             }
             Type::Function(f) => {
                 for param in &f.params {
-                    self.force_nested_aliases(module_path, &param.r#type)?;
+                    self.validate_alias_target(module_path, declared, placeholders, &param.r#type)?;
                 }
-                self.force_nested_aliases(module_path, &f.return_type)?;
+                self.validate_alias_target(module_path, declared, placeholders, &f.return_type)?;
             }
             Type::Named(_) => {}
         }
@@ -273,7 +335,9 @@ impl Driver {
         declared: &HirAlias,
         path: &Path,
     ) -> Result<Option<ResolvedAlias>, ResolveError> {
-        let absolute = if path.is_unqualified() {
+        let absolute = if let Some(anchored) = Driver::resolve_explicit_anchor(module_path, path) {
+            anchored?
+        } else if path.tail.is_empty() {
             if let Some(chained) = self.declared_alias(module_path, &path.head)? {
                 return Ok(Some(chained));
             }
@@ -281,9 +345,9 @@ impl Driver {
                 Some(ImportTarget::Module(target)) => {
                     return Ok(Some(ResolvedAlias::Module(target)));
                 }
-                Some(ImportTarget::Item(target, _)) | Some(ImportTarget::GenericItem(target)) => {
-                    target
-                }
+                Some(ImportTarget::Item(target, _))
+                | Some(ImportTarget::ItemPath(target))
+                | Some(ImportTarget::AliasedItemPath(target)) => target,
                 None => module_path
                     .iter()
                     .cloned()
@@ -304,6 +368,22 @@ impl Driver {
         let (name, target_module) = absolute
             .split_last()
             .expect("an alias target path is never empty");
+        // An intermediate alias in a chain is its own visibility gate: this
+        // alias's own declaration site must be able to see it before its
+        // target is followed, exactly like any other named declaration
+        // reference -- a hidden link may not be smuggled through simply
+        // because the alias that follows it happens to be exposed.
+        if self.alias_index(target_module, name)?.is_some() {
+            let visibility = self
+                .alias_visibility(target_module, name)
+                .expect("just indexed by alias_index");
+            if !Self::visibility_allows(visibility, target_module, module_path) {
+                return Err(ResolveError::NotVisible {
+                    module: target_module.to_vec(),
+                    item: name.clone(),
+                });
+            }
+        }
         if let Some(chained) = self.declared_alias(target_module, name)? {
             return Ok(Some(chained));
         }

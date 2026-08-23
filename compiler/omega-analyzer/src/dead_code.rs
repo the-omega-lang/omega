@@ -1,7 +1,6 @@
 use crate::checked::{
     CheckedAsmDescriptorKind, CheckedBlock, CheckedExpr, CheckedExprNode, CheckedItem,
-    CheckedModule, CheckedPlace, CheckedPlaceRoot, CheckedProjection, CheckedRangeEnd,
-    CheckedStmt,
+    CheckedModule, CheckedPlace, CheckedPlaceRoot, CheckedProjection, CheckedRangeEnd, CheckedStmt,
 };
 use crate::resolved_type::ResolvedType;
 use omega_hir::HirId;
@@ -70,9 +69,7 @@ fn collect_block(block: &CheckedBlock, usage: &mut FieldUsage) {
 
 fn collect_stmt(stmt: &CheckedStmt, usage: &mut FieldUsage) {
     match stmt {
-        CheckedStmt::Declaration(_)
-        | CheckedStmt::Break(_)
-        | CheckedStmt::Continue(_) => {}
+        CheckedStmt::Declaration(_) | CheckedStmt::Break(_) | CheckedStmt::Continue(_) => {}
         CheckedStmt::Expression(e) | CheckedStmt::Return(e) => collect_expr(e, usage),
         CheckedStmt::While(w) => {
             collect_expr(&w.condition, usage);

@@ -1,16 +1,16 @@
 use super::Lowerer;
 use crate::hir::{
-    HirAlias, HirAnnotation, HirAnnotationArg, HirAnnotationValue, HirBlock, HirConformDef, HirDeclaration,
-    HirEnumDef, HirEnumVariant, HirExpr, HirExprNode, HirField, HirForeignBinding,
+    HirAlias, HirAnnotation, HirAnnotationArg, HirAnnotationValue, HirBlock, HirConformDef,
+    HirDeclaration, HirEnumDef, HirEnumVariant, HirExpr, HirExprNode, HirField, HirForeignBinding,
     HirForeignFunction, HirFunctionDef, HirGapDef, HirGapFunction, HirGenericParam, HirGlueDef,
     HirImport, HirItem, HirParam, HirPlace, HirPlaceRoot, HirPrimitiveDef, HirSpecDef,
     HirSpecFunction, HirStmt, HirStructDef, HirUnionDef, HirWalrusDeclaration,
 };
 use omega_parser::prelude::{
     AnnotationArg, AnnotationNode, AnnotationValue, DeclarationStmt, EnumStmt, ForeignBindingItem,
-    ForeignBlockEntry, ForeignBlockItem, ForeignFunctionItem, FunctionDefinitionStmt,
-    GenericParam, Ident, Item, ItemNode, Param, Path, SelfMode, Span, SpecFunctionStmt, SpecStmt,
-    StructStmt, Type, UnionStmt,
+    ForeignBlockEntry, ForeignBlockItem, ForeignFunctionItem, FunctionDefinitionStmt, GenericParam,
+    Ident, Item, ItemNode, Param, Path, SelfMode, Span, SpecFunctionStmt, SpecStmt, StructStmt,
+    Type, UnionStmt,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]

@@ -37,6 +37,7 @@ impl<'r> Analyzer<'r> {
                             &self.path_module(path),
                             absolute,
                             None,
+                            false,
                             expected,
                         )?
                     }
@@ -125,7 +126,8 @@ impl<'r> Analyzer<'r> {
             return Some((root, r#type, mutable));
         }
         let (absolute, unqualified) = match alias {
-            Some(ImportTarget::GenericItem(absolute)) => (absolute, None),
+            Some(ImportTarget::ItemPath(absolute))
+            | Some(ImportTarget::AliasedItemPath(absolute)) => (absolute, None),
             _ => {
                 let absolute = resolution_module
                     .iter()
@@ -135,6 +137,17 @@ impl<'r> Analyzer<'r> {
                 (absolute, Some(ident))
             }
         };
+        // `absolute`'s last segment may still literally be a declared
+        // alias's own name (an import forwards it unflattened): check
+        // directly, so an imported alias gets the same frozen,
+        // ungated-against-the-caller treatment a local one does.
+        let via_alias = absolute.split_last().is_some_and(|(name, module)| {
+            self.resolver
+                .resolve_declared_alias(module, name)
+                .ok()
+                .flatten()
+                .is_some()
+        });
         self.resolve_qualified_value(
             node_id,
             span,
@@ -147,6 +160,7 @@ impl<'r> Analyzer<'r> {
             &resolution_module,
             absolute,
             unqualified,
+            via_alias,
             expected,
         )
     }

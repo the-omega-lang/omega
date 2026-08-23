@@ -259,7 +259,11 @@ impl<'r> Analyzer<'r> {
                     match name_index.get(text.trim_start_matches('$')) {
                         Some(Some(_)) => {}
                         Some(None) => {
-                            self.error(asm_id, span, AnalysisErrorKind::AsmAmbiguousBinding { text });
+                            self.error(
+                                asm_id,
+                                span,
+                                AnalysisErrorKind::AsmAmbiguousBinding { text },
+                            );
                             ok = false;
                         }
                         None => {

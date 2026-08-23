@@ -306,7 +306,10 @@ impl Driver {
 
             let Some(fn_type) = fn_type else { continue };
             let valid = fn_type.params.is_empty()
-                && matches!(*fn_type.return_type, ResolvedType::Void | ResolvedType::Never);
+                && matches!(
+                    *fn_type.return_type,
+                    ResolvedType::Void | ResolvedType::Never
+                );
             if !valid {
                 self.diagnostics.error(
                     entry,

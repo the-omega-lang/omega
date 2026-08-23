@@ -12,7 +12,7 @@ impl<'r> Analyzer<'r> {
             path,
             &self.module_path,
         ) {
-            Ok(absolute) => absolute,
+            Ok((absolute, _bypass)) => absolute,
             Err(error) => {
                 self.error(id, span, AnalysisErrorKind::UnresolvedType(error));
                 return None;
@@ -92,6 +92,7 @@ impl<'r> Analyzer<'r> {
         accessor: &[Ident],
         absolute: Vec<Ident>,
         unqualified: Option<&Ident>,
+        via_alias: bool,
         expected: Option<&ResolvedType>,
     ) -> Option<(CheckedPlaceRoot, ResolvedType, bool)> {
         if !self.check_macro_dependency_visibility(node_id, span, written_path, &absolute) {
@@ -115,7 +116,12 @@ impl<'r> Analyzer<'r> {
                     .find(|candidate| candidate.decl_id == decl_id)
                     .map(|candidate| candidate.visibility)
                     .expect("decl_id came from this same candidates list");
-                if !self.check_visibility(visibility, module_path) {
+                // A declared alias is its own visibility gate, already
+                // checked before this candidate set was frozen -- the
+                // winning candidate's own visibility is not re-checked
+                // against this external caller, exactly as for a whole
+                // overload set reached the same way.
+                if !via_alias && !self.check_visibility(visibility, module_path) {
                     self.error(
                         node_id,
                         span,
@@ -195,7 +201,9 @@ impl<'r> Analyzer<'r> {
                     Ok(ResolvedItem::Gap(gap)) => self
                         .resolve_gap_member(node_id, span, &gap, &absolute[missing.len()..])
                         .map(|(root, r#type)| (root, r#type, false)),
-                    _ => {
+                    // The prefix genuinely doesn't resolve either: the
+                    // original "no such module" reading is the right report.
+                    Ok(ResolvedItem::Value { .. }) | Err(ResolveError::UnknownItem { .. }) => {
                         self.error(
                             node_id,
                             span,
@@ -203,6 +211,14 @@ impl<'r> Analyzer<'r> {
                                 missing,
                             )),
                         );
+                        None
+                    }
+                    // The prefix *does* name a type/gap/item, just not one
+                    // this accessor may reach (or some other specific
+                    // failure) -- that is the real cause, and reporting
+                    // "unknown module" instead would hide it.
+                    Err(e) => {
+                        self.error(node_id, span, AnalysisErrorKind::ModuleResolution(e));
                         None
                     }
                 }
@@ -263,9 +279,9 @@ impl<'r> Analyzer<'r> {
             return self.resolve_gap_member(node_id, span, &gap, &path.tail);
         }
         let absolute: Vec<Ident> = match alias {
-            Some(ImportTarget::GenericItem(absolute)) | Some(ImportTarget::Module(absolute)) => {
-                absolute
-            }
+            Some(ImportTarget::ItemPath(absolute))
+            | Some(ImportTarget::AliasedItemPath(absolute))
+            | Some(ImportTarget::Module(absolute)) => absolute,
             _ => self
                 .path_module(path)
                 .iter()
@@ -410,15 +426,15 @@ impl<'r> Analyzer<'r> {
     ) -> Option<Vec<Ident>> {
         let module = self.path_module(written_path);
         if let [single] = prefix {
-            if let Some(ImportTarget::GenericItem(absolute)) =
-                match self.resolver.resolve_import_alias(&module, single) {
-                    Ok(alias) => Some(alias),
-                    Err(error) => {
-                        self.error(node_id, span, AnalysisErrorKind::ModuleResolution(error));
-                        None
-                    }
-                }?
-            {
+            if let Some(
+                ImportTarget::ItemPath(absolute) | ImportTarget::AliasedItemPath(absolute),
+            ) = match self.resolver.resolve_import_alias(&module, single) {
+                Ok(alias) => Some(alias),
+                Err(error) => {
+                    self.error(node_id, span, AnalysisErrorKind::ModuleResolution(error));
+                    None
+                }
+            }? {
                 return Some(absolute);
             }
             return Some(

@@ -25,9 +25,9 @@ impl<'r> Analyzer<'r> {
             .ok()
             .flatten();
         let absolute: Vec<Ident> = match &alias {
-            Some(ImportTarget::Item(absolute, _)) | Some(ImportTarget::GenericItem(absolute)) => {
-                absolute.clone()
-            }
+            Some(ImportTarget::Item(absolute, _))
+            | Some(ImportTarget::ItemPath(absolute))
+            | Some(ImportTarget::AliasedItemPath(absolute)) => absolute.clone(),
             Some(ImportTarget::Module(_)) => return Intercepted::Declined,
             None => accessor
                 .iter()
@@ -296,7 +296,8 @@ impl<'r> Analyzer<'r> {
                 .ok()
                 .flatten()
             {
-                Some(ImportTarget::GenericItem(absolute)) => absolute,
+                Some(ImportTarget::ItemPath(absolute))
+                | Some(ImportTarget::AliasedItemPath(absolute)) => absolute,
                 _ => accessor
                     .iter()
                     .cloned()

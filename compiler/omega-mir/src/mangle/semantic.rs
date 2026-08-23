@@ -1,5 +1,5 @@
 use omega_analyzer::resolved_type::{CallingConvention, ResolvedFunctionType, ResolvedType};
-use omega_mangle::{FunctionSignature, ManglePath, MangleConvention, MangleType, Namespace};
+use omega_mangle::{FunctionSignature, MangleConvention, ManglePath, MangleType, Namespace};
 use omega_parser::prelude::Ident;
 
 fn mangle_convention(convention: CallingConvention) -> MangleConvention {

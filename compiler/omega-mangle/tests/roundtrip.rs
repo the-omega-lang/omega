@@ -1,5 +1,5 @@
 use omega_mangle::{
-    FunctionSignature, ManglePath, MangleConvention, MangleType, Namespace, Symbol, decode,
+    FunctionSignature, MangleConvention, ManglePath, MangleType, Namespace, Symbol, decode,
     demangle, encode,
 };
 
@@ -183,8 +183,18 @@ fn wrapped_types() {
             ],
             false,
         ),
-        MangleType::Function(vec![MangleType::I32], Box::new(MangleType::Bool), false, MangleConvention::Omega),
-        MangleType::Function(vec![MangleType::I32], Box::new(MangleType::Void), true, MangleConvention::Omega),
+        MangleType::Function(
+            vec![MangleType::I32],
+            Box::new(MangleType::Bool),
+            false,
+            MangleConvention::Omega,
+        ),
+        MangleType::Function(
+            vec![MangleType::I32],
+            Box::new(MangleType::Void),
+            true,
+            MangleConvention::Omega,
+        ),
         named(nested(root("mymod"), Namespace::Type, "MyEnum")),
         MangleType::Named(nested(root("mymod"), Namespace::Type, "MyEnum"), Some(2)),
     ];
@@ -317,8 +327,14 @@ fn convention_and_variadic_identity_round_trip_and_differ() {
     let m_omega = assert_round_trips(&omega_sym);
     let m_c = assert_round_trips(&c_sym);
     let m_sysv64 = assert_round_trips(&sysv64_sym);
-    assert_ne!(m_omega, m_c, "convention must participate in symbol identity");
-    assert_ne!(m_c, m_sysv64, "distinct foreign conventions must not collide");
+    assert_ne!(
+        m_omega, m_c,
+        "convention must participate in symbol identity"
+    );
+    assert_ne!(
+        m_c, m_sysv64,
+        "distinct foreign conventions must not collide"
+    );
     assert!(demangle(&m_c).unwrap().contains("foreign(c)"));
     assert!(demangle(&m_sysv64).unwrap().contains("foreign(sysv64)"));
 }

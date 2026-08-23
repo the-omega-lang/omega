@@ -100,39 +100,66 @@ impl<'r> Analyzer<'r> {
         &mut self,
         ident: &Ident,
     ) -> Option<(Vec<Ident>, OverloadCandidates)> {
-        let (absolute, is_alias, import_reveal) = match self
+        // A declared alias (local or reached through an import) is its own
+        // visibility gate, already checked by `resolve_import_alias`: the
+        // candidate set frozen at its declaration site is forwarded as-is,
+        // not re-filtered against this external caller. An ordinary
+        // (non-alias) import of an overloaded name has no such gate, so each
+        // individual candidate's own visibility -- which may differ between
+        // overloads of the same name -- is still checked against this
+        // caller, exactly as an ordinary import always has.
+        let alias = self
             .resolver
-            .raw_import_absolute_path(&self.module_path, ident)
-        {
-            Ok(Some((absolute, reveal))) => (absolute, true, reveal),
-            Ok(None) => (
+            .resolve_import_alias(&self.module_path, ident)
+            .ok()
+            .flatten();
+        let (absolute, import_reveal) = match alias {
+            Some(ImportTarget::AliasedItemPath(absolute))
+            | Some(ImportTarget::ItemPath(absolute))
+            | Some(ImportTarget::Item(absolute, _)) => {
+                let reveal = self
+                    .resolver
+                    .raw_import_absolute_path(&self.module_path, ident)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|(_, reveal)| reveal);
+                (absolute, reveal)
+            }
+            _ => (
                 self.module_path
                     .iter()
                     .cloned()
                     .chain(std::iter::once(ident.clone()))
                     .collect(),
                 false,
-                false,
             ),
-            // A raw lookup failure isn't this helper's to report -- the
-            // caller's ordinary fallback path re-derives it for real.
-            Err(_) => return None,
         };
         let (name, module_path) = absolute.split_last()?;
+        // `absolute`'s last segment may still literally be a declared
+        // alias's own name (an import forwards it unflattened): check
+        // directly, rather than trusting only how `ident` itself resolved,
+        // so an imported alias of an overload set gets the same frozen,
+        // ungated-against-the-caller treatment a local one does.
+        let via_alias = self
+            .resolver
+            .resolve_declared_alias(module_path, name)
+            .ok()
+            .flatten()
+            .is_some();
         let raw_candidates = self
             .resolver
             .function_overload_signatures(module_path, name)
             .ok()
             .flatten()?;
-        let candidates = if is_alias && !import_reveal {
+        let candidates = if via_alias || import_reveal {
+            raw_candidates
+        } else {
             raw_candidates
                 .into_iter()
                 .filter(|candidate| {
                     Self::visibility_allows(candidate.visibility, module_path, &self.module_path)
                 })
                 .collect()
-        } else {
-            raw_candidates
         };
         Some((absolute, candidates))
     }
@@ -197,7 +224,18 @@ impl<'r> Analyzer<'r> {
                         return Intercepted::Claimed(None);
                     }
                 };
-                (name, module_path, candidates, true)
+                // The final segment itself may name a declared alias (a
+                // module-qualified reference to an aliased overload set,
+                // `module::alias_name(...)`), which has already gated the
+                // caller against the alias and frozen its candidate set --
+                // that set is not re-filtered against this caller either.
+                let via_alias = self
+                    .resolver
+                    .resolve_declared_alias(&module_path, &name)
+                    .ok()
+                    .flatten()
+                    .is_some();
+                (name, module_path, candidates, !via_alias)
             };
 
         let signatures: Vec<(HirId, ResolvedFunctionType)> = candidates

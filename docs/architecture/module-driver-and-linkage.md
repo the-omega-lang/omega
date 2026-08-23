@@ -112,7 +112,11 @@ A namespace-only directory module has a valid empty `HirModule` and no own sourc
 Declared aliases are indexed separately from concrete items on purpose: an
 alias is a name without a declaration, so it must never enter item resolution,
 body checking, or an emission sweep. A collision between an alias name and a
-concrete declaration is an ordinary redeclaration.
+concrete declaration is an ordinary redeclaration. An alias name may still be
+*imported* directly (`import module::SomeAlias;`) like any other name --
+`resolve_import_target` checks the alias index before assuming an indexed
+concrete item, gates the import on the alias's own visibility, and defers the
+rest to the same lazy alias query ordinary references use.
 
 The local item index is published before imports are fully indexed, because resolving annotations/import metadata may re-enter lookup for the same module. This ordering prevents infinite recursive indexing.
 
@@ -149,18 +153,43 @@ A resolved alias is one of three things:
 Structural targets are stamped with a per-module definition `Origin`, reusing
 the provenance mechanism macro expansion already uses, so an alias target keeps
 resolving at its declaration site after it is substituted into a use site in
-another module. Cycles hidden behind type constructors (`alias A = *A;`) are
-caught by forcing every alias a target mentions while the current one is still
-in progress.
+another module.
 
-Re-export lives in exactly one place: the caller is gated on the alias's own
-visibility, and the target is then reached with the alias declaration module's
-rights.
+`Driver::validate_alias_target` symbolically validates a structural target --
+including every generic bound and default -- at declaration time, even if the
+alias is never used: an alias-owned generic parameter is a legal opaque
+placeholder, but every other named reference must resolve and be visible from
+the declaration site, and forbidden target kinds are rejected. Every nested
+alias the target mentions is forced (via the same ordered resolution stack),
+which is what turns a cycle hidden behind a type constructor (`alias A = *A;`)
+into a diagnostic here instead of unbounded expansion at a use site.
+
+Re-export applies the same rule at **every** link of a chain, not just the
+outermost alias. `forward_alias_path` checks each intermediate alias's own
+visibility from the module naming it before following that alias's target;
+`ModuleResolver::resolve_import_alias` returns `ImportTarget::AliasedItemPath`
+for the fully chain-validated end of a declared alias, distinct from the
+ordinary `ItemPath` a plain import-of-a-generic-template lazily returns, so a
+consumer (item resolution, overload-candidate collection, value/place
+resolution) knows the accessor's own visibility to the final target has
+already been established transitively and is not re-checked. An overload
+alias applies the identical rule to a whole candidate set: the caller is gated
+once against the alias, and the full set of overloads visible from the
+alias's own declaration site is forwarded frozen, never re-filtered against
+the external caller.
+
+An alias target's explicit anchor (`root::`/`self::`/`super::`) is resolved
+through the same `Driver::resolve_explicit_anchor` helper ordinary paths,
+imports, and macro-alias targets all share, rather than a parser- or
+alias-specific reimplementation.
 
 Macro aliases are bound earlier, while the pre-expansion macro environment is
 built, because indexing a module needs its HIR and its HIR needs that
-environment. That binding works from raw AST and reuses the target macro's body
-and defining module, taking only the alias's name and visibility.
+environment. That binding works from raw AST -- `raw_macro_target` resolves an
+anchored target through `Driver::resolve_explicit_anchor` and rejects a target
+macro binding not visible from the alias declaration module -- and reuses the
+target macro's body and defining module for hygiene, taking only the alias's
+name and visibility as the effective re-export visibility.
 
 ## Item query identity
 

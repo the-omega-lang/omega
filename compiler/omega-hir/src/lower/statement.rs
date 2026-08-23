@@ -3,9 +3,7 @@ use crate::hir::{
     HirAsmDescriptor, HirAsmDescriptorKind, HirBlock, HirBreak, HirContinue, HirDefer, HirFor,
     HirForIn, HirInlineAsm, HirLoop, HirStmt, HirWalrusDeclaration, HirWhile,
 };
-use omega_parser::prelude::{
-    AsmDescriptorKind, CodeblockExpr, Span, Statement, StatementNode,
-};
+use omega_parser::prelude::{AsmDescriptorKind, CodeblockExpr, Span, Statement, StatementNode};
 
 impl Lowerer {
     fn lower_stmt(&mut self, node: &StatementNode) -> HirStmt {

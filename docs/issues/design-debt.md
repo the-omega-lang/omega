@@ -107,6 +107,45 @@ at least one trait method collapse into the ordinary path — and generic
 overloads become possible rather than structurally excluded. Breaking:
 changes the resolver trait's surface and every cache key shape.
 
+A static-spec parameter (`f(x: spec A + B)`) manifests the identical
+"candidate forced non-generic" limitation: `normalize_static_spec_params`
+(`omega-analyzer/src/generics.rs`) synthesizes an anonymous bounded generic
+for the parameter, so an *overloaded* function that also takes a static-spec
+parameter hits this same parallel-pipeline gap (`ensure_overload_signature`
+analyzes each candidate's signature with an empty substitution list, which a
+static-spec-turned-generic candidate cannot resolve under). This is the same
+root cause as the rest of this entry, not a second one — fixed by the same
+`ItemKey` disambiguator work, not by a local workaround in alias or
+static-spec code.
+
+### A static-spec parameter's synthesized generic uses a fabricated impossible-source name instead of a real identity
+
+`normalize_static_spec_params` (`omega-analyzer/src/generics.rs`) rewrites
+`f(x: spec A + B)` into an ordinary anonymous bounded generic parameter so
+the rest of the compiler can treat a static-spec parameter exactly like any
+other generic. The synthesized parameter's identity is
+`Ident(format!("$Param{index}"))` — a string that can never collide with a
+real source identifier (`$` is not legal in Omega identifier syntax), used
+purely as a collision-safe internal name rather than a semantic
+generic-parameter identity with its own origin/provenance metadata.
+
+This is deliberate, collision-safe compatibility representation, not a
+correctness bug: two different static-spec parameters in the same function
+get distinct `$Param0`/`$Param1` names, and nothing currently depends on the
+name meaning more than "this slot." The debt is that a real generic
+parameter has an origin-tracked identity a diagnostic or downstream query can
+point at meaningfully, while `$ParamN` is source-position-shaped text with no
+backing declaration — a diagnostic that needs to name *this* parameter
+specifically (rather than pointing at the parameter's own span, which still
+works fine today) has nothing better to say than the fabricated name.
+
+The fix is a real `GenericParamId`/anonymous generic-node representation with
+its own origin metadata, replacing the current `Ident`-keyed fabrication
+everywhere a generic parameter's identity is threaded (substitution maps,
+bound-checking, alias-application obligations). Breaking: touches every
+generic-parameter-keyed data structure across the analyzer and driver, so it
+is its own dedicated task rather than a local patch.
+
 ### Module paths and item paths are the same untyped `Vec<Ident>`
 
 Everything module-shaped is `Vec<Ident>`: cloned per lookup, hashed per query,

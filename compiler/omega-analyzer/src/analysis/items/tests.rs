@@ -75,7 +75,11 @@ impl ModuleResolver for NoResolver {
         unreachable!("test never triggers item resolution")
     }
 
-    fn is_item_visible(&mut self, _accessor_module_path: &[Ident], _absolute_path: &[Ident]) -> bool {
+    fn is_item_visible(
+        &mut self,
+        _accessor_module_path: &[Ident],
+        _absolute_path: &[Ident],
+    ) -> bool {
         true
     }
 
@@ -229,7 +233,10 @@ fn foreign_items_default_mangling_to_disabled_unless_overridden() {
         false,
         crate::annotations::ManglingMode::Disabled,
     );
-    assert_eq!(resolved.mangling, crate::annotations::ManglingMode::Disabled);
+    assert_eq!(
+        resolved.mangling,
+        crate::annotations::ManglingMode::Disabled
+    );
     let (errors, _, _) = a.finish();
     assert!(errors.is_empty());
 }

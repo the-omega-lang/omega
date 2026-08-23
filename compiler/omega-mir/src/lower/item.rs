@@ -110,7 +110,13 @@ fn lower_foreign_function(
         mangling,
     } = function;
     let body = body.map(|body| {
-        MirFunctionBody::Normal(FunctionLowerer::lower(&params, body, &return_type, id, span))
+        MirFunctionBody::Normal(FunctionLowerer::lower(
+            &params,
+            body,
+            &return_type,
+            id,
+            span,
+        ))
     });
     MirForeignFunctionDef {
         id,
@@ -199,7 +205,13 @@ fn lower_function(
     let body = if naked {
         MirFunctionBody::Naked(lower_naked_body(body))
     } else {
-        MirFunctionBody::Normal(FunctionLowerer::lower(&params, body, &return_type, id, span))
+        MirFunctionBody::Normal(FunctionLowerer::lower(
+            &params,
+            body,
+            &return_type,
+            id,
+            span,
+        ))
     };
 
     MirFunctionDef {

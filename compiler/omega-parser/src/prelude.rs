@@ -13,8 +13,8 @@ pub use crate::ast::identifier::{
     ExpansionId, ExprPath, Ident, Origin, Path, PathAnchor, QualifiedSpecPath,
 };
 pub use crate::ast::item::{
-    AliasItem, AliasTarget, ConformStmt, EnumHeaderField, EnumStmt, EnumVariantStmt, ForeignBindingItem,
-    ForeignBlockEntry, ForeignBlockItem, ForeignFunctionItem, FragmentKind,
+    AliasItem, AliasTarget, ConformStmt, EnumHeaderField, EnumStmt, EnumVariantStmt,
+    ForeignBindingItem, ForeignBlockEntry, ForeignBlockItem, ForeignFunctionItem, FragmentKind,
     ImportStmt, Item, ItemNode, MacroBodyPiece, MacroDefinitionStmt, MacroParam, MacroRepetition,
     MacroSignature, PrimitiveStmt, SpecFunctionStmt, SpecStmt, StructStmt, UnionStmt,
 };

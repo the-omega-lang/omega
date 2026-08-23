@@ -3,8 +3,8 @@ use super::leaf;
 use inkwell::InlineAsmDialect;
 use inkwell::types::{BasicType, BasicTypeEnum};
 use inkwell::values::BasicValueEnum;
-use omega_analyzer::layout::{self, Leaf};
 use omega_analyzer::Arch;
+use omega_analyzer::layout::{self, Leaf};
 use omega_mir::{MirAsmOperandKind, MirInlineAsm};
 use std::collections::HashMap;
 
@@ -117,9 +117,15 @@ impl<'ctx> Codegen<'ctx> {
         let metadata_args: Vec<inkwell::values::BasicMetadataValueEnum> =
             args.iter().map(|v| (*v).into()).collect();
 
-        let asm_ptr =
-            self.context
-                .create_inline_asm(fn_type, assembly, constraints, true, false, dialect, false);
+        let asm_ptr = self.context.create_inline_asm(
+            fn_type,
+            assembly,
+            constraints,
+            true,
+            false,
+            dialect,
+            false,
+        );
         self.builder
             .build_indirect_call(fn_type, asm_ptr, &metadata_args, "")
             .expect(

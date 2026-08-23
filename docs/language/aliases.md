@@ -38,9 +38,12 @@ distinguished:
 Expression syntax is not a legal target. `alias A = 1 + 2;` and
 `alias A = f();` are rejected as syntax errors.
 
-An alias target uses ordinary path resolution from the alias declaration site;
-it has no `root::` / `self::` / `super::` anchors of its own. Bring a module
-into scope with an `import` and then name it, or write a fully qualified
+An alias target uses ordinary path resolution from the alias declaration site,
+including the explicit anchors `root::`, `self::`, and chained `super::` — the
+same navigation any other path may write (see
+[`modules-and-imports.md`](modules-and-imports.md)). Bring a module into scope
+with an `import` and then name it, write an anchored path to navigate
+relative to the alias declaration's own module, or write a fully qualified
 top-level path such as `std::string::String`, which needs no separate import.
 
 ## What an alias may name
@@ -108,7 +111,10 @@ parameters, but they create no nominal identity: `Keyed<i32>` *is*
 
 Supplying the wrong number of type arguments for an alias template, or an
 argument that does not satisfy an alias-owned bound, is an error reported
-against the alias.
+against the alias. A defaulted argument is bound and bound-checked the same
+way whether the alias template is written in an ordinary type position or in
+an item position such as aggregate construction or a static member access —
+one arity/default rule applies everywhere an alias template may appear.
 
 An explicitly generic alias names a type; its target must be a type or spec
 expression.
@@ -160,14 +166,35 @@ The target declaration's own visibility is unchanged, and so are its members':
 a hidden field or hidden method of `Hidden` remains hidden when reached through
 `Public`.
 
+`Public` may also be imported directly (`import child::Public;`), exactly like
+an ordinary declaration; the alias's own visibility gates the import.
+
 Conversely, an alias never widens anything by accident:
 
-- a hidden alias of an exposed declaration is hidden;
+- a hidden alias of an exposed declaration is hidden, and is not importable
+  from outside its declaration module;
 - a **module** alias exposes only the module name. Traversing `Alias::Item`
   still checks `Item`'s own visibility. Re-exporting an item requires aliasing
   that item directly;
 - an alias whose target is not visible from the alias declaration's own module
   is invalid.
+
+An alias chain applies this rule at **every link**: each alias in the chain
+must itself be visible from the module that names it, before its own target is
+followed. A hidden alias may not be smuggled through by naming it from a
+second, more permissive alias — the chain is only as re-exportable as its
+least visible link. Once a chain has been validated this way, a caller that
+may see the outermost alias reaches the final target with that outermost
+alias's own resolved rights; the intermediate links' declaration modules are
+not re-checked against the caller a second time.
+
+An alias of an overloaded name applies the same rule to the whole candidate
+set: the caller is gated once, against the alias, and the complete set of
+overloads visible **from the alias's own declaration site** is then forwarded
+as-is. A candidate's own individual visibility is not re-checked against the
+external caller — that would either wrongly hide a candidate the alias's
+declaration site can already see, or, for a non-alias import, still be
+checked normally (see [`modules-and-imports.md`](modules-and-imports.md)).
 
 `reveal` remains an explicit use-site bypass where it is written; aliasing is
 not a standing bypass. See [`visibility.md`](visibility.md).
@@ -181,7 +208,10 @@ definition-site name resolution are unchanged.
 The **alias's** visibility is the effective visibility of the aliased macro for
 dependency checks. An `exposed` alias of a macro whose body depends on a
 narrower declaration is therefore rejected, exactly as an `exposed` macro with
-that body would be. See [`macros.md`](macros.md).
+that body would be. A macro alias target obeys the same per-link chain
+visibility rule as any other alias: naming a hidden macro through a chain of
+aliases requires every link, not just the outermost one, to be visible from
+whichever module names it. See [`macros.md`](macros.md).
 
 ## Cycles
 

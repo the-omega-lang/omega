@@ -67,8 +67,25 @@ fn alias_reference(
     let resolution_module = resolver
         .macro_origin_module(path.origin)
         .unwrap_or_else(|| module_path.to_vec());
-    let (module, name) = if path.is_unqualified() {
-        (resolution_module, path.head.clone())
+    let (module, name) = if let Some(anchored) =
+        resolver.resolve_explicit_anchor(&resolution_module, path)
+    {
+        let absolute = anchored?;
+        let (name, module) = absolute
+            .split_last()
+            .expect("an anchored path is never empty");
+        (module.to_vec(), name.clone())
+    } else if path.tail.is_empty() {
+        // An import binds the same name a local declaration would, so a bare
+        // reference to an imported structural alias must resolve at the
+        // alias's own declaration module, not `resolution_module` itself.
+        match resolver.resolve_import_alias(&resolution_module, &path.head)? {
+            Some(ImportTarget::ItemPath(absolute)) => {
+                let (name, module) = absolute.split_last().expect("an item path is never empty");
+                (module.to_vec(), name.clone())
+            }
+            _ => (resolution_module, path.head.clone()),
+        }
     } else {
         let Some(ImportTarget::Module(base)) =
             resolver.resolve_import_alias(&resolution_module, &path.head)?

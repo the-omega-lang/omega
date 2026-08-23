@@ -7,8 +7,8 @@ pub use render::resolve_error_diagnostic;
 pub use warning::{AnalysisWarning, AnalysisWarningKind};
 
 use crate::resolved_type::{CallingConvention, NumericKind, ResolvedFunctionType, ResolvedType};
-use crate::target::Target;
 use crate::resolver::ResolveError;
+use crate::target::Target;
 use omega_diagnostics::Diagnostic;
 use omega_hir::HirId;
 use omega_parser::prelude::{BinaryOp, Ident, Span};

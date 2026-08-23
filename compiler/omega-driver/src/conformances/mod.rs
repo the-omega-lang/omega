@@ -8,8 +8,9 @@ use omega_analyzer::error::{AnalysisError, AnalysisErrorKind};
 use omega_analyzer::resolved_type::{
     ResolvedBound, ResolvedMethod, ResolvedSpecType, ResolvedType,
 };
+use omega_analyzer::resolver::ModuleResolver;
 use omega_diagnostics::Span;
-use omega_hir::{HirConformDef, HirFunctionDef, HirGenericParam, HirId, HirItem};
+use omega_hir::{AliasTarget, HirConformDef, HirFunctionDef, HirGenericParam, HirId, HirItem};
 use omega_parser::prelude::{Ident, Type};
 use std::cell::RefCell;
 use std::cmp::Ordering;

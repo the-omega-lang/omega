@@ -20,7 +20,8 @@ pub fn normalize_static_spec_params(
 ) -> Result<HirFunctionDef, ResolveError> {
     let mut normalized: Option<HirFunctionDef> = None;
     for (index, param) in f.params.iter().enumerate() {
-        let expanded = crate::aliases::expand_type_alias(resolver, module_path, param.r#type.clone())?;
+        let expanded =
+            crate::aliases::expand_type_alias(resolver, module_path, param.r#type.clone())?;
         let Type::SpecStatic(members) = expanded else {
             continue;
         };

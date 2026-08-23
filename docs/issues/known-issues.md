@@ -169,11 +169,6 @@ Remaining known conformance/spec issues:
   glue site in that glue's own module. Left alone because the choice
   between those is a diagnostics-subsystem design decision, not a local fix.
 
-## Visibility
-
-- **No re-export / `pub use`-equivalent.** Matches the language having no
-  re-export concept at all today. [visibility.md](../language/visibility.md)
-
 ## Macros
 
 - **`MAX_EXPANSIONS` does not actually prevent the stack overflow it
@@ -196,12 +191,14 @@ Remaining known conformance/spec issues:
   (nobody writes it deliberately), but the diagnostic points at the wrong
   place. [macros.md](../language/macros.md)
 
-- **Macro visibility is not transitive.** A module's macro environment is
-  built from its *own* import statements and each target's *own* definitions;
-  an imported module's imports are never followed. This matches the language
-  having no re-export concept, and it is what keeps the pre-pass acyclic, but
-  it means a package cannot curate a macro surface the way it can't curate an
-  item surface. [macros.md](../language/macros.md), [visibility.md](../language/visibility.md)
+- **Macro visibility is not transitive through imports.** A module's macro
+  environment is built from its *own* import statements and each target's
+  *own* definitions; an imported module's imports are never followed. This is
+  what keeps the pre-pass acyclic. It means a package cannot curate a macro
+  surface by chaining plain imports the way it can't curate an item surface
+  that way either — the deliberate mechanism for that, for macros exactly as
+  for items, is a macro `alias` (see [`aliases.md`](../language/aliases.md)).
+  [macros.md](../language/macros.md), [visibility.md](../language/visibility.md)
 
 - **Importing a macro leaves a spurious `unused import` warning.** Macro
   names are resolved and consumed by the pre-pass in `omega-driver`'s

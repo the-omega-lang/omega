@@ -1076,9 +1076,10 @@ fn has_module_resolution_error(
     errors
         .iter()
         .any(|error| matches!(error, CompileError::Resolve { error, .. } if predicate(error)))
-        || has_analysis_error(errors, |kind| {
-            matches!(kind, AnalysisErrorKind::ModuleResolution(error) if predicate(error))
-        })
+        || has_analysis_error(
+            errors,
+            |kind| matches!(kind, AnalysisErrorKind::ModuleResolution(error) if predicate(error)),
+        )
 }
 
 #[test]
@@ -2056,9 +2057,9 @@ fn a_blanket_declared_in_one_member_order_is_reachable_through_the_other() {
         entry_fn() => i32 { use_reordered(S { v = 0; }) }
         "#,
     );
-    package.compile().expect(
-        "a blanket declared under one member order must be reachable through the other",
-    );
+    package
+        .compile()
+        .expect("a blanket declared under one member order must be reachable through the other");
 }
 
 #[test]

@@ -13,7 +13,6 @@ use omega_mir::{
     MirStructLiteral, MirUnionConstruct,
 };
 
-
 impl<'ctx> Codegen<'ctx> {
     pub(super) fn process_expr(&mut self, node: &MirExprNode) -> Vec<BasicValueEnum<'ctx>> {
         match &node.kind {
@@ -76,7 +75,10 @@ impl<'ctx> Codegen<'ctx> {
                     fn_type.calling_convention,
                 ));
 
-                if matches!(*fn_type.return_type, ResolvedType::Void | ResolvedType::Never) {
+                if matches!(
+                    *fn_type.return_type,
+                    ResolvedType::Void | ResolvedType::Never
+                ) {
                     return vec![];
                 }
                 match sret_slot {
@@ -171,7 +173,10 @@ impl<'ctx> Codegen<'ctx> {
                     .build_indirect_call(call_type, fnaddr, &metadata_args, "")
                     .expect("call always succeeds");
 
-                if matches!(*fn_type.return_type, ResolvedType::Void | ResolvedType::Never) {
+                if matches!(
+                    *fn_type.return_type,
+                    ResolvedType::Void | ResolvedType::Never
+                ) {
                     return vec![];
                 }
                 match sret_slot {

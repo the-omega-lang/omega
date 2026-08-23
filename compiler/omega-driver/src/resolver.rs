@@ -118,8 +118,28 @@ impl Driver {
             return Err(ResolveError::UnknownModule(segments.to_vec()));
         };
 
+        // A declared alias binds a name the same way a generic template does:
+        // its *target's* resolution is lazy, deferred to whatever later
+        // resolves it. The alias's own visibility is not lazy, though -- it
+        // is the gate a direct import must pass here, exactly like an
+        // ordinary item import, since nothing downstream re-checks it.
+        if self.alias_index(module_path, item_name)?.is_some() {
+            if !reveal {
+                let visibility = self
+                    .alias_visibility(module_path, item_name)
+                    .expect("just indexed by alias_index");
+                if !Self::visibility_allows(visibility, module_path, accessor) {
+                    return Err(ResolveError::NotVisible {
+                        module: module_path.to_vec(),
+                        item: item_name.clone(),
+                    });
+                }
+            }
+            return Ok(ImportTarget::ItemPath(segments.to_vec()));
+        }
+
         if self.is_generic_template(module_path, item_name)? {
-            return Ok(ImportTarget::GenericItem(segments.to_vec()));
+            return Ok(ImportTarget::ItemPath(segments.to_vec()));
         }
 
         let item = self.ensure_item(
@@ -215,7 +235,22 @@ impl Driver {
                 let (name, module) = path
                     .split_last()
                     .expect("an alias item target is never empty");
-                self.ensure_item(alias_module, module, name, type_args, options)
+                // `path` is already the end of a fully-validated chain: every
+                // intermediate alias's own declaration-site visibility to its
+                // own immediate target was checked when the chain was built
+                // (see `forward_alias_path`), so the final hop's target is
+                // necessarily visible from its own containing module already.
+                // Re-checking it against `alias_module` -- the *originally
+                // named* alias's declaration module, which can differ from
+                // this target's own module in a multi-hop chain -- would
+                // reject a legitimately re-exported cross-module chain.
+                self.ensure_item(
+                    alias_module,
+                    module,
+                    name,
+                    type_args,
+                    options.bypassing_visibility(true),
+                )
             }
             ResolvedAlias::Type { generics, r#type } => {
                 self.resolve_alias_type(alias_module, alias_name, &generics, &r#type, type_args)
@@ -234,17 +269,16 @@ impl Driver {
         r#type: &Type,
         type_args: &[ResolvedType],
     ) -> Result<ResolvedItem, ResolveError> {
-        if type_args.len() != generics.len() {
-            return Err(ResolveError::GenericArgCountMismatch {
-                module: alias_module.to_vec(),
-                item: alias_name.clone(),
-                expected: generics.len(),
-                found: type_args.len(),
-            });
-        }
         let index = self
             .alias_index(alias_module, alias_name)?
             .expect("the alias was just resolved from this module");
+        // Alias generic defaults are bound by the same arity/default rule
+        // ordinary item/aggregate-construction positions use, so a defaulted
+        // alias argument works here exactly as it does in a plain type
+        // position.
+        let type_args =
+            self.pad_generic_defaults(alias_module, alias_name, index, generics, type_args)?;
+        let type_args = type_args.as_slice();
         let owner = omega_analyzer::analysis::item_site(
             &self.modules.parsed(alias_module).hir.items[index],
         );
@@ -313,10 +347,12 @@ impl ModuleResolver for Driver {
     ) -> Result<Option<ImportTarget>, ResolveError> {
         match self.declared_alias(module_path, alias)? {
             Some(ResolvedAlias::Module(target)) => return Ok(Some(ImportTarget::Module(target))),
-            // `GenericItem` is the lazily-resolved item-path form: it carries
-            // no eagerly resolved snapshot, which is what an alias needs.
+            // The alias itself was just found declared in `module_path`, so
+            // its own visibility is trivially satisfied (a declaration
+            // always sees itself); its target is fully chain-validated, so
+            // consuming it is deliberately not re-gated against an accessor.
             Some(ResolvedAlias::Item(target)) => {
-                return Ok(Some(ImportTarget::GenericItem(target)));
+                return Ok(Some(ImportTarget::AliasedItemPath(target)));
             }
             Some(ResolvedAlias::Type { .. }) => return Ok(None),
             None => {}

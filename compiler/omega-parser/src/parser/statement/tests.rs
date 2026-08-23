@@ -71,7 +71,10 @@ fn asm_body_is_captured_byte_for_byte() {
     let Statement::InlineAsm(asm) = &stmts[0] else {
         panic!("expected an inline-asm statement");
     };
-    assert!(asm.body.contains("# not an Omega comment: mov $x, 1 ; done"));
+    assert!(
+        asm.body
+            .contains("# not an Omega comment: mov $x, 1 ; done")
+    );
     assert!(asm.body.contains("mov $x, 1"));
 }
 
@@ -91,9 +94,7 @@ fn asm_body_preserves_unknown_target_punctuation_and_dollar_markers() {
 
 #[test]
 fn asm_body_balances_nested_braces() {
-    let stmts = body_statements(
-        "f() => void { asm() => { { nested } ${also_nested} } g(); } ",
-    );
+    let stmts = body_statements("f() => void { asm() => { { nested } ${also_nested} } g(); } ");
     let Statement::InlineAsm(asm) = &stmts[0] else {
         panic!("expected an inline-asm statement");
     };
@@ -126,13 +127,12 @@ fn asm_without_fat_arrow_body_is_an_ordinary_call() {
 
 #[test]
 fn asm_body_does_not_get_ordinary_tokenization() {
-    let tokens = crate::lexer::tokenize("asm() => { \"unterminated because it is not omega }")
-        .0;
+    let tokens = crate::lexer::tokenize("asm() => { \"unterminated because it is not omega }").0;
     // The raw body absorbs the stray quote as ordinary text instead of the
     // lexer trying (and failing) to scan it as an Omega string literal.
     assert!(
-        tokens
-            .iter()
-            .any(|t| matches!(&t.kind, TokenKind::AsmBody(text) if text.contains("\"unterminated")))
+        tokens.iter().any(
+            |t| matches!(&t.kind, TokenKind::AsmBody(text) if text.contains("\"unterminated"))
+        )
     );
 }

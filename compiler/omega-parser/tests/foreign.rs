@@ -74,7 +74,10 @@ fn foreign_convention_type_parses_as_variable_type() {
     let module = SourceModule::parse("handler : foreign(c) (code: i32) => i32;")
         .expect("expected this declaration to parse");
     let Item::Declaration(decl) = &module.nodes[0].item else {
-        panic!("expected a declaration item, got {:?}", module.nodes[0].item);
+        panic!(
+            "expected a declaration item, got {:?}",
+            module.nodes[0].item
+        );
     };
     let Type::Function(function_type) = &decl.r#type else {
         panic!("expected a function type, got {:?}", decl.r#type);
@@ -85,9 +88,11 @@ fn foreign_convention_type_parses_as_variable_type() {
 #[test]
 fn foreign_convention_directly_on_binding_is_rejected() {
     let errors = SourceModule::parse("foreign(c) errno : i32;").unwrap_err();
-    assert!(errors
-        .iter()
-        .any(|e| matches!(e.kind, ParseErrorKind::ForeignConventionOnBinding)));
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, ParseErrorKind::ForeignConventionOnBinding))
+    );
 }
 
 #[test]
@@ -102,21 +107,26 @@ fn nested_foreign_blocks_are_rejected() {
         "#,
     )
     .unwrap_err();
-    assert!(errors
-        .iter()
-        .any(|e| matches!(e.kind, ParseErrorKind::NestedForeignBlock)));
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, ParseErrorKind::NestedForeignBlock))
+    );
 }
 
 #[test]
 fn malformed_convention_token_is_rejected() {
     let errors = SourceModule::parse("foreign(123) bad(s: *u8) => i32;").unwrap_err();
-    assert!(errors
-        .iter()
-        .any(|e| matches!(e.kind, ParseErrorKind::Expected { .. })));
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, ParseErrorKind::Expected { .. }))
+    );
 }
 
 #[test]
 fn extern_is_now_an_ordinary_identifier() {
-    let module = SourceModule::parse("extern := 1;").expect("`extern` must stay usable as an identifier");
+    let module =
+        SourceModule::parse("extern := 1;").expect("`extern` must stay usable as an identifier");
     assert!(matches!(module.nodes[0].item, Item::Walrus(_)));
 }

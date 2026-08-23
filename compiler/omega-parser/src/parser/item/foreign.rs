@@ -142,7 +142,10 @@ fn parse_foreign_block(
         }
     }
     p.expect(&TokenKind::RBrace, "'}'");
-    Some(ForeignBlockItem { convention, entries })
+    Some(ForeignBlockItem {
+        convention,
+        entries,
+    })
 }
 
 fn parse_foreign_block_entry(

@@ -34,3 +34,10 @@ conform Hidden to Named {
 exposed describe(item: *Public) => i32 {
 	item.value
 }
+
+# A hidden overload set, re-exported through an exposed alias: the caller
+# never needs rights to `hidden_pair_sum` itself, only to `public_pair_sum`.
+hidden_pair_sum(a: i32, b: i32) => i32 { a + b }
+hidden_pair_sum(a: *str, b: *str) => i32 { 0 }
+
+exposed alias public_pair_sum = hidden_pair_sum;

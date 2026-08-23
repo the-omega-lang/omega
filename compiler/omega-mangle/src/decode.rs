@@ -3,7 +3,7 @@ use std::str;
 
 use crate::base62;
 use crate::grammar::*;
-use crate::symbol::{FunctionSignature, ManglePath, MangleConvention, MangleType, Symbol};
+use crate::symbol::{FunctionSignature, MangleConvention, ManglePath, MangleType, Symbol};
 
 pub fn decode(mangled: &str) -> Option<Symbol> {
     let bytes = mangled.as_bytes();

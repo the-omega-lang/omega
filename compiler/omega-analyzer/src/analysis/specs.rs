@@ -370,7 +370,7 @@ impl<'r> Analyzer<'r> {
                 .context
                 .resolve_absolute_item_path(&mut *self.resolver, path, module)
             {
-                Ok(a) => a,
+                Ok((absolute, _bypass)) => absolute,
                 Err(e) => {
                     self.error(id, span, AnalysisErrorKind::UnresolvedType(e));
                     return None;
@@ -433,7 +433,7 @@ impl<'r> Analyzer<'r> {
     ) -> Option<Rc<RefCell<ResolvedSpecType>>> {
         let name = Ident(name.to_string());
         let path = Path::from(name.clone());
-        if let Ok(absolute) =
+        if let Ok((absolute, _bypass)) =
             self.context
                 .resolve_absolute_item_path(&mut *self.resolver, &path, &self.module_path)
             && let Ok(Some(cell)) = self.resolver.spec_declaration(&absolute)
@@ -756,7 +756,13 @@ impl<'r> Analyzer<'r> {
         let mut offset = 0usize;
         for member in &shape.members {
             let count = self
-                .flatten_spec(id, span, &member.spec, &member.spec_args, &ResolvedType::Void)
+                .flatten_spec(
+                    id,
+                    span,
+                    &member.spec,
+                    &member.spec_args,
+                    &ResolvedType::Void,
+                )
                 .map(|fns| fns.len())
                 .unwrap_or(0);
             if member.spec.borrow().id == target_spec_id {

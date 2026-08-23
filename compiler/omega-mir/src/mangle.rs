@@ -76,7 +76,10 @@ pub fn conformance_method_symbol(
 /// `ResolvedSpecShape`), so `A + B` and `B + A` always produce this symbol
 /// identically. A single member nests exactly like the pre-conjunction
 /// singleton encoding, since the loop below runs once in that case.
-pub fn vtable_symbol(concrete: &ResolvedType, shape_members: &[(Ident, Vec<ResolvedType>)]) -> Symbol {
+pub fn vtable_symbol(
+    concrete: &ResolvedType,
+    shape_members: &[(Ident, Vec<ResolvedType>)],
+) -> Symbol {
     let omega_mangle::MangleType::Named(concrete_path, _) = semantic::mangle_type(concrete) else {
         unreachable!(
             "a spec-object coercion's concrete pointee is always a nominal aggregate type"

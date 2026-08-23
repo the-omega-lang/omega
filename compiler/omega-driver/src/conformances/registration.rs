@@ -6,41 +6,95 @@ impl Driver {
         module: &[Ident],
         generics: &[HirGenericParam],
     ) {
-        fn walk(this: &mut Driver, module: &[Ident], ty: &Type) {
-            match ty {
-                Type::Named(path) => {
-                    if path.is_unqualified() {
-                        let _ = this.import_entry(module, &path.head);
-                    }
-                }
-                Type::Generic(path, args) => {
-                    if path.is_unqualified() {
-                        let _ = this.import_entry(module, &path.head);
-                    }
-                    for arg in args {
-                        walk(this, module, arg);
-                    }
-                }
-                Type::Pointer(inner, _)
-                | Type::InferredArray(inner)
-                | Type::UnknownSizeArray(inner)
-                | Type::SizedArray(inner, _) => walk(this, module, inner),
-                Type::Function(f) => {
-                    for param in &f.params {
-                        walk(this, module, &param.r#type);
-                    }
-                    walk(this, module, &f.return_type);
-                }
-                Type::SpecStatic(members) => {
-                    for member in members {
-                        walk(this, module, member);
-                    }
-                }
-            }
-        }
+        let mut seen = HashSet::new();
         for param in generics {
             for bound in &param.bounds {
-                walk(self, module, bound);
+                self.mark_type_import_dependencies(module, bound, &mut seen);
+            }
+            if let Some(default) = &param.default {
+                self.mark_type_import_dependencies(module, default, &mut seen);
+            }
+        }
+    }
+
+    /// Marks every import a written type consumes, exactly as if its final
+    /// alias-expanded spelling had appeared directly: an alias RHS, an
+    /// alias-owned bound, or an alias-owned default all count as if written
+    /// at the use site, and a chained alias is followed through every link.
+    fn mark_type_import_dependencies(
+        &mut self,
+        module: &[Ident],
+        ty: &Type,
+        seen: &mut HashSet<(ModulePath, Ident)>,
+    ) {
+        match ty {
+            Type::Named(path) | Type::Generic(path, _) if path.is_unqualified() => {
+                let _ = self.import_entry(module, &path.head);
+                self.mark_alias_declaration_import_dependencies(module, &path.head, seen);
+            }
+            _ => {}
+        }
+        match ty {
+            Type::Generic(_, args) | Type::SpecStatic(args) => {
+                for arg in args {
+                    self.mark_type_import_dependencies(module, arg, seen);
+                }
+            }
+            Type::Pointer(inner, _)
+            | Type::InferredArray(inner)
+            | Type::UnknownSizeArray(inner)
+            | Type::SizedArray(inner, _) => self.mark_type_import_dependencies(module, inner, seen),
+            Type::Function(f) => {
+                for param in &f.params {
+                    self.mark_type_import_dependencies(module, &param.r#type, seen);
+                }
+                self.mark_type_import_dependencies(module, &f.return_type, seen);
+            }
+            Type::Named(_) => {}
+        }
+    }
+
+    /// If `name` names a declared alias reachable from `module` -- locally or
+    /// through an import -- marks every import the alias's own declaration
+    /// (its target, bounds, and defaults) consumes, in the alias's own
+    /// declaration module. A module importing an alias directly still marks
+    /// that alias import itself as used (see the caller); this accounts for
+    /// what the alias's *declaration* separately depends on, which is owed
+    /// to the alias's own module, not the accessor's.
+    fn mark_alias_declaration_import_dependencies(
+        &mut self,
+        module: &[Ident],
+        name: &Ident,
+        seen: &mut HashSet<(ModulePath, Ident)>,
+    ) {
+        let (alias_module, index) = if let Ok(Some(index)) = self.alias_index(module, name) {
+            (module.to_vec(), index)
+        } else if let Ok(Some((target, _))) = self.raw_import_absolute_path(module, name)
+            && let Some((alias_name, alias_module)) = target.split_last()
+            && let Ok(Some(index)) = self.alias_index(alias_module, alias_name)
+        {
+            (alias_module.to_vec(), index)
+        } else {
+            return;
+        };
+        if !seen.insert((alias_module.clone(), name.clone())) {
+            return;
+        }
+        let HirItem::Alias(declared) = &self.modules.parsed(&alias_module).hir.items[index] else {
+            return;
+        };
+        let declared = declared.clone();
+        let written = match &declared.target {
+            AliasTarget::Path(path) => Type::Named(path.clone()),
+            AliasTarget::Type(r#type) => r#type.clone(),
+        };
+        self.mark_type_import_dependencies(&alias_module, &written, seen);
+        for param in &declared.generics {
+            for bound in &param.bounds {
+                self.mark_type_import_dependencies(&alias_module, bound, seen);
+            }
+            if let Some(default) = &param.default {
+                self.mark_type_import_dependencies(&alias_module, default, seen);
             }
         }
     }

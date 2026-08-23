@@ -89,16 +89,18 @@ impl ModuleRoots {
         // on-disk basename (the common case -- `core`, `mathlib`, and
         // every existing extern), and there's no fallback convention to
         // protect for an extern the way there is for the local package.
-        let extern_trees: IndexMap<Ident, HashMap<ModulePath, Result<ModuleLocation, ResolveError>>> =
-            registered
-                .iter()
-                .map(|(name, root)| {
-                    (
-                        name.clone(),
-                        fs_resolve::relabel_root(fs_resolve::discover_tree(&root.dir), name),
-                    )
-                })
-                .collect();
+        let extern_trees: IndexMap<
+            Ident,
+            HashMap<ModulePath, Result<ModuleLocation, ResolveError>>,
+        > = registered
+            .iter()
+            .map(|(name, root)| {
+                (
+                    name.clone(),
+                    fs_resolve::relabel_root(fs_resolve::discover_tree(&root.dir), name),
+                )
+            })
+            .collect();
 
         // Fail package discovery clearly, before any semantic compilation
         // begins, rather than only when something happens to import the
@@ -109,7 +111,10 @@ impl ModuleRoots {
             .collect();
         if !invalid.is_empty() {
             invalid.sort_by_key(|(path, _)| {
-                path.iter().map(Ident::as_ref).collect::<Vec<_>>().join("::")
+                path.iter()
+                    .map(Ident::as_ref)
+                    .collect::<Vec<_>>()
+                    .join("::")
             });
             return Err(invalid.into_iter().map(|(_, error)| error).collect());
         }
@@ -250,7 +255,8 @@ mod tests {
             let local = TestDir::new();
             write(&local.0, "main.omg");
 
-            let result = ModuleRoots::new(local.0.clone(), Some(Ident(reserved.to_string())), vec![]);
+            let result =
+                ModuleRoots::new(local.0.clone(), Some(Ident(reserved.to_string())), vec![]);
             assert!(
                 matches!(
                     result,

@@ -106,13 +106,10 @@ fn a_default_spec_body_can_call_a_hidden_sibling_member() {
     )
     .expect_ok();
     assert!(
-        !program
-            .warnings
-            .iter()
-            .any(|(_, warning)| matches!(
-                warning.kind,
-                AnalysisWarningKind::RedundantHiddenModifier
-            )),
+        !program.warnings.iter().any(|(_, warning)| matches!(
+            warning.kind,
+            AnalysisWarningKind::RedundantHiddenModifier
+        )),
         "narrowing a shared spec member to hidden is not redundant"
     );
 }
@@ -157,13 +154,10 @@ fn an_explicit_hidden_on_an_ordinary_field_is_redundant() {
     )
     .expect_ok();
     assert!(
-        program
-            .warnings
-            .iter()
-            .any(|(_, warning)| matches!(
-                warning.kind,
-                AnalysisWarningKind::RedundantHiddenModifier
-            )),
+        program.warnings.iter().any(|(_, warning)| matches!(
+            warning.kind,
+            AnalysisWarningKind::RedundantHiddenModifier
+        )),
         "explicit 'hidden' on an already-hidden field should warn"
     );
 }

@@ -111,11 +111,17 @@ fn an_expression_shaped_target_is_rejected() {
 fn a_missing_equals_or_terminator_is_rejected() {
     assert!(matches!(
         error_kinds("alias A;").first(),
-        Some(ParseErrorKind::Expected { expected: "'='", .. })
+        Some(ParseErrorKind::Expected {
+            expected: "'='",
+            ..
+        })
     ));
     assert!(matches!(
         error_kinds("alias A = B").first(),
-        Some(ParseErrorKind::Expected { expected: "';'", .. })
+        Some(ParseErrorKind::Expected {
+            expected: "';'",
+            ..
+        })
     ));
 }
 
