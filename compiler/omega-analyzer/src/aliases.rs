@@ -96,6 +96,17 @@ fn alias_reference(
         };
         ItemAccess::gated(base.into_iter().chain(path.tail.iter().cloned()).collect())
     };
+    let mut access = access;
+    if let Some((name, module)) = access.absolute.split_last() {
+        let name = name.clone();
+        let module = module.to_vec();
+        if let Some(canonical_module) = resolver.resolve_module_path(&accessor, &module)? {
+            access.absolute = canonical_module
+                .into_iter()
+                .chain(std::iter::once(name))
+                .collect();
+        }
+    }
     let (name, module) = access
         .absolute
         .split_last()

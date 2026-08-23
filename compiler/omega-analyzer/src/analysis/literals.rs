@@ -474,42 +474,40 @@ impl<'r> Analyzer<'r> {
             return self.literal_target_from_type(node_id, span, resolved, &[]);
         }
 
-        // An explicit anchor already names the whole path, so it takes the
-        // same two readings a module-qualified path does -- the whole path as
-        // a type, then its prefix as a type with a trailing variant -- rather
-        // than looking its head up as an import.
+        // Anchored paths may still be type-qualified (`self::Type::Variant`),
+        // so preserve the old whole-path/prefix fallback when the path is not
+        // a module binding. When it *is* module-qualified, canonicalize every
+        // module-alias segment first.
         let anchored = match self.anchored_path(node_id, span, plain) {
             AnchoredPath::Failed => return None,
             AnchoredPath::Absolute(absolute) => Some(absolute),
             AnchoredPath::Unanchored => None,
         };
-        let alias = match anchored {
-            Some(_) => None,
-            None => self.resolve_alias_or_error(node_id, span, &plain.head)?,
+        let module_qualified = match self.module_qualified_path(node_id, span, plain) {
+            ModuleQualifiedPath::Item(access) => Some(access),
+            ModuleQualifiedPath::NotModule => anchored
+                .as_ref()
+                .map(|absolute| ItemAccess::gated(absolute.clone())),
+            ModuleQualifiedPath::Failed => return None,
         };
-        let module_qualified = match (anchored, &alias) {
-            (Some(absolute), _) => Some(absolute),
-            (None, Some(ImportTarget::Module(target))) => Some(
-                target
-                    .iter()
-                    .cloned()
-                    .chain(plain.tail.iter().cloned())
-                    .collect(),
-            ),
-            _ => None,
+        let alias = if anchored.is_some() || module_qualified.is_some() {
+            None
+        } else {
+            self.resolve_alias_or_error(node_id, span, &plain.head)?
         };
-        if let Some(absolute) = module_qualified {
+        if let Some(access) = module_qualified {
+            let absolute = access.absolute.clone();
             let whole_result = match self.resolver.generic_literal_signature(&absolute, None) {
                 Ok(Some(sig)) => self.resolve_generic_literal(
                     node_id,
                     span,
                     &absolute,
-                    &ItemAccess::gated(absolute.clone()),
+                    &access,
                     &sig,
                     &lit.fields,
                     expected,
                 )?,
-                _ => self.resolve_item_checked(&ItemAccess::gated(absolute.clone()), &[], true),
+                _ => self.resolve_item_checked(&access, &[], true),
             };
             let first_error = match whole_result {
                 Ok(ResolvedItem::Type(t)) => {
@@ -529,20 +527,27 @@ impl<'r> Analyzer<'r> {
             };
             if absolute.len() >= 3 {
                 let (variant, prefix) = absolute.split_last().expect("length checked above");
+                let accessor = self.path_module(plain);
+                let prefix_access = self.canonicalize_item_access(
+                    node_id,
+                    span,
+                    &accessor,
+                    ItemAccess::gated(prefix.to_vec()),
+                )?;
                 let variant_result = match self
                     .resolver
-                    .generic_literal_signature(prefix, Some(variant))
+                    .generic_literal_signature(&prefix_access.absolute, Some(variant))
                 {
                     Ok(Some(sig)) => self.resolve_generic_literal(
                         node_id,
                         span,
-                        prefix,
-                        &ItemAccess::gated(prefix.to_vec()),
+                        &prefix_access.absolute,
+                        &prefix_access,
                         &sig,
                         &lit.fields,
                         expected,
                     )?,
-                    _ => self.resolve_item_checked(&ItemAccess::gated(prefix.to_vec()), &[], true),
+                    _ => self.resolve_item_checked(&prefix_access, &[], true),
                 };
                 if let Ok(ResolvedItem::Type(t)) = variant_result {
                     return self.literal_target_from_type(

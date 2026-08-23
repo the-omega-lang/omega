@@ -23,47 +23,37 @@ impl<'r> Analyzer<'r> {
                 ),
             HirPlaceRoot::Path(expr_path) => {
                 let path = &expr_path.path;
-                // Module-qualified and type-qualified readings split on
-                // whether the head names a module. An unanchored head answers
-                // that through its import binding; an anchored one names its
-                // module directly, so it is asked directly. An anchored path
-                // with no tail names its item outright -- the anchored
-                // counterpart of a bare unqualified name, which never reaches
-                // the type-member reading either.
-                let module_qualified = match self.anchored_path(node_id, span, path) {
-                    AnchoredPath::Failed => return None,
-                    AnchoredPath::Absolute(absolute) => {
-                        let head_absolute = &absolute[..absolute.len() - path.tail.len()];
-                        (path.tail.is_empty() || self.resolver.module_exists(head_absolute))
-                            .then_some(absolute)
-                    }
-                    AnchoredPath::Unanchored => {
-                        match self.resolve_path_alias_or_error(node_id, span, path)? {
-                            Some(ImportTarget::Module(target)) => Some(
-                                target
-                                    .into_iter()
-                                    .chain(path.tail.iter().cloned())
-                                    .collect(),
-                            ),
-                            _ => None,
-                        }
-                    }
-                };
-                let (root, r#type, mutable) = match module_qualified {
-                    Some(absolute) => self.resolve_qualified_value(
+                let (root, r#type, mutable) = match self
+                    .module_qualified_path(node_id, span, path)
+                {
+                    ModuleQualifiedPath::Item(access) => self.resolve_qualified_value(
                         node_id,
                         span,
                         path,
                         &self.path_module(path),
-                        ItemAccess::gated(absolute),
+                        access,
                         None,
                         expected,
                     )?,
-                    None => {
-                        let (root, r#type) =
-                            self.resolve_type_qualified_value(node_id, span, path, expected)?;
-                        (root, r#type, false)
-                    }
+                    ModuleQualifiedPath::NotModule => match self
+                        .module_headed_path(node_id, span, path)?
+                    {
+                        Some(access) => self.resolve_qualified_value(
+                            node_id,
+                            span,
+                            path,
+                            &self.path_module(path),
+                            access,
+                            None,
+                            expected,
+                        )?,
+                        None => {
+                            let (root, r#type) = self
+                                .resolve_type_qualified_value(node_id, span, path, expected)?;
+                            (root, r#type, false)
+                        }
+                    },
+                    ModuleQualifiedPath::Failed => return None,
                 };
                 Some((root, r#type, mutable))
             }

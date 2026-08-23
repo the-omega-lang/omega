@@ -15,10 +15,15 @@ impl<'r> Analyzer<'r> {
             return Intercepted::Declined;
         };
 
-        // An explicit anchor names the owner directly; nothing below applies
-        // to it. Silent probe throughout -- a real resolution failure isn't
-        // this function's to report, and is left to whichever fallback path
-        // needs the same name to surface it.
+        // A module binding wins over a type/static-member interpretation.
+        // This probe resolves physical modules and module aliases alike,
+        // including anchored aliases such as `self::io::print`.
+        match self.module_qualified_path(node_id, span, path) {
+            ModuleQualifiedPath::Item(_) => return Intercepted::Declined,
+            ModuleQualifiedPath::Failed => return Intercepted::Claimed(None),
+            ModuleQualifiedPath::NotModule => {}
+        }
+
         let accessor = self.path_module(path);
         let anchored =
             match self.anchored_prefix(node_id, span, path, std::slice::from_ref(&path.head)) {
@@ -26,15 +31,6 @@ impl<'r> Analyzer<'r> {
                 AnchoredPath::Absolute(absolute) => Some(absolute),
                 AnchoredPath::Unanchored => None,
             };
-        if let Some(absolute) = &anchored
-            && self.resolver.module_exists(absolute)
-        {
-            return Intercepted::Declined;
-        }
-
-        // A module alias wins over a type interpretation whenever both could
-        // apply, so a genuine `module::function` shape is never misread as
-        // `Type::function` here.
         let alias = match anchored {
             Some(_) => None,
             None => self
@@ -43,15 +39,13 @@ impl<'r> Analyzer<'r> {
                 .ok()
                 .flatten(),
         };
-        if matches!(alias, Some(ImportTarget::Module(_))) {
-            return Intercepted::Declined;
-        }
 
         let owner = match anchored {
             Some(absolute) => Some(ItemAccess::gated(absolute)),
             None if self.context.find_defined_type(&path.head).is_some() => None,
             None => match &alias {
                 Some(ImportTarget::Item(_, ResolvedItem::Type(_))) => None,
+                Some(ImportTarget::ItemPath(access)) => Some(access.clone()),
                 _ => Some(ItemAccess::gated(
                     self.module_path
                         .iter()
@@ -208,25 +202,12 @@ impl<'r> Analyzer<'r> {
             set
         } else {
             let accessor = self.path_module(path);
-            let absolute: Vec<Ident> = match self.anchored_path(node_id, span, path) {
-                AnchoredPath::Failed => return Intercepted::Claimed(None),
-                AnchoredPath::Absolute(absolute) => absolute,
-                AnchoredPath::Unanchored => {
-                    match self
-                        .resolver
-                        .resolve_import_alias(&accessor, &path.head)
-                        .ok()
-                        .flatten()
-                    {
-                        Some(ImportTarget::Module(target)) => target
-                            .into_iter()
-                            .chain(path.tail.iter().cloned())
-                            .collect(),
-                        _ => return Intercepted::Declined,
-                    }
-                }
+            let access = match self.module_qualified_path(node_id, span, path) {
+                ModuleQualifiedPath::Item(access) => access,
+                ModuleQualifiedPath::NotModule => return Intercepted::Declined,
+                ModuleQualifiedPath::Failed => return Intercepted::Claimed(None),
             };
-            match self.overload_set(&accessor, &ItemAccess::gated(absolute)) {
+            match self.overload_set(&accessor, &access) {
                 Ok(Some(set)) => set,
                 Ok(None) => return Intercepted::Declined,
                 Err(e) => {

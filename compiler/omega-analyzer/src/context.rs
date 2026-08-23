@@ -276,9 +276,27 @@ impl Context {
             .macro_origin_module(path.origin)
             .unwrap_or_else(|| module_path.to_vec());
         if let Some(anchored) = resolver.resolve_explicit_anchor(&resolution_module, path) {
-            return anchored
-                .map(ItemAccess::gated)
-                .map_err(TypeResolutionError::ModuleResolution);
+            let absolute = anchored.map_err(TypeResolutionError::ModuleResolution)?;
+            if path.tail.is_empty() {
+                return Ok(ItemAccess::gated(absolute));
+            }
+            let (item, module) = absolute
+                .split_last()
+                .expect("an anchored path always has at least one segment");
+            let item = item.clone();
+            let module = module.to_vec();
+            let Some(canonical_module) = resolver
+                .resolve_module_path(&resolution_module, &module)
+                .map_err(TypeResolutionError::ModuleResolution)?
+            else {
+                return Ok(ItemAccess::gated(absolute));
+            };
+            return Ok(ItemAccess::gated(
+                canonical_module
+                    .into_iter()
+                    .chain(std::iter::once(item))
+                    .collect(),
+            ));
         }
         if path.is_unqualified() {
             // `ImportTarget::Item`'s eagerly-resolved snapshot is ignored
@@ -305,12 +323,25 @@ impl Context {
                 .resolve_import_alias(&resolution_module, &path.head)
                 .map_err(TypeResolutionError::ModuleResolution)?
             {
-                Some(ImportTarget::Module(target)) => Ok(ItemAccess::gated(
-                    target
+                Some(ImportTarget::Module(target)) => {
+                    let absolute: Vec<Ident> = target
                         .into_iter()
                         .chain(path.tail.iter().cloned())
-                        .collect(),
-                )),
+                        .collect();
+                    let (item, module) = absolute
+                        .split_last()
+                        .expect("a qualified path always has a final item");
+                    let module = resolver
+                        .resolve_module_path(&resolution_module, module)
+                        .map_err(TypeResolutionError::ModuleResolution)?
+                        .unwrap_or_else(|| module.to_vec());
+                    Ok(ItemAccess::gated(
+                        module
+                            .into_iter()
+                            .chain(std::iter::once(item.clone()))
+                            .collect(),
+                    ))
+                }
                 _ => Err(TypeResolutionError::ModuleNotImported {
                     name: path.head.clone(),
                     similar: best_match(

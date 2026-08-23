@@ -307,41 +307,27 @@ impl<'r> Analyzer<'r> {
         }
 
         let accessor = self.path_module(path);
-        let access: ItemAccess = match self.anchored_path(node_id, span, path) {
-            AnchoredPath::Failed => return Intercepted::Claimed(None),
-            AnchoredPath::Absolute(absolute) => ItemAccess::gated(absolute),
-            AnchoredPath::Unanchored if path.is_unqualified() => {
-                match self
-                    .resolver
-                    .resolve_import_alias(&accessor, &path.head)
-                    .ok()
-                    .flatten()
-                {
-                    Some(ImportTarget::ItemPath(access)) => access,
-                    _ => ItemAccess::gated(
-                        accessor
-                            .iter()
-                            .cloned()
-                            .chain(std::iter::once(path.head.clone()))
-                            .collect(),
-                    ),
-                }
+        let access: ItemAccess = if path.is_unqualified() {
+            match self
+                .resolver
+                .resolve_import_alias(&accessor, &path.head)
+                .ok()
+                .flatten()
+            {
+                Some(ImportTarget::ItemPath(access)) => access,
+                _ => ItemAccess::gated(
+                    accessor
+                        .iter()
+                        .cloned()
+                        .chain(std::iter::once(path.head.clone()))
+                        .collect(),
+                ),
             }
-            AnchoredPath::Unanchored => {
-                match self
-                    .resolver
-                    .resolve_import_alias(&accessor, &path.head)
-                    .ok()
-                    .flatten()
-                {
-                    Some(ImportTarget::Module(target)) => ItemAccess::gated(
-                        target
-                            .into_iter()
-                            .chain(path.tail.iter().cloned())
-                            .collect(),
-                    ),
-                    _ => return Intercepted::Declined,
-                }
+        } else {
+            match self.module_qualified_path(node_id, span, path) {
+                ModuleQualifiedPath::Item(access) => access,
+                ModuleQualifiedPath::NotModule => return Intercepted::Declined,
+                ModuleQualifiedPath::Failed => return Intercepted::Claimed(None),
             }
         };
 

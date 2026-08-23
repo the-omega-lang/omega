@@ -436,13 +436,10 @@ impl<'r> Analyzer<'r> {
         written_path: &Path,
         prefix: &[Ident],
     ) -> Option<ItemAccess> {
-        match self.anchored_prefix(node_id, span, written_path, prefix) {
-            AnchoredPath::Failed => return None,
-            AnchoredPath::Absolute(absolute) => return Some(ItemAccess::gated(absolute)),
-            AnchoredPath::Unanchored => {}
-        }
         let module = self.path_module(written_path);
-        if let [single] = prefix {
+        if let [single] = prefix
+            && written_path.anchor.is_none()
+        {
             if let Some(ImportTarget::ItemPath(access)) =
                 match self.resolver.resolve_import_alias(&module, single) {
                     Ok(alias) => Some(alias),
@@ -462,19 +459,20 @@ impl<'r> Analyzer<'r> {
                     .collect(),
             ));
         }
-        let head = &prefix[0];
-        match self.resolver.resolve_import_alias(&module, head) {
-            Err(error) => {
-                self.error(node_id, span, AnalysisErrorKind::ModuleResolution(error));
-                None
-            }
-            Ok(Some(ImportTarget::Module(target))) => Some(ItemAccess::gated(
-                target
-                    .into_iter()
-                    .chain(prefix[1..].iter().cloned())
-                    .collect(),
-            )),
-            Ok(_) => {
+
+        let Some((head, tail)) = prefix.split_first() else {
+            return None;
+        };
+        let prefix_path = Path {
+            anchor: written_path.anchor,
+            head: head.clone(),
+            tail: tail.to_vec(),
+            origin: written_path.origin,
+        };
+        match self.module_qualified_path(node_id, span, &prefix_path) {
+            ModuleQualifiedPath::Item(access) => Some(access),
+            ModuleQualifiedPath::Failed => None,
+            ModuleQualifiedPath::NotModule => {
                 let similar_module =
                     best_match(head, self.resolver.import_alias_names(&module).iter());
                 self.error(

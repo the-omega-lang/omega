@@ -388,10 +388,16 @@ pub trait ModuleResolver {
         path: &Path,
     ) -> Option<Result<Vec<Ident>, ResolveError>>;
 
-    /// Whether `absolute_path` names a module rather than a declaration.
-    /// An unanchored path answers this through its head's import binding;
-    /// an anchored one has no binding to ask, so it asks here.
-    fn module_exists(&mut self, absolute_path: &[Ident]) -> bool;
+    /// Resolves an absolute module path through physical modules and declared
+    /// module aliases. Every alias segment is checked from `accessor`; the
+    /// returned path is the canonical physical module the binding denotes.
+    /// `None` means the path is not a module binding, so callers may try a
+    /// type/item-qualified interpretation instead.
+    fn resolve_module_path(
+        &mut self,
+        accessor: &[Ident],
+        absolute_path: &[Ident],
+    ) -> Result<Option<Vec<Ident>>, ResolveError>;
 
     fn declared_item_visibility(&mut self, absolute_path: &[Ident]) -> Option<Visibility>;
 

@@ -2515,3 +2515,266 @@ fn an_alias_carries_its_authorization_into_a_static_member_call() {
     )
     .expect_ok();
 }
+
+#[test]
+fn a_revealed_hidden_alias_can_be_realiased_without_losing_authorization() {
+    TestPackage::with_modules(
+        r#"
+        import reveal self::helper::Secret;
+
+        alias Local = Secret;
+
+        entry_fn() => i32 {
+            value: Local = Local { field = 7; };
+            value.field
+        }
+        "#,
+        &[(
+            "helper",
+            r#"
+            exposed struct Hidden {
+                exposed field: i32;
+            }
+
+            alias Secret = Hidden;
+            "#,
+        )],
+    )
+    .expect_ok();
+}
+
+#[test]
+fn a_revealed_hidden_structural_alias_can_be_realiased_without_losing_authorization() {
+    TestPackage::with_modules(
+        r#"
+        import reveal self::helper::Secret;
+
+        alias Local<T> = Secret<T>;
+
+        entry_fn() => i32 {
+            value: Local<i32> = Local<i32> { field = 7; };
+            value.field
+        }
+        "#,
+        &[(
+            "helper",
+            r#"
+            exposed struct Holder<T> {
+                exposed field: T;
+            }
+
+            alias Secret<T> = Holder<T>;
+            "#,
+        )],
+    )
+    .expect_ok();
+}
+
+#[test]
+fn a_local_overload_alias_keeps_its_declaration_site_candidate_set() {
+    let errors = TestPackage::with_modules(
+        r#"
+        import self::exporter;
+
+        entry_fn() => i32 {
+            exporter::exercise()
+        }
+        "#,
+        &[
+            (
+                "exporter",
+                r#"
+                import super::provider;
+
+                alias render = provider::show;
+
+                exposed exercise() => i32 {
+                    render(true)
+                }
+                "#,
+            ),
+            (
+                "provider",
+                r#"
+                exposed show(value: i32) => i32 { value }
+
+                show(value: bool) => i32 { 1 }
+                "#,
+            ),
+        ],
+    )
+    .expect_errors();
+    assert!(
+        analysis_errors(&errors).iter().any(|kind| matches!(
+            kind,
+            AnalysisErrorKind::NoMatchingOverload { name, .. } if name.as_ref() == "show"
+        )),
+        "local use must not re-expand a frozen overload alias to hidden candidates: {}",
+        rendered(&errors)
+    );
+}
+
+#[test]
+fn an_anchored_module_alias_is_a_module_binding_in_type_literal_and_value_paths() {
+    TestPackage::with_modules(
+        r#"
+        alias kid = self::child;
+
+        entry_fn() => i32 {
+            value: self::kid::Public = self::kid::Public { field = 5; };
+            self::kid::read(&value)
+        }
+        "#,
+        &[(
+            "child",
+            r#"
+            exposed struct Public {
+                exposed field: i32;
+            }
+
+            exposed read(value: *Public) => i32 { value.field }
+            "#,
+        )],
+    )
+    .expect_ok();
+}
+
+#[test]
+fn a_directly_imported_module_alias_behaves_like_the_target_module() {
+    TestPackage::with_modules(
+        r#"
+        import self::exporter::api;
+
+        entry_fn() => i32 {
+            value: api::Public = api::Public { field = 6; };
+            api::read(&value)
+        }
+        "#,
+        &[
+            (
+                "exporter",
+                r#"
+                exposed alias api = super::provider;
+                "#,
+            ),
+            (
+                "provider",
+                r#"
+                exposed struct Public {
+                    exposed field: i32;
+                }
+
+                exposed read(value: *Public) => i32 { value.field }
+                "#,
+            ),
+        ],
+    )
+    .expect_ok();
+}
+
+#[test]
+fn a_revealed_imported_alias_keeps_authorization_for_an_overloaded_static_call() {
+    TestPackage::with_modules(
+        r#"
+        import reveal self::helper::Secret;
+
+        entry_fn() => i32 {
+            Secret::pick(true)
+        }
+        "#,
+        &[(
+            "helper",
+            r#"
+            exposed struct Holder {
+                exposed field: i32;
+
+                exposed pick(value: i32) => i32 { value }
+                exposed pick(value: bool) => i32 { 1 }
+            }
+
+            alias Secret = Holder;
+            "#,
+        )],
+    )
+    .expect_ok();
+}
+
+#[test]
+fn an_alias_owned_generic_bound_must_name_a_spec_even_if_unused() {
+    let errors = TestPackage::new(
+        r#"
+        struct Holder {}
+
+        alias Bad<T: Holder> = T;
+
+        entry_fn() => i32 { 0 }
+        "#,
+    )
+    .expect_errors();
+    assert!(
+        resolve_errors(&errors).iter().any(|error| matches!(
+            error,
+            ResolveError::InvalidAliasTarget { kind, .. } if *kind == "the non-spec declaration"
+        )),
+        "a generic bound may not accept an ordinary type merely because its name resolves: {}",
+        rendered(&errors)
+    );
+}
+
+#[test]
+fn an_alias_of_a_non_spec_cannot_masquerade_as_a_spec_member() {
+    let errors = TestPackage::new(
+        r#"
+        struct Holder<T> {}
+
+        alias Fake<T> = Holder<T>;
+        alias Bad = spec Fake<i32>;
+
+        entry_fn() => i32 { 0 }
+        "#,
+    )
+    .expect_errors();
+    assert!(
+        resolve_errors(&errors).iter().any(|error| matches!(
+            error,
+            ResolveError::InvalidAliasTarget { kind, .. }
+                if *kind == "the non-spec declaration" || *kind == "the non-spec type"
+        )),
+        "a structural alias used in spec position must resolve to a spec: {}",
+        rendered(&errors)
+    );
+}
+
+#[test]
+fn an_import_can_traverse_an_intermediate_module_alias() {
+    TestPackage::with_modules(
+        r#"
+        import self::exporter::api::Public;
+        import self::exporter::api::read;
+
+        entry_fn() => i32 {
+            value: Public = Public { field = 9; };
+            read(&value)
+        }
+        "#,
+        &[
+            (
+                "exporter",
+                r#"
+                exposed alias api = super::provider;
+                "#,
+            ),
+            (
+                "provider",
+                r#"
+                exposed struct Public {
+                    exposed field: i32;
+                }
+
+                exposed read(value: *Public) => i32 { value.field }
+                "#,
+            ),
+        ],
+    )
+    .expect_ok();
+}

@@ -66,7 +66,7 @@ impl Driver {
     /// that alias import itself as used (see the caller); this accounts for
     /// what the alias's *declaration* separately depends on, which is owed
     /// to the alias's own module, not the accessor's.
-    fn mark_alias_declaration_import_dependencies(
+    pub(crate) fn mark_alias_declaration_import_dependencies(
         &mut self,
         module: &[Ident],
         name: &Ident,

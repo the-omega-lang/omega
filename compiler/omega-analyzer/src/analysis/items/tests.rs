@@ -59,8 +59,12 @@ impl ModuleResolver for NoResolver {
         vec![]
     }
 
-    fn module_exists(&mut self, _absolute_path: &[Ident]) -> bool {
-        false
+    fn resolve_module_path(
+        &mut self,
+        _accessor: &[Ident],
+        _absolute_path: &[Ident],
+    ) -> Result<Option<Vec<Ident>>, ResolveError> {
+        Ok(None)
     }
 
     fn resolve_item(

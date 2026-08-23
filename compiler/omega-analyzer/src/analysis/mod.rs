@@ -182,6 +182,16 @@ pub(super) enum AnchoredPath {
     Failed,
 }
 
+/// Whether a written qualified path resolves through a module binding.
+/// The returned access always names the final item through the canonical
+/// physical module path; module aliases are visibility gates, not modules
+/// with a second identity.
+pub(super) enum ModuleQualifiedPath {
+    Item(ItemAccess),
+    NotModule,
+    Failed,
+}
+
 impl<'r> Analyzer<'r> {
     pub(super) fn path_module(&self, path: &Path) -> Vec<Ident> {
         self.resolver
@@ -232,6 +242,152 @@ impl<'r> Analyzer<'r> {
                 origin: path.origin,
             },
         )
+    }
+
+    /// Resolves the module-qualified reading of `path`, including module
+    /// aliases in any module segment. A path that does not resolve through a
+    /// module binding is left to the caller's type-qualified interpretation.
+    pub(super) fn module_qualified_path(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        path: &Path,
+    ) -> ModuleQualifiedPath {
+        let accessor = self.path_module(path);
+        let absolute = match self.anchored_path(node_id, span, path) {
+            AnchoredPath::Failed => return ModuleQualifiedPath::Failed,
+            AnchoredPath::Absolute(absolute) => absolute,
+            AnchoredPath::Unanchored => {
+                if path.is_unqualified() {
+                    return ModuleQualifiedPath::NotModule;
+                }
+                match self.resolver.resolve_import_alias(&accessor, &path.head) {
+                    Ok(Some(ImportTarget::Module(target))) => target
+                        .into_iter()
+                        .chain(path.tail.iter().cloned())
+                        .collect(),
+                    Ok(_) => return ModuleQualifiedPath::NotModule,
+                    Err(error) => {
+                        self.error(
+                            node_id,
+                            span,
+                            AnalysisErrorKind::ModuleResolution(error),
+                        );
+                        return ModuleQualifiedPath::Failed;
+                    }
+                }
+            }
+        };
+
+        // An explicitly anchored single item (`self::VALUE`) has no module
+        // segment from the written path to discriminate: the anchor already
+        // supplied its containing module.
+        if path.anchor.is_some() && path.tail.is_empty() {
+            return ModuleQualifiedPath::Item(ItemAccess::gated(absolute));
+        }
+
+        let Some((item, module)) = absolute.split_last() else {
+            return ModuleQualifiedPath::NotModule;
+        };
+        match self.resolver.resolve_module_path(&accessor, module) {
+            Ok(Some(module)) => ModuleQualifiedPath::Item(ItemAccess::gated(
+                module
+                    .into_iter()
+                    .chain(std::iter::once(item.clone()))
+                    .collect(),
+            )),
+            Ok(None) => ModuleQualifiedPath::NotModule,
+            Err(error) => {
+                self.error(
+                    node_id,
+                    span,
+                    AnalysisErrorKind::ModuleResolution(error),
+                );
+                ModuleQualifiedPath::Failed
+            }
+        }
+    }
+
+    /// Recovers a module-headed reading of `path` for the one case
+    /// `module_qualified_path` deliberately declines: a module named by
+    /// `path.head` alone (through an anchor or an import), with a type and
+    /// its member still nested in the remaining tail (`module::Type::member`).
+    /// `module_qualified_path` requires the *whole* prefix up to the last
+    /// segment to be a module, which is wrong here since `Type` is not a
+    /// module segment. Returns `Some(None)` when the head does not name a
+    /// module at all, so the caller falls back to its type-headed reading;
+    /// `None` means an error was already reported.
+    pub(super) fn module_headed_path(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        path: &Path,
+    ) -> Option<Option<ItemAccess>> {
+        if path.tail.is_empty() {
+            return Some(None);
+        }
+        let accessor = self.path_module(path);
+        let head_absolute = match self.anchored_prefix(
+            node_id,
+            span,
+            path,
+            std::slice::from_ref(&path.head),
+        ) {
+            AnchoredPath::Failed => return None,
+            AnchoredPath::Absolute(absolute) => absolute,
+            AnchoredPath::Unanchored => {
+                match self.resolve_path_alias_or_error(node_id, span, path)? {
+                    Some(ImportTarget::Module(target)) => target,
+                    _ => return Some(None),
+                }
+            }
+        };
+        match self.resolver.resolve_module_path(&accessor, &head_absolute) {
+            Ok(Some(module)) => Some(Some(ItemAccess::gated(
+                module.into_iter().chain(path.tail.iter().cloned()).collect(),
+            ))),
+            Ok(None) => Some(None),
+            Err(error) => {
+                self.error(node_id, span, AnalysisErrorKind::ModuleResolution(error));
+                None
+            }
+        }
+    }
+
+    /// Canonicalizes only the module prefix of an already-absolute item
+    /// access. If that prefix is type-qualified rather than module-qualified,
+    /// the access is returned unchanged so the caller can try its other
+    /// interpretation.
+    pub(super) fn canonicalize_item_access(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        accessor: &[Ident],
+        access: ItemAccess,
+    ) -> Option<ItemAccess> {
+        let Some((item, module)) = access.absolute.split_last() else {
+            return Some(access);
+        };
+        let item = item.clone();
+        let module = module.to_vec();
+        match self.resolver.resolve_module_path(accessor, &module) {
+            Ok(Some(module)) => Some(ItemAccess {
+                absolute: module
+                    .into_iter()
+                    .chain(std::iter::once(item))
+                    .collect(),
+                bypass_visibility: access.bypass_visibility,
+            }),
+            Ok(None) => Some(access),
+            Err(error) => {
+                self.error(
+                    node_id,
+                    span,
+                    AnalysisErrorKind::ModuleResolution(error),
+                );
+                None
+            }
+        }
     }
 
     pub(super) fn check_macro_dependency_visibility(

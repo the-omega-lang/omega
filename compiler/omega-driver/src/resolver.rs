@@ -108,35 +108,45 @@ impl Driver {
     ) -> Result<ImportTarget, ResolveError> {
         match self.roots.locate(segments) {
             Ok(_) => return Ok(ImportTarget::Module(segments.to_vec())),
-            // Real either way -- must surface here, not be masked by the
-            // item-import fallback below.
+            // Real either way -- must surface here, not be masked by an
+            // alias/module-binding or item-import fallback below.
             Err(e @ ResolveError::AmbiguousModule(_)) => return Err(e),
             Err(_) => {}
         }
+        // A module alias is a module binding, so imports may traverse one in
+        // exactly the same places an ordinary path can: `import api::Thing`
+        // must not require first importing `api` into a second statement.
+        if let Some(module) = self.resolve_module_path(accessor, segments)? {
+            return Ok(ImportTarget::Module(module));
+        }
 
-        let Some((item_name, module_path)) = segments.split_last() else {
+        let Some((item_name, written_module_path)) = segments.split_last() else {
             return Err(ResolveError::UnknownModule(segments.to_vec()));
         };
+        let item_name = item_name.clone();
+        let module_path = self
+            .resolve_module_path(accessor, written_module_path)?
+            .unwrap_or_else(|| written_module_path.to_vec());
+        let absolute: Vec<Ident> = module_path
+            .iter()
+            .cloned()
+            .chain(std::iter::once(item_name.clone()))
+            .collect();
 
         // A declared alias binds a name the same way a generic template does:
-        // its *target's* resolution is lazy, deferred to whatever later
-        // resolves it. The alias's own visibility is not lazy, though -- it
-        // is the gate a direct import must pass here, exactly like an
-        // ordinary item import, since nothing downstream re-checks it.
-        if self.alias_index(module_path, item_name)?.is_some() {
-            if !reveal {
-                let visibility = self
-                    .alias_visibility(module_path, item_name)
-                    .expect("just indexed by alias_index");
-                if !Self::visibility_allows(visibility, module_path, accessor) {
-                    return Err(ResolveError::NotVisible {
-                        module: module_path.to_vec(),
-                        item: item_name.clone(),
-                    });
-                }
+        // its target resolution is lazy, but the import eagerly passes the
+        // alias's own visibility gate. `reveal` is retained on the lazy
+        // access because later consumers must not silently revoke the
+        // capability established by this import.
+        if self.alias_index(&module_path, &item_name)?.is_some() {
+            let target = self
+                .visible_alias(accessor, &module_path, &item_name, reveal)?
+                .expect("just indexed by alias_index");
+            if let ResolvedAlias::Module(module) = target {
+                return Ok(ImportTarget::Module(module));
             }
             return Ok(ImportTarget::ItemPath(ItemAccess {
-                absolute: segments.to_vec(),
+                absolute,
                 bypass_visibility: reveal,
             }));
         }
@@ -146,29 +156,29 @@ impl Driver {
         // visibility. The import still gates eagerly on there being at least
         // one candidate this accessor can name.
         if !reveal {
-            self.visible_overload_decls(accessor, module_path, item_name)?;
+            self.visible_overload_decls(accessor, &module_path, &item_name, false)?;
         }
         if self
             .modules
-            .index(module_path)
+            .index(&module_path)
             .overloads
-            .contains_key(item_name)
-            || self.is_generic_template(module_path, item_name)?
+            .contains_key(&item_name)
+            || self.is_generic_template(&module_path, &item_name)?
         {
             return Ok(ImportTarget::ItemPath(ItemAccess {
-                absolute: segments.to_vec(),
+                absolute,
                 bypass_visibility: reveal,
             }));
         }
 
         let item = self.ensure_item(
             accessor,
-            module_path,
-            item_name,
+            &module_path,
+            &item_name,
             &[],
             ResolveItemOptions::INDIRECT.bypassing_visibility(reveal),
         )?;
-        Ok(ImportTarget::Item(segments.to_vec(), item))
+        Ok(ImportTarget::Item(absolute, item))
     }
 
     /// Import-alias lookup only. Declared aliases deliberately do not enter
@@ -179,22 +189,62 @@ impl Driver {
         module_path: &[Ident],
         alias: &Ident,
     ) -> Result<Option<ImportTarget>, ResolveError> {
-        let Some((target, reveal)) = self.import_entry(module_path, alias)? else {
+        self.resolve_import_alias_binding(module_path, alias, true)
+            .map(|binding| binding.map(|(target, _)| target))
+    }
+
+    /// The same lookup without consuming the import. Alias declaration
+    /// validation uses this form and only marks dependencies after the whole
+    /// alias has resolved successfully, so a rejected declaration cannot make
+    /// an otherwise-unused import appear used.
+    pub(crate) fn peek_import_alias_binding(
+        &mut self,
+        module_path: &[Ident],
+        alias: &Ident,
+    ) -> Result<Option<(ImportTarget, bool)>, ResolveError> {
+        self.resolve_import_alias_binding(module_path, alias, false)
+    }
+
+    fn resolve_import_alias_binding(
+        &mut self,
+        module_path: &[Ident],
+        alias: &Ident,
+        mark_used: bool,
+    ) -> Result<Option<(ImportTarget, bool)>, ResolveError> {
+        let entry = if mark_used {
+            self.import_entry(module_path, alias)?
+        } else {
+            self.peek_import_entry(module_path, alias)?
+        };
+        let Some((target, reveal)) = entry else {
             if alias.as_ref() == crate::roots::CORE_MODULE
                 && !crate::roots::is_core_module(module_path)
                 && !self.roots.core_modules().is_empty()
             {
-                return Ok(Some(ImportTarget::Module(vec![Ident(
-                    crate::roots::CORE_MODULE.to_string(),
-                )])));
+                return Ok(Some((
+                    ImportTarget::Module(vec![Ident(crate::roots::CORE_MODULE.to_string())]),
+                    false,
+                )));
             }
             return Ok(None);
         };
         self.resolve_alias(module_path, alias, &target, reveal)
-            .map(Some)
+            .map(|target| Some((target, reveal)))
     }
 
     pub(crate) fn import_entry(
+        &mut self,
+        module_path: &[Ident],
+        alias: &Ident,
+    ) -> Result<Option<(ModulePath, bool)>, ResolveError> {
+        let entry = self.peek_import_entry(module_path, alias)?;
+        if entry.is_some() {
+            self.imports.mark_used(module_path, alias);
+        }
+        Ok(entry)
+    }
+
+    pub(crate) fn peek_import_entry(
         &mut self,
         module_path: &[Ident],
         alias: &Ident,
@@ -203,9 +253,7 @@ impl Driver {
         let Some(import) = self.modules.index(module_path).imports.get(alias) else {
             return Ok(None);
         };
-        let entry = (import.target.clone(), import.reveal);
-        self.imports.mark_used(module_path, alias);
-        Ok(Some(entry))
+        Ok(Some((import.target.clone(), import.reveal)))
     }
 }
 
@@ -378,10 +426,53 @@ impl ModuleResolver for Driver {
         Driver::resolve_explicit_anchor(origin_module, path)
     }
 
-    /// An alias is its own visibility gate: the caller is checked against the
-    /// alias, never against the declaration it forwards to.
-    fn module_exists(&mut self, absolute_path: &[Ident]) -> bool {
-        self.roots.module_exists(absolute_path)
+    fn resolve_module_path(
+        &mut self,
+        accessor: &[Ident],
+        absolute_path: &[Ident],
+    ) -> Result<Option<Vec<Ident>>, ResolveError> {
+        let Some((root, rest)) = absolute_path.split_first() else {
+            return Ok(None);
+        };
+        let mut resolved = vec![root.clone()];
+        match self.roots.locate(&resolved) {
+            Ok(_) => {}
+            Err(ResolveError::UnknownModule(_)) => return Ok(None),
+            Err(error) => return Err(error),
+        }
+
+        for segment in rest {
+            let direct: Vec<Ident> = resolved
+                .iter()
+                .cloned()
+                .chain(std::iter::once(segment.clone()))
+                .collect();
+            match self.roots.locate(&direct) {
+                Ok(_) => {
+                    resolved = direct;
+                    continue;
+                }
+                Err(ResolveError::UnknownModule(_)) => {}
+                Err(error) => return Err(error),
+            }
+            // A speculative probe: this function only answers "is the whole
+            // path a module," so a name that exists but is not a visible
+            // module alias here -- hidden, or an alias of something else
+            // entirely -- simply means the path is not a module, exactly
+            // like the unknown-module case just above. Surfacing that as a
+            // hard error would incorrectly fail unrelated resolution that
+            // only reaches here to test the module reading (e.g. resolving
+            // an import target that turns out to name an item, not a
+            // nested module).
+            match self.visible_alias(accessor, &resolved, segment, false) {
+                Ok(Some(ResolvedAlias::Module(target))) => resolved = target,
+                Ok(Some(_)) | Ok(None) | Err(ResolveError::NotVisible { .. }) => {
+                    return Ok(None);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(Some(resolved))
     }
 
     fn declared_item_visibility(&mut self, absolute_path: &[Ident]) -> Option<Visibility> {
@@ -401,15 +492,18 @@ impl ModuleResolver for Driver {
     ) -> Result<Option<ImportTarget>, ResolveError> {
         match self.declared_alias(module_path, alias)? {
             Some(ResolvedAlias::Module(target)) => return Ok(Some(ImportTarget::Module(target))),
-            // The alias itself was just found declared in `module_path`, so
-            // its own visibility is trivially satisfied (a declaration
-            // always sees itself); its target is fully chain-validated, so
-            // consuming it is deliberately not re-gated against an accessor.
-            Some(ResolvedAlias::Item(target))
-            | Some(ResolvedAlias::Overloads {
-                absolute: target, ..
-            }) => {
-                return Ok(Some(ImportTarget::ItemPath(ItemAccess::authorized(target))));
+            // Keep the alias binding itself as the lazy path. Collapsing an
+            // overload alias to its target group would throw away the frozen
+            // candidate subset stored on the alias; keeping the binding also
+            // makes ordinary item aliases follow the same gate-preserving
+            // path as directly imported aliases.
+            Some(ResolvedAlias::Item(_)) | Some(ResolvedAlias::Overloads { .. }) => {
+                let absolute = module_path
+                    .iter()
+                    .cloned()
+                    .chain(std::iter::once(alias.clone()))
+                    .collect();
+                return Ok(Some(ImportTarget::ItemPath(ItemAccess::authorized(absolute))));
             }
             Some(ResolvedAlias::Type { .. }) => return Ok(None),
             None => {}
