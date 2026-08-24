@@ -396,10 +396,7 @@ impl Driver {
     ) {
         let hir = self.modules.hir(module_path);
         let same_params = |a: &ResolvedFunctionType, b: &ResolvedFunctionType| {
-            a.params
-                .iter()
-                .map(|(_, t)| t)
-                .eq(b.params.iter().map(|(_, t)| t))
+            a.param_types().eq(b.param_types())
         };
         for i in 1..indices.len() {
             let Some(j) = (0..i).find(|&j| same_params(&signatures[i], &signatures[j])) else {

@@ -275,8 +275,7 @@ impl<'r> Analyzer<'r> {
             }
             let mut score = 0u32;
             let mut ok = true;
-            for ((_, param_type), (arg, fixed_arg)) in
-                fn_type.params.iter().zip(args.iter().zip(&fixed))
+            for (param_type, (arg, fixed_arg)) in fn_type.param_types().zip(args.iter().zip(&fixed))
             {
                 match fixed_arg {
                     Some(checked) => match Self::conversion_cost(param_type, &checked.r#type) {
@@ -347,7 +346,7 @@ impl<'r> Analyzer<'r> {
         let mut final_args = Vec::with_capacity(args.len());
         for (arg, fixed_arg) in args.iter().zip(fixed) {
             let index = final_args.len();
-            let expected = &winner_params[index].1;
+            let expected = &winner_params[index].r#type;
             let checked = match fixed_arg {
                 Some(checked) => checked,
                 None => self.analyze_expr(arg, Some(expected))?,

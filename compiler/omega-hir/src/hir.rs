@@ -1,8 +1,8 @@
 use crate::ids::HirId;
 pub use omega_parser::prelude::{AliasTarget, BinaryOp, LogicalOp};
 use omega_parser::prelude::{
-    ByteStringExpr, ExprPath, FunctionType, Ident, NumberExpr, Origin, Param, Path, RawConvention,
-    SelfMode, Span, StringExpr, Type, Visibility,
+    ByteStringExpr, ExprPath, FunctionType, FunctionTypeParam, Ident, NumberExpr, Origin, Path,
+    RawConvention, SelfMode, Span, StringExpr, Type, Visibility,
 };
 
 #[derive(Debug, Clone)]
@@ -140,13 +140,7 @@ impl HirForeignFunction {
         let params = self
             .params
             .iter()
-            .map(|p| Param {
-                ident: p.ident.clone(),
-                name_span: p.name_span,
-                span: p.span,
-                origin: p.origin,
-                r#type: p.r#type.clone(),
-            })
+            .map(|p| FunctionTypeParam::described(p.ident.clone(), p.span, p.r#type.clone()))
             .collect::<Vec<_>>();
 
         FunctionType {
@@ -204,13 +198,7 @@ impl HirFunctionDef {
         let params = self
             .params
             .iter()
-            .map(|p| Param {
-                ident: p.ident.clone(),
-                name_span: p.name_span,
-                span: p.span,
-                origin: p.origin,
-                r#type: p.r#type.clone(),
-            })
+            .map(|p| FunctionTypeParam::described(p.ident.clone(), p.span, p.r#type.clone()))
             .collect::<Vec<_>>();
 
         FunctionType {

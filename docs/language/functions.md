@@ -71,7 +71,7 @@ println$(Thing::self::same(&t)); # the same call written directly
 
 The implicit receiver adaptation of `value.name(...)` — auto-borrow, auto-deref, mutability checking — applies to instance syntax only. Calling the acquired value, or calling `Type::self::name(receiver, ...)` directly, passes the receiver as an ordinary argument with no adaptation.
 
-Because a member value's receiver parameter is unnamed, it is compatible with any parameter name in that position; every other part of the function type must still match exactly.
+The receiver parameter of a member value carries no descriptor. Descriptors are not part of function-type identity, so the value stores into `(*Thing) => i32` and `(target: *Thing) => i32` alike; every other part of the function type must still match exactly.
 
 ## Return values
 
@@ -111,11 +111,17 @@ Visibility also participates in candidate selection; see [`visibility.md`](visib
 
 ## Function types, calling conventions, and variadics
 
-Function types use the same parameter/return spelling and always denote the implicit **Omega calling convention**:
+Function types always denote the implicit **Omega calling convention**. Each ordinary parameter is written either as a bare `Type` or as `name: Type`, and the two forms may be mixed in one list:
 
 ```omega
-handler : (i32, *u8) => bool;
+handler   : (i32, *u8) => bool;
+described : (code: i32, data: *u8) => bool;
+mixed     : (i32, data: *u8) => bool;
 ```
+
+A written parameter name in a function type is **optional descriptive metadata**, not a binding and not part of the type. The three types above are one type: they are mutually assignable, select the same overload from an expected-type reference, satisfy the same spec requirement, and hash and compare identically. Renaming or removing a descriptor never changes a type's identity, layout, ABI, or mangled symbols; a diagnostic may still render a type with whichever descriptors it happens to carry.
+
+Function *declarations* are unaffected: a function, method, spec member, gap member, or glue member parameter is a binding and must still be written `name: Type`.
 
 `foreign(cc) (...) => T` is the same type shape with an explicit non-Omega calling convention (currently `c` or `sysv64`), used for function pointers/bindings that cross a foreign ABI boundary. See [`foreign-function-interface.md`](foreign-function-interface.md) for the full `foreign` syntax and semantics.
 

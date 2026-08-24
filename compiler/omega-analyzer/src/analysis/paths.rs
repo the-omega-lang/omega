@@ -232,12 +232,7 @@ impl<'r> Analyzer<'r> {
             fn_type.is_variadic == expected.is_variadic
                 && fn_type.self_mode == expected.self_mode
                 && fn_type.return_type == expected.return_type
-                && fn_type.params.len() == expected.params.len()
-                && fn_type
-                    .params
-                    .iter()
-                    .zip(&expected.params)
-                    .all(|((_, a), (_, b))| a == b)
+                && fn_type.params == expected.params
         });
         let first = matches.next()?;
         if matches.next().is_some() {

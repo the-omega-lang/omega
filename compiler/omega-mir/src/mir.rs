@@ -2,7 +2,7 @@ use crate::body::{MirBody, MirInlineAsm};
 use omega_analyzer::annotations::{InlineMode, ManglingMode};
 use omega_analyzer::checked::{CheckedField, CheckedParam, ConformanceOwner};
 use omega_analyzer::resolved_type::{
-    CallingConvention, ConstValue, ResolvedFunctionType, ResolvedType,
+    CallingConvention, ConstValue, ResolvedFunctionParam, ResolvedFunctionType, ResolvedType,
 };
 use omega_hir::ModuleId;
 use omega_parser::prelude::{Ident, SelfMode, Span};
@@ -64,7 +64,7 @@ impl MirForeignFunctionDef {
             params: self
                 .params
                 .iter()
-                .map(|p| (p.ident.clone(), p.r#type.clone()))
+                .map(|p| ResolvedFunctionParam::described(p.ident.clone(), p.r#type.clone()))
                 .collect(),
             return_type: Box::new(self.return_type.clone()),
             is_variadic: self.is_variadic,
@@ -117,7 +117,7 @@ impl MirFunctionDef {
             params: self
                 .params
                 .iter()
-                .map(|p| (p.ident.clone(), p.r#type.clone()))
+                .map(|p| ResolvedFunctionParam::described(p.ident.clone(), p.r#type.clone()))
                 .collect(),
             return_type: Box::new(self.return_type.clone()),
             is_variadic: self.is_variadic,

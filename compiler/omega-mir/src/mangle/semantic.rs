@@ -136,11 +136,7 @@ pub(super) fn mangle_type(ty: &ResolvedType) -> MangleType {
 
 pub(super) fn signature(function: &ResolvedFunctionType) -> FunctionSignature {
     FunctionSignature {
-        params: function
-            .params
-            .iter()
-            .map(|(_, r#type)| mangle_type(r#type))
-            .collect(),
+        params: function.param_types().map(mangle_type).collect(),
         return_type: mangle_type(&function.return_type),
         is_variadic: function.is_variadic,
         convention: mangle_convention(function.calling_convention),

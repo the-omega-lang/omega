@@ -29,6 +29,14 @@ pub struct Param {
     pub r#type: Type,
 }
 
+impl Param {
+    /// This binding's appearance inside a function type, where its name is
+    /// only a descriptor.
+    pub fn as_function_type_param(&self) -> FunctionTypeParam {
+        FunctionTypeParam::described(self.ident.clone(), self.span, self.r#type.clone())
+    }
+}
+
 impl PartialEq for Param {
     fn eq(&self, other: &Self) -> bool {
         self.ident == other.ident && self.r#type == other.r#type
@@ -37,9 +45,38 @@ impl PartialEq for Param {
 
 impl Eq for Param {}
 
+/// A parameter written inside a function type. Unlike a declaration
+/// [`Param`], it binds nothing: `name` is optional descriptive metadata kept
+/// for diagnostics and tooling, so structural equality compares only the
+/// parameter type.
+#[derive(Debug, Clone)]
+pub struct FunctionTypeParam {
+    pub name: Option<Ident>,
+    pub span: Span,
+    pub r#type: Type,
+}
+
+impl FunctionTypeParam {
+    pub fn described(name: Ident, span: Span, r#type: Type) -> Self {
+        Self {
+            name: Some(name),
+            span,
+            r#type,
+        }
+    }
+}
+
+impl PartialEq for FunctionTypeParam {
+    fn eq(&self, other: &Self) -> bool {
+        self.r#type == other.r#type
+    }
+}
+
+impl Eq for FunctionTypeParam {}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunctionType {
-    pub params: Vec<Param>,
+    pub params: Vec<FunctionTypeParam>,
     pub return_type: Box<Type>,
     pub is_variadic: bool,
     pub self_mode: Option<SelfMode>,

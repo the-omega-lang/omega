@@ -1,5 +1,6 @@
 use crate::ast::expression::NumberBase;
-use crate::ast::r#type::{FunctionType, RawConvention, Type};
+use crate::ast::self_mode::SelfMode;
+use crate::ast::r#type::{FunctionType, FunctionTypeParam, RawConvention, Type};
 use crate::diagnostics::ParseErrorKind;
 use crate::lexer::TokenKind;
 use crate::parser::{Parser, contextual, parse_path};
@@ -96,13 +97,21 @@ fn parse_array_size(p: &mut Parser) -> Option<String> {
 
 fn parse_function_type(p: &mut Parser) -> Option<Type> {
     p.advance(); // '('
-    let (self_mode, params) = crate::parser::parse_param_list(p);
-    let is_variadic = if p.eat(&TokenKind::Comma) {
-        p.expect(&TokenKind::DotDotDot, "'...'");
-        true
-    } else {
-        false
-    };
+    let self_mode = parse_function_type_receiver(p);
+    let mut params = Vec::new();
+    let mut is_variadic = false;
+    let mut needs_separator = self_mode.is_some();
+    while !p.check(&TokenKind::RParen) {
+        if needs_separator && !p.eat(&TokenKind::Comma) {
+            break;
+        }
+        if !params.is_empty() && p.eat(&TokenKind::DotDotDot) {
+            is_variadic = true;
+            break;
+        }
+        params.push(parse_function_type_param(p)?);
+        needs_separator = true;
+    }
     p.expect(&TokenKind::RParen, "')'");
     p.expect(&TokenKind::FatArrow, "'=>'");
     let return_type = parse_type(p)?;
@@ -113,6 +122,48 @@ fn parse_function_type(p: &mut Parser) -> Option<Type> {
         self_mode,
         convention: None,
     }))
+}
+
+/// A receiver is recognized only in its exact spellings, so a leading `*`
+/// still begins an ordinary pointer-typed parameter such as `*Thing`.
+fn parse_function_type_receiver(p: &mut Parser) -> Option<SelfMode> {
+    use contextual::{MUT, SELF};
+
+    let by_pointer = p.check(&TokenKind::Star);
+    let head = usize::from(by_pointer);
+    let mutable = p.at_contextual_at(head, MUT) && p.at_contextual_at(head + 1, SELF);
+    if !mutable && !p.at_contextual_at(head, SELF) {
+        return None;
+    }
+    for _ in 0..head + usize::from(mutable) + 1 {
+        p.advance();
+    }
+    Some(match (by_pointer, mutable) {
+        (false, false) => SelfMode::Value,
+        (false, true) => SelfMode::MutValue,
+        (true, false) => SelfMode::Pointer,
+        (true, true) => SelfMode::MutPointer,
+    })
+}
+
+/// `name : type` is the described form; anything else is a bare type. The
+/// name is metadata, so only `identifier ":"` -- never `identifier "::"` --
+/// distinguishes it from a parameter whose type is a plain path.
+fn parse_function_type_param(p: &mut Parser) -> Option<FunctionTypeParam> {
+    let start = p.peek_span();
+    let name = if matches!(p.peek(), TokenKind::Ident(_)) && p.peek_at(1) == &TokenKind::Colon {
+        let ident = p.expect_ident()?;
+        p.advance(); // ':'
+        Some(ident)
+    } else {
+        None
+    };
+    let r#type = parse_type(p)?;
+    Some(FunctionTypeParam {
+        name,
+        span: start.to(p.last_span()),
+        r#type,
+    })
 }
 
 /// `foreign(cc) (...) => T` -- the parenthesized convention is mandatory and

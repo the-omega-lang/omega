@@ -95,7 +95,11 @@ pub struct ForeignFunctionItem {
 impl ForeignFunctionItem {
     pub fn function_type(&self) -> FunctionType {
         FunctionType {
-            params: self.params.clone(),
+            params: self
+                .params
+                .iter()
+                .map(Param::as_function_type_param)
+                .collect(),
             return_type: Box::new(self.return_type.clone()),
             is_variadic: self.is_variadic,
             self_mode: None,

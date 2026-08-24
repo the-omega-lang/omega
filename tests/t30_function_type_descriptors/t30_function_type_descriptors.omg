@@ -1,0 +1,81 @@
+import std::io::println;
+
+struct Thing {
+	exposed v: i32;
+
+	exposed scaled(*self, factor: i32) => i32 { self.v * factor }
+}
+
+add(a: i32, b: i32) => i32 { a + b }
+
+# Overloaded on parameter type only; an uncalled reference is selected by its
+# expected type, whose parameter descriptors must not participate.
+pick(a: i32) => *str { "pick-i32" }
+pick(a: bool) => *str { "pick-bool" }
+
+# An alias target may describe its parameters; the alias and a bare spelling
+# of the same signature are one type.
+alias Binary = (left: i32, right: i32) => i32;
+
+# A parameter whose type is a pointer starts with the same token a pointer
+# receiver does, so this exercises the receiver lookahead.
+takes_thing(t: *Thing) => i32 { t.v }
+
+exposed spec Scale {
+	# The spec's binding names are its own; a conformance names the same
+	# parameters differently and still satisfies the requirement.
+	scale(*self, factor: i32) => i32;
+}
+
+conform Thing to Scale {
+	scale(*self, multiplier: i32) => i32 { self.v * multiplier }
+}
+
+apply(f: (i32, i32) => i32, a: i32, b: i32) => i32 { f(a, b) }
+
+main() => void {
+	# --- the same function value through all three spellings --------------
+	undescribed: (i32, i32) => i32 = add;
+	described: (a: i32, b: i32) => i32 = add;
+	renamed: (left: i32, right: i32) => i32 = add;
+	println$(
+		"three-spellings: ",
+		undescribed(1, 2), " ", described(1, 2), " ", renamed(1, 2)
+	);
+
+	# --- differently described function-pointer variables are assignable --
+	mut slot: (x: i32, y: i32) => i32 = undescribed;
+	slot = described;
+	slot = renamed;
+	println$("assignments: ", slot(10, 20));
+
+	# A descriptor is not part of the parameter type an argument is checked
+	# against either.
+	println$("passed-as-argument: ", apply(renamed, 4, 5));
+
+	# --- an alias whose target carries descriptors ------------------------
+	aliased: Binary = undescribed;
+	from_bare: Binary = add;
+	println$("alias: ", aliased(6, 7), " ", from_bare(6, 7));
+
+	# --- expected-type overload selection ignores descriptors -------------
+	chosen_bare: (bool) => *str = pick;
+	chosen_renamed: (flag: i32) => *str = pick;
+	println$("overload-selection: ", chosen_bare(true), " ", chosen_renamed(1));
+
+	# --- an unnamed pointer-typed first parameter is not a receiver -------
+	pointer_first: (*Thing) => i32 = takes_thing;
+	t := Thing { v = 3; };
+	println$("pointer-first: ", pointer_first(&t));
+
+	# An unbound member value's receiver has no descriptor at all, so it
+	# stores into both spellings of the explicit-receiver function type.
+	bare_receiver: (*Thing, i32) => i32 = Thing::self::scaled;
+	described_receiver: (target: *Thing, factor: i32) => i32 = Thing::self::scaled;
+	println$(
+		"unbound-member: ", bare_receiver(&t, 2), " ", described_receiver(&t, 2)
+	);
+
+	# --- a conformance whose binding names differ from the spec's ---------
+	println$("conformance: ", Scale::scale(&t, 4));
+}

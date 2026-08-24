@@ -14,11 +14,11 @@ impl<'r> Analyzer<'r> {
         let mut coerced = Vec::with_capacity(checked_args.len());
         let mut ok = true;
         for (index, arg) in checked_args.into_iter().enumerate() {
-            let Some((_, expected_type)) = fn_type.params.get(index) else {
+            let Some(param) = fn_type.params.get(index) else {
                 coerced.push(arg);
                 continue;
             };
-            let expected_type = expected_type.clone();
+            let expected_type = param.r#type.clone();
             let arg = self.coerce_to_expected(Some(&expected_type), arg);
             if !expected_type.accepts(&arg.r#type) {
                 self.error(

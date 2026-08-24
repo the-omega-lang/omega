@@ -68,9 +68,7 @@ impl<'r> Analyzer<'r> {
             return true;
         }
         let unsupported = fn_type
-            .params
-            .iter()
-            .map(|(_, ty)| ty)
+            .param_types()
             .chain(std::iter::once(&*fn_type.return_type))
             .find(|ty| !supported_by_value_under_foreign_convention(ty));
         match unsupported {

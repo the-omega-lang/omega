@@ -9,7 +9,9 @@ use omega_analyzer::resolver::{
     ImportTarget, ItemAccess, ModuleResolver, ResolveError, ResolvedAlias,
 };
 use omega_hir::{AliasTarget, HirAlias, HirGenericParam, HirItem};
-use omega_parser::prelude::{FunctionType, Ident, Origin, Param, Path, Type, Visibility};
+use omega_parser::prelude::{
+    FunctionType, FunctionTypeParam, Ident, Origin, Path, Type, Visibility,
+};
 use std::collections::HashMap;
 
 type AliasKey = (ModulePath, Ident);
@@ -955,7 +957,7 @@ impl Driver {
                 params: f
                     .params
                     .iter()
-                    .map(|p| Param {
+                    .map(|p| FunctionTypeParam {
                         r#type: recur(self, &p.r#type),
                         ..p.clone()
                     })

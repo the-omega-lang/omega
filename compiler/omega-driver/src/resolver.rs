@@ -994,7 +994,7 @@ fn rewrite_self(ty: &Type, owner: &Ident, owner_generics: &[Ident]) -> Type {
             params: f
                 .params
                 .iter()
-                .map(|p| omega_parser::prelude::Param {
+                .map(|p| omega_parser::prelude::FunctionTypeParam {
                     r#type: rewrite_self(&p.r#type, owner, owner_generics),
                     ..p.clone()
                 })

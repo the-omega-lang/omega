@@ -368,8 +368,14 @@ fn calling_another_function_interprets_its_own_body() {
 
     let fn_type = crate::resolved_type::ResolvedFunctionType {
         params: vec![
-            (omega_parser::prelude::Ident("a".into()), ResolvedType::I32),
-            (omega_parser::prelude::Ident("b".into()), ResolvedType::I32),
+            crate::resolved_type::ResolvedFunctionParam::described(
+                omega_parser::prelude::Ident("a".into()),
+                ResolvedType::I32,
+            ),
+            crate::resolved_type::ResolvedFunctionParam::described(
+                omega_parser::prelude::Ident("b".into()),
+                ResolvedType::I32,
+            ),
         ],
         return_type: Box::new(ResolvedType::I32),
         is_variadic: false,

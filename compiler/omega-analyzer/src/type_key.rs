@@ -174,12 +174,9 @@ fn write_function(out: &mut String, fn_type: &ResolvedFunctionType) {
     });
     out.push(if fn_type.is_variadic { '.' } else { '_' });
     out.push('(');
-    // Parameter names participate in `ResolvedFunctionType`'s equality, so
-    // they must participate here too or two unequal function types could
-    // share a key.
-    for (name, param) in &fn_type.params {
-        out.push_str(name.as_ref());
-        out.push(':');
+    // Parameter descriptors are not part of `ResolvedFunctionType`'s
+    // equality, so encoding them here would split one type across two keys.
+    for param in fn_type.param_types() {
         write_type(out, param);
         out.push(',');
     }

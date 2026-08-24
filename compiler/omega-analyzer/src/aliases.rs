@@ -8,7 +8,7 @@
 //! and force each of those positions to learn a second, alias-only format.
 
 use crate::resolver::{ImportTarget, ItemAccess, ModuleResolver, ResolveError, ResolvedAlias};
-use omega_parser::prelude::{FunctionType, Ident, Param, Type};
+use omega_parser::prelude::{FunctionType, FunctionTypeParam, Ident, Type};
 
 /// Replaces alias-owned generic parameter names with the types written for
 /// them at the use site. Substituted types keep their own paths, and with them
@@ -34,7 +34,7 @@ pub fn substitute_type_params(ty: &Type, subst: &[(Ident, Type)]) -> Type {
             params: f
                 .params
                 .iter()
-                .map(|p| Param {
+                .map(|p| FunctionTypeParam {
                     r#type: recur(&p.r#type),
                     ..p.clone()
                 })
@@ -262,7 +262,7 @@ fn normalize_type(
         Type::Function(f) => {
             let mut params = Vec::with_capacity(f.params.len());
             for param in &f.params {
-                params.push(Param {
+                params.push(FunctionTypeParam {
                     r#type: recur(&param.r#type, obligations)?,
                     ..param.clone()
                 });

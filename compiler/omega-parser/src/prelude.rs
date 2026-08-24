@@ -25,6 +25,6 @@ pub use crate::ast::statement::{
     FunctionDefinitionStmt, InlineAsmStmt, LoopStmt, ReturnStmt, Statement, StatementNode,
     WhileStmt,
 };
-pub use crate::ast::r#type::{FunctionType, Param, RawConvention, Type};
+pub use crate::ast::r#type::{FunctionType, FunctionTypeParam, Param, RawConvention, Type};
 pub use crate::ast::visibility::Visibility;
 pub use crate::diagnostics::{ParseError, ParseErrorKind, Span};

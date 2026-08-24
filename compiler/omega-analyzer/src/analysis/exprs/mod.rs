@@ -478,8 +478,7 @@ impl<'r> Analyzer<'r> {
                         return None;
                     }
 
-                    let expected_type = (param_index < fn_type.params.len())
-                        .then(|| &fn_type.params[param_index].1);
+                    let expected_type = fn_type.params.get(param_index).map(|param| &param.r#type);
                     let checked_arg = self.analyze_expr(arg, expected_type)?;
                     let checked_arg = self.coerce_to_expected(expected_type, checked_arg);
 

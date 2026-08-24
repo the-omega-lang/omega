@@ -1,7 +1,8 @@
 use crate::checked::Storage;
 use crate::error::TypeResolutionError;
 use crate::resolved_type::{
-    CallingConvention, ResolvedAnonymousEnum, ResolvedFunctionType, ResolvedType,
+    CallingConvention, ResolvedAnonymousEnum, ResolvedFunctionParam, ResolvedFunctionType,
+    ResolvedType,
 };
 use crate::resolver::{
     ImportTarget, ItemAccess, ItemNamespace, ModuleResolver, ResolveError, ResolveItemOptions,
@@ -239,9 +240,12 @@ impl Context {
                     module_path,
                     options.through_indirection(),
                 )
-                .map(|resolved| (param.ident, resolved))
+                .map(|r#type| ResolvedFunctionParam {
+                    name: param.name,
+                    r#type,
+                })
             })
-            .collect::<Result<Vec<(Ident, ResolvedType)>, TypeResolutionError>>()?;
+            .collect::<Result<Vec<ResolvedFunctionParam>, TypeResolutionError>>()?;
         let calling_convention =
             self.resolve_convention(fntype.convention.as_ref().map(|c| &c.name))?;
         if fntype.is_variadic && !calling_convention.supports_variadic() {

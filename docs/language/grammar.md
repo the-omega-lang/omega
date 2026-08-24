@@ -167,7 +167,10 @@ function-type-parameters = [ receiver, [ "," ] ], parameter-list-rest
                          | receiver
                          | parameter-list-rest ;
 
-parameter-list-rest = parameter, { ",", parameter }, [ ",", "..." ] ;
+parameter-list-rest = function-type-parameter, { ",", function-type-parameter },
+                      [ ",", "..." ] ;
+
+function-type-parameter = [ identifier, ":" ], type ;
 
 parameter = identifier, ":", type ;
 
@@ -177,7 +180,7 @@ receiver = "self"
          | "*", "mut", "self" ;
 ```
 
-`function-type` always denotes the implicit Omega calling convention; `foreign-function-type` names an explicit non-Omega one (currently `c` or `sysv64`). Bare `"foreign", function-type` (no `calling-convention`) is not a valid type -- `calling-convention` is mandatory in `foreign-function-type` and immediately follows the keyword, which is also what keeps this production unambiguous with a plain `function-type`'s own leading `"("`. `...` is legal in `parameter-list-rest` only where the enclosing function type's convention supports variadics; an ordinary Omega-convention function is never variadic. See [`functions.md`](functions.md) and [`foreign-function-interface.md`](foreign-function-interface.md).
+A `function-type-parameter`'s `identifier` is optional descriptive metadata and is not part of the type; `parameter` (used by declarations, spec/gap/glue members, and every other binding position) still requires it. A leading `*` begins a `receiver` only in the exact `"*", "self"` / `"*", "mut", "self"` spellings, so `(*Thing) => void` is a parameter whose type is a pointer. `function-type` always denotes the implicit Omega calling convention; `foreign-function-type` names an explicit non-Omega one (currently `c` or `sysv64`). Bare `"foreign", function-type` (no `calling-convention`) is not a valid type -- `calling-convention` is mandatory in `foreign-function-type` and immediately follows the keyword, which is also what keeps this production unambiguous with a plain `function-type`'s own leading `"("`. `...` is legal in `parameter-list-rest` only where the enclosing function type's convention supports variadics; an ordinary Omega-convention function is never variadic. See [`functions.md`](functions.md) and [`foreign-function-interface.md`](foreign-function-interface.md).
 
 ## Functions
 

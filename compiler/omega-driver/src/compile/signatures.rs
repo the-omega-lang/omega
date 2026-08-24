@@ -143,12 +143,7 @@ impl Driver {
         expected.is_variadic == actual.is_variadic
             && expected.self_mode == actual.self_mode
             && expected.return_type == actual.return_type
-            && expected.params.len() == actual.params.len()
-            && expected
-                .params
-                .iter()
-                .zip(&actual.params)
-                .all(|((_, expected), (_, actual))| expected == actual)
+            && expected.params == actual.params
     }
 
     pub(super) fn sweep_gaps(&self) -> (TaggedWarnings, Vec<CompileError>) {

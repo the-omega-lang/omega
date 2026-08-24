@@ -236,6 +236,7 @@ fn nested_path(parent: ManglePath, namespace: Namespace, name: &str) -> ManglePa
 #[cfg(test)]
 mod tests {
     use super::*;
+    use omega_analyzer::resolved_type::ResolvedFunctionParam;
 
     fn ident(name: &str) -> Ident {
         Ident(name.to_owned())
@@ -246,7 +247,9 @@ mod tests {
             params: params
                 .into_iter()
                 .enumerate()
-                .map(|(index, r#type)| (ident(&format!("p{index}")), r#type))
+                .map(|(index, r#type)| {
+                    ResolvedFunctionParam::described(ident(&format!("p{index}")), r#type)
+                })
                 .collect(),
             return_type: Box::new(return_type),
             is_variadic: false,
@@ -261,7 +264,7 @@ mod tests {
         return_type: ResolvedType,
     ) -> ResolvedFunctionType {
         let mut fn_type = fn_type(std::iter::once(receiver).chain(rest).collect(), return_type);
-        fn_type.params[0].0 = ident("self");
+        fn_type.params[0].name = Some(ident("self"));
         fn_type.self_mode = Some(omega_parser::prelude::SelfMode::Pointer);
         fn_type
     }

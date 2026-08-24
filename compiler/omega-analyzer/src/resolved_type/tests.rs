@@ -2,7 +2,10 @@ use super::*;
 
 fn fn_type(convention: CallingConvention) -> ResolvedFunctionType {
     ResolvedFunctionType {
-        params: vec![(Ident("x".into()), ResolvedType::I32)],
+        params: vec![ResolvedFunctionParam::described(
+            Ident("x".into()),
+            ResolvedType::I32,
+        )],
         return_type: Box::new(ResolvedType::I32),
         is_variadic: false,
         self_mode: None,
@@ -476,9 +479,10 @@ fn spec_shape_orders_generic_applications_of_one_spec_deterministically() {
 fn method(self_mode: Option<SelfMode>, receiver: ResolvedType) -> ResolvedMethod {
     let mut fn_type = fn_type(CallingConvention::Omega);
     if self_mode.is_some() {
-        fn_type
-            .params
-            .insert(0, (Ident("self".into()), receiver.clone()));
+        fn_type.params.insert(
+            0,
+            ResolvedFunctionParam::described(Ident("self".into()), receiver.clone()),
+        );
     }
     fn_type.self_mode = self_mode;
     ResolvedMethod {
@@ -526,8 +530,8 @@ fn member_value_view_keeps_receiver_and_drops_declaration_metadata() {
 
     assert_eq!(value.self_mode, None);
     assert_eq!(value.params.len(), member.fn_type.params.len());
-    assert_eq!(value.params[0].1, owner_pointer());
-    assert!(value.params[0].0.as_ref().is_empty());
+    assert_eq!(value.params[0].r#type, owner_pointer());
+    assert_eq!(value.params[0].name, None);
     assert_eq!(
         ResolvedType::Function(value).to_string(),
         "(*i32, x: i32) => i32"
@@ -541,28 +545,98 @@ fn static_value_view_is_unchanged() {
 }
 
 #[test]
-fn unnamed_parameter_accepts_any_name_in_that_position() {
-    // The unbound member value's receiver has no name, so it must still be
-    // storable in a written function type -- which always names its
-    // parameters.
+fn unbound_member_value_stores_into_named_and_unnamed_receiver_types() {
+    // The unbound member value's receiver carries no descriptor, and a
+    // written function type may describe that parameter or not. Descriptors
+    // are not identity, so all three spellings are one type.
     let value =
         ResolvedType::Function(method(Some(SelfMode::Pointer), owner_pointer()).value_fn_type());
-    let mut written = fn_type(CallingConvention::Omega);
-    written
-        .params
-        .insert(0, (Ident("target".into()), owner_pointer()));
-    let written = ResolvedType::Function(written);
 
-    assert!(written.accepts(&value));
-    assert!(value.accepts(&written));
+    let mut described = fn_type(CallingConvention::Omega);
+    described.params.insert(
+        0,
+        ResolvedFunctionParam::described(Ident("target".into()), owner_pointer()),
+    );
+    let described = ResolvedType::Function(described);
+
+    let mut bare = fn_type(CallingConvention::Omega);
+    bare.params
+        .insert(0, ResolvedFunctionParam::anonymous(owner_pointer()));
+    let bare = ResolvedType::Function(bare);
+
+    for written in [&described, &bare] {
+        assert!(written.accepts(&value));
+        assert!(value.accepts(written));
+    }
+    assert_eq!(described, bare);
+}
+
+/// The same `(i32) => i32` written three ways: undescribed, and described
+/// with two different names.
+fn described_as(name: Option<&str>) -> ResolvedFunctionType {
+    let mut described = fn_type(CallingConvention::Omega);
+    described.params[0].name = name.map(|name| Ident(name.into()));
+    described
 }
 
 #[test]
-fn named_parameter_mismatch_is_still_rejected() {
-    let mut renamed = fn_type(CallingConvention::Omega);
-    renamed.params[0].0 = Ident("y".into());
-    let expected = ResolvedType::Function(fn_type(CallingConvention::Omega));
-    assert!(!expected.accepts(&ResolvedType::Function(renamed)));
+fn parameter_descriptors_are_not_part_of_function_type_identity() {
+    let a = described_as(Some("a"));
+    let b = described_as(Some("b"));
+    let bare = described_as(None);
+
+    assert_eq!(a, b);
+    assert_eq!(a, bare);
+    assert!(ResolvedType::Function(a.clone()).accepts(&ResolvedType::Function(bare.clone())));
+    assert!(ResolvedType::Function(bare.clone()).accepts(&ResolvedType::Function(b.clone())));
+
+    let spellings: std::collections::HashSet<ResolvedType> = [a, b, bare]
+        .into_iter()
+        .map(ResolvedType::Function)
+        .collect();
+    assert_eq!(spellings.len(), 1);
+}
+
+#[test]
+fn structural_key_ignores_parameter_descriptors() {
+    let key = |fn_type| crate::type_key::structural_key(&ResolvedType::Function(fn_type));
+    assert_eq!(key(described_as(Some("a"))), key(described_as(Some("b"))));
+    assert_eq!(key(described_as(Some("a"))), key(described_as(None)));
+}
+
+#[test]
+fn everything_except_descriptors_still_separates_function_types() {
+    let base = described_as(Some("a"));
+
+    let mut other_param_type = described_as(Some("a"));
+    other_param_type.params[0].r#type = ResolvedType::I64;
+
+    let mut other_return_type = described_as(Some("b"));
+    other_return_type.return_type = Box::new(ResolvedType::Void);
+
+    let mut extra_param = described_as(None);
+    extra_param
+        .params
+        .push(ResolvedFunctionParam::anonymous(ResolvedType::I32));
+
+    let mut variadic = described_as(None);
+    variadic.calling_convention = CallingConvention::C;
+    variadic.is_variadic = true;
+
+    let mut member = described_as(None);
+    member.self_mode = Some(SelfMode::Pointer);
+
+    for different in [
+        other_param_type,
+        other_return_type,
+        extra_param,
+        variadic,
+        member,
+        fn_type(CallingConvention::C),
+    ] {
+        assert_ne!(base, different);
+        assert!(!ResolvedType::Function(base.clone()).accepts(&ResolvedType::Function(different)));
+    }
 }
 
 #[test]

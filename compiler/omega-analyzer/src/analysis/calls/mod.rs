@@ -703,7 +703,8 @@ impl<'r> Analyzer<'r> {
 
         let mut checked_args = Vec::with_capacity(args.len());
         let mut ok = true;
-        for (arg, (_, expected_type)) in args.iter().zip(&param_types) {
+        for (arg, param) in args.iter().zip(&param_types) {
+            let expected_type = &param.r#type;
             let Some(checked_arg) = self.analyze_expr(arg, Some(expected_type)) else {
                 ok = false;
                 continue;

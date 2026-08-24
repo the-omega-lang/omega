@@ -45,7 +45,10 @@ pub fn raw_type_display(ty: &omega_parser::prelude::Type) -> String {
             let params: Vec<String> = f
                 .params
                 .iter()
-                .map(|p| format!("{}: {}", p.ident.as_ref(), raw_type_display(&p.r#type)))
+                .map(|p| match &p.name {
+                    Some(name) => format!("{name}: {}", raw_type_display(&p.r#type)),
+                    None => raw_type_display(&p.r#type),
+                })
                 .collect();
             format!(
                 "({}) => {}",

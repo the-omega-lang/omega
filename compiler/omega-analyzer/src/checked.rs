@@ -1,4 +1,6 @@
-use crate::resolved_type::{CallingConvention, ConstValue, ResolvedFunctionType, ResolvedType};
+use crate::resolved_type::{
+    CallingConvention, ConstValue, ResolvedFunctionParam, ResolvedFunctionType, ResolvedType,
+};
 use omega_hir::{HirId, ModuleId};
 use omega_parser::prelude::{BinaryOp, Ident, SelfMode, Span};
 
@@ -98,7 +100,7 @@ impl CheckedForeignFunctionDef {
             params: self
                 .params
                 .iter()
-                .map(|p| (p.ident.clone(), p.r#type.clone()))
+                .map(|p| ResolvedFunctionParam::described(p.ident.clone(), p.r#type.clone()))
                 .collect(),
             return_type: Box::new(self.return_type.clone()),
             is_variadic: self.is_variadic,
@@ -157,7 +159,7 @@ impl CheckedFunctionDef {
             params: self
                 .params
                 .iter()
-                .map(|p| (p.ident.clone(), p.r#type.clone()))
+                .map(|p| ResolvedFunctionParam::described(p.ident.clone(), p.r#type.clone()))
                 .collect(),
             return_type: Box::new(self.return_type.clone()),
             is_variadic: self.is_variadic,

@@ -493,7 +493,7 @@ impl<'r> Analyzer<'r> {
             let mut ok = true;
             for p in &raw.params {
                 match this.resolve_type_or_error_in(id, span, &p.r#type, true, module) {
-                    Some(r) => params.push((p.ident.clone(), r)),
+                    Some(r) => params.push(ResolvedFunctionParam::described(p.ident.clone(), r)),
                     None => ok = false,
                 }
             }

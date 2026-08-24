@@ -198,8 +198,11 @@ impl<'r> Analyzer<'r> {
                 Some(adapted) => adapted,
                 None => return Intercepted::Claimed(None),
             };
-            for (index, (arg, (_, expected))) in
-                call.args.iter().zip(&method.fn_type.params).enumerate()
+            for (index, (arg, expected)) in call
+                .args
+                .iter()
+                .zip(method.fn_type.param_types())
+                .enumerate()
             {
                 let checked = if index == 0 {
                     adapted_first.clone()
@@ -437,7 +440,7 @@ impl<'r> Analyzer<'r> {
             }
             let mut checked_args = Vec::with_capacity(call.args.len());
             let mut ok = true;
-            for (arg, (_, expected)) in call.args.iter().zip(&method.fn_type.params) {
+            for (arg, expected) in call.args.iter().zip(method.fn_type.param_types()) {
                 let Some(checked) = self.analyze_expr(arg, Some(expected)) else {
                     ok = false;
                     continue;
@@ -556,8 +559,11 @@ impl<'r> Analyzer<'r> {
                 Some(adapted) => adapted,
                 None => return Intercepted::Claimed(None),
             };
-            for (index, (arg, (_, expected))) in
-                call.args.iter().zip(&method.fn_type.params).enumerate()
+            for (index, (arg, expected)) in call
+                .args
+                .iter()
+                .zip(method.fn_type.param_types())
+                .enumerate()
             {
                 let checked = if index == 0 {
                     adapted_first.clone()

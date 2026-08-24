@@ -39,9 +39,8 @@ impl AbiSignature {
     pub fn build(target: Target, fn_type: &ResolvedFunctionType) -> AbiSignature {
         AbiSignature {
             params: fn_type
-                .params
-                .iter()
-                .flat_map(|(_, ty)| layout::leaves_of(ty, target.pointer_bytes()))
+                .param_types()
+                .flat_map(|ty| layout::leaves_of(ty, target.pointer_bytes()))
                 .collect(),
             ret: AbiReturn::for_type(target, &fn_type.return_type),
         }
@@ -76,14 +75,19 @@ pub fn variadic_promotion(ty: &ResolvedType, target: Target) -> Option<NumericKi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use omega_analyzer::resolved_type::ResolvedFunctionType;
+    use omega_analyzer::resolved_type::{ResolvedFunctionParam, ResolvedFunctionType};
 
     fn fn_type(params: &[ResolvedType], ret: ResolvedType) -> ResolvedFunctionType {
         ResolvedFunctionType {
             params: params
                 .iter()
                 .enumerate()
-                .map(|(i, t)| (omega_parser::prelude::Ident(format!("p{i}")), t.clone()))
+                .map(|(i, t)| {
+                    ResolvedFunctionParam::described(
+                        omega_parser::prelude::Ident(format!("p{i}")),
+                        t.clone(),
+                    )
+                })
                 .collect(),
             return_type: Box::new(ret),
             is_variadic: false,

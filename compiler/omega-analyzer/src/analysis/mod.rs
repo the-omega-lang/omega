@@ -43,8 +43,8 @@ use crate::{
     resolved_type::{
         CallingConvention, CastClass, ConformanceSource, ConstValue, FunctionNamespace,
         NumericKind, RawSpecFunctionSig, ResolvedAnonymousEnum, ResolvedBound, ResolvedEnumType,
-        ResolvedEnumVariant, ResolvedField, ResolvedFunctionType, ResolvedMethod, ResolvedSpecType,
-        ResolvedStructType, ResolvedType, ResolvedUnionType,
+        ResolvedEnumVariant, ResolvedField, ResolvedFunctionParam, ResolvedFunctionType,
+        ResolvedMethod, ResolvedSpecType, ResolvedStructType, ResolvedType, ResolvedUnionType,
     },
     resolver::{
         GenericLiteralSignature, GenericOwnerFunctionSignature, GenericSignature, ImportTarget,

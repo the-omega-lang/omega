@@ -1,0 +1,8 @@
+three-spellings: 3 3 3
+assignments: 30
+passed-as-argument: 9
+alias: 13 13
+overload-selection: pick-bool pick-i32
+pointer-first: 3
+unbound-member: 6 6
+conformance: 12

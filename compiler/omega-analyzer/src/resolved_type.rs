@@ -51,9 +51,47 @@ impl std::fmt::Display for CallingConvention {
     }
 }
 
+/// A resolved function-type parameter. `name` is the optional descriptor
+/// written at the source level, or a declaration's binding name carried
+/// through for presentation. It is metadata only: equality and hashing --
+/// and therefore function-type identity -- depend on `r#type` alone. See
+/// `docs/architecture/types-layout-and-const-eval.md`.
+#[derive(Debug, Clone)]
+pub struct ResolvedFunctionParam {
+    pub name: Option<Ident>,
+    pub r#type: ResolvedType,
+}
+
+impl ResolvedFunctionParam {
+    pub fn described(name: Ident, r#type: ResolvedType) -> Self {
+        Self {
+            name: Some(name),
+            r#type,
+        }
+    }
+
+    pub fn anonymous(r#type: ResolvedType) -> Self {
+        Self { name: None, r#type }
+    }
+}
+
+impl PartialEq for ResolvedFunctionParam {
+    fn eq(&self, other: &Self) -> bool {
+        self.r#type == other.r#type
+    }
+}
+
+impl Eq for ResolvedFunctionParam {}
+
+impl Hash for ResolvedFunctionParam {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.r#type.hash(state);
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ResolvedFunctionType {
-    pub params: Vec<(Ident, ResolvedType)>,
+    pub params: Vec<ResolvedFunctionParam>,
     pub return_type: Box<ResolvedType>,
     pub is_variadic: bool,
     pub self_mode: Option<SelfMode>,
@@ -61,46 +99,33 @@ pub struct ResolvedFunctionType {
 }
 
 impl ResolvedFunctionType {
+    pub fn param_types(&self) -> impl Iterator<Item = &ResolvedType> {
+        self.params.iter().map(|param| &param.r#type)
+    }
+
     /// This declaration's type as an unbound first-class function value.
     ///
     /// HIR lowering already materialized a receiver as parameter 0, so the
     /// value view only drops the declaration-only receiver metadata: the
     /// remaining signature is the real ABI the address was compiled with.
-    /// The synthetic `self` parameter name is dropped with it, because the
-    /// receiver is now an ordinary explicit argument rather than a name the
-    /// callee's own body reaches through.
+    /// The receiver's descriptor is dropped with it, because the receiver is
+    /// now an ordinary explicit argument rather than a name the callee's own
+    /// body reaches through.
     pub fn unbound_value(&self) -> Self {
         let mut value = self.clone();
         if value.self_mode.take().is_some()
-            && let Some((name, _)) = value.params.first_mut()
+            && let Some(receiver) = value.params.first_mut()
         {
-            *name = Ident(String::new());
+            receiver.name = None;
         }
         value
     }
 
     /// Whether a value of type `value` may be used where `self` is expected.
-    ///
-    /// Function types are invariant, so this is equality except for unnamed
-    /// parameters. Only the compiler produces one -- taking a member
-    /// function by address exposes its receiver as one -- so an unnamed
-    /// parameter matches any name in the same position, which is what lets
-    /// an unbound member function value be stored, passed, and returned as
-    /// an ordinary function type.
+    /// Function types are invariant, and parameter descriptors are not part
+    /// of their identity, so this is exactly equality.
     pub fn accepts(&self, value: &Self) -> bool {
-        self.return_type == value.return_type
-            && self.is_variadic == value.is_variadic
-            && self.self_mode == value.self_mode
-            && self.calling_convention == value.calling_convention
-            && self.params.len() == value.params.len()
-            && self.params.iter().zip(&value.params).all(
-                |((expected_name, expected), (found_name, found))| {
-                    expected == found
-                        && (expected_name == found_name
-                            || expected_name.as_ref().is_empty()
-                            || found_name.as_ref().is_empty())
-                },
-            )
+        self == value
     }
 }
 
@@ -780,14 +805,13 @@ impl std::fmt::Display for ResolvedType {
                     write!(f, "{}", self_mode_spelling(self_mode))?;
                     wrote_param = true;
                 }
-                for (name, param) in &fn_type.params {
+                for param in &fn_type.params {
                     if wrote_param {
                         write!(f, ", ")?;
                     }
-                    if name.as_ref().is_empty() {
-                        write!(f, "{param}")?;
-                    } else {
-                        write!(f, "{}: {param}", name.as_ref())?;
+                    match &param.name {
+                        Some(name) => write!(f, "{name}: {}", param.r#type)?,
+                        None => write!(f, "{}", param.r#type)?,
                     }
                     wrote_param = true;
                 }

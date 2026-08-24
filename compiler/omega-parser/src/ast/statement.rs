@@ -138,7 +138,11 @@ pub struct FunctionDefinitionStmt {
 impl FunctionDefinitionStmt {
     pub fn function_type(&self) -> FunctionType {
         FunctionType {
-            params: self.params.clone(),
+            params: self
+                .params
+                .iter()
+                .map(Param::as_function_type_param)
+                .collect(),
             return_type: Box::new(self.return_type.clone()),
             is_variadic: false,
             self_mode: self.self_mode,

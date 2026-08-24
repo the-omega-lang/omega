@@ -6,7 +6,7 @@ fn fn_type(convention: CallingConvention, params: Vec<ResolvedType>) -> Resolved
         params: params
             .into_iter()
             .enumerate()
-            .map(|(index, ty)| (Ident(format!("p{index}")), ty))
+            .map(|(index, ty)| ResolvedFunctionParam::described(Ident(format!("p{index}")), ty))
             .collect(),
         return_type: Box::new(ResolvedType::Void),
         is_variadic: false,

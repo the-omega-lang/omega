@@ -41,7 +41,10 @@ impl<'r> Analyzer<'r> {
                     ok = false;
                     continue;
                 };
-                params.push((param.ident.clone(), r#type));
+                params.push(ResolvedFunctionParam::described(
+                    param.ident.clone(),
+                    r#type,
+                ));
             }
             let Some(return_type) = self.resolve_return_type_or_error(
                 function.id,
@@ -339,7 +342,7 @@ impl<'r> Analyzer<'r> {
         }
         let params = self.analyze_all(&f.params, |this, p| {
             this.resolve_type_or_error(p.id, p.span, &p.r#type, true)
-                .map(|t| (p.ident.clone(), t))
+                .map(|t| ResolvedFunctionParam::described(p.ident.clone(), t))
         })?;
         let return_type = self.resolve_return_type_or_error(f.id, f.span, &f.return_type, true)?;
         let calling_convention = match self
@@ -403,11 +406,11 @@ impl<'r> Analyzer<'r> {
                     .params
                     .iter()
                     .zip(&f.params)
-                    .map(|((ident, r#type), p)| CheckedParam {
+                    .map(|(param, p)| CheckedParam {
                         id: p.id,
                         span: p.span,
-                        ident: ident.clone(),
-                        r#type: r#type.clone(),
+                        ident: p.ident.clone(),
+                        r#type: param.r#type.clone(),
                     })
                     .collect(),
                 return_type: (*fn_type.return_type).clone(),
@@ -528,10 +531,14 @@ impl<'r> Analyzer<'r> {
         self.check_redundant_hidden(f.id, f.explicit_hidden_span);
         let params = self.analyze_all(&f.params, |this, p| {
             this.resolve_type_or_error(p.id, p.span, &p.r#type, true)
-                .map(|t| (p.ident.clone(), t))
+                .map(|t| ResolvedFunctionParam::described(p.ident.clone(), t))
         })?;
 
-        for (p, (_, r#type)) in f.params.iter().zip(params.iter()) {
+        for (p, r#type) in f
+            .params
+            .iter()
+            .zip(params.iter().map(|param| &param.r#type))
+        {
             if matches!(
                 r#type,
                 ResolvedType::Struct(_)
@@ -597,11 +604,7 @@ impl<'r> Analyzer<'r> {
                 if FunctionNamespace::of(sig_i) != FunctionNamespace::of(sig_j) {
                     continue;
                 }
-                let same_params = sig_i
-                    .params
-                    .iter()
-                    .map(|(_, t)| t)
-                    .eq(sig_j.params.iter().map(|(_, t)| t));
+                let same_params = sig_i.param_types().eq(sig_j.param_types());
                 if same_params {
                     self.error(
                         functions[i].id,
@@ -619,8 +622,8 @@ impl<'r> Analyzer<'r> {
                 if FunctionNamespace::of(sig_i) == FunctionNamespace::Member {
                     let same_rest = sig_i.params[1..]
                         .iter()
-                        .map(|(_, t)| t)
-                        .eq(sig_j.params[1..].iter().map(|(_, t)| t));
+                        .map(|param| &param.r#type)
+                        .eq(sig_j.params[1..].iter().map(|param| &param.r#type));
                     if same_rest {
                         self.error(
                             functions[i].id,

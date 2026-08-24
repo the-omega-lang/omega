@@ -54,7 +54,9 @@ Aggregate members use a dedicated `ResolvedField { name, type, visibility }` rep
 
 ## Function types
 
-`ResolvedFunctionType` contains resolved parameter types, return type, variadic flag, and self-mode information. It is the input to shared ABI construction.
+`ResolvedFunctionType` contains its parameters, return type, variadic flag, self-mode information, and calling convention. It is the input to shared ABI construction.
+
+A parameter is a `ResolvedFunctionParam { name: Option<Ident>, type }`. The optional name is a **descriptor**: presentation/tooling metadata carried through resolution, alias expansion, and generic substitution, but deliberately excluded from identity. `ResolvedFunctionParam`'s own `PartialEq`/`Eq`/`Hash` read only `type`, which is what makes descriptor-independence a property of the representation rather than a rule every comparison site has to remember. `type_key::write_function` must stay consistent with that and encode parameter types only, or one type would split across two structural keys. Descriptors likewise never reach layout, ABI, or mangling.
 
 Method receiver shape is semantically explicit by this point; codegen should not re-infer source receiver modes.
 
