@@ -28,6 +28,16 @@ my_function_that_errors_more() => Result<void, enum ErrorA | ErrorB | ErrorC> {
 	return Result::Err { value = ErrorC{}; };
 }
 
+struct MyStruct {
+	exposed number: i32;
+	exposed member_function(*self) => void {
+		println$("hello, this is my pointer: ", <usize>self);
+		println$("my number is: ", self.number);
+	}
+}
+
 main() => void {
-	
+	fnptr := MyStruct::self::member_function;
+	mystruct := MyStruct { number = 10; };
+	fnptr(&mystruct);
 }
