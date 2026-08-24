@@ -6,7 +6,9 @@ pub use kind::AnalysisErrorKind;
 pub use render::resolve_error_diagnostic;
 pub use warning::{AnalysisWarning, AnalysisWarningKind};
 
-use crate::resolved_type::{CallingConvention, NumericKind, ResolvedFunctionType, ResolvedType};
+use crate::resolved_type::{
+    CallingConvention, FunctionNamespace, NumericKind, ResolvedFunctionType, ResolvedType,
+};
 use crate::resolver::ResolveError;
 use crate::target::Target;
 use omega_diagnostics::Diagnostic;

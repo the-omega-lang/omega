@@ -2,10 +2,11 @@ use crate::{Driver, ModulePath};
 use omega_analyzer::analysis::item_visibility;
 use omega_analyzer::checked::{CheckedFunctionDef, CheckedItem};
 use omega_analyzer::resolved_type::{
-    ConstValue, ResolvedConformance, ResolvedMethod, ResolvedSpecType, ResolvedType,
+    ConstValue, FunctionNamespace, ResolvedConformance, ResolvedMethod, ResolvedSpecType,
+    ResolvedType,
 };
 use omega_analyzer::resolver::{
-    GenericLiteralSignature, GenericSignature, GenericStaticFunctionSignature, ImportTarget,
+    GenericLiteralSignature, GenericOwnerFunctionSignature, GenericSignature, ImportTarget,
     ItemAccess, ItemNamespace, ModuleResolver, OverloadCandidate, OverloadCandidates, ResolveError,
     ResolveItemOptions, ResolvedAlias, ResolvedItem, ResolvedOverloadSet,
 };
@@ -699,11 +700,12 @@ impl ModuleResolver for Driver {
         }))
     }
 
-    fn generic_static_function_signature(
+    fn generic_owner_function_signature(
         &mut self,
         owner_absolute: &[Ident],
         function_name: &Ident,
-    ) -> Result<Option<GenericStaticFunctionSignature>, ResolveError> {
+        namespace: FunctionNamespace,
+    ) -> Result<Option<GenericOwnerFunctionSignature>, ResolveError> {
         let owner_absolute = self.canonical_query_path(owner_absolute);
         let Some((name, module_path)) = owner_absolute.split_last() else {
             return Err(ResolveError::UnknownModule(owner_absolute.to_vec()));
@@ -721,12 +723,12 @@ impl ModuleResolver for Driver {
         if owner_generics.is_empty() {
             return Ok(None);
         }
-        // Exactly one candidate only -- 2+ overloaded statics under this
-        // name is `resolve_overloaded_static_call`'s own concern (once the
+        // Exactly one candidate only -- 2+ overloads under this name is
+        // `resolve_type_qualified_overload_call`'s own concern (once the
         // owner is concrete); this must not silently pick a first match.
-        let mut matches = functions
-            .iter()
-            .filter(|f| &f.name == function_name && f.self_mode.is_none());
+        let mut matches = functions.iter().filter(|f| {
+            &f.name == function_name && FunctionNamespace::of_declaration(f.self_mode) == namespace
+        });
         let f = matches.next();
         if matches.next().is_some() {
             return Ok(None);
@@ -734,19 +736,20 @@ impl ModuleResolver for Driver {
         let Some(f) = f else {
             return Ok(None);
         };
-        Ok(Some(GenericStaticFunctionSignature {
-            owner_generics: owner_generics.iter().map(|g| g.ident.clone()).collect(),
+        let generics: Vec<Ident> = owner_generics.iter().map(|g| g.ident.clone()).collect();
+        Ok(Some(GenericOwnerFunctionSignature {
+            owner_generics: generics.clone(),
             owner_defaults: owner_generics.iter().map(|g| g.default.clone()).collect(),
             function_generics: f.generics.iter().map(|g| g.ident.clone()).collect(),
-            params: f.params.iter().map(|p| p.r#type.clone()).collect(),
-            return_type: rewrite_self_return(
-                &f.return_type,
-                name,
-                &owner_generics
-                    .iter()
-                    .map(|g| g.ident.clone())
-                    .collect::<Vec<_>>(),
-            ),
+            // A member's synthetic receiver is written in terms of `Self`,
+            // which inference cannot solve; the owner applied to its own
+            // generic parameters is the same type and is solvable.
+            params: f
+                .params
+                .iter()
+                .map(|p| rewrite_self(&p.r#type, name, &generics))
+                .collect(),
+            return_type: rewrite_self(&f.return_type, name, &generics),
         }))
     }
 
@@ -950,7 +953,7 @@ impl ModuleResolver for Driver {
     }
 }
 
-fn rewrite_self_return(ty: &Type, owner: &Ident, owner_generics: &[Ident]) -> Type {
+fn rewrite_self(ty: &Type, owner: &Ident, owner_generics: &[Ident]) -> Type {
     match ty {
         Type::Named(path) if path.is_unqualified() && &path.head == &Ident("Self".to_string()) => {
             Type::Generic(
@@ -962,29 +965,29 @@ fn rewrite_self_return(ty: &Type, owner: &Ident, owner_generics: &[Ident]) -> Ty
             )
         }
         Type::Pointer(inner, mutable) => Type::Pointer(
-            Box::new(rewrite_self_return(inner, owner, owner_generics)),
+            Box::new(rewrite_self(inner, owner, owner_generics)),
             *mutable,
         ),
         Type::InferredArray(inner) => {
-            Type::InferredArray(Box::new(rewrite_self_return(inner, owner, owner_generics)))
+            Type::InferredArray(Box::new(rewrite_self(inner, owner, owner_generics)))
         }
         Type::UnknownSizeArray(inner) => {
-            Type::UnknownSizeArray(Box::new(rewrite_self_return(inner, owner, owner_generics)))
+            Type::UnknownSizeArray(Box::new(rewrite_self(inner, owner, owner_generics)))
         }
         Type::SizedArray(inner, n) => Type::SizedArray(
-            Box::new(rewrite_self_return(inner, owner, owner_generics)),
+            Box::new(rewrite_self(inner, owner, owner_generics)),
             n.clone(),
         ),
         Type::SpecStatic(members) => Type::SpecStatic(
             members
                 .iter()
-                .map(|m| rewrite_self_return(m, owner, owner_generics))
+                .map(|m| rewrite_self(m, owner, owner_generics))
                 .collect(),
         ),
         Type::Generic(path, args) => Type::Generic(
             path.clone(),
             args.iter()
-                .map(|arg| rewrite_self_return(arg, owner, owner_generics))
+                .map(|arg| rewrite_self(arg, owner, owner_generics))
                 .collect(),
         ),
         Type::Function(f) => Type::Function(FunctionType {
@@ -992,11 +995,11 @@ fn rewrite_self_return(ty: &Type, owner: &Ident, owner_generics: &[Ident]) -> Ty
                 .params
                 .iter()
                 .map(|p| omega_parser::prelude::Param {
-                    r#type: rewrite_self_return(&p.r#type, owner, owner_generics),
+                    r#type: rewrite_self(&p.r#type, owner, owner_generics),
                     ..p.clone()
                 })
                 .collect(),
-            return_type: Box::new(rewrite_self_return(&f.return_type, owner, owner_generics)),
+            return_type: Box::new(rewrite_self(&f.return_type, owner, owner_generics)),
             is_variadic: f.is_variadic,
             self_mode: f.self_mode,
             convention: f.convention.clone(),

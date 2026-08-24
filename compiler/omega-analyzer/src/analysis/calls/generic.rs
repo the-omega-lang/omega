@@ -37,7 +37,10 @@ impl<'r> Analyzer<'r> {
         ok.then_some(coerced)
     }
 
-    pub(crate) fn resolve_generic_static_call(
+    /// `GenericOwner::name(...)` and `GenericOwner::self::name(receiver, ...)`
+    /// where the owner's type arguments are inferred from the call. A member
+    /// call infers them from its explicit receiver argument like any other.
+    pub(crate) fn resolve_generic_owner_function_call(
         &mut self,
         node_id: HirId,
         span: Span,
@@ -47,8 +50,12 @@ impl<'r> Analyzer<'r> {
         let Some(path) = Self::callee_path(call) else {
             return Intercepted::Declined;
         };
-        let [member] = path.tail.as_slice() else {
-            return Intercepted::Declined;
+        let (namespace, member) = match path.tail.as_slice() {
+            [member] => (FunctionNamespace::Static, member),
+            [segment, member] if segment.as_ref() == FunctionNamespace::MEMBER_SEGMENT => {
+                (FunctionNamespace::Member, member)
+            }
+            _ => return Intercepted::Declined,
         };
         if self.context.find_defined_type(&path.head).is_some() {
             return Intercepted::Declined;
@@ -83,11 +90,12 @@ impl<'r> Analyzer<'r> {
             };
         let absolute = access.absolute.clone();
 
-        let Some((real_absolute, sig)) = self.generic_static_function_signature_with_ambient(
+        let Some((real_absolute, sig)) = self.generic_owner_function_signature_with_ambient(
             &accessor,
             std::slice::from_ref(&path.head),
             &absolute,
             member,
+            namespace,
         ) else {
             return Intercepted::Declined;
         };
@@ -102,7 +110,7 @@ impl<'r> Analyzer<'r> {
             bypass_visibility: access.bypass_visibility && real_absolute == absolute,
             absolute: real_absolute,
         };
-        Intercepted::Claimed(self.finish_generic_static_call(
+        Intercepted::Claimed(self.finish_generic_owner_function_call(
             node_id,
             span,
             call,
@@ -110,21 +118,23 @@ impl<'r> Analyzer<'r> {
             std::slice::from_ref(&path.head),
             &owner,
             member,
+            namespace,
             &sig,
             expected,
         ))
     }
 
-    fn generic_static_function_signature_with_ambient(
+    fn generic_owner_function_signature_with_ambient(
         &mut self,
         accessor: &[Ident],
         prefix: &[Ident],
         absolute: &[Ident],
         function_name: &Ident,
-    ) -> Option<(Vec<Ident>, GenericStaticFunctionSignature)> {
-        if let Ok(Some(sig)) = self
-            .resolver
-            .generic_static_function_signature(absolute, function_name)
+        namespace: FunctionNamespace,
+    ) -> Option<(Vec<Ident>, GenericOwnerFunctionSignature)> {
+        if let Ok(Some(sig)) =
+            self.resolver
+                .generic_owner_function_signature(absolute, function_name, namespace)
         {
             return Some((absolute.to_vec(), sig));
         }
@@ -136,7 +146,7 @@ impl<'r> Analyzer<'r> {
             .flatten()?;
         let sig = self
             .resolver
-            .generic_static_function_signature(&ambient, function_name)
+            .generic_owner_function_signature(&ambient, function_name, namespace)
             .ok()
             .flatten()?;
         Some((ambient, sig))
@@ -186,7 +196,8 @@ impl<'r> Analyzer<'r> {
         None
     }
 
-    fn finish_generic_static_call(
+    #[allow(clippy::too_many_arguments)]
+    fn finish_generic_owner_function_call(
         &mut self,
         node_id: HirId,
         span: Span,
@@ -195,7 +206,8 @@ impl<'r> Analyzer<'r> {
         prefix: &[Ident],
         owner: &ItemAccess,
         member: &Ident,
-        sig: &GenericStaticFunctionSignature,
+        namespace: FunctionNamespace,
+        sig: &GenericOwnerFunctionSignature,
         expected: Option<&ResolvedType>,
     ) -> Option<CheckedExprNode> {
         let (checked_args, subst) = self.infer_generic_args(
@@ -259,14 +271,12 @@ impl<'r> Analyzer<'r> {
                 }
             };
 
-        let all_methods = owner_type
-            .declared_methods()
-            .expect("generic static signatures only come from aggregate types");
-        let method = all_methods
+        let method = owner_type
+            .candidates_in(namespace, member)
+            .expect("generic owner signatures only come from aggregate types")
             .into_iter()
-            .find(|(name, m)| name == member && m.fn_type.self_mode.is_none())
-            .map(|(_, m)| m)
-            .expect("generic_static_function_signature confirmed this static function exists");
+            .next()
+            .expect("generic_owner_function_signature confirmed this function exists");
 
         let (owner_module_path, owner_id) = owner_type
             .declaring_owner()
@@ -283,9 +293,10 @@ impl<'r> Analyzer<'r> {
             return None;
         }
 
-        let ResolvedMethod {
-            decl_id, fn_type, ..
-        } = method;
+        let decl_id = method.decl_id;
+        // A member reached this way is an ordinary function value: the
+        // receiver is the first written argument, never adapted.
+        let fn_type = method.value_fn_type();
         if checked_args.len() != fn_type.params.len() && !fn_type.is_variadic {
             self.error(
                 node_id,

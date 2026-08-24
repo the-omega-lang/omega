@@ -1,7 +1,14 @@
 use super::*;
 
 impl<'r> Analyzer<'r> {
-    pub(crate) fn resolve_overloaded_static_call(
+    /// Overloaded `Type::name(...)` and `Type::self::name(...)` calls.
+    ///
+    /// A single candidate needs no interception: the ordinary callee path
+    /// resolves the same namespace through `resolve_type_member`. Only an
+    /// overload set needs the arguments to choose, and a member call ranks
+    /// against the unbound signature -- receiver included -- because
+    /// `Type::self::name` supplies no implicit receiver.
+    pub(crate) fn resolve_type_qualified_overload_call(
         &mut self,
         node_id: HirId,
         span: Span,
@@ -11,8 +18,12 @@ impl<'r> Analyzer<'r> {
         let Some(path) = Self::callee_path(call) else {
             return Intercepted::Declined;
         };
-        let [member] = path.tail.as_slice() else {
-            return Intercepted::Declined;
+        let (namespace, member) = match path.tail.as_slice() {
+            [member] => (FunctionNamespace::Static, member),
+            [segment, member] if segment.as_ref() == FunctionNamespace::MEMBER_SEGMENT => {
+                (FunctionNamespace::Member, member)
+            }
+            _ => return Intercepted::Declined,
         };
 
         // A module binding wins over a type/static-member interpretation.
@@ -69,21 +80,16 @@ impl<'r> Analyzer<'r> {
             },
         };
 
-        let Some(all_methods) = r#type.declared_methods() else {
+        let Some(overloads) = r#type.candidates_in(namespace, member) else {
             return Intercepted::Declined;
         };
-        let statics: Vec<ResolvedMethod> = all_methods
-            .into_iter()
-            .filter(|(name, m)| name == member && m.fn_type.self_mode.is_none())
-            .map(|(_, m)| m)
-            .collect();
-        if statics.len() < 2 {
+        if overloads.len() < 2 {
             return Intercepted::Declined;
         }
 
-        let candidates: Vec<(HirId, ResolvedFunctionType)> = statics
+        let candidates: Vec<(HirId, ResolvedFunctionType)> = overloads
             .iter()
-            .map(|m| (m.decl_id, m.fn_type.clone()))
+            .map(|m| (m.decl_id, m.value_fn_type()))
             .collect();
         let Some((winner, args)) =
             self.resolve_overload(node_id, span, member, &candidates, &call.args)
@@ -95,7 +101,8 @@ impl<'r> Analyzer<'r> {
         let (owner_module_path, owner_id) = r#type
             .declaring_owner()
             .unwrap_or_else(|| (Vec::new(), node_id));
-        if !self.check_member_visibility(statics[winner].visibility, &owner_module_path, owner_id) {
+        if !self.check_member_visibility(overloads[winner].visibility, &owner_module_path, owner_id)
+        {
             self.error(
                 node_id,
                 span,

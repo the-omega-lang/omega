@@ -79,6 +79,8 @@ as_c := <foreign(c) (a: i32, b: i32) => i32><*void>omega_handler;
 
 The destination function type is what a later indirect call obeys; the cast itself neither converts nor validates an ABI. A `foreign(cc)` function pointer's signature is checked where the ABI is actually relied upon -- at the declaration and at the call.
 
+Taking a member function's address through `Type::self::name` (see [`functions.md`](functions.md#unbound-member-function-values)) produces exactly this one address too. It builds no adapter: the receiver the declaration wrote as `self` is already an ordinary leading parameter in the compiled signature, so the acquired value's function type just states it explicitly. Receiver *metadata* -- the `self`/`*mut self` form a declaration writes -- belongs to the ordinary method-call adaptation of `value.name(...)` and is not part of the acquired value's type.
+
 Function values do not participate in numeric casts: `<usize>handler` and `<(i32) => void>some_address_integer` are both invalid. Going through a thin raw pointer expresses either direction explicitly.
 
 ### Casts into an anonymous enum

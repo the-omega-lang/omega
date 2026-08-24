@@ -184,7 +184,13 @@ impl<'r> Analyzer<'r> {
             {
                 match self.resolve_item_checked(&ItemAccess::gated(missing.clone()), &[], true) {
                     Ok(ResolvedItem::Type(t)) => self
-                        .resolve_type_member(node_id, span, &t, &absolute[missing.len()..])
+                        .resolve_type_member(
+                            node_id,
+                            span,
+                            &t,
+                            &absolute[missing.len()..],
+                            expected,
+                        )
                         .map(|(root, r#type)| (root, r#type, false)),
                     Ok(ResolvedItem::Gap(gap)) => self
                         .resolve_gap_member(node_id, span, &gap, &absolute[missing.len()..])
@@ -261,10 +267,11 @@ impl<'r> Analyzer<'r> {
                     span,
                     &ResolvedType::Str { mutable: false },
                     &path.tail,
+                    expected,
                 );
             }
             if let Some(head_type) = self.context.find_defined_type(&path.head).cloned() {
-                return self.resolve_type_member(node_id, span, &head_type, &path.tail);
+                return self.resolve_type_member(node_id, span, &head_type, &path.tail, expected);
             }
         }
 
@@ -278,7 +285,7 @@ impl<'r> Analyzer<'r> {
             None => {
                 let alias = self.resolve_path_alias_or_error(node_id, span, path)?;
                 if let Some(ImportTarget::Item(_, ResolvedItem::Type(t))) = alias {
-                    return self.resolve_type_member(node_id, span, &t, &path.tail);
+                    return self.resolve_type_member(node_id, span, &t, &path.tail, expected);
                 }
                 if let Some(ImportTarget::Item(_, ResolvedItem::Gap(gap))) = alias {
                     return self.resolve_gap_member(node_id, span, &gap, &path.tail);
@@ -329,7 +336,7 @@ impl<'r> Analyzer<'r> {
         };
         let kind = match result {
             Ok(ResolvedItem::Type(t)) => {
-                return self.resolve_type_member(node_id, span, &t, &path.tail);
+                return self.resolve_type_member(node_id, span, &t, &path.tail, expected);
             }
             Ok(ResolvedItem::Gap(gap)) => {
                 return self.resolve_gap_member(node_id, span, &gap, &path.tail);
@@ -359,10 +366,17 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         expr_path: &ExprPath,
+        expected: Option<&ResolvedType>,
     ) -> Option<(CheckedPlaceRoot, ResolvedType)> {
         let segments = expr_path.path.segments();
         let rest = &segments[expr_path.args_at + 1..];
-        if rest.len() > 1 {
+        // One member segment, or the two that select the member namespace.
+        let too_deep = match rest {
+            [] | [_] => false,
+            [first, _] => first.as_ref() != FunctionNamespace::MEMBER_SEGMENT,
+            _ => true,
+        };
+        if too_deep {
             self.error(
                 node_id,
                 span,
@@ -383,7 +397,9 @@ impl<'r> Analyzer<'r> {
                 self.error(node_id, span, AnalysisErrorKind::NotAValue(absolute));
                 None
             }
-            Ok(ResolvedItem::Type(t)) => self.resolve_type_member(node_id, span, &t, rest),
+            Ok(ResolvedItem::Type(t)) => {
+                self.resolve_type_member(node_id, span, &t, rest, expected)
+            }
             Ok(ResolvedItem::Value {
                 r#type,
                 storage,
@@ -530,191 +546,206 @@ impl<'r> Analyzer<'r> {
         ))
     }
 
+    /// The namespace a type-qualified tail selects, the function it names,
+    /// and anything written after that function.
+    ///
+    /// `self` is contextual here: it only opens the member namespace
+    /// directly after a resolved type and only when a further segment
+    /// follows, so `Type::self` still names a static function or enum
+    /// variant literally called `self`, and a leading module-relative
+    /// `self::...` is never reinterpreted.
+    fn select_function_namespace(rest: &[Ident]) -> (FunctionNamespace, &Ident, &[Ident]) {
+        if let [segment, function, deeper @ ..] = rest
+            && segment.as_ref() == FunctionNamespace::MEMBER_SEGMENT
+        {
+            return (FunctionNamespace::Member, function, deeper);
+        }
+        let (function, deeper) = rest
+            .split_first()
+            .expect("a type-qualified path always names at least one member");
+        (FunctionNamespace::Static, function, deeper)
+    }
+
+    /// The declaration-owned functions of a concrete owner, together with
+    /// what a diagnostic needs to name it. `None` means the type owns no
+    /// function declarations at all and the error was already reported.
+    fn owner_functions(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        r#type: &ResolvedType,
+    ) -> Option<OwnerFunctions> {
+        match r#type {
+            ResolvedType::Struct(cell) => {
+                let owner = cell.borrow();
+                Some(OwnerFunctions {
+                    name: owner.name.clone(),
+                    functions: owner.functions.clone(),
+                    module_path: owner.module_path.clone(),
+                    id: owner.id,
+                    variants: None,
+                })
+            }
+            ResolvedType::Union(cell) => {
+                let owner = cell.borrow();
+                Some(OwnerFunctions {
+                    name: owner.name.clone(),
+                    functions: owner.functions.clone(),
+                    module_path: owner.module_path.clone(),
+                    id: owner.id,
+                    variants: None,
+                })
+            }
+            ResolvedType::Enum { cell, .. } => {
+                let owner = cell.borrow();
+                Some(OwnerFunctions {
+                    name: owner.name.clone(),
+                    functions: owner.functions.clone(),
+                    module_path: owner.module_path.clone(),
+                    id: owner.id,
+                    variants: Some(owner.variants.iter().map(|v| v.name.clone()).collect()),
+                })
+            }
+            other => {
+                let functions = match self.resolver.primitive_methods(other) {
+                    Ok(functions) => functions,
+                    Err(err) => {
+                        self.error(node_id, span, AnalysisErrorKind::ModuleResolution(err));
+                        return None;
+                    }
+                };
+                if functions.is_empty() {
+                    self.error(
+                        node_id,
+                        span,
+                        AnalysisErrorKind::StaticAccessOnNonStruct {
+                            found: other.clone(),
+                        },
+                    );
+                    return None;
+                }
+                Some(OwnerFunctions {
+                    name: Ident(other.to_string()),
+                    functions,
+                    module_path: Vec::new(),
+                    id: node_id,
+                    variants: None,
+                })
+            }
+        }
+    }
+
     fn resolve_type_member(
         &mut self,
         node_id: HirId,
         span: Span,
         r#type: &ResolvedType,
         rest: &[Ident],
+        expected: Option<&ResolvedType>,
     ) -> Option<(CheckedPlaceRoot, ResolvedType)> {
-        let member = &rest[0];
-        let (type_name, mut method, missing_member_error, mut owner_module_path, mut owner_id) =
-            match r#type {
-                ResolvedType::Struct(cell) => {
-                    let struct_type = cell.borrow();
-                    let method = struct_type
-                        .functions
-                        .iter()
-                        .find(|(name, _)| name == member)
-                        .map(|(_, method)| method.clone());
-                    let similar = match method {
-                        Some(_) => None,
-                        None => {
-                            best_match(member, struct_type.functions.iter().map(|(name, _)| name))
-                        }
-                    };
-                    let missing = AnalysisErrorKind::NoSuchStructFunction {
-                        r#struct: struct_type.name.clone(),
-                        function: member.clone(),
-                        similar,
-                    };
-                    (
-                        struct_type.name.clone(),
-                        method,
-                        missing,
-                        struct_type.module_path.clone(),
-                        struct_type.id,
-                    )
-                }
-                ResolvedType::Union(cell) => {
-                    let union_type = cell.borrow();
-                    let method = union_type
-                        .functions
-                        .iter()
-                        .find(|(name, _)| name == member)
-                        .map(|(_, method)| method.clone());
-                    let similar = match method {
-                        Some(_) => None,
-                        None => {
-                            best_match(member, union_type.functions.iter().map(|(name, _)| name))
-                        }
-                    };
-                    let missing = AnalysisErrorKind::NoSuchStructFunction {
-                        r#struct: union_type.name.clone(),
-                        function: member.clone(),
-                        similar,
-                    };
-                    (
-                        union_type.name.clone(),
-                        method,
-                        missing,
-                        union_type.module_path.clone(),
-                        union_type.id,
-                    )
-                }
-                ResolvedType::Enum { cell, .. } => {
-                    let found = cell.borrow().variant(member).map(|(i, v)| (i, v.clone()));
-                    if let Some((variant_index, variant)) = found {
-                        return self.resolve_unit_variant(
-                            node_id,
-                            span,
-                            cell,
-                            variant_index,
-                            &variant,
-                            rest,
-                        );
-                    }
-                    let e = cell.borrow();
-                    let method = e
-                        .functions
-                        .iter()
-                        .find(|(name, _)| name == member)
-                        .map(|(_, method)| method.clone());
-                    let missing = AnalysisErrorKind::NoSuchEnumMember {
-                        r#enum: e.name.clone(),
-                        name: member.clone(),
-                        similar_variant: best_match(member, e.variants.iter().map(|v| &v.name)),
-                        similar_function: best_match(
-                            member,
-                            e.functions.iter().map(|(name, _)| name),
-                        ),
-                    };
-                    (e.name.clone(), method, missing, e.module_path.clone(), e.id)
-                }
-                other => {
-                    let methods = match self.resolver.primitive_methods(other) {
-                        Ok(methods) => methods,
-                        Err(err) => {
-                            self.error(node_id, span, AnalysisErrorKind::ModuleResolution(err));
-                            return None;
-                        }
-                    };
-                    if methods.is_empty() {
-                        self.error(
-                            node_id,
-                            span,
-                            AnalysisErrorKind::StaticAccessOnNonStruct {
-                                found: other.clone(),
-                            },
-                        );
-                        return None;
-                    }
-                    let type_name = Ident(other.to_string());
-                    let method = methods
-                        .iter()
-                        .find(|(name, _)| name == member)
-                        .map(|(_, m)| m.clone());
-                    let similar = match method {
-                        Some(_) => None,
-                        None => best_match(member, methods.iter().map(|(name, _)| name)),
-                    };
-                    let missing = AnalysisErrorKind::NoSuchStructFunction {
-                        r#struct: type_name.clone(),
-                        function: member.clone(),
-                        similar,
-                    };
-                    (type_name, method, missing, Vec::new(), node_id)
-                }
-            };
+        let (namespace, member, deeper) = Self::select_function_namespace(rest);
 
-        if method.is_none() {
-            let conformances = match self.resolver.conformances_for_type(r#type) {
+        // A variant is an ordinary member of its enum's own name, never a
+        // function, so `Enum::self::...` cannot reach one.
+        if namespace == FunctionNamespace::Static
+            && let ResolvedType::Enum { cell, .. } = r#type
+        {
+            let found = cell.borrow().variant(member).map(|(i, v)| (i, v.clone()));
+            if let Some((variant_index, variant)) = found {
+                return self.resolve_unit_variant(
+                    node_id,
+                    span,
+                    cell,
+                    variant_index,
+                    &variant,
+                    rest,
+                );
+            }
+        }
+
+        let owner = self.owner_functions(node_id, span, r#type)?;
+        let mut owner_module_path = owner.module_path.clone();
+        let mut owner_id = owner.id;
+        let mut candidates = namespace.select(&owner.functions, member);
+
+        // An inherent declaration wins over a conforming one, but only
+        // inside the selected namespace: an inherent static must not hide a
+        // conforming member from `Type::self::name`, or the reverse.
+        let mut conformances = Vec::new();
+        if candidates.is_empty() {
+            conformances = match self.resolver.conformances_for_type(r#type) {
                 Ok(conformances) => conformances,
                 Err(err) => {
                     self.error(node_id, span, AnalysisErrorKind::ModuleResolution(err));
                     return None;
                 }
             };
-            let candidates: Vec<_> = conformances
+            let providers: Vec<_> = conformances
                 .iter()
                 .flat_map(|conform| {
-                    conform
-                        .methods
-                        .iter()
-                        .filter(|(name, method)| {
-                            name == member && method.fn_type.self_mode.is_none()
-                        })
-                        .map(move |(_, method)| (conform, method.clone()))
+                    namespace
+                        .select(&conform.methods, member)
+                        .into_iter()
+                        .map(move |method| (conform, method))
                 })
                 .collect();
-            if candidates.len() > 1 {
+            if providers.len() > 1 {
                 self.error(
                     node_id,
                     span,
-                    AnalysisErrorKind::AmbiguousConformanceStatic {
+                    AnalysisErrorKind::AmbiguousConformanceFunction {
                         target: r#type.to_string(),
                         function: member.clone(),
-                        specs: candidates
+                        specs: providers
                             .iter()
                             .map(|(conform, _)| conform.spec.borrow().name.clone())
                             .collect(),
+                        namespace,
                     },
                 );
                 return None;
             }
-            if let Some((conform, conformance_method)) = candidates.into_iter().next() {
+            if let Some((conform, method)) = providers.into_iter().next() {
                 let spec = conform.spec.borrow();
                 owner_module_path = spec.module_path.clone();
                 owner_id = spec.id;
-                method = Some(conformance_method);
+                candidates = vec![method];
             }
         }
 
-        let Some(method) = method else {
-            self.error(node_id, span, missing_member_error);
+        if candidates.is_empty() {
+            let sibling = namespace.other();
+            let has_sibling = !sibling.select(&owner.functions, member).is_empty()
+                || conformances
+                    .iter()
+                    .any(|conform| !sibling.select(&conform.methods, member).is_empty());
+            let kind = if has_sibling {
+                AnalysisErrorKind::FunctionNamespaceMismatch {
+                    owner: owner.name.clone(),
+                    function: member.clone(),
+                    declared_in: sibling,
+                }
+            } else {
+                owner.missing(member, namespace)
+            };
+            self.error(node_id, span, kind);
             return None;
-        };
-        if rest.len() > 1 {
+        }
+
+        if !deeper.is_empty() {
             self.error(
                 node_id,
                 span,
                 AnalysisErrorKind::StructPathTooDeep {
-                    r#struct: type_name,
+                    r#struct: owner.name.clone(),
                     function: member.clone(),
+                    namespace,
                 },
             );
             return None;
         }
+
+        let method = self.select_uncalled_function(node_id, span, member, candidates, expected)?;
         if !self.check_member_visibility(method.visibility, &owner_module_path, owner_id) {
             self.error(
                 node_id,
@@ -726,25 +757,51 @@ impl<'r> Analyzer<'r> {
             );
             return None;
         }
-        if method.fn_type.self_mode.is_some() {
-            self.error(
-                node_id,
-                span,
-                AnalysisErrorKind::MemberFunctionWithoutInstance {
-                    r#struct: type_name,
-                    function: member.clone(),
-                },
-            );
-            return None;
-        }
 
-        let fn_type = ResolvedType::Function(method.fn_type);
+        let fn_type = ResolvedType::Function(method.value_fn_type());
         let root = CheckedPlaceRoot::Variable {
             decl_id: method.decl_id,
             storage: Storage::Function,
             r#type: fn_type.clone(),
         };
         Some((root, fn_type))
+    }
+
+    /// Picks the one candidate an uncalled reference names. Overloads within
+    /// a namespace are separated by the expected ordinary function type,
+    /// which for a member is its unbound explicit-receiver view.
+    fn select_uncalled_function(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        name: &Ident,
+        candidates: Vec<ResolvedMethod>,
+        expected: Option<&ResolvedType>,
+    ) -> Option<ResolvedMethod> {
+        if let [only] = candidates.as_slice() {
+            return Some(only.clone());
+        }
+        let signatures: Vec<(HirId, ResolvedFunctionType)> = candidates
+            .iter()
+            .map(|method| (method.decl_id, method.value_fn_type()))
+            .collect();
+        if let Some(ResolvedType::Function(expected_fn)) = expected
+            && let Some((decl_id, _)) =
+                Self::unique_overload_signature_match(expected_fn, &signatures)
+        {
+            return candidates
+                .into_iter()
+                .find(|method| method.decl_id == decl_id);
+        }
+        self.error(
+            node_id,
+            span,
+            AnalysisErrorKind::AmbiguousOverload {
+                name: name.clone(),
+                candidates: signatures.into_iter().map(|(_, sig)| sig).collect(),
+            },
+        );
+        None
     }
 
     fn resolve_unit_variant(
@@ -802,5 +859,37 @@ impl<'r> Analyzer<'r> {
             }),
         };
         Some((CheckedPlaceRoot::Expr(Box::new(construct)), r#type))
+    }
+}
+
+/// A concrete owner's own function declarations, plus what a namespace
+/// diagnostic needs to name it. Enum variants are carried alongside because
+/// they share the ordinary namespace with static functions.
+struct OwnerFunctions {
+    name: Ident,
+    functions: Vec<(Ident, ResolvedMethod)>,
+    module_path: Vec<Ident>,
+    id: HirId,
+    variants: Option<Vec<Ident>>,
+}
+
+impl OwnerFunctions {
+    fn missing(&self, member: &Ident, namespace: FunctionNamespace) -> AnalysisErrorKind {
+        let similar = best_match(member, namespace.names(&self.functions).into_iter());
+        match &self.variants {
+            Some(variants) if namespace == FunctionNamespace::Static => {
+                AnalysisErrorKind::NoSuchEnumMember {
+                    r#enum: self.name.clone(),
+                    name: member.clone(),
+                    similar_variant: best_match(member, variants.iter()),
+                    similar_function: similar,
+                }
+            }
+            _ => AnalysisErrorKind::NoSuchStructFunction {
+                r#struct: self.name.clone(),
+                function: member.clone(),
+                similar,
+            },
+        }
     }
 }

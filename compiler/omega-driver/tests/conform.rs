@@ -1,7 +1,7 @@
 use omega_analyzer::Target;
 use omega_analyzer::checked::{CheckedItem, ExternFunctionKind, NumberValue};
 use omega_analyzer::error::{AnalysisErrorKind, TypeResolutionError};
-use omega_analyzer::resolved_type::ConstValue;
+use omega_analyzer::resolved_type::{ConstValue, FunctionNamespace};
 use omega_analyzer::resolver::ResolveError;
 use omega_driver::{CompileError, Driver, ExternRoot};
 use omega_parser::{macros::MacroError, prelude::Ident};
@@ -409,8 +409,8 @@ fn an_ambiguous_conforming_static_names_the_candidates_and_their_spelling() {
     let errors = compile_errors(&package, "an ambiguous conforming static must be diagnosed");
     assert!(has_analysis_error(&errors, |kind| matches!(
         kind,
-        AnalysisErrorKind::AmbiguousConformanceStatic { specs, .. }
-            if specs.len() == 2
+        AnalysisErrorKind::AmbiguousConformanceFunction { specs, namespace, .. }
+            if specs.len() == 2 && *namespace == FunctionNamespace::Static
     )));
 }
 

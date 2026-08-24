@@ -60,6 +60,122 @@ pub struct ResolvedFunctionType {
     pub calling_convention: CallingConvention,
 }
 
+impl ResolvedFunctionType {
+    /// This declaration's type as an unbound first-class function value.
+    ///
+    /// HIR lowering already materialized a receiver as parameter 0, so the
+    /// value view only drops the declaration-only receiver metadata: the
+    /// remaining signature is the real ABI the address was compiled with.
+    /// The synthetic `self` parameter name is dropped with it, because the
+    /// receiver is now an ordinary explicit argument rather than a name the
+    /// callee's own body reaches through.
+    pub fn unbound_value(&self) -> Self {
+        let mut value = self.clone();
+        if value.self_mode.take().is_some()
+            && let Some((name, _)) = value.params.first_mut()
+        {
+            *name = Ident(String::new());
+        }
+        value
+    }
+
+    /// Whether a value of type `value` may be used where `self` is expected.
+    ///
+    /// Function types are invariant, so this is equality except for unnamed
+    /// parameters. Only the compiler produces one -- taking a member
+    /// function by address exposes its receiver as one -- so an unnamed
+    /// parameter matches any name in the same position, which is what lets
+    /// an unbound member function value be stored, passed, and returned as
+    /// an ordinary function type.
+    pub fn accepts(&self, value: &Self) -> bool {
+        self.return_type == value.return_type
+            && self.is_variadic == value.is_variadic
+            && self.self_mode == value.self_mode
+            && self.calling_convention == value.calling_convention
+            && self.params.len() == value.params.len()
+            && self.params.iter().zip(&value.params).all(
+                |((expected_name, expected), (found_name, found))| {
+                    expected == found
+                        && (expected_name == found_name
+                            || expected_name.as_ref().is_empty()
+                            || found_name.as_ref().is_empty())
+                },
+            )
+    }
+}
+
+/// Which associated-function namespace a type-qualified path selects.
+///
+/// The two namespaces are independent: a receiverless and a receiver-bearing
+/// function may share a name and a parameter list without colliding, and
+/// neither namespace can be reached with the other's spelling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FunctionNamespace {
+    /// `Type::name` -- receiverless associated functions.
+    Static,
+    /// `Type::self::name` -- functions declaring `self`, `mut self`, `*self`,
+    /// or `*mut self`.
+    Member,
+}
+
+impl FunctionNamespace {
+    /// The contextual segment selecting [`Self::Member`]. It only has this
+    /// meaning directly after a resolved type prefix and only when a further
+    /// segment follows it, so a leading module-relative `self::...` and a
+    /// static function literally named `self` both keep their meaning.
+    pub const MEMBER_SEGMENT: &'static str = "self";
+
+    pub fn of(fn_type: &ResolvedFunctionType) -> Self {
+        Self::of_declaration(fn_type.self_mode)
+    }
+
+    /// The namespace a declaration's written receiver form places it in.
+    pub fn of_declaration(self_mode: Option<SelfMode>) -> Self {
+        match self_mode {
+            Some(_) => Self::Member,
+            None => Self::Static,
+        }
+    }
+
+    pub fn other(self) -> Self {
+        match self {
+            Self::Static => Self::Member,
+            Self::Member => Self::Static,
+        }
+    }
+
+    /// The declarations named `name` that belong to this namespace, in
+    /// declaration order.
+    pub fn select(
+        self,
+        functions: &[(Ident, ResolvedMethod)],
+        name: &Ident,
+    ) -> Vec<ResolvedMethod> {
+        functions
+            .iter()
+            .filter(|(candidate, method)| candidate == name && method.namespace() == self)
+            .map(|(_, method)| method.clone())
+            .collect()
+    }
+
+    /// The names this namespace offers, for "did you mean" reporting.
+    pub fn names(self, functions: &[(Ident, ResolvedMethod)]) -> Vec<&Ident> {
+        functions
+            .iter()
+            .filter(|(_, method)| method.namespace() == self)
+            .map(|(name, _)| name)
+            .collect()
+    }
+
+    /// How a path selecting this namespace is written.
+    pub fn spelling(self, owner: &str, name: &Ident) -> String {
+        match self {
+            Self::Static => format!("{owner}::{name}"),
+            Self::Member => format!("{owner}::{}::{name}", Self::MEMBER_SEGMENT),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedMethod {
     pub decl_id: HirId,
@@ -67,6 +183,18 @@ pub struct ResolvedMethod {
     pub visibility: Visibility,
     pub annotations: crate::annotations::ResolvedAnnotations,
     pub source: Option<ConformanceSource>,
+}
+
+impl ResolvedMethod {
+    pub fn namespace(&self) -> FunctionNamespace {
+        FunctionNamespace::of(&self.fn_type)
+    }
+
+    /// This function's type when it is acquired by address rather than
+    /// called through its owner. See [`ResolvedFunctionType::unbound_value`].
+    pub fn value_fn_type(&self) -> ResolvedFunctionType {
+        self.fn_type.unbound_value()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -904,17 +1032,33 @@ impl ResolvedType {
             // and `*[u8]` must never accept one another implicitly (see
             // `Str`'s own doc comment), only `*mut str` -> `*str` widening.
             (Self::Str { mutable: false }, Self::Str { .. }) => true,
+            (Self::Function(expected), Self::Function(found)) => expected.accepts(found),
             _ => false,
         }
     }
 
-    pub fn declared_methods(&self) -> Option<Vec<(Ident, ResolvedMethod)>> {
+    /// Every function this nominal type declares, across both namespaces, or
+    /// `None` for a type that owns no declarations of its own. Deliberately
+    /// private: semantic lookup goes through [`Self::candidates_in`], so no
+    /// path searches a mixed set and rejects the wrong receiver kind after
+    /// selecting from it.
+    fn declared_functions(&self) -> Option<Vec<(Ident, ResolvedMethod)>> {
         match self {
             Self::Struct(cell) => Some(cell.borrow().functions.clone()),
             Self::Union(cell) => Some(cell.borrow().functions.clone()),
             Self::Enum { cell, .. } => Some(cell.borrow().functions.clone()),
             _ => None,
         }
+    }
+
+    /// The declarations of `name` this owner offers in `namespace`, in
+    /// declaration order.
+    pub fn candidates_in(
+        &self,
+        namespace: FunctionNamespace,
+        name: &Ident,
+    ) -> Option<Vec<ResolvedMethod>> {
+        Some(namespace.select(&self.declared_functions()?, name))
     }
 
     pub fn declaring_owner(&self) -> Option<(Vec<Ident>, HirId)> {

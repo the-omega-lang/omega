@@ -65,15 +65,29 @@ Concrete current compiler/library bugs and unsupported cases. Resolved issues ar
   codegen-side type workaround.
   [strings-casts-arrays-and-slices.md](../language/strings-casts-arrays-and-slices.md)
 
-- **`Type` equality compares parameter *names*.** Inside `FunctionType`,
-  `params: Vec<Param>` and `Param`'s hand-written `PartialEq` compares
-  `ident` as well as `r#type`, so `(a: i32) => void` and `(b: i32) => void`
-  compare unequal. Harmless today — the analyzer compares `ResolvedType`,
-  never raw `Type` — but latent if raw `Type` equality ever becomes
-  load-bearing. `Param` already drops spans and `origin` from equality,
-  following `Path`'s precedent; whether the *name* belongs in a function
-  type's identity is the open question.
+- **Function-type equality compares parameter *names*.** Inside
+  `FunctionType`, `params: Vec<Param>` and `Param`'s hand-written `PartialEq`
+  compares `ident` as well as `r#type`, and `ResolvedFunctionType`'s derived
+  equality does the same, so `(a: i32) => void` and `(b: i32) => void` are
+  different types and one cannot be assigned to the other. `Param` already
+  drops spans and `origin` from equality, following `Path`'s precedent;
+  whether the *name* belongs in a function type's identity is the open
+  question. `ResolvedFunctionType::accepts` carves out exactly one exception
+  today: an *unnamed* parameter, which only the compiler produces (the
+  receiver of an unbound member function value), matches any name in its
+  position.
   [parsing-and-hir.md](../architecture/parsing-and-hir.md)
+
+- **A function type cannot leave its parameters unnamed.** `parse_param_decls`
+  requires `name: Type` for every parameter, so `(i32, *u8) => bool` is a
+  parse error and only `(a: i32, b: *u8) => bool` is accepted. Several
+  normative examples predate this and still use the unnamed spelling —
+  `functions.md`'s "Function types, calling conventions, and variadics",
+  `foreign-function-interface.md`, and `grammar.md`'s anonymous-enum member
+  example. Deciding whether unnamed parameters are part of the language is
+  the same open question as the entry above; the docs and the parser should
+  be reconciled in one direction once it is answered.
+  [functions.md](../language/functions.md)
 
 
 - **`*str` is not actually guaranteed valid UTF-8** — casting between

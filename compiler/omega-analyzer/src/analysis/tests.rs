@@ -101,11 +101,12 @@ impl ModuleResolver for NoResolver {
         unreachable!("test never triggers generic resolution")
     }
 
-    fn generic_static_function_signature(
+    fn generic_owner_function_signature(
         &mut self,
         _owner_absolute: &[Ident],
         _function_name: &Ident,
-    ) -> Result<Option<GenericStaticFunctionSignature>, ResolveError> {
+        _namespace: crate::resolved_type::FunctionNamespace,
+    ) -> Result<Option<GenericOwnerFunctionSignature>, ResolveError> {
         unreachable!("test never triggers generic resolution")
     }
 

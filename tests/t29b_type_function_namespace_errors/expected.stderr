@@ -1,0 +1,49 @@
+error: 'Thing::member_only' is a member function
+  --> tests/t29b_type_function_namespace_errors/t29b_type_function_namespace_errors.omg:16:5
+   |
+16 |     Thing::member_only(t)
+   |     ^^^^^^^^^^^^^^^^^^ this names the static namespace
+   |
+   = help: write `Thing::self::member_only` instead
+   = note: `Thing::self::member_only` takes a receiver as an explicit first argument; `value.member_only(...)` still calls it on an instance
+
+error: 'Thing::self::static_only' is a static function
+  --> tests/t29b_type_function_namespace_errors/t29b_type_function_namespace_errors.omg:21:5
+   |
+21 |     Thing::self::static_only(t)
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^ this names the member namespace
+   |
+   = help: write `Thing::static_only` instead
+
+error: 'Thing::static_only' is a static function and cannot be called on an instance
+  --> tests/t29b_type_function_namespace_errors/t29b_type_function_namespace_errors.omg:26:5
+   |
+26 |     t.static_only()
+   |     ^^^^^^^^^^^^^ this function does not take `self`
+   |
+   = help: call it through the type's name instead: `Thing::static_only(...)`
+
+error: ambiguous reference to overloaded 'over'
+  --> tests/t29b_type_function_namespace_errors/t29b_type_function_namespace_errors.omg:32:12
+   |
+32 |     bad := Thing::self::over;
+   |            ^^^^^^^^^^^^^^^^^ reference to `over` is ambiguous
+   |
+   = note: candidate: (*Thing, a: i32) => i32
+   = note: candidate: (*Thing, a: bool) => i32
+
+error: 'hidden_member' on 'Thing' is not visible here
+  --> tests/t29b_type_function_namespace_errors/t29b_type_function_namespace_errors.omg:37:5
+   |
+37 |     Thing::self::hidden_member(t)
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^ `hidden_member` is not visible from this module
+   |
+   = help: mark the method `exposed`/`shared` on `Thing`, or bypass with `reveal`
+
+error: 'Thing::self::member_only' is a function; there is nothing to look up inside it
+  --> tests/t29b_type_function_namespace_errors/t29b_type_function_namespace_errors.omg:42:5
+   |
+42 |     Thing::self::member_only::inner(t)
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ a function has no items of its own
+
+error: could not compile the program due to 6 previous errors

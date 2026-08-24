@@ -454,11 +454,17 @@ pub trait ModuleResolver {
         variant: Option<&Ident>,
     ) -> Result<Option<GenericLiteralSignature>, ResolveError>;
 
-    fn generic_static_function_signature(
+    /// The one function `owner_absolute` declares under `function_name` in
+    /// `namespace`, when the owner is generic. A member's signature includes
+    /// its receiver as parameter 0, with `Self` already rewritten to the
+    /// owner applied to its own generics, so ordinary argument inference can
+    /// solve the owner's type arguments from the explicit receiver.
+    fn generic_owner_function_signature(
         &mut self,
         owner_absolute: &[Ident],
         function_name: &Ident,
-    ) -> Result<Option<GenericStaticFunctionSignature>, ResolveError>;
+        namespace: crate::resolved_type::FunctionNamespace,
+    ) -> Result<Option<GenericOwnerFunctionSignature>, ResolveError>;
 
     /// The overload candidates `accessor` may choose between when it writes
     /// the name bound by `access`. `Ok(None)` means the name is not an
@@ -551,7 +557,7 @@ pub struct GenericLiteralSignature {
 }
 
 #[derive(Debug, Clone)]
-pub struct GenericStaticFunctionSignature {
+pub struct GenericOwnerFunctionSignature {
     pub owner_generics: Vec<Ident>,
     pub owner_defaults: Vec<Option<Type>>,
     pub function_generics: Vec<Ident>,

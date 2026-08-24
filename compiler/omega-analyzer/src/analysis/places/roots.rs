@@ -10,7 +10,8 @@ impl<'r> Analyzer<'r> {
     ) -> Option<(CheckedPlaceRoot, ResolvedType, bool)> {
         match &place.root {
             HirPlaceRoot::Path(expr_path) if expr_path.plain().is_none() => {
-                let (root, r#type) = self.resolve_generic_args_place(node_id, span, expr_path)?;
+                let (root, r#type) =
+                    self.resolve_generic_args_place(node_id, span, expr_path, expected)?;
                 Some((root, r#type, false))
             }
             HirPlaceRoot::Path(expr_path) if expr_path.path.is_unqualified() => self

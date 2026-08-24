@@ -472,3 +472,122 @@ fn spec_shape_orders_generic_applications_of_one_spec_deterministically() {
     assert_eq!(forwards.members.len(), 2);
     assert_eq!(forwards, backwards);
 }
+
+fn method(self_mode: Option<SelfMode>, receiver: ResolvedType) -> ResolvedMethod {
+    let mut fn_type = fn_type(CallingConvention::Omega);
+    if self_mode.is_some() {
+        fn_type
+            .params
+            .insert(0, (Ident("self".into()), receiver.clone()));
+    }
+    fn_type.self_mode = self_mode;
+    ResolvedMethod {
+        decl_id: HirId {
+            module: omega_hir::ModuleId(0),
+            local: 0,
+        },
+        fn_type,
+        visibility: Visibility::Hidden,
+        annotations: crate::annotations::ResolvedAnnotations::default(),
+        source: None,
+    }
+}
+
+fn owner_pointer() -> ResolvedType {
+    ResolvedType::Pointer {
+        pointee: Box::new(ResolvedType::I32),
+        mutable: false,
+    }
+}
+
+#[test]
+fn namespace_classifies_by_receiver_presence() {
+    assert_eq!(
+        method(None, owner_pointer()).namespace(),
+        FunctionNamespace::Static
+    );
+    for mode in [
+        SelfMode::Value,
+        SelfMode::MutValue,
+        SelfMode::Pointer,
+        SelfMode::MutPointer,
+    ] {
+        assert_eq!(
+            method(Some(mode), owner_pointer()).namespace(),
+            FunctionNamespace::Member
+        );
+    }
+}
+
+#[test]
+fn member_value_view_keeps_receiver_and_drops_declaration_metadata() {
+    let member = method(Some(SelfMode::Pointer), owner_pointer());
+    let value = member.value_fn_type();
+
+    assert_eq!(value.self_mode, None);
+    assert_eq!(value.params.len(), member.fn_type.params.len());
+    assert_eq!(value.params[0].1, owner_pointer());
+    assert!(value.params[0].0.as_ref().is_empty());
+    assert_eq!(
+        ResolvedType::Function(value).to_string(),
+        "(*i32, x: i32) => i32"
+    );
+}
+
+#[test]
+fn static_value_view_is_unchanged() {
+    let r#static = method(None, owner_pointer());
+    assert_eq!(r#static.value_fn_type(), r#static.fn_type);
+}
+
+#[test]
+fn unnamed_parameter_accepts_any_name_in_that_position() {
+    // The unbound member value's receiver has no name, so it must still be
+    // storable in a written function type -- which always names its
+    // parameters.
+    let value =
+        ResolvedType::Function(method(Some(SelfMode::Pointer), owner_pointer()).value_fn_type());
+    let mut written = fn_type(CallingConvention::Omega);
+    written
+        .params
+        .insert(0, (Ident("target".into()), owner_pointer()));
+    let written = ResolvedType::Function(written);
+
+    assert!(written.accepts(&value));
+    assert!(value.accepts(&written));
+}
+
+#[test]
+fn named_parameter_mismatch_is_still_rejected() {
+    let mut renamed = fn_type(CallingConvention::Omega);
+    renamed.params[0].0 = Ident("y".into());
+    let expected = ResolvedType::Function(fn_type(CallingConvention::Omega));
+    assert!(!expected.accepts(&ResolvedType::Function(renamed)));
+}
+
+#[test]
+fn namespace_selection_separates_identical_signatures() {
+    let name = Ident("same".into());
+    let functions = vec![
+        (name.clone(), method(None, owner_pointer())),
+        (
+            name.clone(),
+            method(Some(SelfMode::Pointer), owner_pointer()),
+        ),
+    ];
+
+    assert_eq!(FunctionNamespace::Static.select(&functions, &name).len(), 1);
+    assert_eq!(FunctionNamespace::Member.select(&functions, &name).len(), 1);
+    assert_eq!(
+        FunctionNamespace::Static.select(&functions, &name)[0].namespace(),
+        FunctionNamespace::Static
+    );
+    assert_eq!(
+        FunctionNamespace::Member.spelling("Thing", &name),
+        "Thing::self::same"
+    );
+    assert_eq!(
+        FunctionNamespace::Static.spelling("Thing", &name),
+        "Thing::same"
+    );
+}

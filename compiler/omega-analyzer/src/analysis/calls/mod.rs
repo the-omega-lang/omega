@@ -181,8 +181,14 @@ impl<'r> Analyzer<'r> {
             ));
         }
 
-        let methods = self.find_methods(callee.id, callee.span, &receiver.r#type, field);
-        if methods.is_empty() {
+        let members = self.find_functions(
+            callee.id,
+            callee.span,
+            &receiver.r#type,
+            field,
+            FunctionNamespace::Member,
+        );
+        if members.is_empty() {
             let receiver_type = receiver.r#type.autoderef();
             let field_shadows = match receiver_type {
                 ResolvedType::Struct(cell) => cell
@@ -209,12 +215,35 @@ impl<'r> Analyzer<'r> {
                 _ => false,
             };
             if !field_shadows {
+                // The type's own receiverless declaration is the precise
+                // diagnosis for `value.name(...)`; it is probed only here,
+                // never merged into the member candidate set.
+                if !self
+                    .find_functions(
+                        callee.id,
+                        callee.span,
+                        &receiver.r#type,
+                        field,
+                        FunctionNamespace::Static,
+                    )
+                    .is_empty()
+                {
+                    self.error(
+                        callee.id,
+                        callee.span,
+                        AnalysisErrorKind::StaticFunctionOnInstance {
+                            r#struct: Self::owner_name(&receiver.r#type),
+                            function: field.clone(),
+                        },
+                    );
+                    return None;
+                }
                 match self.resolver.conformances_for_type(receiver_type) {
                     Ok(conformances) => {
                         if let Some(conform) = conformances.iter().find(|conform| {
-                            conform.methods.iter().any(|(name, method)| {
-                                name == field && method.fn_type.self_mode.is_some()
-                            })
+                            !FunctionNamespace::Member
+                                .select(&conform.methods, field)
+                                .is_empty()
                         }) {
                             self.error(
                                 callee.id,
@@ -240,7 +269,7 @@ impl<'r> Analyzer<'r> {
             }
             return self.resolve_field_callee(callee, field, receiver);
         }
-        self.resolve_method_callee(callee, field, receiver, methods, args)
+        self.resolve_method_callee(callee, field, receiver, members, args)
     }
 
     fn resolve_method_callee(
@@ -251,14 +280,13 @@ impl<'r> Analyzer<'r> {
         methods: Vec<ResolvedMethod>,
         args: &[HirExprNode],
     ) -> Option<CalleeResolution> {
-        let (method, checked_args) =
-            self.pick_method(callee, field, &receiver.r#type, methods, args)?;
+        let (method, checked_args) = self.pick_method(callee, field, methods, args)?;
         self.require_method_visible(callee, field, &receiver.r#type, &method)?;
 
         let self_mode = method
             .fn_type
             .self_mode
-            .expect("a method resolved through find_methods always has a self mode");
+            .expect("a member candidate always has a self mode");
         let self_arg = self.adapt_self_argument(callee, receiver, self_mode)?;
 
         let fn_type = ResolvedType::Function(method.fn_type.clone());
@@ -284,51 +312,39 @@ impl<'r> Analyzer<'r> {
         }))
     }
 
+    /// Instance syntax supplies its receiver implicitly, so overloads are
+    /// separated by the arguments actually written -- the receiver
+    /// parameter is dropped from every candidate before ranking.
     fn pick_method(
         &mut self,
         callee: &HirExprNode,
         field: &Ident,
-        receiver_type: &ResolvedType,
-        methods: Vec<ResolvedMethod>,
+        members: Vec<ResolvedMethod>,
         args: &[HirExprNode],
     ) -> Option<(ResolvedMethod, Option<Vec<CheckedExprNode>>)> {
-        let members: Vec<ResolvedMethod> = methods
-            .into_iter()
-            .filter(|m| m.fn_type.self_mode.is_some())
+        if let [only] = members.as_slice() {
+            return Some((only.clone(), None));
+        }
+        let candidates: Vec<(HirId, ResolvedFunctionType)> = members
+            .iter()
+            .map(|m| {
+                let mut sans_self = m.fn_type.clone();
+                sans_self.params = sans_self.params[1..].to_vec();
+                (m.decl_id, sans_self)
+            })
             .collect();
+        let (winner, checked) =
+            self.resolve_overload(callee.id, callee.span, field, &candidates, args)?;
+        Some((members[winner].clone(), Some(checked)))
+    }
 
-        if members.len() > 1 {
-            let candidates: Vec<(HirId, ResolvedFunctionType)> = members
-                .iter()
-                .map(|m| {
-                    let mut sans_self = m.fn_type.clone();
-                    sans_self.params = sans_self.params[1..].to_vec();
-                    (m.decl_id, sans_self)
-                })
-                .collect();
-            let (winner, checked) =
-                self.resolve_overload(callee.id, callee.span, field, &candidates, args)?;
-            return Some((members[winner].clone(), Some(checked)));
-        }
-        if let Some(only) = members.into_iter().next() {
-            return Some((only, None));
-        }
-
-        let r#struct = match receiver_type.autoderef() {
+    fn owner_name(receiver_type: &ResolvedType) -> Ident {
+        match receiver_type.autoderef() {
             ResolvedType::Struct(cell) => cell.borrow().name.clone(),
             ResolvedType::Union(cell) => cell.borrow().name.clone(),
             ResolvedType::Enum { cell, .. } => cell.borrow().name.clone(),
             other => Ident(other.to_string()),
-        };
-        self.error(
-            callee.id,
-            callee.span,
-            AnalysisErrorKind::StaticFunctionOnInstance {
-                r#struct,
-                function: field.clone(),
-            },
-        );
-        None
+        }
     }
 
     fn require_method_visible(

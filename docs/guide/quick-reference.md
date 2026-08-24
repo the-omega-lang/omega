@@ -300,11 +300,14 @@ bounded<T: Animal + Display>(value: T) => void {
 }
 ```
 
-Static member access uses `::`:
+Static member access uses `::`; a receiver-bearing function is named through `::self::` instead:
 
 ```omega
 writer := BufWriter<Stdout>::new(&mut stdout, &mut buf[0..]);
+Vec2::self::translate(&mut p, 1, 2);    # the same function `p.translate(1, 2)` calls
 ```
+
+The two spellings are separate namespaces and `Type::self::name` hands back an ordinary function value with the receiver as an explicit first parameter; see [`../language/functions.md`](../language/functions.md#associated-function-namespaces).
 
 ## Specs and conformance
 

@@ -1,0 +1,43 @@
+struct Thing {
+	exposed v: i32;
+
+	hidden_member(*self) => i32 { self.v }
+
+	exposed static_only(other: *Thing) => i32 { other.v }
+	exposed member_only(*self) => i32 { self.v + 1 }
+
+	exposed over(*self, a: i32) => i32 { a }
+	exposed over(*self, a: bool) => i32 { 0 }
+}
+
+# The static namespace never resolves a member function, however unambiguous
+# the name is on its own.
+member_through_static_namespace(t: *Thing) => i32 {
+	Thing::member_only(t)
+}
+
+# ...and the member namespace never resolves a receiverless one.
+static_through_member_namespace(t: *Thing) => i32 {
+	Thing::self::static_only(t)
+}
+
+# Instance syntax stays member-only in the other direction too.
+static_on_instance(t: *Thing) => i32 {
+	t.static_only()
+}
+
+# An uncalled overloaded member reference still needs an expected type that
+# selects exactly one candidate.
+ambiguous_member_reference() => void {
+	bad := Thing::self::over;
+}
+
+# The member namespace is not a visibility bypass.
+inaccessible_member(t: *Thing) => i32 {
+	Thing::self::hidden_member(t)
+}
+
+# A function has no items of its own in either namespace.
+too_deep(t: *Thing) => i32 {
+	Thing::self::member_only::inner(t)
+}

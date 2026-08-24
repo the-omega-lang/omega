@@ -1,0 +1,3 @@
+# A sibling module whose own name is also `self`-reachable, used to prove
+# that a leading module anchor keeps its meaning.
+exposed anchored_value() => i32 { 42 }

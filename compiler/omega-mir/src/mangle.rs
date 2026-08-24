@@ -31,7 +31,28 @@ pub fn method_symbol(
     fn_type: &ResolvedFunctionType,
 ) -> Symbol {
     let owner = nominal_path(module, owner_name, owner_type_args);
-    function_symbol(value_path(owner, method_name), fn_type)
+    function_symbol(
+        associated_function_path(owner, method_name, fn_type),
+        fn_type,
+    )
+}
+
+/// The path of a function declared on an owner.
+///
+/// A receiver-bearing declaration nests under an extra `self` value segment,
+/// mirroring the `Owner::self::name` source spelling that names it. The two
+/// associated-function namespaces are therefore distinct linker identities
+/// even when a static and a member share a name and an ABI signature.
+fn associated_function_path(
+    owner: ManglePath,
+    name: &Ident,
+    fn_type: &ResolvedFunctionType,
+) -> ManglePath {
+    let owner = match fn_type.self_mode {
+        Some(_) => value_path_name(owner, "self"),
+        None => owner,
+    };
+    value_path(owner, name)
 }
 
 pub fn glued_symbol(
@@ -54,7 +75,10 @@ pub fn primitive_method_symbol(
     method_name: &Ident,
     fn_type: &ResolvedFunctionType,
 ) -> Symbol {
-    function_symbol(value_path(owner_path(target), method_name), fn_type)
+    function_symbol(
+        associated_function_path(owner_path(target), method_name, fn_type),
+        fn_type,
+    )
 }
 
 pub fn conformance_method_symbol(
@@ -69,7 +93,10 @@ pub fn conformance_method_symbol(
     // ABI-changing fix is tracked in docs/issues/known-issues.md rather than hidden in a refactor.
     let spec = type_path(owner_path(target), spec_name);
     let spec = generic_path(spec, spec_args);
-    function_symbol(value_path(spec, method_name), fn_type)
+    function_symbol(
+        associated_function_path(spec, method_name, fn_type),
+        fn_type,
+    )
 }
 
 /// `shape_members` must already be in the object's canonical shape order (see
@@ -228,6 +255,17 @@ mod tests {
         }
     }
 
+    fn member_fn_type(
+        receiver: ResolvedType,
+        rest: Vec<ResolvedType>,
+        return_type: ResolvedType,
+    ) -> ResolvedFunctionType {
+        let mut fn_type = fn_type(std::iter::once(receiver).chain(rest).collect(), return_type);
+        fn_type.params[0].0 = ident("self");
+        fn_type.self_mode = Some(omega_parser::prelude::SelfMode::Pointer);
+        fn_type
+    }
+
     fn assert_adapter_round_trip(symbol: Symbol) {
         let mangled = encode(&symbol);
         assert_eq!(omega_mangle::decode(&mangled), Some(symbol));
@@ -283,6 +321,121 @@ mod tests {
     // `resolved_type::tests`) that guarantees callers always pass the same
     // canonical order for a reordered source spelling, so `*spec A + B` and
     // `*spec B + A` reach this function with an identical member list.
+
+    #[test]
+    fn member_and_static_of_one_signature_are_different_symbols() {
+        // The whole point of the `::self::` path segment: these two have the
+        // same owner, name, and ABI parameter list, and must still be
+        // separately linkable across compilations.
+        let owner = ResolvedType::Pointer {
+            pointee: Box::new(concrete_struct("Thing")),
+            mutable: false,
+        };
+        let r#static = method_symbol(
+            &[ident("mymod")],
+            &ident("Thing"),
+            &[],
+            &ident("same"),
+            &fn_type(vec![owner.clone()], ResolvedType::I32),
+        );
+        let member = method_symbol(
+            &[ident("mymod")],
+            &ident("Thing"),
+            &[],
+            &ident("same"),
+            &member_fn_type(owner, vec![], ResolvedType::I32),
+        );
+        assert_ne!(encode(&r#static), encode(&member));
+        assert_adapter_round_trip(r#static);
+        assert_adapter_round_trip(member);
+    }
+
+    #[test]
+    fn member_symbol_nests_self_under_the_owner() {
+        let owner = ResolvedType::Pointer {
+            pointee: Box::new(concrete_struct("Thing")),
+            mutable: false,
+        };
+        let member = method_symbol(
+            &[ident("mymod")],
+            &ident("Thing"),
+            &[],
+            &ident("same"),
+            &member_fn_type(owner, vec![], ResolvedType::I32),
+        );
+        let ManglePath::Nested(parent, Namespace::Value, name) = &member.path else {
+            panic!("a member symbol ends in its own value segment");
+        };
+        assert_eq!(name, "same");
+        let ManglePath::Nested(owner_path, Namespace::Value, segment) = parent.as_ref() else {
+            panic!("a member symbol nests under a `self` value segment");
+        };
+        assert_eq!(segment, "self");
+        assert!(matches!(
+            owner_path.as_ref(),
+            ManglePath::Nested(_, Namespace::Type, owner) if owner == "Thing"
+        ));
+    }
+
+    #[test]
+    fn primitive_and_conformance_members_take_the_same_self_segment() {
+        let member = member_fn_type(ResolvedType::I32, vec![], ResolvedType::I32);
+        let r#static = fn_type(vec![ResolvedType::I32], ResolvedType::I32);
+
+        let primitive_member = primitive_method_symbol(&ResolvedType::I32, &ident("abs"), &member);
+        let primitive_static =
+            primitive_method_symbol(&ResolvedType::I32, &ident("abs"), &r#static);
+        assert_ne!(encode(&primitive_member), encode(&primitive_static));
+        assert_adapter_round_trip(primitive_member);
+
+        let conform_member = conformance_method_symbol(
+            &ResolvedType::I32,
+            &ident("Show"),
+            &[],
+            &ident("show"),
+            &member,
+        );
+        let conform_static = conformance_method_symbol(
+            &ResolvedType::I32,
+            &ident("Show"),
+            &[],
+            &ident("show"),
+            &r#static,
+        );
+        assert_ne!(encode(&conform_member), encode(&conform_static));
+        assert_adapter_round_trip(conform_member);
+    }
+
+    #[test]
+    fn member_definition_and_extern_reference_agree() {
+        use omega_hir::{HirId, ModuleId};
+        let owner = ResolvedType::Pointer {
+            pointee: Box::new(concrete_struct("Thing")),
+            mutable: false,
+        };
+        let fn_type = member_fn_type(owner, vec![], ResolvedType::I32);
+        let definition = encode(&method_symbol(
+            &[ident("mymod")],
+            &ident("Thing"),
+            &[],
+            &ident("same"),
+            &fn_type,
+        ));
+        let reference = extern_function_ref_symbol(&ExternFunctionRef {
+            decl_id: HirId {
+                module: ModuleId(0),
+                local: 0,
+            },
+            module_path: vec![ident("mymod")],
+            kind: ExternFunctionKind::Method {
+                type_name: ident("Thing"),
+                method_name: ident("same"),
+            },
+            fn_type,
+            mangling: ManglingMode::Enabled,
+        });
+        assert_eq!(definition, reference);
+    }
 
     #[test]
     fn vtable_symbol_single_member_matches_singleton_shape() {

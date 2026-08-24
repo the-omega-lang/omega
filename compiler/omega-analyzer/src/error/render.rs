@@ -272,13 +272,24 @@ impl AnalysisErrorKind {
                     None => d,
                 }
             }
-            Self::MemberFunctionWithoutInstance { r#struct, function } => d
-                .with_label(span, "this function takes `self`")
-                .with_help(format!(
-                    "call it on a value of type `{}` instead: `value.{}(...)`",
-                    r#struct.as_ref(),
-                    function.as_ref()
-                )),
+            Self::FunctionNamespaceMismatch { owner, function, declared_in } => {
+                let d = d.with_label(span, match declared_in {
+                    FunctionNamespace::Member => "this names the static namespace",
+                    FunctionNamespace::Static => "this names the member namespace",
+                });
+                let d = d.with_help(format!(
+                    "write `{}` instead",
+                    declared_in.spelling(owner.as_ref(), function)
+                ));
+                match declared_in {
+                    FunctionNamespace::Member => d.with_note(format!(
+                        "`{}` takes a receiver as an explicit first argument; `value.{}(...)` still calls it on an instance",
+                        declared_in.spelling(owner.as_ref(), function),
+                        function.as_ref()
+                    )),
+                    FunctionNamespace::Static => d,
+                }
+            }
             Self::StaticFunctionOnInstance { r#struct, function } => d
                 .with_label(span, "this function does not take `self`")
                 .with_help(format!(
@@ -694,20 +705,28 @@ impl AnalysisErrorKind {
             Self::DuplicatePrimitiveTarget { previous, .. } => d
                 .with_label(span, "this primitive target already has a declaration block")
                 .with_secondary_label(*previous, "the first block is here"),
-            Self::AmbiguousConformanceStatic {
+            Self::AmbiguousConformanceFunction {
                 target,
                 function,
                 specs,
+                namespace,
             } => {
                 let mut d = d
-                    .with_label(span, "more than one conforming spec provides this static function")
+                    .with_label(span, match namespace {
+                        FunctionNamespace::Static => "more than one conforming spec provides this static function",
+                        FunctionNamespace::Member => "more than one conforming spec provides this member function",
+                    })
                     .with_note(format!(
                         "declared by: {}",
                         specs.iter().map(Ident::as_ref).collect::<Vec<_>>().join(", ")
                     ));
+                let arguments = match namespace {
+                    FunctionNamespace::Static => "()",
+                    FunctionNamespace::Member => "(value, ...)",
+                };
                 for spec in specs {
                     d = d.with_note(format!(
-                        "candidate: `<{target} : {spec}>::{function}()`"
+                        "candidate: `<{target} : {spec}>::{function}{arguments}`"
                     ));
                 }
                 d.with_help("name the one you mean with the fully-qualified spelling")

@@ -436,9 +436,9 @@ impl<'r> Analyzer<'r> {
         let interceptors: [Interceptor<'r>; 5] = [
             Self::resolve_spec_qualified_call,
             Self::resolve_overloaded_call,
-            Self::resolve_overloaded_static_call,
+            Self::resolve_type_qualified_overload_call,
             Self::resolve_generic_call,
-            Self::resolve_generic_static_call,
+            Self::resolve_generic_owner_function_call,
         ];
         for intercept in interceptors {
             if let Intercepted::Claimed(result) = intercept(self, node_id, span, call, expected) {

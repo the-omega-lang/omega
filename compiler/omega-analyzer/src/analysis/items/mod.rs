@@ -590,6 +590,13 @@ impl<'r> Analyzer<'r> {
                     continue;
                 }
                 let (sig_i, sig_j) = (&signatures[i].0, &signatures[j].0);
+                // The static and member namespaces are independent, so a
+                // receiverless and a receiver-bearing declaration never
+                // redeclare or overload one another however alike their
+                // parameter lists are.
+                if FunctionNamespace::of(sig_i) != FunctionNamespace::of(sig_j) {
+                    continue;
+                }
                 let same_params = sig_i
                     .params
                     .iter()
@@ -606,7 +613,10 @@ impl<'r> Analyzer<'r> {
                     );
                     break;
                 }
-                if sig_i.self_mode.is_some() && sig_j.self_mode.is_some() {
+                // Receiver spelling alone is not an overload selector: an
+                // ordinary `value.name(...)` call writes no receiver, so two
+                // members that differ only there could never be told apart.
+                if FunctionNamespace::of(sig_i) == FunctionNamespace::Member {
                     let same_rest = sig_i.params[1..]
                         .iter()
                         .map(|(_, t)| t)

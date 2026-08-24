@@ -67,7 +67,11 @@ Structural types have no path, so they encode their shape instead: a dynamic spe
 
 Unlike Rust v0 mangling, Omega's function signature is load-bearing because Omega supports function overloading. Parameter + return type identity participates in the symbol so overloads with the same source path remain distinct.
 
-Method `self` shape is represented through the actual leading receiver type in the signature rather than a separate mangling tag.
+A receiver-bearing function's path carries an extra nested `self` **value** segment before the function name, mirroring the `Owner::self::name` source spelling that selects it: an inherent method is `Owner::self::name`, a primitive method `<target>::self::name`, and a conformance method places `self` beneath the existing target/spec owner path. This is an ordinary nested value segment, so `omega-mangle` needs no grammar tag for it, and `omega-mir::mangle` builds definitions and `ExternFunctionRef` references through the same helper so separately compiled sides agree.
+
+The signature still carries the real ABI parameter types, receiver included. The path segment is *in addition to* that, not a replacement: it is what keeps a static and a member of the same owner, name, and ABI signature separately linkable, which the leading receiver type alone cannot do when a static declares that same pointer explicitly.
+
+Changing this changed every normally mangled receiver-bearing function's linker name -- an ABI/separate-compilation migration. Definitions, extern references, generic weak instantiations, and conformance/primitive references all moved together; no compatibility alias or dual export was added. `@mangling(force = "...")` remains an intentional user override and can still collide.
 
 ## Compiler adapter: `omega-mir::mangle`
 

@@ -41,13 +41,13 @@ use crate::{
     },
     generics::{resolve_inferred_type_args, unify_generic_type},
     resolved_type::{
-        CallingConvention, CastClass, ConformanceSource, ConstValue, NumericKind,
-        RawSpecFunctionSig, ResolvedAnonymousEnum, ResolvedBound, ResolvedEnumType,
+        CallingConvention, CastClass, ConformanceSource, ConstValue, FunctionNamespace,
+        NumericKind, RawSpecFunctionSig, ResolvedAnonymousEnum, ResolvedBound, ResolvedEnumType,
         ResolvedEnumVariant, ResolvedField, ResolvedFunctionType, ResolvedMethod, ResolvedSpecType,
         ResolvedStructType, ResolvedType, ResolvedUnionType,
     },
     resolver::{
-        GenericLiteralSignature, GenericSignature, GenericStaticFunctionSignature, ImportTarget,
+        GenericLiteralSignature, GenericOwnerFunctionSignature, GenericSignature, ImportTarget,
         ItemAccess, ItemNamespace, ModuleResolver, ResolveError, ResolveItemOptions, ResolvedItem,
         ResolvedOverloadSet,
     },

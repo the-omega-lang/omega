@@ -1,0 +1,144 @@
+import std::io::println;
+import self::helpers;
+
+# A concrete owner may declare a receiverless and a receiver-bearing
+# function under one name with one effective ABI signature. `Thing::same`
+# names the static; `Thing::self::same` names the member.
+struct Thing {
+	exposed v: i32;
+
+	exposed same(other: *Thing) => i32 { other.v + 100 }
+	exposed same(*self) => i32 { self.v + 1 }
+
+	# The two overload sets are independent: adding a static overload here
+	# must not make the single member above ambiguous, and vice versa.
+	exposed pick(a: i32) => *str { "static-i32" }
+	exposed pick(a: bool) => *str { "static-bool" }
+	exposed pick(*self, a: i32) => *str { "member-i32" }
+	exposed pick(*self, a: bool) => *str { "member-bool" }
+
+	# Every receiver form becomes the matching explicit parameter.
+	exposed bump(*mut self) => void { self.v += 1; }
+	exposed copy_of(self) => i32 { self.v }
+}
+
+alias Aliased = Thing;
+
+# `self` is contextual, not reserved: it only opens the member namespace when
+# another segment follows it.
+struct Contextual {
+	exposed v: i32;
+
+	exposed self(c: *Contextual) => i32 { c.v }
+	exposed peek(*self) => i32 { self.v + 1 }
+}
+
+enum Marker {
+	self,
+	Other;
+}
+
+union Bits {
+	exposed word: u32;
+
+	exposed halve(word: u32) => u32 { word / 2u32 }
+	exposed halve(*self) => u32 { self.word / 2u32 }
+}
+
+enum Signal {
+	Idle,
+	Busy;
+
+	exposed label(s: *Signal) => *str { "static-label" }
+	exposed label(*self) => *str { "member-label" }
+}
+
+marker Probe {
+	exposed reading(other: *Probe) => i32 { 9 }
+	exposed reading(*self) => i32 { 4 }
+}
+
+struct Cell<T> {
+	exposed value: T;
+
+	exposed make(value: T) => Cell<T> { Cell<T> { value = value; } }
+	exposed get(*self) => T { self.value }
+}
+
+main() => void {
+	t := Thing { v = 5; };
+
+	# --- the three spellings select what their syntax says ----------------
+	println$("instance: ", t.same());
+	println$("static-call: ", Thing::same(&t));
+	println$("member-call: ", Thing::self::same(&t));
+
+	# --- an unbound member value is an ordinary function value: its
+	# receiver is a normal explicit first parameter, with no adapter ------
+	static_fn: (other: *Thing) => i32 = Thing::same;
+	member_fn: (target: *Thing) => i32 = Thing::self::same;
+	println$("static-pointer: ", static_fn(&t));
+	println$("member-pointer: ", member_fn(&t));
+
+	# The member value is the same one code address the type declares.
+	println$("member-one-address: ", <usize><*void>member_fn != 0usize);
+
+	# --- independent overload sets ---------------------------------------
+	println$("static-overloads: ", Thing::pick(1), " ", Thing::pick(true));
+	println$("member-overloads: ", t.pick(1), " ", t.pick(true));
+	println$("member-qualified: ", Thing::self::pick(&t, 1), " ", Thing::self::pick(&t, true));
+
+	# An uncalled overloaded reference is selected by its expected type,
+	# inside the namespace the spelling named.
+	chosen_static: (a: bool) => *str = Thing::pick;
+	chosen_member: (target: *Thing, a: bool) => *str = Thing::self::pick;
+	println$("expected-type-selection: ", chosen_static(true), " ", chosen_member(&t, true));
+
+	# --- namespace interpretation happens after type resolution ----------
+	println$("alias-static: ", Aliased::same(&t));
+	println$("alias-member: ", Aliased::self::same(&t));
+
+	# --- unions, named enums, and markers follow the same rule -----------
+	b := Bits { word = 20u32; };
+	println$("union: ", Bits::halve(b.word), " ", Bits::self::halve(&b));
+
+	s := Signal::Busy;
+	println$("enum: ", Signal::label(&s), " ", Signal::self::label(&s));
+	# A variant is still reached through the ordinary namespace only.
+	println$("enum-variant: ", Signal::Idle.tag);
+
+	p := Probe {};
+	println$("marker: ", Probe::reading(&p), " ", Probe::self::reading(&p));
+
+	# --- generic owners, inferred and explicit ---------------------------
+	c := Cell<i32>::make(7);
+	println$("generic-inferred: ", Cell::self::get(&c));
+	println$("generic-explicit: ", Cell<i32>::self::get(&c));
+	generic_fn: (target: *Cell<i32>) => i32 = Cell<i32>::self::get;
+	println$("generic-pointer: ", generic_fn(&c));
+
+	# --- every receiver form becomes an ordinary explicit parameter ------
+	mut m := Thing { v = 1; };
+	Thing::self::bump(&mut m);
+	bump_fn: (target: *mut Thing) => void = Thing::self::bump;
+	bump_fn(&mut m);
+	println$("mut-pointer-receiver: ", m.v);
+
+	by_value: (target: Thing) => i32 = Thing::self::copy_of;
+	println$("by-value-receiver: ", Thing::self::copy_of(m), " ", by_value(m));
+
+	# --- `self` still works as an ordinary declared name -----------------
+	ctx := Contextual { v = 3; };
+	println$("static-named-self: ", Contextual::self(&ctx));
+	println$("member-after-named-self: ", Contextual::self::peek(&ctx));
+	println$("variant-named-self: ", Marker::self.tag, " ", Marker::Other.tag);
+
+	# --- a leading `self::` is still the module anchor -------------------
+	println$("module-anchor: ", self::helpers::anchored_value());
+
+	# --- an existing primitive member is acquirable the same way ---------
+	ch := 'x';
+	println$("primitive-member: ", char::self::is_ascii(&ch));
+	ascii: (target: *char) => bool = char::self::is_ascii;
+	println$("primitive-pointer: ", ascii(&ch));
+}

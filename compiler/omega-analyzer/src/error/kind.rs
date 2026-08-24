@@ -175,9 +175,13 @@ pub enum AnalysisErrorKind {
         function: Ident,
         similar: Option<Ident>,
     },
-    MemberFunctionWithoutInstance {
-        r#struct: Ident,
+    /// A type-qualified path selected one associated-function namespace
+    /// while the only declaration of that name lives in the other.
+    FunctionNamespaceMismatch {
+        owner: Ident,
         function: Ident,
+        /// The namespace that actually declares `function`.
+        declared_in: FunctionNamespace,
     },
     StaticFunctionOnInstance {
         r#struct: Ident,
@@ -189,6 +193,7 @@ pub enum AnalysisErrorKind {
     StructPathTooDeep {
         r#struct: Ident,
         function: Ident,
+        namespace: FunctionNamespace,
     },
     NotAModule {
         name: Ident,
@@ -491,10 +496,11 @@ pub enum AnalysisErrorKind {
         target: String,
         previous: Span,
     },
-    AmbiguousConformanceStatic {
+    AmbiguousConformanceFunction {
         target: String,
         function: Ident,
         specs: Vec<Ident>,
+        namespace: FunctionNamespace,
     },
     MethodNotInScope {
         method: Ident,
@@ -779,11 +785,18 @@ impl fmt::Display for AnalysisErrorKind {
                     r#struct.as_ref()
                 )
             }
-            Self::MemberFunctionWithoutInstance { r#struct, function } => write!(
+            Self::FunctionNamespaceMismatch {
+                owner,
+                function,
+                declared_in,
+            } => write!(
                 f,
-                "'{}::{}' is a member function and cannot be called without an instance",
-                r#struct.as_ref(),
-                function.as_ref()
+                "'{}' is {} function",
+                declared_in.other().spelling(owner.as_ref(), function),
+                match declared_in {
+                    FunctionNamespace::Member => "a member",
+                    FunctionNamespace::Static => "a static",
+                }
             ),
             Self::StaticFunctionOnInstance { r#struct, function } => write!(
                 f,
@@ -942,12 +955,15 @@ impl fmt::Display for AnalysisErrorKind {
                     field.as_ref()
                 )
             }
-            Self::StructPathTooDeep { r#struct, function } => {
+            Self::StructPathTooDeep {
+                r#struct,
+                function,
+                namespace,
+            } => {
                 write!(
                     f,
-                    "'{}::{}' is a function; there is nothing to look up inside it",
-                    r#struct.as_ref(),
-                    function.as_ref()
+                    "'{}' is a function; there is nothing to look up inside it",
+                    namespace.spelling(r#struct.as_ref(), function)
                 )
             }
             Self::NotAModule { name } => {
@@ -1274,14 +1290,16 @@ impl fmt::Display for AnalysisErrorKind {
             Self::DuplicatePrimitiveTarget { target, .. } => {
                 write!(f, "duplicate primitive block for '{target}'")
             }
-            Self::AmbiguousConformanceStatic {
-                target, function, ..
+            Self::AmbiguousConformanceFunction {
+                target,
+                function,
+                namespace,
+                ..
             } => {
                 write!(
                     f,
-                    "conforming static function '{}::{}' is ambiguous",
-                    target,
-                    function.as_ref()
+                    "conforming function '{}' is ambiguous",
+                    namespace.spelling(target, function)
                 )
             }
             Self::MethodNotInScope { method, spec, .. } => {

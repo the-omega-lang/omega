@@ -5,12 +5,19 @@ mod roots;
 mod slicing;
 
 impl<'r> Analyzer<'r> {
-    pub(super) fn find_methods(
+    /// The functions `current_type` offers under `field` in one namespace.
+    ///
+    /// Instance syntax asks for [`FunctionNamespace::Member`] directly, so a
+    /// receiverless declaration never enters an instance overload set; the
+    /// static namespace is only probed to diagnose `value.static_name(...)`.
+    /// A field of the same name shadows every function, in both namespaces.
+    pub(super) fn find_functions(
         &mut self,
         id: HirId,
         span: Span,
         current_type: &ResolvedType,
         field: &Ident,
+        namespace: FunctionNamespace,
     ) -> Vec<ResolvedMethod> {
         let current_type = current_type.autoderef();
         let mut methods = match current_type {
@@ -23,12 +30,7 @@ impl<'r> Analyzer<'r> {
                 {
                     return Vec::new();
                 }
-                struct_type
-                    .functions
-                    .iter()
-                    .filter(|(name, _)| name == field)
-                    .map(|(_, method)| method.clone())
-                    .collect()
+                namespace.select(&struct_type.functions, field)
             }
             ResolvedType::Enum { cell, variant } => {
                 let e = cell.borrow();
@@ -43,11 +45,7 @@ impl<'r> Analyzer<'r> {
                 if shadowed {
                     return Vec::new();
                 }
-                e.functions
-                    .iter()
-                    .filter(|(name, _)| name == field)
-                    .map(|(_, method)| method.clone())
-                    .collect()
+                namespace.select(&e.functions, field)
             }
             ResolvedType::Union(union_type) => {
                 let union_type = union_type.borrow();
@@ -58,19 +56,10 @@ impl<'r> Analyzer<'r> {
                 {
                     return Vec::new();
                 }
-                union_type
-                    .functions
-                    .iter()
-                    .filter(|(name, _)| name == field)
-                    .map(|(_, method)| method.clone())
-                    .collect()
+                namespace.select(&union_type.functions, field)
             }
             other => match self.resolver.primitive_methods(other) {
-                Ok(methods) => methods
-                    .into_iter()
-                    .filter(|(name, _)| name == field)
-                    .map(|(_, m)| m)
-                    .collect(),
+                Ok(methods) => namespace.select(&methods, field),
                 Err(err) => {
                     self.error(id, span, AnalysisErrorKind::ModuleResolution(err));
                     Vec::new()
@@ -87,12 +76,7 @@ impl<'r> Analyzer<'r> {
                 .conformance_for(current_type, &bound.spec, &bound.spec_args)
             {
                 Ok(Some(conform)) => {
-                    for method in conform
-                        .methods
-                        .into_iter()
-                        .filter(|(name, _)| name == field)
-                        .map(|(_, method)| method)
-                    {
+                    for method in namespace.select(&conform.methods, field) {
                         if !methods.iter().any(|existing| {
                             existing.decl_id == method.decl_id && existing.fn_type == method.fn_type
                         }) {

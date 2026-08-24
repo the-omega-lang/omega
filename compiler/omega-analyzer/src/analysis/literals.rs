@@ -826,9 +826,12 @@ impl<'r> Analyzer<'r> {
                                     variant_name,
                                     e.variants.iter().map(|v| &v.name),
                                 ),
+                                // An enum literal names a variant, so only
+                                // the namespace variants share can offer a
+                                // near miss here.
                                 similar_function: best_match(
                                     variant_name,
-                                    e.functions.iter().map(|(name, _)| name),
+                                    FunctionNamespace::Static.names(&e.functions).into_iter(),
                                 ),
                             }
                         }

@@ -1,0 +1,27 @@
+instance: 6
+static-call: 105
+member-call: 6
+static-pointer: 105
+member-pointer: 6
+member-one-address: true
+static-overloads: static-i32 static-bool
+member-overloads: member-i32 member-bool
+member-qualified: member-i32 member-bool
+expected-type-selection: static-bool member-bool
+alias-static: 105
+alias-member: 6
+union: 10 10
+enum: static-label member-label
+enum-variant: 0
+marker: 9 4
+generic-inferred: 7
+generic-explicit: 7
+generic-pointer: 7
+mut-pointer-receiver: 3
+by-value-receiver: 3 3
+static-named-self: 3
+member-after-named-self: 4
+variant-named-self: 0 1
+module-anchor: 42
+primitive-member: true
+primitive-pointer: true
