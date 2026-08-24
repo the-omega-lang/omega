@@ -38,6 +38,56 @@ fn function_pointer_assignment_rejects_calling_convention_mismatch() {
     assert!(expected.accepts(&ResolvedType::Function(fn_type(CallingConvention::Omega))));
 }
 
+#[test]
+fn function_display_distinguishes_calling_conventions() {
+    // A rejected cast between these two must not render both sides as the
+    // same text, or the diagnostic is unactionable.
+    assert_eq!(
+        ResolvedType::Function(fn_type(CallingConvention::Omega)).to_string(),
+        "(x: i32) => i32"
+    );
+    assert_eq!(
+        ResolvedType::Function(fn_type(CallingConvention::C)).to_string(),
+        "foreign(c) (x: i32) => i32"
+    );
+    assert_eq!(
+        ResolvedType::Function(fn_type(CallingConvention::SysV64)).to_string(),
+        "foreign(sysv64) (x: i32) => i32"
+    );
+}
+
+#[test]
+fn function_display_distinguishes_self_modes() {
+    let with_self = |self_mode| {
+        let mut fn_type = fn_type(CallingConvention::Omega);
+        fn_type.self_mode = Some(self_mode);
+        ResolvedType::Function(fn_type).to_string()
+    };
+    assert_eq!(with_self(SelfMode::Value), "(self, x: i32) => i32");
+    assert_eq!(with_self(SelfMode::MutValue), "(mut self, x: i32) => i32");
+    assert_eq!(with_self(SelfMode::Pointer), "(*self, x: i32) => i32");
+    assert_eq!(
+        with_self(SelfMode::MutPointer),
+        "(*mut self, x: i32) => i32"
+    );
+}
+
+#[test]
+fn function_display_keeps_a_variadic_tail_after_self() {
+    let mut variadic = fn_type(CallingConvention::C);
+    variadic.is_variadic = true;
+    assert_eq!(
+        ResolvedType::Function(variadic.clone()).to_string(),
+        "foreign(c) (x: i32, ...) => i32"
+    );
+    let mut no_params = variadic;
+    no_params.params.clear();
+    assert_eq!(
+        ResolvedType::Function(no_params).to_string(),
+        "foreign(c) (...) => i32"
+    );
+}
+
 fn spec_cell(id: u32, name: &str) -> Rc<RefCell<ResolvedSpecType>> {
     Rc::new(RefCell::new(ResolvedSpecType {
         id: HirId {

@@ -736,9 +736,15 @@ impl<'ctx> Codegen<'ctx> {
                     _ => None,
                 };
                 let base_leaves = self.process_expr(base);
+                // A `void` target has no leaves, so the discard has to resolve
+                // before `target_ir` indexes the first one.
+                if *kind == CastKind::Discard {
+                    return vec![];
+                }
                 let target_ir =
                     leaf::llvm_leaves(self.context, target_type, self.pointer_bytes())[0];
                 match kind {
+                    CastKind::Discard => unreachable!("returned above"),
                     CastKind::Reinterpret => {
                         let target_leaves =
                             leaf::llvm_leaves(self.context, target_type, self.pointer_bytes());

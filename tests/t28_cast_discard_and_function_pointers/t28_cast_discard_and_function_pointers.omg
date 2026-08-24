@@ -1,0 +1,68 @@
+import std::io::println;
+
+mut effects: i32 = 0;
+
+# A value-returning function whose result is intentionally thrown away at one
+# call site and used at another.
+record(amount: i32) => i32 {
+	effects = effects + amount;
+	effects
+}
+
+add(a: i32, b: i32) => i32 {
+	a + b
+}
+
+# A C-convention definition Omega itself provides, so the indirect call below
+# proves the destination function type -- not the raw address -- is what
+# selects the convention.
+@mangling(enabled)
+foreign(c) c_mul(a: i32, b: i32) => i32 {
+	a * b
+}
+
+spin_forever() => never {
+	loop { }
+}
+
+# A discarded divergent operand is still divergent, so this body needs no
+# further value on the second path.
+pick(flag: bool) => i32 {
+	if flag {
+		return 11;
+	}
+	<void>spin_forever();
+}
+
+struct Pair {
+	exposed a: i32;
+	exposed b: i32;
+}
+
+main() => void {
+	# --- `<void>`: evaluate once, keep the side effects, produce no value ---
+	<void>record(5);
+	<void>record(2);
+	println$("discarded-calls: ", effects, " ", record(0));
+
+	# A bare cast statement whose result is usable is only a warning
+	# (`unused_cast_result`): the conversion still happens, and is discarded.
+	<i64>record(0);
+
+	println$("divergent-discard: ", pick(true));
+
+	# --- a function value and a thin raw pointer are the same one address ---
+	address := <*void>add;
+	back := <(a: i32, b: i32) => i32>address;
+	println$("omega-fn-roundtrip: ", back(3, 4));
+
+	# --- the destination function type still drives the foreign convention --
+	c_address := <*void>c_mul;
+	c_back := <foreign(c) (a: i32, b: i32) => i32>c_address;
+	println$("foreign-fn-roundtrip: ", c_back(3, 4));
+
+	# --- a `foreign(c)` function pointer with an aggregate parameter is only
+	# an ABI boundary when it is called, so building one is fine --------------
+	aggregate_fp := <foreign(c) (value: Pair) => void>address;
+	println$("foreign-fp-built: ", <usize><*void>aggregate_fp != 0usize);
+}

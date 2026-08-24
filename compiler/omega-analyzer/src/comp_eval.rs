@@ -572,6 +572,9 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
     ) -> CompResult<ConstValue> {
         match kind {
             CastKind::Reinterpret => Ok(base),
+            // The operand was already evaluated for its effects; `void` has no
+            // comp value, so this reuses the interpreter's no-value sentinel.
+            CastKind::Discard => Ok(ConstValue::Bool(false)),
             CastKind::DropLength => match base {
                 ConstValue::Str(s) => {
                     let bytes = s

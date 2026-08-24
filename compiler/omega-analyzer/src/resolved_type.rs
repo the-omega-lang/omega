@@ -606,6 +606,15 @@ impl Hash for ResolvedType {
     }
 }
 
+fn self_mode_spelling(self_mode: SelfMode) -> &'static str {
+    match self_mode {
+        SelfMode::Value => "self",
+        SelfMode::MutValue => "mut self",
+        SelfMode::Pointer => "*self",
+        SelfMode::MutPointer => "*mut self",
+    }
+}
+
 impl std::fmt::Display for ResolvedType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -634,9 +643,17 @@ impl std::fmt::Display for ResolvedType {
                 mutable: true,
             } => write!(f, "*mut {pointee}"),
             Self::Function(fn_type) => {
+                if fn_type.calling_convention != CallingConvention::Omega {
+                    write!(f, "foreign({}) ", fn_type.calling_convention)?;
+                }
                 write!(f, "(")?;
-                for (i, (name, param)) in fn_type.params.iter().enumerate() {
-                    if i > 0 {
+                let mut wrote_param = false;
+                if let Some(self_mode) = fn_type.self_mode {
+                    write!(f, "{}", self_mode_spelling(self_mode))?;
+                    wrote_param = true;
+                }
+                for (name, param) in &fn_type.params {
+                    if wrote_param {
                         write!(f, ", ")?;
                     }
                     if name.as_ref().is_empty() {
@@ -644,9 +661,10 @@ impl std::fmt::Display for ResolvedType {
                     } else {
                         write!(f, "{}: {param}", name.as_ref())?;
                     }
+                    wrote_param = true;
                 }
                 if fn_type.is_variadic {
-                    if !fn_type.params.is_empty() {
+                    if wrote_param {
                         write!(f, ", ")?;
                     }
                     write!(f, "...")?;

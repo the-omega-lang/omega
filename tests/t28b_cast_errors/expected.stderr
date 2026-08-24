@@ -1,0 +1,54 @@
+error: cannot cast '(a: i32, b: i32) => i32' to 'foreign(c) (a: i32, b: i32) => i32'
+ --> tests/t28b_cast_errors/t28b_cast_errors.omg:8:12
+  |
+8 |     bad := <foreign(c) (a: i32, b: i32) => i32>add;
+  |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no cast exists from '(a: i32, b: i32) => i32' to 'foreign(c) (a: i32, b: i32) => i32'
+  |
+  = note: casts are only supported between numeric types, pointers, the str/byte-slice family (*str, *[u8], *[i8]), between a function type and a thin raw pointer, into a spec object (spec *Spec) when the source genuinely implements it, and to `void` to discard a value
+  = help: a function type only converts to or from a thin raw pointer; write the reinterpretation explicitly as `<*void>` and back if that is what you mean -- a cast never adapts a signature or a calling convention
+
+error: cannot cast '(a: i32, b: i32) => i32' to '(a: i32) => i32'
+  --> tests/t28b_cast_errors/t28b_cast_errors.omg:13:12
+   |
+13 |     bad := <(a: i32) => i32>add;
+   |            ^^^^^^^^^^^^^^^^^^^^ no cast exists from '(a: i32, b: i32) => i32' to '(a: i32) => i32'
+   |
+   = note: casts are only supported between numeric types, pointers, the str/byte-slice family (*str, *[u8], *[i8]), between a function type and a thin raw pointer, into a spec object (spec *Spec) when the source genuinely implements it, and to `void` to discard a value
+   = help: a function type only converts to or from a thin raw pointer; write the reinterpretation explicitly as `<*void>` and back if that is what you mean -- a cast never adapts a signature or a calling convention
+
+error: cannot cast '(a: i32, b: i32) => i32' to 'usize'
+  --> tests/t28b_cast_errors/t28b_cast_errors.omg:18:12
+   |
+18 |     bad := <usize>add;
+   |            ^^^^^^^^^^ no cast exists from '(a: i32, b: i32) => i32' to 'usize'
+   |
+   = note: casts are only supported between numeric types, pointers, the str/byte-slice family (*str, *[u8], *[i8]), between a function type and a thin raw pointer, into a spec object (spec *Spec) when the source genuinely implements it, and to `void` to discard a value
+   = help: a function type only converts to or from a thin raw pointer; write the reinterpretation explicitly as `<*void>` and back if that is what you mean -- a cast never adapts a signature or a calling convention
+
+error: cannot cast 'usize' to '(a: i32, b: i32) => i32'
+  --> tests/t28b_cast_errors/t28b_cast_errors.omg:22:12
+   |
+22 |     bad := <(a: i32, b: i32) => i32>1usize;
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no cast exists from 'usize' to '(a: i32, b: i32) => i32'
+   |
+   = note: casts are only supported between numeric types, pointers, the str/byte-slice family (*str, *[u8], *[i8]), between a function type and a thin raw pointer, into a spec object (spec *Spec) when the source genuinely implements it, and to `void` to discard a value
+   = help: a function type only converts to or from a thin raw pointer; write the reinterpretation explicitly as `<*void>` and back if that is what you mean -- a cast never adapts a signature or a calling convention
+
+error: cannot cast '(a: i32, b: i32) => i32' to '*mut void': target is mutable, source is not
+  --> tests/t28b_cast_errors/t28b_cast_errors.omg:27:12
+   |
+27 |     bad := <*mut void>add;
+   |            ^^^^^^^^^^^^^^ cannot cast '(a: i32, b: i32) => i32' to '*mut void'
+   |
+   = help: there is no writable data behind a function; cast to an immutable `*T` instead
+
+error: cannot cast '*str' to '(a: i32, b: i32) => i32'
+  --> tests/t28b_cast_errors/t28b_cast_errors.omg:32:12
+   |
+32 |     bad := <(a: i32, b: i32) => i32>text;
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no cast exists from '*str' to '(a: i32, b: i32) => i32'
+   |
+   = note: casts are only supported between numeric types, pointers, the str/byte-slice family (*str, *[u8], *[i8]), between a function type and a thin raw pointer, into a spec object (spec *Spec) when the source genuinely implements it, and to `void` to discard a value
+   = help: a function type only converts to or from a thin raw pointer; write the reinterpretation explicitly as `<*void>` and back if that is what you mean -- a cast never adapts a signature or a calling convention
+
+error: could not compile the program due to 6 previous errors

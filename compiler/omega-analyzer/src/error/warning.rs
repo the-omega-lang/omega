@@ -56,7 +56,10 @@ impl AnalysisWarning {
             ),
             AnalysisWarningKind::UnusedReturnValue => d
                 .with_label(self.span, "this call's result is discarded")
-                .with_note("if that's intentional, bind it to a local instead of leaving it a bare statement"),
+                .with_help("if that's intentional, write `<void>...` around the call to say so"),
+            AnalysisWarningKind::UnusedCastResult { r#type } => d
+                .with_label(self.span, format!("this cast produces a `{type}` that nothing reads"))
+                .with_help("use the converted value, or write `<void>...` if the point was only the operand's side effects"),
             AnalysisWarningKind::NoOpCast { r#type } => {
                 d.with_label(self.span, format!("`{type}` cast to itself changes nothing"))
             }
@@ -114,6 +117,7 @@ pub enum AnalysisWarningKind {
     UnusedField { owner: Ident, field: Ident },
     NeverConstructedVariant { r#enum: Ident, variant: Ident },
     UnusedReturnValue,
+    UnusedCastResult { r#type: ResolvedType },
     NoOpCast { r#type: ResolvedType },
     SelfAssignment,
     AlwaysTrueFalseComparison { result: bool },
@@ -141,6 +145,7 @@ impl AnalysisWarningKind {
             Self::UnusedField { .. } => "unused_field",
             Self::NeverConstructedVariant { .. } => "never_constructed_variant",
             Self::UnusedReturnValue => "unused_return_value",
+            Self::UnusedCastResult { .. } => "unused_cast_result",
             Self::NoOpCast { .. } => "no_op_cast",
             Self::SelfAssignment => "self_assignment",
             Self::AlwaysTrueFalseComparison { .. } => "always_true_false_comparison",
@@ -180,6 +185,9 @@ impl fmt::Display for AnalysisWarningKind {
                 )
             }
             Self::UnusedReturnValue => write!(f, "unused return value"),
+            Self::UnusedCastResult { r#type } => {
+                write!(f, "this cast to '{type}' is discarded")
+            }
             Self::NoOpCast { r#type } => write!(f, "this cast to '{type}' has no effect"),
             Self::SelfAssignment => write!(f, "self-assignment"),
             Self::AlwaysTrueFalseComparison { result } => {
@@ -201,6 +209,43 @@ impl fmt::Display for AnalysisWarningKind {
 mod tests {
     use super::*;
     use omega_diagnostics::Footer;
+
+    fn diagnostic(kind: AnalysisWarningKind) -> Diagnostic {
+        AnalysisWarning::new(
+            HirId {
+                module: omega_hir::SYNTHETIC_MODULE,
+                local: 0,
+            },
+            Span::new(0, 0),
+            kind,
+        )
+        .to_diagnostic()
+    }
+
+    fn helps(diagnostic: &Diagnostic) -> String {
+        diagnostic
+            .footers
+            .iter()
+            .filter_map(|footer| match footer {
+                Footer::Help(help) => Some(help.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[test]
+    fn discarded_cast_and_return_value_both_point_at_the_void_cast() {
+        let cast = diagnostic(AnalysisWarningKind::UnusedCastResult {
+            r#type: ResolvedType::I64,
+        });
+        assert_eq!(cast.message, "this cast to 'i64' is discarded");
+        assert!(helps(&cast).contains("<void>"), "{:?}", cast.footers);
+        assert!(
+            helps(&diagnostic(AnalysisWarningKind::UnusedReturnValue)).contains("<void>"),
+            "the intentional-discard spelling is the language-level one"
+        );
+    }
 
     #[test]
     fn unfilled_gap_does_not_advertise_impossible_suppression() {

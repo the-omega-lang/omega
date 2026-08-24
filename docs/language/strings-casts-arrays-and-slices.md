@@ -43,6 +43,44 @@ Pointer/integer casts use the target pointer width. A cast to a mutable pointer 
 
 Pointer-to-pointer casts are explicit reinterpretations. Pointee types need not be identical.
 
+### Discarding a value with `<void>`
+
+`<void>expression` is the explicit discard form. It accepts any operand, evaluates it exactly once, keeps its side effects, and produces no value:
+
+```omega
+<void>write_all(buffer);
+```
+
+A `<void>` cast is intentional by definition, so it is never reported as a no-op cast -- not even when the operand is already `void`. If the operand diverges, the discard diverges with it and the code after it is still unreachable.
+
+### A cast used as a statement
+
+A cast written as a bare statement whose result is neither `void` nor divergent warns (`unused_cast_result`): the conversion is performed and then thrown away, which is never what the conversion was for. Use the result, or write `<void>...` to say the discard is deliberate. This rule is about cast statements specifically; an ordinary expression statement is not otherwise required to consume its value.
+
+### Function values and thin raw pointers
+
+A function value and a thin raw pointer are both exactly one address, so a cast may reinterpret one as the other:
+
+- thin `*T` -> a function type, ordinary or `foreign(cc)`;
+- a function type -> an immutable thin `*T`.
+
+A function value can never be cast to `*mut T`. There is no writable data behind a function, and a cast never manufactures mutability.
+
+```omega
+address := <*void>handler;                  # a callable address as raw data
+back := <(a: i32, b: i32) => i32>address;   # the same address, callable again
+```
+
+A cast between two function types is valid only when the two types are already identical, which makes it a no-op. Any difference in parameter or return types, variadicness, `self` mode, or calling convention is rejected. The calling convention is part of a function type's identity (see [`foreign-function-interface.md`](foreign-function-interface.md)) and a cast never inserts an ABI adapter, so a reinterpretation across function types is written explicitly through a thin raw pointer:
+
+```omega
+as_c := <foreign(c) (a: i32, b: i32) => i32><*void>omega_handler;
+```
+
+The destination function type is what a later indirect call obeys; the cast itself neither converts nor validates an ABI. A `foreign(cc)` function pointer's signature is checked where the ABI is actually relied upon -- at the declaration and at the call.
+
+Function values do not participate in numeric casts: `<usize>handler` and `<(i32) => void>some_address_integer` are both invalid. Going through a thin raw pointer expresses either direction explicitly.
+
 ### Casts into an anonymous enum
 
 A cast to an anonymous enum is not a reinterpretation. It writes the destination type down, which is the one thing conversion into an anonymous enum requires, and then performs the same conversion an expected type would:

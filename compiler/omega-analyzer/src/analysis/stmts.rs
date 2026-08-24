@@ -231,15 +231,28 @@ impl<'r> Analyzer<'r> {
             HirStmt::DeclarationWithInit(decl, value) => self
                 .analyze_declaration_with_init(decl, value)
                 .map(Vec::from),
-            HirStmt::Expression(expr) => self.analyze_expr(expr, None).map(|e| {
-                if matches!(e.kind, CheckedExpr::FunctionCall(_))
-                    && e.r#type != ResolvedType::Void
-                    && e.r#type != ResolvedType::Never
-                {
-                    self.warn(e.id, e.span, AnalysisWarningKind::UnusedReturnValue);
-                }
-                vec![CheckedStmt::Expression(e)]
-            }),
+            HirStmt::Expression(expr) => {
+                // Tested against the *source* form: analysis lowers some casts
+                // to a conversion node of their own (anonymous-enum widening,
+                // spec coercion), and those are still discarded casts.
+                let is_source_cast = matches!(expr.expr, HirExpr::Cast(_));
+                self.analyze_expr(expr, None).map(|e| {
+                    let usable_result =
+                        e.r#type != ResolvedType::Void && e.r#type != ResolvedType::Never;
+                    if is_source_cast && usable_result {
+                        self.warn(
+                            e.id,
+                            e.span,
+                            AnalysisWarningKind::UnusedCastResult {
+                                r#type: e.r#type.clone(),
+                            },
+                        );
+                    } else if matches!(e.kind, CheckedExpr::FunctionCall(_)) && usable_result {
+                        self.warn(e.id, e.span, AnalysisWarningKind::UnusedReturnValue);
+                    }
+                    vec![CheckedStmt::Expression(e)]
+                })
+            }
             HirStmt::Return(expr) => {
                 if self.in_defer_body {
                     self.error(expr.id, expr.span, AnalysisErrorKind::ReturnInsideDefer);

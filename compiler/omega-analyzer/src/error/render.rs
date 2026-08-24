@@ -468,18 +468,37 @@ impl AnalysisErrorKind {
                     .with_label(span, format!("no cast exists from '{from}' to '{to}'"))
                     .with_note(anonymous_enum_conversion_note(to, from).unwrap_or(
                     "casts are only supported between numeric types, pointers, \
-                     the str/byte-slice family (*str, *[u8], *[i8]), and into a \
-                     spec object (spec *Spec) when the source genuinely implements it",
+                     the str/byte-slice family (*str, *[u8], *[i8]), between a \
+                     function type and a thin raw pointer, into a spec object \
+                     (spec *Spec) when the source genuinely implements it, and \
+                     to `void` to discard a value",
                     ));
                 if *to == ResolvedType::Char && from.numeric_kind(64).is_some() {
                     d.with_help("use `char::from_u32` for a checked Unicode scalar conversion")
+                } else if matches!(from, ResolvedType::Function(_))
+                    || matches!(to, ResolvedType::Function(_))
+                {
+                    d.with_help(
+                        "a function type only converts to or from a thin raw pointer; \
+                         write the reinterpretation explicitly as `<*void>` and back if \
+                         that is what you mean -- a cast never adapts a signature or a \
+                         calling convention",
+                    )
                 } else {
                     d
                 }
             }
-            Self::CastToMutablePointer { from, to } => d
-                .with_label(span, format!("cannot cast '{from}' to '{to}'"))
-                .with_help("a cast can only target a mutable pointer/slice/str if the source is already mutable"),
+            Self::CastToMutablePointer { from, to } => {
+                let d = d.with_label(span, format!("cannot cast '{from}' to '{to}'"));
+                if matches!(from, ResolvedType::Function(_)) {
+                    d.with_help(
+                        "there is no writable data behind a function; cast to an \
+                         immutable `*T` instead",
+                    )
+                } else {
+                    d.with_help("a cast can only target a mutable pointer/slice/str if the source is already mutable")
+                }
+            }
             Self::NoMatchingOverload { name, candidates } => {
                 let mut d = d.with_label(span, format!("no overload of `{}` matches this", name.as_ref()));
                 for candidate in candidates {

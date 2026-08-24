@@ -1,0 +1,5 @@
+discarded-calls: 7 7
+divergent-discard: 11
+omega-fn-roundtrip: 7
+foreign-fn-roundtrip: 12
+foreign-fp-built: true

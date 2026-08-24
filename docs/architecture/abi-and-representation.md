@@ -25,6 +25,7 @@ Typical shapes include:
 | fixed integers/floats | matching scalar leaf |
 | `isize` / `usize` | target pointer-width integer leaf |
 | thin pointer / unsized-array pointer | one pointer leaf |
+| function value / function pointer | one pointer leaf |
 | slice / `str` pointer | data pointer + length |
 | `[N]T` | N repetitions of `T`'s leaves, inline |
 | struct | field leaves + explicit layout padding |
@@ -33,6 +34,8 @@ Typical shapes include:
 | dynamic spec object | data pointer + vtable pointer |
 
 The exact functions live in `omega_analyzer::layout`; this table is a routing summary, not a replacement for the code.
+
+Sharing the single-pointer-leaf shape is what makes an explicit cast between a thin raw pointer and a function type a pure bit reinterpretation, with no ABI adapter and no leaf-count change. Representation compatibility is not type identity: the analyzer still treats signature, variadicness, `self` mode, and calling convention as part of a function type, and casts between two differing function types remain invalid. See [`../language/strings-casts-arrays-and-slices.md`](../language/strings-casts-arrays-and-slices.md).
 
 ## Memory vs register representation
 

@@ -383,6 +383,7 @@ pub struct CheckedCast {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CastKind {
     Reinterpret,
+    Discard,
     IntExtend { signed: bool },
     IntTruncate,
     IntToFloat { signed: bool },

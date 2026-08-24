@@ -76,6 +76,8 @@ Initial named conventions are `c` and `sysv64`. `sysv64` selects the AMD64 Syste
 
 Calling convention is part of complete function-type identity (equality, function-pointer assignment/coercion, indirect-call typing, mangled type identity). It is **not** an overload selector: two same-name functions with the same callable parameter types remain duplicate/redeclaration candidates regardless of any differing convention, because direct call syntax has no way to choose a convention.
 
+A cast does not convert between conventions either. A direct cast between two differing function types is invalid; reinterpreting an address as a differently-conventioned function type is written explicitly through a thin raw pointer, and produces no ABI adapter. See [`strings-casts-arrays-and-slices.md`](strings-casts-arrays-and-slices.md).
+
 ## Variadic calls
 
 `...` exists only for foreign conventions that support it; an ordinary Omega function type can never be variadic. `c` supports variadics; `sysv64` supports them on its accepted x86-64 targets. A convention that does not support variadic arguments on the current target rejects `...` at the declaration.

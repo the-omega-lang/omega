@@ -1,0 +1,36 @@
+add(a: i32, b: i32) => i32 {
+	a + b
+}
+
+# A calling convention is part of a function type's identity, so this is not a
+# conversion the cast may perform.
+to_foreign_convention() => void {
+	bad := <foreign(c) (a: i32, b: i32) => i32>add;
+}
+
+# The same rule for a differing signature.
+to_other_signature() => void {
+	bad := <(a: i32) => i32>add;
+}
+
+# A function is not a number, in either direction.
+to_integer() => void {
+	bad := <usize>add;
+}
+
+from_integer() => void {
+	bad := <(a: i32, b: i32) => i32>1usize;
+}
+
+# A function has no writable data behind it.
+to_mutable_pointer() => void {
+	bad := <*mut void>add;
+}
+
+# Only a thin raw pointer is the one-address bridge.
+from_fat_pointer(text: *str) => void {
+	bad := <(a: i32, b: i32) => i32>text;
+}
+
+main() => void {
+}

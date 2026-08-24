@@ -217,6 +217,27 @@ impl<'r> Analyzer<'r> {
         let target_type = self.resolve_type_or_error(node_id, span, target, true)?;
         let checked_base = self.analyze_expr(base, None)?;
 
+        // `<void>` is the explicit discard form, so it is deliberately not a
+        // conversion at all: it accepts any operand, is never a `NoOpCast`,
+        // and stays divergent when the operand cannot complete.
+        if target_type == ResolvedType::Void {
+            let result_type = if checked_base.r#type == ResolvedType::Never {
+                ResolvedType::Never
+            } else {
+                ResolvedType::Void
+            };
+            return Some(CheckedExprNode {
+                id: node_id,
+                span,
+                r#type: result_type,
+                kind: CheckedExpr::Cast(CheckedCast {
+                    kind: CastKind::Discard,
+                    target_type,
+                    base: Box::new(checked_base),
+                }),
+            });
+        }
+
         // Generalized over `Pointer`/`Slice`/`Str` alike, and checked before
         // either cast-kind path below, so e.g. `<*mut str>` on an immutable
         // `*str` is caught here rather than silently succeeding as a
@@ -396,6 +417,33 @@ impl<'r> Analyzer<'r> {
             kind
         } else if let Some(kind) = Self::array_pointer_cast_kind(&checked_base.r#type, &target_type)
         {
+            kind
+        } else if matches!(checked_base.r#type, ResolvedType::Function(_))
+            || matches!(target_type, ResolvedType::Function(_))
+        {
+            // Handled before `cast_class`, which would otherwise see a
+            // function as a plain address and admit function <-> integer and
+            // arbitrary function <-> function conversions.
+            let Some(kind) = Self::function_cast_kind(&checked_base.r#type, &target_type) else {
+                // A function value has no writable data behind it, so a
+                // `*mut T` destination is a mutability violation rather than
+                // a merely missing cast.
+                let error = if matches!(checked_base.r#type, ResolvedType::Function(_))
+                    && matches!(target_type, ResolvedType::Pointer { mutable: true, .. })
+                {
+                    AnalysisErrorKind::CastToMutablePointer {
+                        from: checked_base.r#type.clone(),
+                        to: target_type.clone(),
+                    }
+                } else {
+                    AnalysisErrorKind::InvalidCast {
+                        from: checked_base.r#type.clone(),
+                        to: target_type.clone(),
+                    }
+                };
+                self.error(node_id, span, error);
+                return None;
+            };
             kind
         } else {
             let (Some(source_class), Some(target_class)) = (
@@ -842,6 +890,24 @@ impl<'r> Analyzer<'r> {
                     CastKind::FloatTruncate
                 }
             }
+        }
+    }
+
+    /// The only legal function-type reinterpretations: a function value and a
+    /// thin raw pointer are the same single pointer leaf. Function -> function
+    /// is restricted to the identity, so any difference in signature,
+    /// variadicness, `self` mode, or calling convention must be written
+    /// explicitly through a raw pointer instead of being adapted silently.
+    fn function_cast_kind(source: &ResolvedType, target: &ResolvedType) -> Option<CastKind> {
+        match (source, target) {
+            (ResolvedType::Function(source_fn), ResolvedType::Function(target_fn)) => {
+                (source_fn == target_fn).then_some(CastKind::Reinterpret)
+            }
+            (ResolvedType::Function(_), ResolvedType::Pointer { mutable: false, .. })
+            | (ResolvedType::Pointer { .. }, ResolvedType::Function(_)) => {
+                Some(CastKind::Reinterpret)
+            }
+            _ => None,
         }
     }
 
