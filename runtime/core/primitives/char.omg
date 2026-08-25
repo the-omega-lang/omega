@@ -11,11 +11,11 @@ import root::range::Successor;
 
 primitive char {
     exposed from_u32(value: u32) => Option<char> {
-        if value > 0x10FFFFu32 {
+        if value > 0x10FFFF_u32 {
             return Option<char>::None;
         }
-        if value >= 0xD800u32 {
-            if value <= 0xDFFFu32 {
+        if value >= 0xD800_u32 {
+            if value <= 0xDFFF_u32 {
                 return Option<char>::None;
             }
         }
@@ -24,38 +24,38 @@ primitive char {
         Option<char>::Some { value = *<*char>&value; }
     }
 
-    exposed is_ascii(*self) => bool { <u32>*self <= 0x7Fu32 }
+    exposed is_ascii(*self) => bool { <u32>*self <= 0x7F_u32 }
     exposed is_digit(*self) => bool {
         cp := <u32>*self;
-        if cp < 0x30u32 { false } else { cp <= 0x39u32 }
+        if cp < 0x30_u32 { false } else { cp <= 0x39_u32 }
     }
     # ASCII-only; see docs/issues/known-issues.md.
     exposed is_alphabetic(*self) => bool {
         cp := <u32>*self;
-        if cp >= 0x41u32 {
-            if cp <= 0x5Au32 { return true; }
+        if cp >= 0x41_u32 {
+            if cp <= 0x5A_u32 { return true; }
         }
-        if cp >= 0x61u32 { cp <= 0x7Au32 } else { false }
+        if cp >= 0x61_u32 { cp <= 0x7A_u32 } else { false }
     }
     exposed is_whitespace(*self) => bool {
         cp := <u32>*self;
-        if cp == 0x20u32 { return true; }
-        if cp >= 0x09u32 { cp <= 0x0Du32 } else { false }
+        if cp == 0x20_u32 { return true; }
+        if cp >= 0x09_u32 { cp <= 0x0D_u32 } else { false }
     }
     exposed len_utf8(*self) => usize {
         cp := <u32>*self;
-        if cp < 0x80u32 { 1usize }
-        else if cp < 0x800u32 { 2usize }
-        else if cp < 0x10000u32 { 3usize }
+        if cp < 0x80_u32 { 1usize }
+        else if cp < 0x800_u32 { 2usize }
+        else if cp < 0x10000_u32 { 3usize }
         else { 4usize }
     }
     # Reinterpret directly rather than via `from_u32`: result is always
     # ASCII, so nothing a check could reject.
     exposed to_ascii_uppercase(*self) => char {
         mut cp := <u32>*self;
-        if cp >= 0x61u32 {
-            if cp <= 0x7Au32 {
-                cp = cp - 0x20u32;
+        if cp >= 0x61_u32 {
+            if cp <= 0x7A_u32 {
+                cp = cp - 0x20_u32;
                 return *<*char>&cp;
             }
         }
@@ -63,9 +63,9 @@ primitive char {
     }
     exposed to_ascii_lowercase(*self) => char {
         mut cp := <u32>*self;
-        if cp >= 0x41u32 {
-            if cp <= 0x5Au32 {
-                cp = cp + 0x20u32;
+        if cp >= 0x41_u32 {
+            if cp <= 0x5A_u32 {
+                cp = cp + 0x20_u32;
                 return *<*char>&cp;
             }
         }
@@ -84,8 +84,8 @@ conform char to Ord {
 conform char to Successor {
     successor(*self) => Option<Self> {
         cp := <u32>*self;
-        if cp == 0x10FFFFu32 { return Option<char>::None; }
-        if cp == 0xD7FFu32 { return char::from_u32(0xE000u32); }
+        if cp == 0x10FFFF_u32 { return Option<char>::None; }
+        if cp == 0xD7FF_u32 { return char::from_u32(0xE000_u32); }
         char::from_u32(cp + 1u32)
     }
 }
@@ -96,7 +96,7 @@ conform char to Bounded {
     # -- routing it through would need an unreachable `else` with no honest
     # value to return.
     max() => Self {
-        cp := 0x10FFFFu32;
+        cp := 0x10FFFF_u32;
         *<*char>&cp
     }
 }

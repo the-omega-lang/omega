@@ -105,7 +105,7 @@ main() => void {
 
 	# --- char: ordering, checked construction, casts --------------------
 	println$("char-ordering: ", 'a' < 'b', " ", 'b' <= 'b', " ", 'c' > 'b', " ", 'c' >= 'd', " ", 'a' == 'a', " ", 'a' != 'b');
-	println$("char-from-u32: ", probe_char(0x41u32), " ", probe_char(0x110000u32), " ", probe_char(0xD800u32));
+	println$("char-from-u32: ", probe_char(0x41_u32), " ", probe_char(0x110000_u32), " ", probe_char(0xD800_u32));
 	from_byte := <char>65u8;
 	println$("char-cast: ", from_byte == 'A', " ", <i32>from_byte);
 

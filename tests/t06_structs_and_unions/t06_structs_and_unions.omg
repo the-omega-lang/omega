@@ -39,7 +39,7 @@ main() => void {
 	# at offset zero, so writing one field is visible through another.
 	println$("union-size: ", sizeof<Raw>, " ", sizeof<[4]u8>);
 
-	mut raw := Raw { as_u32 = 0x01020304u32; };
+	mut raw := Raw { as_u32 = 0x01020304_u32; };
 	println$("union-overlap: ", raw.as_bytes[0], " ", raw.as_bytes[1], " ", raw.as_bytes[2], " ", raw.as_bytes[3]);
 
 	v := Value { as_i32 = 42; };

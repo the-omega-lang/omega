@@ -42,20 +42,20 @@ exposed struct String {
     # byte carries the rest tagged with the right number of leading 1s.
     exposed push(*mut self, c: char) => void {
         cp := <u32>c;
-        if cp < 0x80u32 {
+        if cp < 0x80_u32 {
             self.bytes.push(<u8>cp);
-        } else if cp < 0x800u32 {
-            self.bytes.push(<u8>(0xC0u32 | (cp >> 6u32)));
-            self.bytes.push(<u8>(0x80u32 | (cp & 0x3Fu32)));
-        } else if cp < 0x10000u32 {
-            self.bytes.push(<u8>(0xE0u32 | (cp >> 12u32)));
-            self.bytes.push(<u8>(0x80u32 | ((cp >> 6u32) & 0x3Fu32)));
-            self.bytes.push(<u8>(0x80u32 | (cp & 0x3Fu32)));
+        } else if cp < 0x800_u32 {
+            self.bytes.push(<u8>(0xC0_u32 | (cp >> 6u32)));
+            self.bytes.push(<u8>(0x80_u32 | (cp & 0x3F_u32)));
+        } else if cp < 0x10000_u32 {
+            self.bytes.push(<u8>(0xE0_u32 | (cp >> 12u32)));
+            self.bytes.push(<u8>(0x80_u32 | ((cp >> 6u32) & 0x3F_u32)));
+            self.bytes.push(<u8>(0x80_u32 | (cp & 0x3F_u32)));
         } else {
-            self.bytes.push(<u8>(0xF0u32 | (cp >> 18u32)));
-            self.bytes.push(<u8>(0x80u32 | ((cp >> 12u32) & 0x3Fu32)));
-            self.bytes.push(<u8>(0x80u32 | ((cp >> 6u32) & 0x3Fu32)));
-            self.bytes.push(<u8>(0x80u32 | (cp & 0x3Fu32)));
+            self.bytes.push(<u8>(0xF0_u32 | (cp >> 18u32)));
+            self.bytes.push(<u8>(0x80_u32 | ((cp >> 12u32) & 0x3F_u32)));
+            self.bytes.push(<u8>(0x80_u32 | ((cp >> 6u32) & 0x3F_u32)));
+            self.bytes.push(<u8>(0x80_u32 | (cp & 0x3F_u32)));
         }
     }
 

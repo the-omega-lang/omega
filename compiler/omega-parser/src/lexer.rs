@@ -593,6 +593,7 @@ impl<'a> Lexer<'a> {
     }
 
     fn scan_number(&mut self) -> TokenKind {
+        let start = self.pos;
         let (base, integer_part) = if self.peek() == Some('0') {
             match self.peek_at(1) {
                 Some('x') => {
@@ -626,7 +627,26 @@ impl<'a> Lexer<'a> {
             None
         };
 
+        // A hex digit run can end in letters, so an unseparated suffix has no
+        // visible boundary (`0xdeadbeefusize`). Requiring `_` keeps every hex
+        // literal readable rather than only the ones that happen to end in a
+        // letter.
+        let separated = self.source[..self.pos].ends_with('_');
+        let suffix_start = self.pos;
         let explicit_type = self.scan_number_suffix();
+
+        if matches!(base, NumberBase::Hex) && !separated {
+            if let Some(suffix) = &explicit_type {
+                let digits = &self.source[start..suffix_start];
+                self.errors.push(ParseError::new(
+                    self.span_from(suffix_start),
+                    ParseErrorKind::NumberSuffixNeedsSeparator {
+                        suffix: suffix.clone(),
+                        suggestion: format!("{digits}_{}", suffix.0),
+                    },
+                ));
+            }
+        }
 
         TokenKind::Number(NumberExpr {
             base,
@@ -881,5 +901,7 @@ impl<'a> Lexer<'a> {
 
 #[cfg(test)]
 mod multiline_string_tests;
+#[cfg(test)]
+mod number_tests;
 #[cfg(test)]
 mod spelling_tests;

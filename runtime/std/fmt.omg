@@ -86,10 +86,10 @@ exposed write_char(out: *mut spec Write, value: char) => void {
 
 exposed write_float(out: *mut spec Write, value: f64) => void {
     bits := *<*u64>&value;
-    exponent := (bits >> 52u64) & 0x7ffu64;
-    mantissa := bits & 0x000fffffffffffffu64;
+    exponent := (bits >> 52u64) & 0x7ff_u64;
+    mantissa := bits & 0x000fffffffffffff_u64;
     negative := (bits >> 63u64) != 0u64;
-    if exponent == 0x7ffu64 {
+    if exponent == 0x7ff_u64 {
         if mantissa != 0u64 { out.write(b"nan"); }
         else if negative { out.write(b"-inf"); }
         else { out.write(b"inf"); }

@@ -1,0 +1,19 @@
+error: type suffix `usize` must be separated from a hexadecimal literal by `_`
+ --> tests/t31_hex_literal_suffix_errors/t31_hex_literal_suffix_errors.omg:2:27
+  |
+2 |     attached := 0xdeadbeefusize;
+  |                           ^^^^^ no visible boundary between the digits and the suffix
+  |
+  = note: hexadecimal digits include letters, so an attached suffix is unreadable
+  = help: write it as `0xdeadbeef_usize`
+
+error: type suffix `u8` must be separated from a hexadecimal literal by `_`
+ --> tests/t31_hex_literal_suffix_errors/t31_hex_literal_suffix_errors.omg:3:23
+  |
+3 |     no_letters := 0xFFu8;
+  |                       ^^ no visible boundary between the digits and the suffix
+  |
+  = note: hexadecimal digits include letters, so an attached suffix is unreadable
+  = help: write it as `0xFF_u8`
+
+error: could not compile the program due to 2 previous errors

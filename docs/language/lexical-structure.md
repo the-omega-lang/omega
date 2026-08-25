@@ -175,6 +175,20 @@ Examples:
 8usize
 ```
 
+Because hexadecimal digits include letters, a hexadecimal literal must separate its suffix from the digits with `_`; there is otherwise no visible boundary between the two:
+
+```omega
+0xdeadbeef_usize
+0xFF_u8
+```
+
+```text
+0xdeadbeefusize   rejected
+0xFFu8            rejected
+```
+
+The separator is required for every hexadecimal literal, including ones whose digits happen to end in a decimal digit. Decimal, octal, and binary digits are never letters, so those bases accept an attached suffix.
+
 Lexing recognizes the suffix shape; semantic analysis decides whether the resulting type is a supported primitive and whether the value fits.
 
 Unsuffixed literal defaulting and contextual narrowing are specified in [`types-and-primitives.md`](types-and-primitives.md) and [`control-flow-and-operators.md`](control-flow-and-operators.md).

@@ -100,7 +100,7 @@ fn from_u32_is_available_and_returns_an_option() {
         r#"
         import core::option::Option;
         entry_fn() => i32 {
-            checked := char::from_u32(0x41u32);
+            checked := char::from_u32(0x41_u32);
             match checked {
                 Option::Some => { <i32>checked.value },
             } else { 1 }

@@ -1,0 +1,9 @@
+main() => i32 {
+    attached := 0xdeadbeefusize;
+    no_letters := 0xFFu8;
+    separated := 0xdeadbeef_usize;
+    decimal := 123u64;
+    binary := 0b1010u8;
+    octal := 0o755isize;
+    <i32>0
+}

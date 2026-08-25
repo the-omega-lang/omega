@@ -81,12 +81,14 @@ count += 1;
 
 ```omega
 signed := -12;
-hex := 0x7Fu32;
+hex := 0x7F_u32;
 flag := true;
 letter := 'A';
 text := "hello";
 bytes := b"raw bytes";
 ```
+
+A hexadecimal literal must separate a type suffix with `_` (`0x7F_u32`, never `0x7Fu32`); the other bases may attach the suffix directly (`12u32`).
 
 Common types visible in the repository include:
 
@@ -353,7 +355,7 @@ Repository runtime source adds methods/conformances to compiler primitive types 
 ```omega
 primitive char {
     exposed is_ascii(*self) => bool {
-        <u32>*self <= 0x7Fu32
+        <u32>*self <= 0x7F_u32
     }
 }
 

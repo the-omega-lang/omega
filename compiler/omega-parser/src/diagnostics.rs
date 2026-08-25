@@ -47,6 +47,10 @@ impl ParseError {
             ParseErrorKind::InvalidUnicodeEscape(hex) => Diagnostic::error(format!("invalid unicode escape '\\u{{{hex}}}'"))
                 .with_label(self.span, "not a valid Unicode scalar value")
                 .with_note("valid scalar values are U+0000..=U+D7FF and U+E000..=U+10FFFF"),
+            ParseErrorKind::NumberSuffixNeedsSeparator { suffix, suggestion } => Diagnostic::error(format!("type suffix `{suffix}` must be separated from a hexadecimal literal by `_`"))
+                .with_label(self.span, "no visible boundary between the digits and the suffix")
+                .with_note("hexadecimal digits include letters, so an attached suffix is unreadable")
+                .with_help(format!("write it as `{suggestion}`")),
             ParseErrorKind::InvalidCharLiteral => Diagnostic::error("character literal must contain exactly one character")
                 .with_label(self.span, "must contain exactly one character")
                 .with_help("write multi-character text as a string literal: `\"...\"`"),
@@ -172,6 +176,10 @@ pub enum ParseErrorKind {
     },
     InvalidCharacter(char),
     InvalidUnicodeEscape(String),
+    NumberSuffixNeedsSeparator {
+        suffix: Ident,
+        suggestion: String,
+    },
     InvalidCharLiteral,
     StructLiteralNotAllowedHere,
     EnumFunctionBeforeSemi,
