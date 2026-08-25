@@ -153,6 +153,23 @@ pub enum AnalysisErrorKind {
     },
     DeferInsideLoopNotSupported,
     ReturnInsideDefer,
+    TryInsideDefer,
+    TryOperandNotFallible {
+        found: ResolvedType,
+    },
+    TryOutsideFallibleFunction {
+        operand: &'static str,
+        r#return: ResolvedType,
+    },
+    TryFamilyMismatch {
+        operand: &'static str,
+        r#return: ResolvedType,
+        returned: &'static str,
+    },
+    TryErrorNotPropagatable {
+        found: ResolvedType,
+        expected: ResolvedType,
+    },
     NestedDeferNotSupported,
     StructLiteralNotAStruct {
         found: ResolvedType,
@@ -746,6 +763,24 @@ impl fmt::Display for AnalysisErrorKind {
                 write!(f, "'defer' is not supported inside a loop body")
             }
             Self::ReturnInsideDefer => write!(f, "'return' is not supported inside a 'defer' body"),
+            Self::TryInsideDefer => write!(f, "'?' is not supported inside a 'defer' body"),
+            Self::TryOperandNotFallible { found } => {
+                write!(f, "'?' cannot be applied to a value of type '{found}'")
+            }
+            Self::TryOutsideFallibleFunction { operand, r#return } => write!(
+                f,
+                "'?' requires an enclosing function returning '{operand}', but this one returns '{return}'"
+            ),
+            Self::TryFamilyMismatch {
+                operand, returned, ..
+            } => write!(
+                f,
+                "'?' on a '{operand}' value cannot propagate through a function returning '{returned}'"
+            ),
+            Self::TryErrorNotPropagatable { found, expected } => write!(
+                f,
+                "the error type '{found}' cannot be propagated as '{expected}'"
+            ),
             Self::NestedDeferNotSupported => {
                 write!(f, "'defer' is not supported inside another 'defer' body")
             }

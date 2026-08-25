@@ -457,6 +457,13 @@ impl FunctionLowerer {
             self.terminate(MirTerminator::Unreachable);
             return;
         }
+        self.return_value(value);
+    }
+
+    /// Stores a function result and enters the exit chain, so any registered
+    /// `defer` still runs before the function actually returns. Every path
+    /// that leaves a function with a value goes through here.
+    pub(super) fn return_value(&mut self, value: MirExprNode) {
         match self.return_slot {
             Some(slot) => self.assign_local(value.id, value.span, slot, value),
             None => self.push_stmt(value),
@@ -622,7 +629,10 @@ fn bare_local(place: &MirPlace) -> Option<LocalId> {
 fn is_control_flow_expr(kind: &CheckedExpr) -> bool {
     matches!(
         kind,
-        CheckedExpr::If(_) | CheckedExpr::Match(_) | CheckedExpr::Codeblock(_)
+        CheckedExpr::If(_)
+            | CheckedExpr::Match(_)
+            | CheckedExpr::Codeblock(_)
+            | CheckedExpr::Try(_)
     )
 }
 

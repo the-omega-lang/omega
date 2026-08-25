@@ -248,6 +248,24 @@ Forms used by repository source include:
 
 See [`../language/iteration-and-ranges.md`](../language/iteration-and-ranges.md).
 
+## The try operator `?`
+
+```omega
+quarter(n: i32) => Option<i32> {
+    half := halve(n)?;       # `None` returns this function's own `None`
+    halve(half)
+}
+
+scaled(n: i32) => Result<i32, *str> {
+    Result<i32, *str>::Ok { value = parse(n)? * 10; }
+}
+```
+
+`?` works only on `core::option::Option` and `core::result::Result`, and only
+inside a function returning the same one of the two. A `Result` error converts
+into the enclosing error type exactly as it would where that type is explicitly
+expected. Full rules: [`../language/control-flow-and-operators.md`](../language/control-flow-and-operators.md).
+
 ## `defer`
 
 ```omega

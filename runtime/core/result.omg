@@ -1,0 +1,8 @@
+# `core::result` -- a generic "value or failure" type. Together with
+# `core::option::Option` it is one of the two types the postfix `?` operator
+# recognizes (see docs/language/control-flow-and-operators.md).
+
+exposed enum Result<T, E> {
+    Ok { exposed value: T; },
+    Err { exposed error: E; };
+}

@@ -2,6 +2,7 @@ use super::*;
 
 mod operators;
 mod ranges;
+mod try_operator;
 
 impl<'r> Analyzer<'r> {
     pub(super) fn analyze_expr(
@@ -84,6 +85,7 @@ impl<'r> Analyzer<'r> {
             }
 
             HirExpr::Range(range) => self.analyze_range_value(id, span, range, expected),
+            HirExpr::Try(r#try) => self.analyze_try(id, span, r#try),
         }
     }
 

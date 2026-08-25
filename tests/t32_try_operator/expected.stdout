@@ -1,0 +1,24 @@
+option-success: some 2
+option-failure: none
+option-chain-field: some 5
+option-chain-field-none: none
+option-double-try: some 9
+option-double-try-none: none
+option-alias: some 5
+option-eval-once-success: 1
+option-eval-once-failure: 1
+option-independent-success-type: small
+result-success: ok 30
+result-failure: err not positive
+result-alias: ok 7
+result-defer-success: ok 1
+result-defer-count-success: 1
+result-defer-failure: err not positive
+result-defer-count-failure: 2
+result-void-success: ok
+result-void-failure: err
+result-mixed-ok: ok 5
+result-mixed-first: not-found 4
+result-mixed-second: denied 7
+comp-success: ok 40
+comp-failure: err not positive

@@ -620,6 +620,10 @@ impl<'a> Expander<'a> {
             })),
             Expression::Match(m) => Expression::Match(Box::new(self.expand_match(*m)?)),
             Expression::Range(r) => Expression::Range(Box::new(self.expand_range(*r)?)),
+            Expression::Try(t) => Expression::Try(Box::new(TryExpr {
+                base: self.expand_expr(t.base)?,
+                operator_span: t.operator_span,
+            })),
         };
         Ok(ExpressionNode { expression, span })
     }

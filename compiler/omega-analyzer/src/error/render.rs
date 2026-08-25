@@ -243,6 +243,27 @@ impl AnalysisErrorKind {
             Self::ReturnInsideDefer => d
                 .with_label(span, "cannot `return` from inside a `defer` body")
                 .with_note("deferred code runs while the function is already returning"),
+            Self::TryInsideDefer => d
+                .with_label(span, "`?` cannot appear inside a `defer` body")
+                .with_note("a failing `?` exits the enclosing function, which deferred code cannot do"),
+            Self::TryOperandNotFallible { found } => d
+                .with_label(span, format!("`?` was applied to a value of type `{found}`"))
+                .with_note("`?` only propagates `core::option::Option` and `core::result::Result`"),
+            Self::TryOutsideFallibleFunction { operand, r#return } => d
+                .with_label(span, format!("this function returns `{return}`"))
+                .with_help(format!(
+                    "make the enclosing function return `{operand}`, or handle the failure with `match`"
+                )),
+            Self::TryFamilyMismatch { operand, r#return, returned } => d
+                .with_label(span, format!("this function returns `{return}`"))
+                .with_note(format!(
+                    "`?` propagates `{operand}` only into `{operand}`, and never converts between `{operand}` and `{returned}`"
+                )),
+            Self::TryErrorNotPropagatable { found, expected } => d
+                .with_label(span, format!("expected `{expected}`, found `{found}`"))
+                .with_note(anonymous_enum_conversion_note(expected, found).unwrap_or(
+                    "`?` converts a propagated error exactly as an explicitly typed destination would; it never rebuilds the whole `Result`",
+                )),
             Self::NestedDeferNotSupported => d
                 .with_label(span, "`defer` cannot appear inside another `defer` body")
                 .with_note("a defer's body already runs exactly once, at function exit"),

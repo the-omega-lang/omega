@@ -3,7 +3,7 @@ use crate::hir::{
     HirAddressOf, HirAssignment, HirBinaryOp, HirCast, HirCompoundAssign, HirExpr, HirExprNode,
     HirFunctionCall, HirIf, HirLogical, HirMatch, HirMatchArm, HirPattern, HirPatternValue,
     HirPlace, HirPlaceRoot, HirProjection, HirRange, HirRangeEnd, HirSlice, HirStructLiteral,
-    HirStructLiteralField,
+    HirStructLiteralField, HirTry,
 };
 use omega_parser::prelude::{
     Expression, ExpressionNode, Pattern, PatternValue, RangeEnd, RangeExpr, Span,
@@ -202,6 +202,16 @@ impl Lowerer {
                         scrutinee,
                         arms,
                         else_branch,
+                    }),
+                )
+            }
+            Expression::Try(t) => {
+                let base = Box::new(self.lower_expr(&t.base));
+                self.node(
+                    node.span,
+                    HirExpr::Try(HirTry {
+                        base,
+                        operator_span: t.operator_span,
                     }),
                 )
             }

@@ -494,6 +494,7 @@ pub enum HirExpr {
     Match(HirMatch),
     Cast(HirCast),
     Sizeof(Type),
+    Try(HirTry),
 }
 
 #[derive(Debug, Clone)]
@@ -501,6 +502,14 @@ pub struct HirLogical {
     pub op: LogicalOp,
     pub left: Box<HirExprNode>,
     pub right: Box<HirExprNode>,
+}
+
+/// A postfix `base?`. Lowering is purely syntactic: whether `base` is a
+/// fallible type at all is a semantic question the analyzer answers.
+#[derive(Debug, Clone)]
+pub struct HirTry {
+    pub base: Box<HirExprNode>,
+    pub operator_span: Span,
 }
 
 #[derive(Debug, Clone)]

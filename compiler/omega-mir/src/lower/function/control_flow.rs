@@ -1,13 +1,14 @@
 use super::{BlockDestination, FunctionLowerer, LoopTargets, is_control_flow_expr};
 use crate::body::{
     MirBinaryOp, MirEnumConstruct, MirExpr, MirExprNode, MirFieldInit, MirPlace, MirProjection,
-    MirTerminator,
+    MirSpecCoerce, MirTerminator,
 };
 use crate::ids::{BlockId, LocalId};
 use crate::lower::place::place_align;
 use omega_analyzer::checked::{
-    CheckedAnonymousEnumWiden, CheckedBlock, CheckedExpr, CheckedExprNode, CheckedMatchArm,
-    CheckedStmt, NumberValue,
+    CheckedAnonymousEnumWiden, CheckedBlock, CheckedCoercion, CheckedCoercionStep, CheckedExpr,
+    CheckedExprNode, CheckedMatchArm, CheckedStmt, CheckedTry, CheckedTryDestination,
+    CheckedTrySource, NumberValue,
 };
 use omega_analyzer::layout::ANONYMOUS_ENUM_TAG_TYPE;
 use omega_analyzer::resolved_type::ResolvedType;
@@ -20,7 +21,13 @@ impl FunctionLowerer {
         expr: CheckedExprNode,
         destination: BlockDestination,
     ) -> bool {
-        match expr.kind {
+        let CheckedExprNode {
+            id,
+            span,
+            r#type,
+            kind,
+        } = expr;
+        match kind {
             CheckedExpr::If(if_expr) => self.lower_if_chain(
                 if_expr.branches.into_iter(),
                 if_expr.else_branch,
@@ -32,6 +39,7 @@ impl FunctionLowerer {
                 destination,
             ),
             CheckedExpr::Codeblock(block) => self.lower_block_into(block, destination),
+            CheckedExpr::Try(r#try) => self.lower_try_into(id, span, r#type, r#try, destination),
             _ => unreachable!(
                 "lower_control_flow_into is only called for checked control-flow expressions"
             ),
@@ -367,6 +375,17 @@ impl FunctionLowerer {
         widen: CheckedAnonymousEnumWiden,
     ) -> MirExprNode {
         let source = self.lower_expr(*widen.source);
+        self.widen_anonymous_enum(id, span, r#type, source, widen.variant_map)
+    }
+
+    fn widen_anonymous_enum(
+        &mut self,
+        id: HirId,
+        span: Span,
+        r#type: ResolvedType,
+        source: MirExprNode,
+        variant_map: Vec<usize>,
+    ) -> MirExprNode {
         let ResolvedType::AnonymousEnum {
             shape: source_shape,
             ..
@@ -396,7 +415,7 @@ impl FunctionLowerer {
 
         let result = self.declare_local(None, r#type);
         let merge = self.new_block();
-        for (source_index, target_index) in widen.variant_map.into_iter().enumerate() {
+        for (source_index, target_index) in variant_map.into_iter().enumerate() {
             let member = source_shape.members()[source_index].clone();
             let body = MirExprNode {
                 id,
@@ -455,6 +474,230 @@ impl FunctionLowerer {
         self.terminate(MirTerminator::Unreachable);
         self.current = merge;
         self.local_expr(result, id, span)
+    }
+
+    pub(super) fn lower_try_expr(
+        &mut self,
+        id: HirId,
+        span: Span,
+        r#type: ResolvedType,
+        r#try: CheckedTry,
+    ) -> MirExprNode {
+        let merge = self.new_block();
+        let result = self.declare_local(None, r#type.clone());
+        let destination = BlockDestination::new(merge, Some(result));
+        let reached = self.lower_try_into(id, span, r#type, r#try, destination);
+        self.finish_merge(merge, reached, result, id, span)
+    }
+
+    /// Turns `operand?` into ordinary control flow. The operand is stored
+    /// once and then read for both its tag and its payload; the failure
+    /// variant builds the enclosing function's failure value and enters the
+    /// existing return/defer exit chain; the success variant's payload
+    /// continues into `destination`. Every semantic fact used here was
+    /// already resolved by the analyzer.
+    fn lower_try_into(
+        &mut self,
+        id: HirId,
+        span: Span,
+        success_type: ResolvedType,
+        r#try: CheckedTry,
+        destination: BlockDestination,
+    ) -> bool {
+        let operand = self.lower_expr(*r#try.operand);
+        if self.is_current_terminated() {
+            return false;
+        }
+        let operand = self.materialize_once(operand);
+        let MirExpr::Place(operand_place) = operand.kind else {
+            unreachable!("omega-mir lowering bug: materialize_once always yields a place read")
+        };
+
+        let source = r#try.source;
+        let tag_type = source.tag_type.clone();
+        let tag = MirExprNode {
+            id,
+            span,
+            r#type: tag_type.clone(),
+            kind: MirExpr::Place(projected(
+                &operand_place,
+                MirProjection::EnumTag {
+                    r#type: tag_type.clone(),
+                },
+                tag_type.clone(),
+            )),
+        };
+        let condition = MirExprNode {
+            id,
+            span,
+            r#type: ResolvedType::Bool,
+            kind: MirExpr::BinaryOp(MirBinaryOp {
+                op: BinaryOp::Eq,
+                left: Box::new(tag),
+                right: Box::new(MirExprNode {
+                    id,
+                    span,
+                    r#type: tag_type,
+                    kind: MirExpr::Number(source.success_tag),
+                }),
+            }),
+        };
+        let success_block = self.new_block();
+        let failure_block = self.new_block();
+        self.terminate(MirTerminator::Branch {
+            condition,
+            then_block: success_block,
+            else_block: failure_block,
+        });
+
+        self.current = failure_block;
+        self.lower_try_failure(id, span, &operand_place, &source, r#try.destination);
+
+        self.current = success_block;
+        let payload = MirExprNode {
+            id,
+            span,
+            r#type: success_type.clone(),
+            kind: MirExpr::Place(projected(
+                &operand_place,
+                MirProjection::EnumBody {
+                    variant_index: source.success_variant,
+                    field_index: source.success_field,
+                    r#type: success_type.clone(),
+                },
+                success_type,
+            )),
+        };
+        match destination.result {
+            Some(result) => self.assign_local(id, span, result, payload),
+            None => self.push_stmt(payload),
+        }
+        self.terminate(MirTerminator::Goto(destination.merge));
+        true
+    }
+
+    fn lower_try_failure(
+        &mut self,
+        id: HirId,
+        span: Span,
+        operand_place: &MirPlace,
+        source: &CheckedTrySource,
+        destination: CheckedTryDestination,
+    ) {
+        let fields = match (&source.failure_payload, destination.failure_field) {
+            (Some((source_field, error_type)), Some(field_index)) => {
+                let error = MirExprNode {
+                    id,
+                    span,
+                    r#type: error_type.clone(),
+                    kind: MirExpr::Place(projected(
+                        operand_place,
+                        MirProjection::EnumBody {
+                            variant_index: source.failure_variant,
+                            field_index: *source_field,
+                            r#type: error_type.clone(),
+                        },
+                        error_type.clone(),
+                    )),
+                };
+                let value = self.apply_coercion(id, span, &destination.error_coercion, error);
+                vec![MirFieldInit { field_index, value }]
+            }
+            _ => Vec::new(),
+        };
+        let failure = MirExprNode {
+            id,
+            span,
+            r#type: destination.r#type,
+            kind: MirExpr::EnumConstruct(MirEnumConstruct {
+                variant_index: destination.failure_variant,
+                fields,
+            }),
+        };
+        self.return_value(failure);
+    }
+
+    /// Replays a coercion the analyzer already decided on. Nothing here
+    /// re-asks whether the conversion is legal.
+    fn apply_coercion(
+        &mut self,
+        id: HirId,
+        span: Span,
+        plan: &CheckedCoercion,
+        value: MirExprNode,
+    ) -> MirExprNode {
+        let mut value = value;
+        for step in &plan.steps {
+            value = match step {
+                CheckedCoercionStep::ProjectAnonymousMember {
+                    variant_index,
+                    member_type,
+                } => {
+                    let base = match value.kind {
+                        MirExpr::Place(place) => place,
+                        kind => {
+                            let node = MirExprNode { kind, ..value };
+                            let stored = self.materialize_once(node);
+                            let MirExpr::Place(place) = stored.kind else {
+                                unreachable!(
+                                    "omega-mir lowering bug: materialize_once always yields a place read"
+                                )
+                            };
+                            place
+                        }
+                    };
+                    MirExprNode {
+                        id,
+                        span,
+                        r#type: member_type.clone(),
+                        kind: MirExpr::Place(projected(
+                            &base,
+                            MirProjection::EnumBody {
+                                variant_index: *variant_index,
+                                field_index: 0,
+                                r#type: member_type.clone(),
+                            },
+                            member_type.clone(),
+                        )),
+                    }
+                }
+                CheckedCoercionStep::InjectAnonymousMember {
+                    variant_index,
+                    target_type,
+                } => MirExprNode {
+                    id,
+                    span,
+                    r#type: target_type.clone(),
+                    kind: MirExpr::EnumConstruct(MirEnumConstruct {
+                        variant_index: *variant_index,
+                        fields: vec![MirFieldInit {
+                            field_index: 0,
+                            value,
+                        }],
+                    }),
+                },
+                CheckedCoercionStep::WidenAnonymousEnum {
+                    variant_map,
+                    target_type,
+                } => self.widen_anonymous_enum(
+                    id,
+                    span,
+                    target_type.clone(),
+                    value,
+                    variant_map.clone(),
+                ),
+                CheckedCoercionStep::SpecCoerce { slots, target_type } => MirExprNode {
+                    id,
+                    span,
+                    r#type: target_type.clone(),
+                    kind: MirExpr::SpecCoerce(MirSpecCoerce {
+                        base: Box::new(value),
+                        slots: slots.clone(),
+                    }),
+                },
+            };
+        }
+        value
     }
 
     fn finish_merge(

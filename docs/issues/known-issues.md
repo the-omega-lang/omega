@@ -369,6 +369,14 @@ Shape problems in `omega-driver` and `omega-analyzer` that still need a delibera
   shape is cheaper to decide early than late.
   [parsing-and-hir.md](../architecture/parsing-and-hir.md)
 
+- **A generic type prints without its arguments.** `ResolvedType`'s `Display`
+  writes only a struct/union/enum/spec declaration's name, so a mismatch
+  between two instantiations of one generic reads as `expected 'Result',
+  found 'Result'`. Every diagnostic that names such a type is affected;
+  `tests/t32b_try_operator_errors` shows the case. Printing the resolved
+  type arguments would fix it in one place.
+  [diagnostics.md](../architecture/diagnostics.md)
+
 - **Type-level capture remains possible in macro-generated declarations.**
   Generic parameters and `Self` intentionally ignore macro origin, because
   they are substitution-bound rather than lexical bindings. A generated type

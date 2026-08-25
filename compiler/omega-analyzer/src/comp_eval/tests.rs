@@ -407,3 +407,331 @@ fn calling_another_function_interprets_its_own_body() {
     let value = eval(&mut resolver, &call, Target::DEFAULT).unwrap();
     assert_eq!(value, ConstValue::Number(NumberValue::Signed(30)));
 }
+
+/// A two-variant fallible enum shaped like `core`'s, built directly so the
+/// evaluator tests need no module resolution.
+fn fallible_enum(
+    local: u32,
+    name: &str,
+    success: &str,
+    failure: &str,
+    success_type: ResolvedType,
+    error_type: Option<ResolvedType>,
+) -> ResolvedType {
+    use crate::resolved_type::{ResolvedEnumType, ResolvedEnumVariant, ResolvedField};
+    use omega_parser::prelude::{Ident, Visibility};
+    let field = |name: &str, r#type: ResolvedType| {
+        ResolvedField::new(Ident(name.to_string()), r#type, Visibility::Exposed)
+    };
+    ResolvedType::Enum {
+        cell: std::rc::Rc::new(std::cell::RefCell::new(ResolvedEnumType {
+            id: id(local),
+            name: Ident(name.to_string()),
+            module_path: vec![Ident("core".into())],
+            type_args: vec![],
+            tag_type: ResolvedType::U8,
+            header: vec![],
+            dynamic_fields: vec![],
+            variants: vec![
+                ResolvedEnumVariant {
+                    name: Ident(success.to_string()),
+                    tag: NumberValue::Unsigned(0),
+                    header_values: vec![],
+                    fields: vec![field("value", success_type)],
+                },
+                ResolvedEnumVariant {
+                    name: Ident(failure.to_string()),
+                    tag: NumberValue::Unsigned(1),
+                    header_values: vec![],
+                    fields: error_type.into_iter().map(|t| field("error", t)).collect(),
+                },
+            ],
+            functions: vec![],
+            layout: crate::annotations::Layout::default(),
+            suppress: vec![],
+        })),
+        variant: None,
+    }
+}
+
+fn fallible_const(variant_index: usize, payload: Vec<ConstValue>) -> ConstValue {
+    ConstValue::Enum {
+        variant_index,
+        tag: NumberValue::Unsigned(variant_index as u64),
+        header: vec![],
+        dynamic_fields: vec![],
+        fields: payload,
+    }
+}
+
+/// `operand?` in a function returning `destination_type`, with the operand
+/// supplied as an already-evaluated constant.
+fn try_node(
+    operand: ConstValue,
+    operand_type: ResolvedType,
+    destination_type: ResolvedType,
+    success_type: ResolvedType,
+    carries_error: bool,
+    error_coercion: CheckedCoercion,
+) -> CheckedExprNode {
+    let payload = carries_error.then_some((0, ResolvedType::I32));
+    node(
+        CheckedExpr::Try(CheckedTry {
+            operand: Box::new(node(CheckedExpr::Const(operand), operand_type)),
+            operator_span: sp(),
+            kind: if carries_error {
+                crate::checked::CheckedTryKind::Result
+            } else {
+                crate::checked::CheckedTryKind::Option
+            },
+            source: crate::checked::CheckedTrySource {
+                tag_type: ResolvedType::U8,
+                success_variant: 0,
+                success_tag: NumberValue::Unsigned(0),
+                success_field: 0,
+                failure_variant: 1,
+                failure_payload: payload.clone(),
+            },
+            destination: crate::checked::CheckedTryDestination {
+                r#type: destination_type,
+                failure_variant: 1,
+                failure_field: payload.map(|(field, _)| field),
+                error_coercion,
+            },
+        }),
+        success_type,
+    )
+}
+
+/// Wraps `body` in a called function so a failing `?` has a frame to return
+/// from, mirroring how the operator is always used in real source.
+fn call_returning(body: CheckedBlock, return_type: ResolvedType) -> (CheckedExprNode, TheCallee) {
+    let def = CheckedFunctionDef {
+        id: id(100),
+        span: sp(),
+        name: omega_parser::prelude::Ident("callee".into()),
+        type_args: vec![],
+        self_mode: None,
+        is_variadic: false,
+        params: vec![],
+        return_type: return_type.clone(),
+        body,
+        inline: None,
+        mangling: crate::annotations::ManglingMode::Enabled,
+        conformance_owner: None,
+        primitive_target: None,
+        naked: false,
+    };
+    let fn_type = crate::resolved_type::ResolvedFunctionType {
+        params: vec![],
+        return_type: Box::new(return_type.clone()),
+        is_variadic: false,
+        self_mode: None,
+        calling_convention: crate::resolved_type::CallingConvention::Omega,
+    };
+    let callee = node(
+        CheckedExpr::Place(CheckedPlace {
+            root: CheckedPlaceRoot::Variable {
+                decl_id: def.id,
+                storage: Storage::Function,
+                r#type: ResolvedType::Function(fn_type.clone()),
+            },
+            projections: vec![],
+            r#type: ResolvedType::Function(fn_type.clone()),
+        }),
+        ResolvedType::Function(fn_type.clone()),
+    );
+    let call = node(
+        CheckedExpr::FunctionCall(CheckedFunctionCall {
+            callee: Box::new(callee),
+            fn_type,
+            args: vec![],
+        }),
+        return_type,
+    );
+    (call, TheCallee(def))
+}
+
+struct TheCallee(CheckedFunctionDef);
+impl CompFunctionResolver for TheCallee {
+    fn resolve_function_body(
+        &mut self,
+        decl_id: HirId,
+    ) -> Result<Option<CheckedFunctionDef>, ResolveError> {
+        Ok((decl_id == self.0.id).then(|| self.0.clone()))
+    }
+}
+
+#[test]
+fn a_successful_try_yields_the_payload() {
+    let option = fallible_enum(1, "Option", "Some", "None", ResolvedType::I32, None);
+    let expr = try_node(
+        fallible_const(0, vec![ConstValue::Number(NumberValue::Signed(7))]),
+        option.clone(),
+        option,
+        ResolvedType::I32,
+        false,
+        CheckedCoercion::default(),
+    );
+    let (call, mut resolver) = call_returning(
+        CheckedBlock {
+            stmts: vec![],
+            tail: Some(Box::new(expr)),
+        },
+        ResolvedType::I32,
+    );
+    let value = eval(&mut resolver, &call, Target::DEFAULT).unwrap();
+    assert_eq!(value, ConstValue::Number(NumberValue::Signed(7)));
+}
+
+#[test]
+fn a_failing_option_try_returns_the_enclosing_none() {
+    let option = fallible_enum(1, "Option", "Some", "None", ResolvedType::I32, None);
+    let expr = try_node(
+        fallible_const(1, vec![]),
+        option.clone(),
+        option.clone(),
+        ResolvedType::I32,
+        false,
+        CheckedCoercion::default(),
+    );
+    let (call, mut resolver) = call_returning(
+        CheckedBlock {
+            stmts: vec![CheckedStmt::Expression(expr)],
+            tail: None,
+        },
+        option,
+    );
+    let value = eval(&mut resolver, &call, Target::DEFAULT).unwrap();
+    assert_eq!(value, fallible_const(1, vec![]));
+}
+
+#[test]
+fn a_failing_result_try_returns_the_enclosing_err() {
+    let result = fallible_enum(
+        2,
+        "Result",
+        "Ok",
+        "Err",
+        ResolvedType::I32,
+        Some(ResolvedType::I32),
+    );
+    let expr = try_node(
+        fallible_const(1, vec![ConstValue::Number(NumberValue::Signed(5))]),
+        result.clone(),
+        result.clone(),
+        ResolvedType::I32,
+        true,
+        CheckedCoercion::default(),
+    );
+    let (call, mut resolver) = call_returning(
+        CheckedBlock {
+            stmts: vec![CheckedStmt::Expression(expr)],
+            tail: None,
+        },
+        result,
+    );
+    let value = eval(&mut resolver, &call, Target::DEFAULT).unwrap();
+    assert_eq!(
+        value,
+        fallible_const(1, vec![ConstValue::Number(NumberValue::Signed(5))])
+    );
+}
+
+#[test]
+fn a_propagated_error_runs_its_recorded_coercion() {
+    let result = fallible_enum(
+        2,
+        "Result",
+        "Ok",
+        "Err",
+        ResolvedType::I32,
+        Some(ResolvedType::I32),
+    );
+    let coercion = CheckedCoercion {
+        steps: vec![CheckedCoercionStep::InjectAnonymousMember {
+            variant_index: 1,
+            target_type: ResolvedType::I32,
+        }],
+    };
+    let expr = try_node(
+        fallible_const(1, vec![ConstValue::Number(NumberValue::Signed(5))]),
+        result.clone(),
+        result.clone(),
+        ResolvedType::I32,
+        true,
+        coercion,
+    );
+    let (call, mut resolver) = call_returning(
+        CheckedBlock {
+            stmts: vec![CheckedStmt::Expression(expr)],
+            tail: None,
+        },
+        result,
+    );
+    let value = eval(&mut resolver, &call, Target::DEFAULT).unwrap();
+    assert_eq!(
+        value,
+        fallible_const(
+            1,
+            vec![ConstValue::anonymous_enum(
+                1,
+                vec![ConstValue::Number(NumberValue::Signed(5))]
+            )]
+        )
+    );
+}
+
+#[test]
+fn a_defer_registered_before_a_failing_try_still_runs() {
+    let option = fallible_enum(1, "Option", "Some", "None", ResolvedType::I32, None);
+    // The deferred body cannot be evaluated at compile time, so the failure
+    // it reports is the proof that a `?`-generated return still ran it.
+    let defer = CheckedStmt::Defer(crate::checked::CheckedDefer {
+        id: id(43),
+        span: sp(),
+        body: CheckedBlock {
+            stmts: vec![CheckedStmt::Expression(node(
+                CheckedExpr::BinaryOp(CheckedBinaryOp {
+                    op: BinaryOp::Div,
+                    left: Box::new(num(1)),
+                    right: Box::new(num(0)),
+                }),
+                ResolvedType::I32,
+            ))],
+            tail: None,
+        },
+    });
+    let expr = try_node(
+        fallible_const(1, vec![]),
+        option.clone(),
+        option.clone(),
+        ResolvedType::I32,
+        false,
+        CheckedCoercion::default(),
+    );
+    let (call, mut resolver) = call_returning(
+        CheckedBlock {
+            stmts: vec![defer, CheckedStmt::Expression(expr)],
+            tail: None,
+        },
+        option,
+    );
+    let err = eval(&mut resolver, &call, Target::DEFAULT).unwrap_err();
+    assert!(matches!(err.kind, CompErrorKind::Unsupported(_)));
+}
+
+#[test]
+fn a_try_that_escapes_the_outermost_evaluation_is_a_diagnostic() {
+    let option = fallible_enum(1, "Option", "Some", "None", ResolvedType::I32, None);
+    let expr = try_node(
+        fallible_const(1, vec![]),
+        option.clone(),
+        option,
+        ResolvedType::I32,
+        false,
+        CheckedCoercion::default(),
+    );
+    let err = eval(&mut NoFunctions, &expr, Target::DEFAULT).unwrap_err();
+    assert!(matches!(err.kind, CompErrorKind::EscapingControlFlow));
+}

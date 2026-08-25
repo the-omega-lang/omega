@@ -1,0 +1,16 @@
+# Structurally identical to core's fallible types, but declared here. `?` is
+# defined on the canonical `core::option::Option`/`core::result::Result`
+# declarations, so these must not gain the operator.
+exposed enum Option<T> {
+	None,
+	Some { exposed value: T; };
+}
+
+exposed enum Result<T, E> {
+	Ok { exposed value: T; },
+	Err { exposed error: E; };
+}
+
+exposed some(n: i32) => Option<i32> {
+	Option<i32>::Some { value = n; }
+}

@@ -1,0 +1,69 @@
+error: '?' cannot be applied to a value of type 'i32'
+  --> tests/t32b_try_operator_errors/t32b_try_operator_errors.omg:19:35
+   |
+19 |     Option<i32>::Some { value = 42?; }
+   |                                   ^ `?` was applied to a value of type `i32`
+   |
+   = note: `?` only propagates `core::option::Option` and `core::result::Result`
+
+error: '?' requires an enclosing function returning 'Option', but this one returns 'i32'
+  --> tests/t32b_try_operator_errors/t32b_try_operator_errors.omg:24:17
+   |
+24 |     some_value()?
+   |                 ^ this function returns `i32`
+   |
+   = help: make the enclosing function return `Option`, or handle the failure with `match`
+
+error: '?' on a 'Option' value cannot propagate through a function returning 'Result'
+  --> tests/t32b_try_operator_errors/t32b_try_operator_errors.omg:29:49
+   |
+29 |     Result<i32, *str>::Ok { value = some_value()?; }
+   |                                                 ^ this function returns `Result`
+   |
+   = note: `?` propagates `Option` only into `Option`, and never converts between `Option` and `Result`
+
+error: '?' on a 'Result' value cannot propagate through a function returning 'Option'
+  --> tests/t32b_try_operator_errors/t32b_try_operator_errors.omg:33:43
+   |
+33 |     Option<i32>::Some { value = ok_value()?; }
+   |                                           ^ this function returns `Option`
+   |
+   = note: `?` propagates `Result` only into `Result`, and never converts between `Result` and `Option`
+
+error: the error type '*str' cannot be propagated as 'i32'
+  --> tests/t32b_try_operator_errors/t32b_try_operator_errors.omg:38:45
+   |
+38 |     Result<i32, i32>::Ok { value = failing()?; }
+   |                                             ^ expected `i32`, found `*str`
+   |
+   = note: `?` converts a propagated error exactly as an explicitly typed destination would; it never rebuilds the whole `Result`
+
+error: '?' is not supported inside a 'defer' body
+  --> tests/t32b_try_operator_errors/t32b_try_operator_errors.omg:44:23
+   |
+44 |         x := failing()?;
+   |                       ^ `?` cannot appear inside a `defer` body
+   |
+   = note: a failing `?` exits the enclosing function, which deferred code cannot do
+
+error: '?' cannot be applied to a value of type 'Option'
+  --> tests/t32b_try_operator_errors/t32b_try_operator_errors.omg:51:62
+   |
+51 |     lookalike::Option<i32>::Some { value = lookalike::some(1)?; }
+   |                                                              ^ `?` was applied to a value of type `Option`
+   |
+   = note: `?` only propagates `core::option::Option` and `core::result::Result`
+
+error: mismatched types: expected return type 'Result', found 'Result'
+  --> tests/t32b_try_operator_errors/t32b_try_operator_errors.omg:56:22
+   |
+56 | widen_container() => Result<i32, Mixed> {
+   |                      ^^^^^^^^^^^^^^^^^^ expected `Result` because of the declared return type, found `Result`
+
+error: mismatched types: expected return type 'Option', found 'Result'
+  --> tests/t32b_try_operator_errors/t32b_try_operator_errors.omg:61:19
+   |
+61 | cross_family() => Option<i32> {
+   |                   ^^^^^^^^^^^ expected `Option` because of the declared return type, found `Result`
+
+error: could not compile the program due to 9 previous errors

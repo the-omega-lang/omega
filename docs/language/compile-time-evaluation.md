@@ -54,7 +54,7 @@ Current compile-time evaluation supports the ordinary operations needed by Omega
 
 - arithmetic, comparisons, boolean operations, and casts;
 - blocks, `if`, `match`, `while`, classic `for`, range `for`, and `loop`;
-- `break`, `continue`, `return`, and `defer`;
+- `break`, `continue`, `return`, `defer`, and the try operator `?`;
 - fixed arrays and compile-time slices;
 - struct, union, marker, and enum construction and field access;
 - indexing and supported slicing;
@@ -63,7 +63,9 @@ Current compile-time evaluation supports the ordinary operations needed by Omega
 - nested `comp` evaluation;
 - addresses/references to compile-time data where the resulting value can be represented as immutable static data.
 
-`defer` inside a compile-time function call follows the same function-scoped FILO execution rule as at runtime and runs after the function's return value has been determined.
+`defer` inside a compile-time function call follows the same function-scoped FILO execution rule as at runtime and runs after the function's return value has been determined. A failing `?` exits the evaluated function the same way an explicit `return` does, so its deferred statements still run.
+
+A `comp` operand that itself exits the enclosing *runtime* function — a bare `?` under `comp`, for instance — has no frame to return into, so the evaluation fails with a diagnostic rather than producing a value.
 
 ## Unsupported compile-time operations
 

@@ -1,6 +1,7 @@
 use crate::checked::{
     CheckedAsmDescriptorKind, CheckedBlock, CheckedExpr, CheckedExprNode, CheckedItem,
     CheckedModule, CheckedPlace, CheckedPlaceRoot, CheckedProjection, CheckedRangeEnd, CheckedStmt,
+    CheckedTry,
 };
 use crate::resolved_type::ResolvedType;
 use omega_hir::HirId;
@@ -191,6 +192,41 @@ pub(crate) fn collect_expr(expr: &CheckedExprNode, usage: &mut FieldUsage) {
             for arg in &call.args {
                 collect_expr(arg, usage);
             }
+        }
+        CheckedExpr::Try(r#try) => collect_try(r#try, usage),
+    }
+}
+
+/// A try operator reads its operand's two variants and payloads and builds
+/// the enclosing function's failure variant, none of which appears as an
+/// ordinary projection or construction in the checked tree. Recording them
+/// here keeps the usage accounting complete.
+fn collect_try(r#try: &CheckedTry, usage: &mut FieldUsage) {
+    collect_expr(&r#try.operand, usage);
+
+    if let ResolvedType::Enum { cell, .. } = &r#try.operand.r#type {
+        let source = cell.borrow().id;
+        let s = &r#try.source;
+        usage.enum_variants.insert((source, s.success_variant));
+        usage.enum_variants.insert((source, s.failure_variant));
+        usage
+            .enum_body_fields
+            .insert((source, s.success_variant, s.success_field));
+        if let Some((field, _)) = &s.failure_payload {
+            usage
+                .enum_body_fields
+                .insert((source, s.failure_variant, *field));
+        }
+    }
+
+    if let ResolvedType::Enum { cell, .. } = &r#try.destination.r#type {
+        let destination = cell.borrow().id;
+        let d = &r#try.destination;
+        usage.enum_variants.insert((destination, d.failure_variant));
+        if let Some(field) = d.failure_field {
+            usage
+                .enum_body_fields
+                .insert((destination, d.failure_variant, field));
         }
     }
 }

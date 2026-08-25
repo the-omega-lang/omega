@@ -637,6 +637,20 @@ pub enum ConstValue {
     Ref(Box<ConstValue>),
 }
 
+impl ConstValue {
+    /// An anonymous enum's constant form: the tag is the canonical member
+    /// index, and the shape has no header or dynamic field to fill.
+    pub fn anonymous_enum(index: usize, fields: Vec<ConstValue>) -> Self {
+        Self::Enum {
+            variant_index: index,
+            tag: crate::checked::NumberValue::Unsigned(index as u64),
+            header: Vec::new(),
+            dynamic_fields: Vec::new(),
+            fields,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NumericKind {
     Signed(u32),

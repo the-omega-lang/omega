@@ -1,8 +1,8 @@
 use crate::checked::{
-    CastKind, CheckedAnonymousEnumWiden, CheckedBinaryOp, CheckedBlock, CheckedExpr,
-    CheckedExprNode, CheckedFor, CheckedFunctionCall, CheckedFunctionDef, CheckedIf, CheckedLoop,
-    CheckedMatch, CheckedPlace, CheckedPlaceRoot, CheckedProjection, CheckedStmt, CheckedWhile,
-    NumberValue, Storage,
+    CastKind, CheckedAnonymousEnumWiden, CheckedBinaryOp, CheckedBlock, CheckedCoercion,
+    CheckedCoercionStep, CheckedExpr, CheckedExprNode, CheckedFor, CheckedFunctionCall,
+    CheckedFunctionDef, CheckedIf, CheckedLoop, CheckedMatch, CheckedPlace, CheckedPlaceRoot,
+    CheckedProjection, CheckedStmt, CheckedTry, CheckedWhile, NumberValue, Storage,
 };
 use crate::resolved_type::{ConstValue, ResolvedType};
 use crate::resolver::ResolveError;
@@ -38,6 +38,7 @@ pub enum CompErrorKind {
     ReadBeforeInit,
     ResolutionFailed(ResolveError),
     FuelExhausted,
+    EscapingControlFlow,
     Unsupported(&'static str),
 }
 
@@ -56,6 +57,10 @@ impl std::fmt::Display for CompErrorKind {
             Self::ReadBeforeInit => write!(f, "it reads a local before it's ever assigned"),
             Self::ResolutionFailed(e) => write!(f, "{e}"),
             Self::FuelExhausted => write!(f, "it ran for too long (a runaway loop or recursion)"),
+            Self::EscapingControlFlow => write!(
+                f,
+                "it exits the enclosing function, which a compile-time evaluation cannot do"
+            ),
             Self::Unsupported(what) => {
                 write!(f, "{what} isn't supported in a compile-time evaluation yet")
             }
@@ -133,9 +138,14 @@ pub fn eval<R: CompFunctionResolver + ?Sized>(
     match result {
         Ok(value) => Ok(value),
         Err(Outcome::Error(e)) => Err(e),
-        Err(Outcome::Signal(_)) => {
-            unreachable!("control-flow signal escaped the outermost comp evaluation")
-        }
+        // Reachable when the evaluated expression itself exits the enclosing
+        // function, e.g. a `comp` operand whose `?` fails: the signal has no
+        // frame left to unwind into.
+        Err(Outcome::Signal(_)) => Err(CompError {
+            kind: CompErrorKind::EscapingControlFlow,
+            span: expr.span,
+            trace: Vec::new(),
+        }),
     }
 }
 
@@ -255,7 +265,7 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
             }
             CheckedExpr::EnumConstruct(construct) => {
                 let (tag, header, dynamic_count) =
-                    self.enum_variant_facts(node, construct.variant_index)?;
+                    self.enum_variant_facts(&node.r#type, construct.variant_index)?;
                 let mut values: Vec<Option<ConstValue>> =
                     (0..construct.fields.len()).map(|_| None).collect();
                 for field in &construct.fields {
@@ -295,6 +305,7 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
                 crate::layout::total_bytes(target, self.target.pointer_bytes()) as u64,
             ))),
             CheckedExpr::AnonymousEnumWiden(widen) => self.eval_anonymous_enum_widen(node, widen),
+            CheckedExpr::Try(r#try) => self.eval_try(r#try, node.span),
             CheckedExpr::SpecCoerce(_) => Err(self.err(node.span, CompErrorKind::DynamicDispatch)),
             CheckedExpr::DynamicCall(_) => Err(self.err(node.span, CompErrorKind::DynamicDispatch)),
         }
@@ -316,7 +327,7 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
             unreachable!("analysis guarantees an anonymous-enum source for widening")
         };
         let target_index = widen.variant_map[variant_index];
-        let (tag, header, _) = self.enum_variant_facts(node, target_index)?;
+        let (tag, header, _) = self.enum_variant_facts(&node.r#type, target_index)?;
         Ok(ConstValue::Enum {
             variant_index: target_index,
             tag,
@@ -326,13 +337,104 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
         })
     }
 
+    /// Evaluates the operand once, then either yields its success payload or
+    /// builds the enclosing function's failure value and returns it through
+    /// the ordinary return signal, so registered defers still run.
+    fn eval_try(&mut self, r#try: &CheckedTry, span: Span) -> CompResult<ConstValue> {
+        let ConstValue::Enum {
+            variant_index,
+            fields,
+            ..
+        } = self.eval_expr(&r#try.operand)?
+        else {
+            unreachable!("analysis guarantees a canonical fallible enum operand")
+        };
+
+        if variant_index == r#try.source.success_variant {
+            return Ok(fields
+                .into_iter()
+                .nth(r#try.source.success_field)
+                .expect("analysis resolved the success payload's field index"));
+        }
+
+        let destination = &r#try.destination;
+        let mut slots: Vec<Option<ConstValue>> = Vec::new();
+        if let (Some((source_field, _)), Some(field_index)) =
+            (&r#try.source.failure_payload, destination.failure_field)
+        {
+            let error = fields
+                .into_iter()
+                .nth(*source_field)
+                .expect("analysis resolved the failure payload's field index");
+            let error = self.eval_coercion(&destination.error_coercion, error, span)?;
+            slots.resize(field_index + 1, None);
+            slots[field_index] = Some(error);
+        }
+        let fields: Vec<ConstValue> = slots
+            .into_iter()
+            .map(|slot| slot.expect("a canonical failure variant declares one payload field"))
+            .collect();
+
+        let (tag, header, _) =
+            self.enum_variant_facts(&destination.r#type, destination.failure_variant)?;
+        Err(Outcome::Signal(Signal::Return(ConstValue::Enum {
+            variant_index: destination.failure_variant,
+            tag,
+            header,
+            dynamic_fields: Vec::new(),
+            fields,
+        })))
+    }
+
+    /// Replays a coercion the analyzer already decided is legal. No step here
+    /// re-asks whether the conversion is allowed.
+    fn eval_coercion(
+        &mut self,
+        plan: &CheckedCoercion,
+        value: ConstValue,
+        span: Span,
+    ) -> CompResult<ConstValue> {
+        let mut value = value;
+        for step in &plan.steps {
+            value = match step {
+                CheckedCoercionStep::ProjectAnonymousMember { .. } => {
+                    let ConstValue::Enum { fields, .. } = value else {
+                        unreachable!("analysis guarantees a refined anonymous-enum source")
+                    };
+                    fields
+                        .into_iter()
+                        .next()
+                        .expect("an anonymous-enum member is its variant's only field")
+                }
+                CheckedCoercionStep::InjectAnonymousMember { variant_index, .. } => {
+                    ConstValue::anonymous_enum(*variant_index, vec![value])
+                }
+                CheckedCoercionStep::WidenAnonymousEnum { variant_map, .. } => {
+                    let ConstValue::Enum {
+                        variant_index,
+                        fields,
+                        ..
+                    } = value
+                    else {
+                        unreachable!("analysis guarantees an anonymous-enum widening source")
+                    };
+                    ConstValue::anonymous_enum(variant_map[variant_index], fields)
+                }
+                CheckedCoercionStep::SpecCoerce { .. } => {
+                    return Err(self.err(span, CompErrorKind::DynamicDispatch));
+                }
+            };
+        }
+        Ok(value)
+    }
+
     fn enum_variant_facts(
         &self,
-        node: &CheckedExprNode,
+        r#type: &ResolvedType,
         variant_index: usize,
     ) -> CompResult<(NumberValue, Vec<ConstValue>, usize)> {
-        let view = crate::layout::EnumView::of(&node.r#type)
-            .expect("CheckedExpr::EnumConstruct's own type is always an enum-like type");
+        let view = crate::layout::EnumView::of(r#type)
+            .expect("an enum construction's own type is always an enum-like type");
         let variant = &view.variants[variant_index];
         Ok((
             variant.tag,

@@ -454,7 +454,8 @@ qualified-spec-member = "<", type, ":", type, ">", "::", identifier, { postfix-s
 postfix = primary, { postfix-suffix } ;
 postfix-suffix = ".", identifier
                | "[", ( expression | range-expression ), "]"
-               | "(", [ argument-list ], ")" ;
+               | "(", [ argument-list ], ")"
+               | "?" ;
 argument-list = expression, { ",", expression } ;
 
 primary = literal
@@ -524,7 +525,7 @@ additive:         + -
 multiplicative:   * / %
 unary:            - ! * & &mut ~ ++ -- reveal comp
 cast:             <Type>expression
-postfix:          call, index/slice, field/member access
+postfix:          call, index/slice, field/member access, try (?)
 ```
 
 Assignments require an assignable place. Comparison operators are non-associative, so chained comparison syntax is rejected.

@@ -4,7 +4,7 @@ use crate::ast::expression::{
     DerefExpr, Expression, ExpressionNode, FieldAccessExpr, FunctionCallExpr, IfExpr,
     IncrementExpr, IndexExpr, LogicalExpr, LogicalOp, MatchArm, MatchExpr, NegateExpr, NotExpr,
     Pattern, PatternValue, RevealExpr, SizeofExpr, SliceExpr, StringExpr, StructLiteralExpr,
-    StructLiteralField,
+    StructLiteralField, TryExpr,
 };
 use crate::ast::range::{RangeEnd, RangeExpr};
 use crate::ast::r#type::Type;
@@ -280,6 +280,18 @@ fn parse_postfix_loop(p: &mut Parser, mut expr: ExpressionNode) -> Option<Expres
             }
             TokenKind::LParen => {
                 expr = parse_call(p, expr)?;
+            }
+            TokenKind::Question => {
+                let operator_span = p.peek_span();
+                p.advance();
+                let span = expr.span.to(operator_span);
+                expr = ExpressionNode {
+                    expression: Expression::Try(Box::new(TryExpr {
+                        base: expr,
+                        operator_span,
+                    })),
+                    span,
+                };
             }
             _ => break,
         }

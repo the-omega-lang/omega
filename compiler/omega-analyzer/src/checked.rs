@@ -342,6 +342,115 @@ pub enum CheckedExpr {
     SpecCoerce(CheckedSpecCoerce),
     AnonymousEnumWiden(CheckedAnonymousEnumWiden),
     DynamicCall(CheckedDynamicCall),
+    Try(CheckedTry),
+}
+
+/// A source-level `expression?`. Analysis resolves every fact the operator
+/// needs -- which canonical fallible type the operand is, which variants and
+/// payload fields carry success and failure, and how the operand's failure
+/// reaches the enclosing function's failure type -- and records them here.
+/// The operator survives as itself so checked-tree consumers still see what
+/// the user wrote; turning it into branches and a return is MIR's job.
+///
+/// The node's own type is the success payload type, which is independent of
+/// the enclosing function's success type.
+#[derive(Debug, Clone)]
+pub struct CheckedTry {
+    pub operand: Box<CheckedExprNode>,
+    pub operator_span: Span,
+    pub kind: CheckedTryKind,
+    pub source: CheckedTrySource,
+    pub destination: CheckedTryDestination,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckedTryKind {
+    Option,
+    Result,
+}
+
+impl CheckedTryKind {
+    pub fn type_name(self) -> &'static str {
+        match self {
+            Self::Option => "Option",
+            Self::Result => "Result",
+        }
+    }
+}
+
+/// The operand's resolved shape. `tag_type`/`success_tag` say how to tell the
+/// two variants apart, so no consumer re-derives them from the declaration.
+#[derive(Debug, Clone)]
+pub struct CheckedTrySource {
+    pub tag_type: ResolvedType,
+    pub success_variant: usize,
+    pub success_tag: NumberValue,
+    pub success_field: usize,
+    pub failure_variant: usize,
+    /// `Err.error`'s field index and type. `None` for `Option::None`, which
+    /// carries no payload.
+    pub failure_payload: Option<(usize, ResolvedType)>,
+}
+
+/// The enclosing function's fallible return type and the failure value the
+/// operator builds in it.
+///
+/// The canonical fallible enums declare no dynamic fields, so `failure_field`
+/// reads the same whether a consumer treats it as an index into the variant's
+/// own fields (a body projection) or into an enum construction, which counts
+/// any dynamic fields first.
+#[derive(Debug, Clone)]
+pub struct CheckedTryDestination {
+    pub r#type: ResolvedType,
+    pub failure_variant: usize,
+    pub failure_field: Option<usize>,
+    /// How the operand's `E` becomes the destination's `F`; identity for
+    /// `Option` and for an already-matching `Result` error type.
+    pub error_coercion: CheckedCoercion,
+}
+
+/// A conversion from a found type to an expected type that the analyzer has
+/// already decided is legal, recorded as data rather than applied to an
+/// expression. Sites that own a value hand it to `apply_coercion`; sites like
+/// `CheckedTry` that only own a value's *description* store the plan and let
+/// MIR or compile-time evaluation replay it. Either way the legality
+/// question is answered exactly once, here.
+#[derive(Debug, Clone, Default)]
+pub struct CheckedCoercion {
+    pub steps: Vec<CheckedCoercionStep>,
+}
+
+impl CheckedCoercion {
+    pub fn is_identity(&self) -> bool {
+        self.steps.is_empty()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum CheckedCoercionStep {
+    /// Reads the proven member out of a refined anonymous-enum value. The
+    /// storage is unchanged; this only names the member inside it.
+    ProjectAnonymousMember {
+        variant_index: usize,
+        member_type: ResolvedType,
+    },
+    /// Packs an exact member value into an anonymous enum, tagged with its
+    /// canonical index.
+    InjectAnonymousMember {
+        variant_index: usize,
+        target_type: ResolvedType,
+    },
+    /// Rebuilds an anonymous-enum value under a wider shape's tags.
+    WidenAnonymousEnum {
+        variant_map: Vec<usize>,
+        target_type: ResolvedType,
+    },
+    /// Pairs a pointer with the vtable slots proving its pointee implements
+    /// the destination shape.
+    SpecCoerce {
+        slots: Vec<HirId>,
+        target_type: ResolvedType,
+    },
 }
 
 /// Rebuilds an anonymous-enum value under a wider shape's tags. Both shapes

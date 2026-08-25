@@ -135,6 +135,7 @@ fn collect_expr(expr: &CheckedExprNode, out: &mut Vec<(HirId, Span)>) {
         CheckedExpr::Cast(cast) => collect_expr(&cast.base, out),
         CheckedExpr::SpecCoerce(coerce) => collect_expr(&coerce.base, out),
         CheckedExpr::AnonymousEnumWiden(widen) => collect_expr(&widen.source, out),
+        CheckedExpr::Try(r#try) => collect_expr(&r#try.operand, out),
         CheckedExpr::DynamicCall(call) => {
             collect_place(&call.base, out);
             for arg in &call.args {

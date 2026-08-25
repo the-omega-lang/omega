@@ -77,6 +77,50 @@ Current Omega rejects `defer` while lexically inside a loop and rejects a `defer
 
 Omega has no exception/`try`/`catch` mechanism in the current language.
 
+## The try operator `?`
+
+`expression?` propagates a typed failure out of the enclosing function. It is a
+postfix suffix at the tightest precedence tier, so it chains left to right with
+calls, indexing/slicing, and field access: `find(key)?.name` applies the field
+access to the unwrapped value, and `nested()??` unwraps two layers.
+
+The operator is defined on exactly two types, recognized by declaration
+identity rather than by spelling: `core::option::Option<T>` and
+`core::result::Result<T, E>`. A transparent alias of either resolves to the same
+declaration and keeps the behavior; a separately declared type with the same
+shape and variant names does not gain it. There is no user-extensible protocol
+behind `?`.
+
+- `Option<T>?` requires the enclosing function to return `Option<R>`. `Some`
+  yields the `T` payload; `None` returns that enclosing function's own `None`.
+- `Result<T, E>?` requires the enclosing function to return `Result<R, F>`.
+  `Ok` yields the `T` payload; `Err` extracts the `E` payload, converts it to
+  `F` under exactly the rules that apply where an `F` is explicitly expected,
+  and returns the enclosing `Result<R, F>::Err`.
+
+The two families never convert into one another, in either direction, and the
+error conversion applies to the extracted payload only — a `Result<T, E>` value
+still does not convert to a `Result<T, enum E | F>` as a whole. In practice the
+payload rule is what lets a function returning `Result<R, enum E | F>` apply `?`
+to both a `Result<_, E>` and a `Result<_, F>`, using the anonymous-enum
+conversion described in
+[`enums-and-pattern-matching.md`](enums-and-pattern-matching.md).
+
+```omega
+combined(key: i32, code: i32) => Result<i32, enum NotFound | Denied> {
+	found := lookup(key)?;
+	allowed := authorize(code)?;
+	Result<i32, enum NotFound | Denied>::Ok { value = found + allowed; }
+}
+```
+
+The success type is independent of the enclosing function's success type: `?`
+produces `T`, and the surrounding expression applies its ordinary expected-type
+rules to that value. The operand is evaluated exactly once. A failing `?` exits
+the function exactly as an explicit `return` does, so any already-registered
+`defer` runs. For the same reason `?` is rejected inside a `defer` body, matching
+the existing prohibition on `return` there.
+
 ## Boolean operators
 
 `bool` supports eager `&`, `|`, `^`, logical negation `!`, and short-circuit `&&`/`||`:
@@ -117,7 +161,7 @@ additive (+ -)
 multiplicative (* / %)
 unary (- ! * & &mut ~ ++ -- reveal comp)
 cast (<Type>expr)
-postfix (call, index/slice, field access)
+postfix (call, index/slice, field access, try `?`)
 ```
 
 Comparison is non-associative: `a == b == c` is invalid without explicitly grouping into boolean operations.

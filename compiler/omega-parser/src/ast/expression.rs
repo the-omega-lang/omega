@@ -39,6 +39,7 @@ pub enum Expression {
     Slice(Box<SliceExpr>),
     MacroInvocation(MacroInvocationExpr),
     Range(Box<RangeExpr>),
+    Try(Box<TryExpr>),
 }
 
 #[derive(Debug, Clone)]
@@ -312,6 +313,15 @@ pub struct StructLiteralField {
 pub struct SliceExpr {
     pub base: ExpressionNode,
     pub range: RangeExpr,
+}
+
+/// A postfix `base?`. `operator_span` covers only the `?` token so
+/// diagnostics and tooling can point at the operator rather than the whole
+/// expression.
+#[derive(Debug, Clone)]
+pub struct TryExpr {
+    pub base: ExpressionNode,
+    pub operator_span: Span,
 }
 
 #[derive(Debug, Clone)]

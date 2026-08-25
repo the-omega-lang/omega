@@ -27,6 +27,7 @@ pub(super) fn lower_expr(lowerer: &mut FunctionLowerer, node: CheckedExprNode) -
             lowerer.lower_match_expr(id, span, r#type, match_expr.arms, match_expr.else_branch)
         }
         CheckedExpr::Codeblock(block) => lowerer.lower_codeblock_expr(id, span, r#type, block),
+        CheckedExpr::Try(r#try) => lowerer.lower_try_expr(id, span, r#type, r#try),
         CheckedExpr::Place(place) => {
             let place = lowerer.lower_place(place);
             mir_node(id, span, r#type, MirExpr::Place(place))

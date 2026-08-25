@@ -159,6 +159,12 @@ A pre-pass allocates a boolean flag for each supported defer. Reaching the sourc
 
 The language restrictions on where defer is currently allowed are semantic-analysis concerns and tracked in language/issues docs; MIR assumes checked input satisfies them.
 
+### try (`?`)
+
+`CheckedExpr::Try` is where a source-semantic construct becomes CFG, and MIR is the only stage that does it: there is no `MirExpr::Try` and no try terminator. The operand is lowered and materialized into a local so its tag and its payload are two reads of one evaluation, the analyzer-selected success tag drives an ordinary `Branch`, the success arm projects the payload into the current or a fresh `BlockDestination`, and the failure arm builds the enclosing function's failure value and enters the same return/exit chain `return` uses — which is what makes a failing `?` run registered defers.
+
+MIR reads the analyzer's decisions and makes none of its own: it does not discover `Option`/`Result` by spelling, re-derive variant order, or type-check the propagated error. A `Result` error conversion is replayed from the stored `CheckedCoercion` steps.
+
 ### `void` and effects
 
 `void` means that an expression produces no value slot; it does not mean the expression can be omitted. MIR still emits a `void`-typed tail or return expression so calls and other effects are preserved.

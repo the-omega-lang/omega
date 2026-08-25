@@ -1,0 +1,63 @@
+import self::lookalike;
+
+alias Mixed = enum *str | i32;
+
+some_value() => Option<i32> {
+	Option<i32>::Some { value = 1; }
+}
+
+ok_value() => Result<i32, *str> {
+	Result<i32, *str>::Ok { value = 1; }
+}
+
+failing() => Result<i32, *str> {
+	Result<i32, *str>::Err { error = "no"; }
+}
+
+# `?` only propagates the canonical fallible types.
+not_fallible() => Option<i32> {
+	Option<i32>::Some { value = 42?; }
+}
+
+# The enclosing function must itself be fallible.
+plain_return() => i32 {
+	some_value()?
+}
+
+# The two families never convert into one another, in either direction.
+option_in_result() => Result<i32, *str> {
+	Result<i32, *str>::Ok { value = some_value()?; }
+}
+
+result_in_option() => Option<i32> {
+	Option<i32>::Some { value = ok_value()?; }
+}
+
+# The extracted error must be able to inhabit the destination error type.
+unpropagatable_error() => Result<i32, i32> {
+	Result<i32, i32>::Ok { value = failing()?; }
+}
+
+# A failing `?` exits the function, which deferred code cannot do.
+try_in_defer() => Result<i32, *str> {
+	defer {
+		x := failing()?;
+	}
+	Result<i32, *str>::Ok { value = 1; }
+}
+
+# A lookalike declaration is not the canonical type.
+lookalike_try() => lookalike::Option<i32> {
+	lookalike::Option<i32>::Some { value = lookalike::some(1)?; }
+}
+
+# `?` converts only the extracted error, so whole-container conversion is
+# still not a thing.
+widen_container() => Result<i32, Mixed> {
+	failing()
+}
+
+# No implicit interconversion between the two families either.
+cross_family() => Option<i32> {
+	ok_value()
+}

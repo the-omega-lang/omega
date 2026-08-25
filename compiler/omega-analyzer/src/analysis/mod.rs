@@ -26,14 +26,15 @@ use crate::{
     checked::{
         CastKind, CheckedAddressOf, CheckedAnonymousEnumWiden, CheckedArrayLiteral,
         CheckedAsmDescriptor, CheckedAsmDescriptorKind, CheckedAssignment, CheckedBinaryOp,
-        CheckedBlock, CheckedBreak, CheckedCast, CheckedCompoundAssign, CheckedContinue,
-        CheckedDeclaration, CheckedDefer, CheckedDynamicCall, CheckedEnumConstruct, CheckedEnumDef,
-        CheckedExpr, CheckedExprNode, CheckedField, CheckedFor, CheckedForeignFunctionDef,
-        CheckedFunctionCall, CheckedFunctionDef, CheckedIf, CheckedInlineAsm, CheckedLoop,
-        CheckedMatch, CheckedMatchArm, CheckedParam, CheckedPlace, CheckedPlaceRoot,
-        CheckedProjection, CheckedRangeEnd, CheckedSlice, CheckedSpecCoerce, CheckedStmt,
-        CheckedStructDef, CheckedStructLiteral, CheckedStructLiteralField, CheckedUnionConstruct,
-        CheckedUnionDef, CheckedWhile, NumberValue, Storage,
+        CheckedBlock, CheckedBreak, CheckedCast, CheckedCoercion, CheckedCoercionStep,
+        CheckedCompoundAssign, CheckedContinue, CheckedDeclaration, CheckedDefer,
+        CheckedDynamicCall, CheckedEnumConstruct, CheckedEnumDef, CheckedExpr, CheckedExprNode,
+        CheckedField, CheckedFor, CheckedForeignFunctionDef, CheckedFunctionCall,
+        CheckedFunctionDef, CheckedIf, CheckedInlineAsm, CheckedLoop, CheckedMatch,
+        CheckedMatchArm, CheckedParam, CheckedPlace, CheckedPlaceRoot, CheckedProjection,
+        CheckedRangeEnd, CheckedSlice, CheckedSpecCoerce, CheckedStmt, CheckedStructDef,
+        CheckedStructLiteral, CheckedStructLiteralField, CheckedUnionConstruct, CheckedUnionDef,
+        CheckedWhile, NumberValue, Storage,
     },
     context::{Context, LexicalScope, VarBinding},
     error::{
@@ -618,51 +619,260 @@ impl<'r> Analyzer<'r> {
         let Some(target) = expected else {
             return value;
         };
-        if target.accepts(&value.r#type) {
-            return value;
+        match self.plan_coercion(value.id, value.span, target, &value.r#type) {
+            Some(plan) => self.apply_coercion(plan, value),
+            None => value,
         }
-        let value = match self.convert_to_anonymous_enum(target, value) {
-            Ok(converted) => return converted,
-            Err(value) => value,
-        };
+    }
+
+    /// Decides how `found` can inhabit `expected`, without owning a value to
+    /// convert. `Some` with no steps means plain acceptance; `None` means no
+    /// conversion exists and the caller reports the mismatch.
+    ///
+    /// This is the single home of "does this value fit that type": an
+    /// expected type, a `<enum ...>` cast, and `?`'s error propagation are
+    /// three ways to establish a destination, and they must agree on the
+    /// answer and on the IR.
+    pub(crate) fn plan_coercion(
+        &mut self,
+        id: HirId,
+        span: Span,
+        expected: &ResolvedType,
+        found: &ResolvedType,
+    ) -> Option<CheckedCoercion> {
+        if expected.accepts(found) {
+            return Some(CheckedCoercion::default());
+        }
+        if let Some(steps) = Self::plan_anonymous_conversion(expected, found) {
+            return Some(CheckedCoercion { steps });
+        }
         // A refined read also satisfies a plain expected type: the proof names
         // the member, so the site reads it out of the unchanged storage.
-        let value = self.project_refined_anonymous(target, value);
-        if target.accepts(&value.r#type) {
-            return value;
+        if let Some((variant_index, member)) = found.refined_anonymous_member()
+            && expected.accepts(member)
+        {
+            return Some(CheckedCoercion {
+                steps: vec![CheckedCoercionStep::ProjectAnonymousMember {
+                    variant_index,
+                    member_type: member.clone(),
+                }],
+            });
         }
         let ResolvedType::SpecObject {
             shape,
             mutable: expected_mutable,
-        } = target
+        } = expected
         else {
-            return value;
+            return None;
         };
         let ResolvedType::Pointer {
             pointee,
             mutable: value_mutable,
-        } = &value.r#type
+        } = found
         else {
-            return value;
+            return None;
         };
         if !*value_mutable && *expected_mutable {
-            return value;
+            return None;
         }
-        let Ok(slots) = self.type_implements_shape(value.id, value.span, pointee, shape) else {
-            return value;
+        let slots = self.type_implements_shape(id, span, pointee, shape).ok()?;
+        Some(CheckedCoercion {
+            steps: vec![CheckedCoercionStep::SpecCoerce {
+                slots,
+                target_type: expected.clone(),
+            }],
+        })
+    }
+
+    /// The steps that make `found` inhabit the anonymous enum `target`, or
+    /// `None` when it cannot. Both conversions are real representation
+    /// changes, so each leaves an explicit step rather than being spelled as
+    /// an acceptance rule.
+    fn plan_anonymous_conversion(
+        target: &ResolvedType,
+        found: &ResolvedType,
+    ) -> Option<Vec<CheckedCoercionStep>> {
+        let ResolvedType::AnonymousEnum {
+            shape: target_shape,
+            variant: None,
+        } = target
+        else {
+            return None;
         };
+        // Dropping a refinement of this very shape is a plain copy, so the
+        // parent type is used as-is rather than unpacked and repacked.
+        if target.accepts(found) {
+            return Some(Vec::new());
+        }
+        // Projection runs first so a proven leaf can be injected into a
+        // *different* anonymous enum in one step.
+        let mut steps = Vec::new();
+        let mut current = found;
+        if let Some((variant_index, member)) = found.refined_anonymous_member()
+            && (target.accepts(member)
+                || Self::anonymous_member_index(target_shape, member).is_some())
+        {
+            steps.push(CheckedCoercionStep::ProjectAnonymousMember {
+                variant_index,
+                member_type: member.clone(),
+            });
+            current = member;
+        }
+        if let Some(variant_index) = Self::anonymous_member_index(target_shape, current) {
+            steps.push(CheckedCoercionStep::InjectAnonymousMember {
+                variant_index,
+                target_type: target.clone(),
+            });
+            return Some(steps);
+        }
+        let ResolvedType::AnonymousEnum {
+            shape: source_shape,
+            variant: None,
+        } = current
+        else {
+            return None;
+        };
+        let variant_map = target_shape.subset_remap(source_shape)?;
+        steps.push(CheckedCoercionStep::WidenAnonymousEnum {
+            variant_map,
+            target_type: target.clone(),
+        });
+        Some(steps)
+    }
+
+    /// Runs an already-decided plan over a value the caller owns.
+    pub(crate) fn apply_coercion(
+        &mut self,
+        plan: CheckedCoercion,
+        mut value: CheckedExprNode,
+    ) -> CheckedExprNode {
+        for step in plan.steps {
+            value = self.apply_coercion_step(step, value);
+        }
+        value
+    }
+
+    fn apply_coercion_step(
+        &mut self,
+        step: CheckedCoercionStep,
+        value: CheckedExprNode,
+    ) -> CheckedExprNode {
         let id = value.id;
         let span = value.span;
-        let mut base = value;
-        base.id = self.resolver.fresh_synthetic_id();
-        CheckedExprNode {
-            id,
-            span,
-            r#type: target.clone(),
-            kind: CheckedExpr::SpecCoerce(CheckedSpecCoerce {
-                base: Box::new(base),
-                slots,
-            }),
+        match step {
+            CheckedCoercionStep::ProjectAnonymousMember {
+                variant_index,
+                member_type,
+            } => {
+                let projection = CheckedProjection::EnumBody {
+                    variant_index,
+                    field_index: 0,
+                    r#type: member_type.clone(),
+                };
+                let place = match value.kind {
+                    CheckedExpr::Place(mut place) => {
+                        place.projections.push(projection);
+                        place.r#type = member_type.clone();
+                        place
+                    }
+                    _ => {
+                        let mut base = value;
+                        base.id = self.resolver.fresh_synthetic_id();
+                        CheckedPlace {
+                            root: CheckedPlaceRoot::Expr(Box::new(base)),
+                            projections: vec![projection],
+                            r#type: member_type.clone(),
+                        }
+                    }
+                };
+                CheckedExprNode {
+                    id,
+                    span,
+                    r#type: member_type,
+                    kind: CheckedExpr::Place(place),
+                }
+            }
+            CheckedCoercionStep::InjectAnonymousMember {
+                variant_index,
+                target_type,
+            } => {
+                // Injecting a constant yields a constant: the tagged value is
+                // fully known, and folding it here keeps compile-time-only
+                // positions (globals, `comp` bindings) on the one shared enum
+                // constant representation instead of needing a second packer.
+                if let CheckedExpr::Const(member) = value.kind {
+                    return CheckedExprNode {
+                        id,
+                        span,
+                        r#type: target_type,
+                        kind: CheckedExpr::Const(ConstValue::anonymous_enum(
+                            variant_index,
+                            vec![member],
+                        )),
+                    };
+                }
+                let mut member = value;
+                member.id = self.resolver.fresh_synthetic_id();
+                CheckedExprNode {
+                    id,
+                    span,
+                    r#type: target_type,
+                    kind: CheckedExpr::EnumConstruct(CheckedEnumConstruct {
+                        variant_index,
+                        fields: vec![CheckedStructLiteralField {
+                            field_index: 0,
+                            value: member,
+                        }],
+                    }),
+                }
+            }
+            CheckedCoercionStep::WidenAnonymousEnum {
+                variant_map,
+                target_type,
+            } => {
+                // Widening a constant yields a constant, for the same reason
+                // injecting one does.
+                if let CheckedExpr::Const(ConstValue::Enum {
+                    variant_index,
+                    fields,
+                    ..
+                }) = value.kind
+                {
+                    return CheckedExprNode {
+                        id,
+                        span,
+                        r#type: target_type,
+                        kind: CheckedExpr::Const(ConstValue::anonymous_enum(
+                            variant_map[variant_index],
+                            fields,
+                        )),
+                    };
+                }
+                let mut source = value;
+                source.id = self.resolver.fresh_synthetic_id();
+                CheckedExprNode {
+                    id,
+                    span,
+                    r#type: target_type,
+                    kind: CheckedExpr::AnonymousEnumWiden(CheckedAnonymousEnumWiden {
+                        source: Box::new(source),
+                        variant_map,
+                    }),
+                }
+            }
+            CheckedCoercionStep::SpecCoerce { slots, target_type } => {
+                let mut base = value;
+                base.id = self.resolver.fresh_synthetic_id();
+                CheckedExprNode {
+                    id,
+                    span,
+                    r#type: target_type,
+                    kind: CheckedExpr::SpecCoerce(CheckedSpecCoerce {
+                        base: Box::new(base),
+                        slots,
+                    }),
+                }
+            }
         }
     }
 
@@ -720,182 +930,18 @@ impl<'r> Analyzer<'r> {
             .or_else(|| shape.index_of(&value.widened()))
     }
 
-    /// Reads the payload of a refined anonymous binding when the site wants
-    /// the member rather than the whole enum. The binding's storage is
-    /// unchanged; this only adds the body projection that names the member
-    /// inside it.
-    fn project_refined_anonymous(
-        &mut self,
-        target: &ResolvedType,
-        value: CheckedExprNode,
-    ) -> CheckedExprNode {
-        let Some((index, member)) = value.r#type.refined_anonymous_member() else {
-            return value;
-        };
-        let member = member.clone();
-        let wanted = target.accepts(&member)
-            || matches!(
-                target,
-                ResolvedType::AnonymousEnum { shape, variant: None }
-                    if Self::anonymous_member_index(shape, &member).is_some()
-            );
-        if !wanted {
-            return value;
-        }
-
-        let id = value.id;
-        let span = value.span;
-        let projection = CheckedProjection::EnumBody {
-            variant_index: index,
-            field_index: 0,
-            r#type: member.clone(),
-        };
-        let place = match value.kind {
-            CheckedExpr::Place(mut place) => {
-                place.projections.push(projection);
-                place.r#type = member.clone();
-                place
-            }
-            _ => {
-                let mut base = value;
-                base.id = self.resolver.fresh_synthetic_id();
-                CheckedPlace {
-                    root: CheckedPlaceRoot::Expr(Box::new(base)),
-                    projections: vec![projection],
-                    r#type: member.clone(),
-                }
-            }
-        };
-        CheckedExprNode {
-            id,
-            span,
-            r#type: member,
-            kind: CheckedExpr::Place(place),
-        }
-    }
-
     /// Converts `value` into the already-resolved anonymous enum `target`,
-    /// or hands it back untouched when no conversion exists. Both conversions
-    /// are real representation changes, so each leaves an explicit node here
-    /// rather than being spelled as an acceptance rule.
-    ///
-    /// This is the single home of "does this value fit that shape": an
-    /// expected type and a `<enum ...>` cast are two ways to establish the
-    /// destination, and they must agree on the answer and on the IR.
+    /// or hands it back untouched when no conversion exists. An expected
+    /// type and a `<enum ...>` cast are two ways to establish the
+    /// destination, so both route through `plan_anonymous_conversion`.
     pub(crate) fn convert_to_anonymous_enum(
         &mut self,
         target: &ResolvedType,
         value: CheckedExprNode,
     ) -> Result<CheckedExprNode, CheckedExprNode> {
-        let ResolvedType::AnonymousEnum {
-            shape: target_shape,
-            variant: None,
-        } = target
-        else {
-            return Err(value);
-        };
-        // Dropping a refinement of this very shape is a plain copy, so the
-        // parent type is used as-is rather than unpacked and repacked.
-        if target.accepts(&value.r#type) {
-            return Ok(value);
-        }
-        // Projection runs first so a proven leaf can be injected into a
-        // *different* anonymous enum in one step.
-        let value = self.project_refined_anonymous(target, value);
-        if let Some(index) = Self::anonymous_member_index(target_shape, &value.r#type) {
-            return Ok(self.inject_anonymous_member(target, index, value));
-        }
-        let ResolvedType::AnonymousEnum {
-            shape: source_shape,
-            variant: None,
-        } = &value.r#type
-        else {
-            return Err(value);
-        };
-        let Some(variant_map) = target_shape.subset_remap(source_shape) else {
-            return Err(value);
-        };
-        let id = value.id;
-        let span = value.span;
-        // Widening a constant yields a constant, for the same reason injecting
-        // one does: compile-time-only positions stay on the one shared enum
-        // constant representation.
-        if let CheckedExpr::Const(ConstValue::Enum {
-            variant_index,
-            fields,
-            ..
-        }) = value.kind
-        {
-            return Ok(CheckedExprNode {
-                id,
-                span,
-                r#type: target.clone(),
-                kind: CheckedExpr::Const(Self::anonymous_enum_const(
-                    variant_map[variant_index],
-                    fields,
-                )),
-            });
-        }
-        let mut source = value;
-        source.id = self.resolver.fresh_synthetic_id();
-        Ok(CheckedExprNode {
-            id,
-            span,
-            r#type: target.clone(),
-            kind: CheckedExpr::AnonymousEnumWiden(CheckedAnonymousEnumWiden {
-                source: Box::new(source),
-                variant_map,
-            }),
-        })
-    }
-
-    /// An anonymous enum's constant form: the tag is the canonical member
-    /// index, and the shape has no header or dynamic field to fill.
-    fn anonymous_enum_const(index: usize, fields: Vec<ConstValue>) -> ConstValue {
-        ConstValue::Enum {
-            variant_index: index,
-            tag: NumberValue::Unsigned(index as u64),
-            header: Vec::new(),
-            dynamic_fields: Vec::new(),
-            fields,
-        }
-    }
-
-    /// Packs an exact member value into the expected anonymous enum, tagged
-    /// with its canonical index.
-    fn inject_anonymous_member(
-        &mut self,
-        target: &ResolvedType,
-        index: usize,
-        value: CheckedExprNode,
-    ) -> CheckedExprNode {
-        let id = value.id;
-        let span = value.span;
-        // Injecting a constant yields a constant: the tagged value is fully
-        // known, and folding it here keeps compile-time-only positions
-        // (globals, `comp` bindings) on the one shared enum constant
-        // representation instead of needing a second packer.
-        if let CheckedExpr::Const(member) = value.kind {
-            return CheckedExprNode {
-                id,
-                span,
-                r#type: target.clone(),
-                kind: CheckedExpr::Const(Self::anonymous_enum_const(index, vec![member])),
-            };
-        }
-        let mut member = value;
-        member.id = self.resolver.fresh_synthetic_id();
-        CheckedExprNode {
-            id,
-            span,
-            r#type: target.clone(),
-            kind: CheckedExpr::EnumConstruct(CheckedEnumConstruct {
-                variant_index: index,
-                fields: vec![CheckedStructLiteralField {
-                    field_index: 0,
-                    value: member,
-                }],
-            }),
+        match Self::plan_anonymous_conversion(target, &value.r#type) {
+            Some(steps) => Ok(self.apply_coercion(CheckedCoercion { steps }, value)),
+            None => Err(value),
         }
     }
 

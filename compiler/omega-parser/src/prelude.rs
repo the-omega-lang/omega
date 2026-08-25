@@ -6,7 +6,7 @@ pub use crate::ast::expression::{
     DerefExpr, Expression, ExpressionNode, FieldAccessExpr, FunctionCallExpr, IfExpr,
     IncrementExpr, IndexExpr, LogicalExpr, LogicalOp, MacroInvocationExpr, MatchArm, MatchExpr,
     NegateExpr, NotExpr, NumberBase, NumberExpr, Pattern, PatternValue, RevealExpr, SizeofExpr,
-    SliceExpr, StringExpr, StructLiteralExpr, StructLiteralField,
+    SliceExpr, StringExpr, StructLiteralExpr, StructLiteralField, TryExpr,
 };
 pub use crate::ast::generics::GenericParam;
 pub use crate::ast::identifier::{

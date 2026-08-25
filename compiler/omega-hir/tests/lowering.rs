@@ -300,3 +300,45 @@ fn a_function_return_type_span_covers_the_written_type() {
     );
     assert_eq!(&source[f.name_span.start..f.name_span.end], "f");
 }
+
+#[test]
+fn a_try_operator_stays_a_try_node() {
+    let source = "f() => i32 { call()? }";
+    let module = lower(source);
+    let f = only_function(&module);
+    let tail = f.body.tail.as_ref().expect("expected a tail expression");
+    let HirExpr::Try(r#try) = &tail.expr else {
+        panic!(
+            "`?` must survive lowering as HirExpr::Try, found {:?}",
+            tail.expr
+        );
+    };
+    assert_ne!(
+        tail.id, r#try.base.id,
+        "the try node owns an id distinct from its operand"
+    );
+    assert!(
+        matches!(r#try.base.expr, HirExpr::FunctionCall(_)),
+        "the operand is preserved as itself"
+    );
+    assert_eq!(
+        &source[r#try.operator_span.start..r#try.operator_span.end],
+        "?",
+        "the operator span still names the `?` token"
+    );
+    assert_eq!(&source[tail.span.start..tail.span.end], "call()?");
+}
+
+#[test]
+fn a_chained_try_lowers_to_nested_try_nodes() {
+    let module = lower("f() => i32 { nested?? }");
+    let f = only_function(&module);
+    let tail = f.body.tail.as_ref().expect("expected a tail expression");
+    let HirExpr::Try(outer) = &tail.expr else {
+        panic!("expected the outer try");
+    };
+    let HirExpr::Try(inner) = &outer.base.expr else {
+        panic!("expected the inner try");
+    };
+    assert!(matches!(inner.base.expr, HirExpr::Place(_)));
+}

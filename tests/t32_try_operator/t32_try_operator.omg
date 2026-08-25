@@ -1,0 +1,203 @@
+import std::io::println;
+
+# `?` is recognized by canonical type identity, so a transparent alias of
+# `core::option::Option`/`core::result::Result` behaves exactly like the
+# original spelling.
+alias Maybe<T> = Option<T>;
+alias Fallible<T> = Result<T, *str>;
+
+struct Item {
+	exposed id: i32;
+}
+
+struct NotFound {
+	exposed key: i32;
+}
+
+struct Denied {
+	exposed code: i32;
+}
+
+alias AnyError = enum NotFound | Denied;
+
+mut option_calls: i32 = 0;
+mut cleanups: i32 = 0;
+
+# --- Option ------------------------------------------------------------------
+
+halve(n: i32) => Option<i32> {
+	if n % 2 == 0 { Option::Some { value = n / 2; } } else { Option::None }
+}
+
+# `Some` yields the payload; `None` returns this function's own `None`.
+quarter(n: i32) => Option<i32> {
+	half := halve(n)?;
+	halve(half)
+}
+
+find(n: i32) => Option<Item> {
+	if n > 0 { Option::Some { value = Item { id = n; }; } } else { Option::None }
+}
+
+# Postfix chaining: the field access applies to the unwrapped payload.
+id_of(n: i32) => Option<i32> {
+	Option::Some { value = find(n)?.id; }
+}
+
+nested(n: i32) => Option<Option<i32>> {
+	if n > 0 { Option::Some { value = Option::Some { value = n; }; } } else { Option::None }
+}
+
+# `??` chains left to right: the inner `?` unwraps one layer, the outer the next.
+twice_unwrapped(n: i32) => Option<i32> {
+	Option::Some { value = nested(n)??; }
+}
+
+counted(ok: bool) => Option<i32> {
+	option_calls += 1;
+	if ok { Option::Some { value = 7; } } else { Option::None }
+}
+
+# The operand is evaluated exactly once, whichever way it goes.
+use_counted(ok: bool) => Option<i32> {
+	Option::Some { value = counted(ok)? + 1; }
+}
+
+# The success type is independent of the enclosing success type.
+describe_halved(n: i32) => Option<*str> {
+	half := halve(n)?;
+	if half > 2 { Option::Some { value = "big"; } } else { Option::Some { value = "small"; } }
+}
+
+via_alias(n: i32) => Maybe<i32> {
+	Maybe<i32>::Some { value = halve(n)?; }
+}
+
+# --- Result ------------------------------------------------------------------
+
+parse(n: i32) => Result<i32, *str> {
+	if n > 0 { Result::Ok { value = n; } } else { Result::Err { error = "not positive"; } }
+}
+
+scaled(n: i32) => Result<i32, *str> {
+	Result::Ok { value = parse(n)? * 10; }
+}
+
+via_result_alias(n: i32) => Fallible<i32> {
+	Fallible<i32>::Ok { value = parse(n)? + 1; }
+}
+
+# A registered `defer` still runs when `?` takes the failure path.
+with_cleanup(n: i32) => Result<i32, *str> {
+	defer { cleanups += 1; }
+	Result::Ok { value = parse(n)?; }
+}
+
+# A void success payload carries no data but still propagates.
+check(n: i32) => Result<void, *str> {
+	if n > 0 { Result::Ok { value = <void>n; } } else { Result::Err { error = "rejected"; } }
+}
+
+confirm(n: i32) => Result<void, *str> {
+	Result::Ok { value = check(n)?; }
+}
+
+# --- Result error conversion -------------------------------------------------
+
+lookup(key: i32) => Result<i32, NotFound> {
+	if key == 0 { Result::Ok { value = 2; } } else { Result::Err { error = NotFound { key = key; }; } }
+}
+
+authorize(code: i32) => Result<i32, Denied> {
+	if code == 0 { Result::Ok { value = 3; } } else { Result::Err { error = Denied { code = code; }; } }
+}
+
+# Each `?` converts only its own extracted error into the destination's
+# anonymous-enum error type; the whole `Result` is never rebuilt.
+combined(key: i32, code: i32) => Result<i32, AnyError> {
+	found := lookup(key)?;
+	allowed := authorize(code)?;
+	Result::Ok { value = found + allowed; }
+}
+
+# --- Compile-time evaluation -------------------------------------------------
+
+comp COMP_OK := comp scaled(4);
+comp COMP_ERR := comp scaled(-4);
+
+# --- Reporting ---------------------------------------------------------------
+
+show_option(label: *str, value: Option<i32>) => void {
+	match value {
+		Option::Some => println$(label, ": some ", value.value),
+		Option::None => println$(label, ": none"),
+	}
+}
+
+show_result(label: *str, value: Result<i32, *str>) => void {
+	match value {
+		Result::Ok => println$(label, ": ok ", value.value),
+		Result::Err => println$(label, ": err ", value.error),
+	}
+}
+
+show_combined(label: *str, value: Result<i32, AnyError>) => void {
+	match value {
+		Result::Ok => println$(label, ": ok ", value.value),
+		Result::Err => {
+			error := value.error;
+			match error {
+				NotFound => println$(label, ": not-found ", error.key),
+				Denied => println$(label, ": denied ", error.code),
+			}
+		},
+	}
+}
+
+main() => void {
+	show_option("option-success", quarter(8));
+	show_option("option-failure", quarter(6));
+	show_option("option-chain-field", id_of(5));
+	show_option("option-chain-field-none", id_of(-5));
+	show_option("option-double-try", twice_unwrapped(9));
+	show_option("option-double-try-none", twice_unwrapped(-9));
+	show_option("option-alias", via_alias(10));
+
+	<void>use_counted(true);
+	println$("option-eval-once-success: ", option_calls);
+	option_calls = 0;
+	<void>use_counted(false);
+	println$("option-eval-once-failure: ", option_calls);
+
+	described := describe_halved(4);
+	match described {
+		Option::Some => println$("option-independent-success-type: ", described.value),
+		Option::None => println$("option-independent-success-type: none"),
+	}
+
+	show_result("result-success", scaled(3));
+	show_result("result-failure", scaled(-3));
+	show_result("result-alias", via_result_alias(6));
+
+	show_result("result-defer-success", with_cleanup(1));
+	println$("result-defer-count-success: ", cleanups);
+	show_result("result-defer-failure", with_cleanup(-1));
+	println$("result-defer-count-failure: ", cleanups);
+
+	confirmed := confirm(1);
+	match confirmed {
+		Result::Ok => println$("result-void-success: ok"),
+		Result::Err => println$("result-void-success: err ", confirmed.error),
+	}
+	match confirm(-1) {
+		Result::Ok => println$("result-void-failure: ok"),
+		Result::Err => println$("result-void-failure: err"),
+	}
+
+	show_combined("result-mixed-ok", combined(0, 0));
+	show_combined("result-mixed-first", combined(4, 0));
+	show_combined("result-mixed-second", combined(0, 7));
+
+	show_result("comp-success", COMP_OK);
+	show_result("comp-failure", COMP_ERR);
+}

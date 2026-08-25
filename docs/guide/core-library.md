@@ -14,6 +14,7 @@ runtime/core/
   numerics.omg   # inherent scalar operations
   option.omg     # Option<T>
   range.omg      # Range<T>, RangeIterator<T>, Successor, Bounded
+  result.omg     # Result<T, E>
   platform.omg   # allocator and console capability gaps
   slices.omg     # inherent generic-slice operations
   strings.omg    # inherent str operations
@@ -32,6 +33,9 @@ compiled object: definitions from `core.o` must be linked when used.
 
 - **`core::option::Option<T>`** is the simple `None` / `Some { value: T }`
   result used when a value may be absent.
+- **`core::result::Result<T, E>`** is the ordinary `Ok { value: T }` /
+  `Err { error: E }` enum used when a failure carries a reason. Together with
+  `Option<T>` it is what the postfix `?` operator propagates.
 - **`core::cmp`** defines `Ordering`, `Eq`, and `Ord`; primitive integer and
   `str` conformances live in core because range iteration depends on them.
 - **`core::iterator`** defines `Iterator<T>::next(*mut self) => Option<T>`
