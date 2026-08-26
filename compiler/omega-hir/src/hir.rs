@@ -305,6 +305,7 @@ pub struct HirGapFunction {
     pub span: Span,
     pub name_span: Span,
     pub name: Ident,
+    pub visibility: Visibility,
     pub params: Vec<HirParam>,
     pub return_type: Type,
 }
@@ -478,7 +479,7 @@ pub enum HirExpr {
     Assignment(HirAssignment),
     CompoundAssign(HirCompoundAssign),
     AddressOf(HirAddressOf),
-    Reveal(Box<HirExprNode>),
+    Reveal(HirReveal),
     Comp(Box<HirExprNode>),
     Negate(Box<HirExprNode>),
     BitNot(Box<HirExprNode>),
@@ -659,6 +660,12 @@ pub struct HirBinaryOp {
 pub struct HirAddressOf {
     pub base: Box<HirExprNode>,
     pub mutable: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct HirReveal {
+    pub base: Box<HirExprNode>,
+    pub origin: Origin,
 }
 
 #[derive(Debug, Clone)]

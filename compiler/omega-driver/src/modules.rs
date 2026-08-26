@@ -206,7 +206,17 @@ impl Driver {
                 for node in &ast.nodes {
                     if let Item::MacroDefinition(definition) = &node.item {
                         let mut definition = definition.clone();
-                        definition.defining_module = path.to_vec();
+                        if let Err(error) =
+                            omega_parser::macros::bind_definition(&mut definition, path)
+                        {
+                            self.modules
+                                .failures
+                                .insert(path.to_vec(), LoadFailure::MacroExpansion(error));
+                            return Err(ResolveError::LoadFailed {
+                                path: path.to_vec(),
+                                message: "macro expansion failed".into(),
+                            });
+                        }
                         definitions.insert(definition.name.clone(), definition);
                     }
                 }
@@ -515,10 +525,12 @@ impl Driver {
                         message: "building macro environment failed".into(),
                     }
                 })?;
+                let source = self.modules.source(path);
                 let ast = omega_parser::macros::expand_with_origins(
                     (*ast).clone(),
                     &macros,
                     path,
+                    source.as_deref(),
                     &mut self.modules.macro_expansions,
                 )
                 .map_err(|e| {

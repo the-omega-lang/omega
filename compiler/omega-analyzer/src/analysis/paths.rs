@@ -193,7 +193,13 @@ impl<'r> Analyzer<'r> {
                         )
                         .map(|(root, r#type)| (root, r#type, false)),
                     Ok(ResolvedItem::Gap(gap)) => self
-                        .resolve_gap_member(node_id, span, &gap, &absolute[missing.len()..])
+                        .resolve_gap_member(
+                            node_id,
+                            span,
+                            written_path,
+                            &gap,
+                            &absolute[missing.len()..],
+                        )
                         .map(|(root, r#type)| (root, r#type, false)),
                     // The prefix genuinely doesn't resolve either: the
                     // original "no such module" reading is the right report.
@@ -283,7 +289,7 @@ impl<'r> Analyzer<'r> {
                     return self.resolve_type_member(node_id, span, &t, &path.tail, expected);
                 }
                 if let Some(ImportTarget::Item(_, ResolvedItem::Gap(gap))) = alias {
-                    return self.resolve_gap_member(node_id, span, &gap, &path.tail);
+                    return self.resolve_gap_member(node_id, span, path, &gap, &path.tail);
                 }
                 match alias {
                     Some(ImportTarget::ItemPath(access)) => access,
@@ -334,7 +340,7 @@ impl<'r> Analyzer<'r> {
                 return self.resolve_type_member(node_id, span, &t, &path.tail, expected);
             }
             Ok(ResolvedItem::Gap(gap)) => {
-                return self.resolve_gap_member(node_id, span, &gap, &path.tail);
+                return self.resolve_gap_member(node_id, span, path, &gap, &path.tail);
             }
             Ok(ResolvedItem::Value { .. }) => AnalysisErrorKind::NotAModule {
                 name: path.head.clone(),
@@ -500,10 +506,15 @@ impl<'r> Analyzer<'r> {
         }
     }
 
+    /// Selects one function of a gap. `written_path` is the path as the
+    /// programmer spelled it, so a gap member reached from a macro body is
+    /// checked against the macro's definition module and against the macro
+    /// dependency-leak rule, not against wherever the expansion landed.
     fn resolve_gap_member(
         &mut self,
         node_id: HirId,
         span: Span,
+        written_path: &omega_parser::prelude::Path,
         gap: &std::rc::Rc<crate::resolved_type::ResolvedGap>,
         rest: &[Ident],
     ) -> Option<(CheckedPlaceRoot, ResolvedType)> {
@@ -530,10 +541,44 @@ impl<'r> Analyzer<'r> {
             );
             return None;
         };
-        let r#type = ResolvedType::Function(function.fn_type.clone());
+        let (visibility, decl_id, fn_type) = (
+            function.visibility,
+            function.decl_id,
+            function.fn_type.clone(),
+        );
+        let accessor = self.path_module(written_path);
+        if !Self::visibility_allows(visibility, &gap.module_path, &accessor) {
+            if !self.reveals.active() {
+                self.error(
+                    node_id,
+                    span,
+                    AnalysisErrorKind::ModuleResolution(ResolveError::NotVisible {
+                        module: gap
+                            .module_path
+                            .iter()
+                            .cloned()
+                            .chain(std::iter::once(gap.name.clone()))
+                            .collect(),
+                        item: member.clone(),
+                    }),
+                );
+                return None;
+            }
+            self.reveals.mark_used();
+        }
+        if !self.check_macro_dependency_level(
+            node_id,
+            span,
+            written_path.origin,
+            member.clone(),
+            visibility,
+        ) {
+            return None;
+        }
+        let r#type = ResolvedType::Function(fn_type);
         Some((
             CheckedPlaceRoot::Variable {
-                decl_id: function.decl_id,
+                decl_id,
                 storage: Storage::Function,
                 r#type: r#type.clone(),
             },

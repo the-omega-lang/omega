@@ -86,6 +86,7 @@ pub fn parse_macro_definition(
         signature,
         body,
         defining_module: vec![],
+        builtin: None,
     })
 }
 

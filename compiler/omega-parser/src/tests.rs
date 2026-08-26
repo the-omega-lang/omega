@@ -54,6 +54,32 @@ fn gap_and_glue_reject_a_visibility_modifier() {
 }
 
 #[test]
+fn gap_functions_carry_visibility_and_default_to_exposed() {
+    let module = SourceModule::parse(
+        "gap Capability {
+             implicit() => void;
+             exposed anyone() => void;
+             shared package_wide() => void;
+             hidden declaring_module() => void;
+         }",
+    )
+    .expect("gap members should accept the ordinary visibility modifiers");
+    let Item::Gap(gap) = &module.nodes[0].item else {
+        panic!("expected a gap definition");
+    };
+    let visibilities: Vec<Visibility> = gap.functions.iter().map(|f| f.visibility).collect();
+    assert_eq!(
+        visibilities,
+        vec![
+            Visibility::Exposed,
+            Visibility::Exposed,
+            Visibility::Shared,
+            Visibility::Hidden,
+        ]
+    );
+}
+
+#[test]
 fn gap_and_glue_reject_generics_without_cascading() {
     assert!(matches!(
         errors("gap Foo<T> { f() => void; }").as_slice(),

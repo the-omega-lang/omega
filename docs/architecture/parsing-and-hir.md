@@ -109,6 +109,8 @@ The driver constructs the module-visible macro environment. `omega_parser::macro
 
 This provenance later lets semantic path resolution honor definition-site lookup and ensure a macro does not expose a dependency narrower than the macro itself.
 
+The driver also passes the `omega_diagnostics::SourceFile` of the module being expanded. That is the only source context expansion has, and it is what the compiler-implemented `core::builtins` macros read: they call `SourceFile::line_col` rather than carrying a second location algorithm, and they are substituted at the call span macro-authored tokens already carry, so a builtin written inside another macro's body describes the outer invocation. An expansion path with no source context (the parser's template-only convenience entry point) fails a builtin invocation explicitly rather than fabricating a location.
+
 Nested macro lookup resolves only the requested definition from the origin module's registered environment. The expander deliberately does not clone an entire macro environment per invocation; definitions are cloned only when expansion needs to release the environment borrow before mutating expansion state.
 
 Tokens substituted from macro arguments retain caller-side origin; tokens emitted by the macro body receive the expansion's definition-site origin. That distinction is what prevents the whole expanded subtree from being incorrectly treated as either caller-authored or definition-authored.
@@ -239,6 +241,8 @@ Specific child spans are intentional. Fields, parameters, names, signatures, and
 ### Macro spans and provenance
 
 `Span` itself has no source-file identity. A macro definition may come from another module, so definition-module byte offsets cannot safely survive as ordinary spans inside the caller's expanded AST: rendering them against the caller's source would point at unrelated text. Macro-authored generated tokens therefore use invocation/call-site spans for diagnostics while separate origin metadata preserves definition-site module/visibility provenance for resolution. Substituted argument tokens retain caller provenance.
+
+Macro *definitions* also carry a compiler-backed discriminator, bound from the canonical `(defining module, declared name)` pair by the one shared binding path both the expander and the driver's definition cache use. Classification therefore cannot disagree between a cached definition and a re-collected one, and it survives the clone a macro `alias` performs. The declaration-shape contract is checked where a declaration is bound to its module, so an alias is not mistaken for a second canonical declaration.
 
 The macro body is not independently type-checked or semantically validated. Expansion substitutes tokens and reparses them at the invocation's syntactic position; normal downstream analysis validates the resulting program.
 

@@ -195,7 +195,7 @@ fn parse_unary(p: &mut Parser) -> Option<ExpressionNode> {
         TokenKind::Ident(_) if p.at_contextual(COMP) && operand_follows(p) => Prefix::Comp,
         _ => return parse_postfix(p),
     };
-    p.advance();
+    let prefix_origin = p.advance().origin;
     if matches!(prefix, Prefix::AddressOf { mutable: true }) {
         p.advance(); // 'mut'
     }
@@ -209,7 +209,10 @@ fn parse_unary(p: &mut Parser) -> Option<ExpressionNode> {
         Prefix::Negate => Expression::Negate(Box::new(NegateExpr { base })),
         Prefix::BitNot => Expression::BitNot(Box::new(BitNotExpr { base })),
         Prefix::Not => Expression::Not(Box::new(NotExpr { base })),
-        Prefix::Reveal => Expression::Reveal(Box::new(RevealExpr { base })),
+        Prefix::Reveal => Expression::Reveal(Box::new(RevealExpr {
+            base,
+            origin: prefix_origin,
+        })),
         Prefix::Comp => Expression::Comp(Box::new(CompExpr { base })),
         Prefix::Increment => Expression::Increment(Box::new(IncrementExpr { base })),
         Prefix::Decrement => Expression::Decrement(Box::new(DecrementExpr { base })),

@@ -15,8 +15,9 @@ pub use crate::ast::identifier::{
 pub use crate::ast::item::{
     AliasItem, AliasTarget, ConformStmt, EnumHeaderField, EnumStmt, EnumVariantStmt,
     ForeignBindingItem, ForeignBlockEntry, ForeignBlockItem, ForeignFunctionItem, FragmentKind,
-    ImportStmt, Item, ItemNode, MacroBodyPiece, MacroDefinitionStmt, MacroParam, MacroRepetition,
-    MacroSignature, PrimitiveStmt, SpecFunctionStmt, SpecStmt, StructStmt, UnionStmt,
+    ImportStmt, Item, ItemNode, MacroBodyPiece, MacroBuiltin, MacroDefinitionStmt, MacroParam,
+    MacroRepetition, MacroSignature, PrimitiveStmt, SpecFunctionStmt, SpecStmt, StructStmt,
+    UnionStmt,
 };
 pub use crate::ast::range::{RangeEnd, RangeExpr};
 pub use crate::ast::self_mode::SelfMode;

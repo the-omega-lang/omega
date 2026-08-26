@@ -103,12 +103,44 @@ Generated declarations remain ordinary declarations and therefore participate in
 
 An `import` inside a macro body is invalid. Definition-origin paths already resolve in the definition module, and expansion is not allowed to mutate the caller's import namespace.
 
+## Compiler-implemented core macros
+
+`core::builtins` declares three macros whose expansion the compiler supplies:
+
+```omega
+exposed macro file() => { }
+exposed macro line() => { }
+exposed macro column() => { }
+```
+
+`file$()` expands to a `*str` literal holding the compiler's source name for
+the file being compiled. `line$()` and `column$()` expand to `u32` literals
+holding the 1-based line and display column of the invocation, using the same
+tab-width and Unicode column rules a rendered diagnostic caret uses. Because
+they become ordinary literals during expansion, nothing after macro expansion
+treats them specially.
+
+Only these exact declarations are compiler-implemented, and they must be
+written as `exposed`, zero-parameter macros with empty bodies; any other shape
+is rejected. A same-named macro declared in another module is an ordinary
+template, and a local or imported macro of the same name shadows the ambient
+core declaration under the usual lookup order. An `alias` of one of them keeps
+the compiler-implemented behavior and reports the alias's own invocation site.
+
+The site reported is the site of the **outermost** invocation, following the
+general rule that macro-authored tokens carry call-site spans. A wrapper macro
+whose body invokes `line$()` therefore reports where the wrapper was called,
+not where the wrapper was written. `core::panic::panic` relies on exactly this
+so a panic names the code that panicked.
+
 ## Where it's actually used
 
 `runtime/core/primitives/numerics.omg` uses three macros
 (`signed_integer`/`unsigned_integer`/`float_ops`) to generate numeric spec
 method and conformance declarations for every primitive type instead of
-hand-writing twelve near-identical groups. See [core library](../guide/core-library.md).
+hand-writing twelve near-identical groups. `runtime/core/panic.omg` uses one
+(`panic`) to build a `PanicInfo` at the call site and hand it to the
+`PanicHandler` gap. See [core library](../guide/core-library.md).
 
 ## Cross-file visibility
 

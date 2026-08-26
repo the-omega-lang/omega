@@ -2,6 +2,7 @@ use super::*;
 
 pub(super) struct Expander<'a> {
     defs: &'a HashMap<Ident, MacroDefinitionStmt>,
+    source: Option<&'a SourceFile>,
     budget: u32,
     state: &'a mut ExpansionState,
 }
@@ -9,10 +10,12 @@ pub(super) struct Expander<'a> {
 impl<'a> Expander<'a> {
     pub(super) fn new(
         defs: &'a HashMap<Ident, MacroDefinitionStmt>,
+        source: Option<&'a SourceFile>,
         state: &'a mut ExpansionState,
     ) -> Self {
         Self {
             defs,
+            source,
             budget: MAX_EXPANSIONS,
             state,
         }
@@ -271,13 +274,16 @@ impl<'a> Expander<'a> {
         }
         let mut out = Vec::new();
         let origin = self.state.fresh_origin(def);
-        render(
-            &def.body,
-            &bindings,
-            def.signature.variadic.as_ref().map(|p| &p.name),
-            origin,
-            &mut out,
-        );
+        match def.builtin {
+            Some(builtin) => out.push(self.builtin_token(builtin, call_span, origin)?),
+            None => render(
+                &def.body,
+                &bindings,
+                def.signature.variadic.as_ref().map(|p| &p.name),
+                origin,
+                &mut out,
+            ),
+        }
         // Generated tokens use call-site spans because `Span` has no file identity.
         Ok(out
             .into_iter()
@@ -287,6 +293,45 @@ impl<'a> Expander<'a> {
                 origin: token.origin,
             })
             .collect())
+    }
+
+    /// The single literal a compiler-backed macro expands to. The location
+    /// comes from `call_span`, which macro-generated tokens already carry
+    /// from their outermost invocation, so a builtin written inside another
+    /// macro reports that macro's call site.
+    fn builtin_token(
+        &self,
+        builtin: MacroBuiltin,
+        call_span: Span,
+        origin: Origin,
+    ) -> Result<Token, MacroError> {
+        let source = self
+            .source
+            .ok_or(MacroError::BuiltinWithoutSourceContext { builtin })?;
+        let kind = match builtin {
+            MacroBuiltin::File => TokenKind::Str(source.name().to_string()),
+            MacroBuiltin::Line | MacroBuiltin::Column => {
+                let (line, column) = source.line_col(call_span.start);
+                let value = if builtin == MacroBuiltin::Line {
+                    line
+                } else {
+                    column
+                };
+                let value = u32::try_from(value)
+                    .map_err(|_| MacroError::SourceLocationOutOfRange { builtin, value })?;
+                TokenKind::Number(NumberExpr {
+                    base: NumberBase::Decimal,
+                    integer_part: value.to_string(),
+                    fractional_part: None,
+                    explicit_type: Some(Ident("u32".into())),
+                })
+            }
+        };
+        Ok(Token {
+            kind,
+            span: call_span,
+            origin,
+        })
     }
 
     fn expand_function_def(
@@ -546,6 +591,7 @@ impl<'a> Expander<'a> {
             })),
             Expression::Reveal(reveal) => Expression::Reveal(Box::new(RevealExpr {
                 base: self.expand_expr(reveal.base)?,
+                origin: reveal.origin,
             })),
             Expression::Comp(comp) => Expression::Comp(Box::new(CompExpr {
                 base: self.expand_expr(comp.base)?,

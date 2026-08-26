@@ -80,6 +80,7 @@ impl Lowerer {
                         span: f.signature_span,
                         name_span: f.name_span,
                         name: f.ident.clone(),
+                        visibility: f.visibility,
                         params: f.params.iter().map(|p| self.lower_param(p)).collect(),
                         return_type: f.return_type.clone(),
                     })

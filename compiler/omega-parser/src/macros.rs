@@ -7,6 +7,7 @@ use crate::diagnostics::ParseError;
 use crate::lexer::{Token, TokenKind};
 use crate::parser::Parser;
 use crate::prelude::*;
+use omega_diagnostics::SourceFile;
 use std::collections::HashMap;
 use std::fmt;
 
@@ -140,6 +141,16 @@ pub enum MacroError {
     ExpansionLimitExceeded {
         macro_name: Ident,
     },
+    MalformedBuiltinDeclaration {
+        builtin: MacroBuiltin,
+    },
+    BuiltinWithoutSourceContext {
+        builtin: MacroBuiltin,
+    },
+    SourceLocationOutOfRange {
+        builtin: MacroBuiltin,
+        value: usize,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -254,22 +265,46 @@ impl fmt::Display for MacroError {
                  expanding '{}' -- check for runaway recursive macro calls",
                 macro_name.0
             ),
+            Self::MalformedBuiltinDeclaration { builtin } => write!(
+                f,
+                "'{}::{}' is compiler-implemented and must be declared as an exposed macro with \
+                 no parameters and an empty body",
+                MacroBuiltin::MODULE.join("::"),
+                builtin.name()
+            ),
+            Self::BuiltinWithoutSourceContext { builtin } => write!(
+                f,
+                "'{}' needs the invoking module's source, which this expansion has no access to",
+                builtin.name()
+            ),
+            Self::SourceLocationOutOfRange { builtin, value } => write!(
+                f,
+                "'{}' is {value} here, which does not fit in the 'u32' it expands to",
+                builtin.name()
+            ),
         }
     }
 }
 
+/// Template-only expansion with no module identity or source text. A
+/// compiler-backed builtin invoked through this path fails rather than
+/// inventing a source location.
 pub fn expand(
     module: SourceModule,
     imported: &HashMap<Ident, MacroDefinitionStmt>,
 ) -> Result<SourceModule, MacroError> {
     let mut state = ExpansionState::default();
-    expand_with_origins(module, imported, &[], &mut state)
+    expand_with_origins(module, imported, &[], None, &mut state)
 }
 
+/// `source` is the file being expanded, not the file a macro was defined in:
+/// `file$`/`line$`/`column$` describe the invocation site even when the
+/// invocation was written inside another macro's body.
 pub fn expand_with_origins(
     module: SourceModule,
     imported: &HashMap<Ident, MacroDefinitionStmt>,
     module_path: &[Ident],
+    source: Option<&SourceFile>,
     state: &mut ExpansionState,
 ) -> Result<SourceModule, MacroError> {
     let (own, items) = collect_definitions(module.nodes, module_path)?;
@@ -279,8 +314,34 @@ pub fn expand_with_origins(
     for def in defs.values() {
         validate_definition(def)?;
     }
-    let nodes = expander::Expander::new(&defs, state).expand_item_list(items)?;
+    let nodes = expander::Expander::new(&defs, source, state).expand_item_list(items)?;
     Ok(SourceModule { nodes })
+}
+
+/// Attaches the facts a raw parsed definition cannot know: which module
+/// declared it, and therefore whether it is one of the compiler-backed
+/// `core::builtins` declarations. Every path that binds a *declaration* to
+/// its module goes through here, so a re-collected definition can never be
+/// classified differently from a cached one, and the compiler/core contract
+/// is enforced on the declaration itself rather than on later copies of it
+/// such as macro aliases.
+pub fn bind_definition(
+    def: &mut MacroDefinitionStmt,
+    module_path: &[Ident],
+) -> Result<(), MacroError> {
+    def.defining_module = module_path.to_vec();
+    def.builtin = MacroBuiltin::canonical(module_path, &def.name);
+    let Some(builtin) = def.builtin else {
+        return Ok(());
+    };
+    let well_formed = def.visibility == Visibility::Exposed
+        && def.signature.fixed.is_empty()
+        && def.signature.variadic.is_none()
+        && def.body.is_empty();
+    if !well_formed {
+        return Err(MacroError::MalformedBuiltinDeclaration { builtin });
+    }
+    Ok(())
 }
 
 fn collect_definitions(
@@ -295,7 +356,7 @@ fn collect_definitions(
                 if defs.contains_key(&def.name) {
                     return Err(MacroError::DuplicateMacroDefinition { name: def.name });
                 }
-                def.defining_module = module_path.to_vec();
+                bind_definition(&mut def, module_path)?;
                 defs.insert(def.name.clone(), def);
             }
             other => items.push(ItemNode {

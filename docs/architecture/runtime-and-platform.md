@@ -26,7 +26,8 @@ The exact objects linked are a build/application choice; there is no mandatory c
 
 - built-in primitive declaration blocks and inherent primitive methods;
 - allocation-free core data/protocols such as `Option`, comparison, iterators, ranges;
-- platform capability **gaps** (allocator/console contracts), not implementations.
+- platform capability **gaps** (allocator/console/panic contracts), not implementations;
+- the compiler-implemented source-location macros in `core::builtins`.
 
 It is designed to remain useful in freestanding/embedded contexts.
 
@@ -83,9 +84,17 @@ There is no runtime service locator, registration table, or implicit dynamic dis
 
 The driver checks declaration/implementation relationship and uniqueness at compilation scope. MIR mangling ensures both sides use the same symbol.
 
+### Panic as a gap
+
+Unrecoverable failure uses the same seam. `core::panic` declares `PanicHandler`, and `core::panic::panic$` is the source-level entry point: the macro builds a stack-local `PanicInfo` from `core::builtins`' source-location macros at the call site and tail-calls the handler, which returns `never`.
+
+Nothing in the compiler or `core` picks a panic policy. There is no default hosted glue in `runtime/plat/libc`, because printing and exiting is only correct for a hosted program -- a freestanding target may want a trap, a reset, or a status LED instead. Deliberately keeping the construction inside the macro rather than behind a core helper function is what keeps `core.o` free of any reference to the handler symbol, so a program that never panics needs no panic glue and no extra linkage.
+
+No allocation, formatting, unwinding, backtrace machinery, runtime registry, or backend intrinsic is involved: the location macros become ordinary literals during macro expansion, and the handler call is an ordinary gap call.
+
 ## Platform independence
 
-`core` declares allocator/console capabilities but does not automatically invoke them merely by being linked. Higher-level `std` facilities reference the gaps only from functions that need them.
+`core` declares allocator/console/panic capabilities but does not automatically invoke them merely by being linked. Higher-level `std` facilities reference the gaps only from functions that need them.
 
 The repository compiles functions into independently collectible object sections and links integration binaries with `--gc-sections`, so unused library functions should not force unrelated platform capabilities into the final executable.
 

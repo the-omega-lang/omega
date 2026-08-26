@@ -93,6 +93,55 @@ fn an_exposed_macro_cannot_name_a_hidden_item() {
 }
 
 #[test]
+fn a_definition_authored_reveal_transfers_the_macro_s_own_dependency() {
+    let package = TestPackage::new(
+        r#"
+        import self::helper::apply;
+        entry_fn() => i32 { apply$(1) }
+        "#,
+    );
+    package.child(
+        "helper",
+        r#"
+        secret(value: i32) => i32 { value }
+        # The `reveal` is written by the definition, so it shares the
+        # expansion origin of the path it authorizes.
+        exposed macro apply($value: expr) => { reveal secret($value) }
+        "#,
+    );
+    package.compile();
+}
+
+#[test]
+fn a_caller_side_reveal_cannot_transfer_a_macro_s_private_dependency() {
+    let package = TestPackage::new(
+        r#"
+        import self::helper::apply;
+        entry_fn() => i32 { reveal apply$(1) }
+        "#,
+    );
+    package.child(
+        "helper",
+        r#"
+        secret(value: i32) => i32 { value }
+        exposed macro apply($value: expr) => { secret($value) }
+        "#,
+    );
+    let result = Driver::new(package.0.clone(), None, vec![], Target::DEFAULT)
+        .expect("construct driver")
+        .compile(&[Ident("main".into())], Target::DEFAULT);
+    let errors = match result {
+        Ok(_) => panic!("a caller's reveal may not weaken the macro definition's obligation"),
+        Err(errors) => errors,
+    };
+    assert!(errors.iter().any(|error| matches!(
+        error,
+        CompileError::Analysis { errors, .. }
+            if errors.iter().any(|error| matches!(error.kind, AnalysisErrorKind::MacroDependencyTooPrivate { .. }))
+    )));
+}
+
+#[test]
 fn macro_locals_do_not_capture_substituted_arguments() {
     let package = TestPackage::new(
         r#"

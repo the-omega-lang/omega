@@ -63,6 +63,20 @@ An alias changes nothing about its target: the target declaration's own visibili
 
 A macro body may not use declarations less visible than the macro itself in a way that would expose them to callers. In particular, an `exposed` macro cannot smuggle a `shared` or hidden dependency across package boundaries. Caller-side `reveal` does not retroactively weaken the macro definition's own visibility obligations. An alias of a macro is checked with the **alias's** visibility, so an `exposed` alias of a hidden macro carries the same obligation.
 
+A macro definition may make that transfer **deliberately** by writing `reveal` in its own body:
+
+```omega
+# In `core::panic`. `PanicHandler::panic` is `shared`, but this exposed macro
+# is allowed to wrap it because the `reveal` is part of the definition.
+exposed macro panic($message: expr...) => {
+    { ... reveal PanicHandler::panic(&info) }
+}
+```
+
+The exception is narrow: a `reveal` authorizes a narrower dependency only when it and the dependency's path come from the **same macro expansion**. A `reveal` written by the caller around the invocation carries the caller's own origin instead, so `reveal some_macro$()` still cannot make an otherwise-invalid macro valid. This makes the capability transfer a decision of the macro's author, who is also the one who can be held to it.
+
+The same rule applies to a gap function named from a macro body, so gap-function visibility is not a way around the macro dependency rule.
+
 ## Specs and conformance
 
 A function requirement declared inside a spec may carry an explicit visibility modifier (`hidden`, `shared`, or `exposed`); when omitted, it defaults to the declaring spec's own visibility -- unlike every other declaration kind, whose default is always `hidden`. An explicit modifier must not exceed the spec's own visibility.

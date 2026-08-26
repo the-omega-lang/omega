@@ -1,0 +1,48 @@
+# The portable panic contract. `panic$` is the ordinary way to report an
+# unrecoverable condition; the final program or platform package supplies the
+# one `PanicHandler` glue that decides what that means -- print and exit, trap,
+# reset the board, and so on. Core neither allocates, formats, nor terminates.
+#
+# As with every gap, a program that emits no reference to the handler needs no
+# glue for it.
+
+# Aliased, not imported: a nested invocation inside `panic$` below resolves in
+# the environment registered for this module, which an `alias` contributes to
+# and an `import` does not. See docs/issues/known-issues.md.
+alias file = super::builtins::file;
+alias line = super::builtins::line;
+alias column = super::builtins::column;
+
+# Passed to the handler by pointer: an unrecoverable call that cannot return
+# has no reason to copy an aggregate through the ABI, and the caller's stack
+# record outlives a call that never comes back. Every field is exposed because
+# the glue satisfying `PanicHandler` normally lives in another package -- which
+# is also why core itself only ever writes them.
+@suppress(unused_field)
+exposed struct PanicInfo {
+	exposed source_file: *str;
+	exposed line: u32;
+	exposed column: u32;
+	exposed message: *str;
+}
+
+# `shared` so `panic$` below stays the only ordinary source entry point.
+gap PanicHandler {
+	shared panic(info: *PanicInfo) => never;
+}
+
+exposed macro panic($message: expr...) => {
+	{
+		mut info := PanicInfo {
+			source_file = file$();
+			line = line$();
+			column = column$();
+			message = "";
+		};
+		$...(){
+			comp PANIC_TAKES_AT_MOST_ONE_MESSAGE := 0;
+			info.message = $message;
+		}
+		reveal PanicHandler::panic(&info)
+	}
+}

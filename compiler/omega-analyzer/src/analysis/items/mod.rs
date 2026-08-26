@@ -60,6 +60,7 @@ impl<'r> Analyzer<'r> {
                 crate::resolved_type::GapFunction {
                     decl_id: function.id,
                     span: function.span,
+                    visibility: function.visibility,
                     fn_type: ResolvedFunctionType {
                         params,
                         return_type: Box::new(return_type),

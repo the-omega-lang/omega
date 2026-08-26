@@ -2,7 +2,12 @@ use super::*;
 
 #[derive(Default)]
 pub(super) struct RevealState {
-    frames: Vec<bool>,
+    frames: Vec<RevealFrame>,
+}
+
+struct RevealFrame {
+    origin: Origin,
+    used: bool,
 }
 
 impl RevealState {
@@ -10,13 +15,24 @@ impl RevealState {
         !self.frames.is_empty()
     }
 
-    pub fn begin(&mut self) {
-        self.frames.push(false);
+    pub fn begin(&mut self, origin: Origin) {
+        self.frames.push(RevealFrame {
+            origin,
+            used: false,
+        });
+    }
+
+    /// Whether some active `reveal` was written by the same macro expansion
+    /// that produced `origin`. A caller-written `reveal` around a macro
+    /// invocation never matches, so it cannot authorize what the macro
+    /// definition itself was not allowed to expose.
+    pub fn has_origin(&self, origin: Origin) -> bool {
+        origin.0.is_some() && self.frames.iter().any(|frame| frame.origin == origin)
     }
 
     pub fn mark_used(&mut self) {
         for frame in &mut self.frames {
-            *frame = true;
+            frame.used = true;
         }
     }
 
@@ -24,6 +40,7 @@ impl RevealState {
         self.frames
             .pop()
             .expect("finishing reveal analysis requires an active reveal")
+            .used
     }
 }
 
@@ -75,32 +92,35 @@ impl<'r> Analyzer<'r> {
         false
     }
 
-    pub(super) fn strip_reveal(expr: &HirExprNode) -> (usize, &HirExprNode) {
+    /// The origins of the `reveal` prefixes wrapping `expr`, outermost
+    /// first, and the expression underneath all of them.
+    pub(super) fn strip_reveal(expr: &HirExprNode) -> (Vec<Origin>, &HirExprNode) {
         match &expr.expr {
-            HirExpr::Reveal(inner) => {
-                let (depth, inner) = Self::strip_reveal(inner);
-                (depth + 1, inner)
+            HirExpr::Reveal(reveal) => {
+                let (mut origins, inner) = Self::strip_reveal(&reveal.base);
+                origins.insert(0, reveal.origin);
+                (origins, inner)
             }
-            _ => (0, expr),
+            _ => (Vec::new(), expr),
         }
     }
 
     pub(super) fn with_reveal_bypass<T>(
         &mut self,
-        reveal_depth: usize,
+        reveal_origins: &[Origin],
         node_id: HirId,
         span: Span,
         f: impl FnOnce(&mut Self) -> Option<T>,
     ) -> Option<T> {
-        for _ in 0..reveal_depth {
-            self.reveals.begin();
+        for origin in reveal_origins {
+            self.reveals.begin(*origin);
         }
         let result = f(self);
         let mut used = true;
-        for _ in 0..reveal_depth {
+        for _ in reveal_origins {
             used &= self.reveals.finish();
         }
-        if reveal_depth != 0 && !used {
+        if !reveal_origins.is_empty() && !used {
             self.warn(node_id, span, AnalysisWarningKind::UnnecessaryReveal);
         }
         result
@@ -111,8 +131,8 @@ impl<'r> Analyzer<'r> {
         operand: &HirExprNode,
         f: impl FnOnce(&mut Self, &HirExprNode) -> Option<T>,
     ) -> Option<T> {
-        let (reveal_depth, inner) = Self::strip_reveal(operand);
-        self.with_reveal_bypass(reveal_depth, operand.id, operand.span, |this| {
+        let (reveal_origins, inner) = Self::strip_reveal(operand);
+        self.with_reveal_bypass(&reveal_origins, operand.id, operand.span, |this| {
             f(this, inner)
         })
     }
@@ -121,15 +141,44 @@ impl<'r> Analyzer<'r> {
 #[cfg(test)]
 mod tests {
     use super::RevealState;
+    use omega_parser::prelude::{ExpansionId, Origin};
+
+    fn origin(id: u32) -> Origin {
+        Origin(Some(ExpansionId(id)))
+    }
 
     #[test]
     fn using_a_nested_reveal_marks_the_whole_chain_used() {
         let mut reveals = RevealState::default();
-        reveals.begin();
-        reveals.begin();
+        reveals.begin(Origin::default());
+        reveals.begin(Origin::default());
         reveals.mark_used();
 
         assert!(reveals.finish());
         assert!(reveals.finish());
+    }
+
+    #[test]
+    fn only_the_exact_expansion_origin_of_an_active_frame_matches() {
+        let mut reveals = RevealState::default();
+        reveals.begin(origin(1));
+        reveals.begin(origin(2));
+
+        assert!(reveals.has_origin(origin(1)));
+        assert!(reveals.has_origin(origin(2)));
+        assert!(!reveals.has_origin(origin(3)));
+
+        reveals.finish();
+        assert!(!reveals.has_origin(origin(2)));
+        assert!(reveals.has_origin(origin(1)));
+    }
+
+    #[test]
+    fn a_source_written_reveal_never_matches_a_macro_dependency() {
+        let mut reveals = RevealState::default();
+        reveals.begin(Origin::default());
+
+        assert!(reveals.active());
+        assert!(!reveals.has_origin(Origin::default()));
     }
 }

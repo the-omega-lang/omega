@@ -602,6 +602,10 @@ pub struct RawSpecFunctionSig {
 pub struct GapFunction {
     pub decl_id: HirId,
     pub span: Span,
+    /// Who may *call* this function through an ordinary path. Glue matching
+    /// is not a call, so this is deliberately not part of the gap's ABI or
+    /// conformance identity.
+    pub visibility: Visibility,
     pub fn_type: ResolvedFunctionType,
 }
 

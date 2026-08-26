@@ -9,15 +9,15 @@ console policy; those belong to `std`.
 
 ```
 runtime/core/
+  builtins.omg   # file$, line$, column$ -- compiler-implemented
   cmp.omg        # Ordering, Eq, Ord
   iterator.omg   # Iterator<T>, ToIterator<T>
-  numerics.omg   # inherent scalar operations
   option.omg     # Option<T>
+  panic.omg      # PanicInfo, PanicHandler gap, panic$
+  platform.omg   # allocator and console capability gaps
+  primitives/    # the built-in type declarations (see below)
   range.omg      # Range<T>, RangeIterator<T>, Successor, Bounded
   result.omg     # Result<T, E>
-  platform.omg   # allocator and console capability gaps
-  slices.omg     # inherent generic-slice operations
-  strings.omg    # inherent str operations
 ```
 
 `core` has no root source file: its package root is a namespace for these
@@ -40,6 +40,9 @@ compiled object: definitions from `core.o` must be linked when used.
   `str` conformances live in core because range iteration depends on them.
 - **`core::iterator`** defines `Iterator<T>::next(*mut self) => Option<T>`
   and `ToIterator<T>`, the protocols behind `for`.
+- **`core::panic`** owns `PanicInfo`, the `PanicHandler` gap, and the `panic$`
+  macro; **`core::builtins`** owns the compiler-implemented `file$`, `line$`,
+  and `column$` source-location macros. See "Panicking" below.
 - **`core::primitives`** is where every built-in type is declared. A
   `primitive` block is a type's declaration site, not merely somewhere to hang
   methods on it, so **every** built-in has one — including `void` and `never`,
@@ -102,6 +105,65 @@ of bytes transferred. In particular, `Some(0)` is valid: it can mean EOF on
 input or a zero-progress write. Core declares these names but does not call
 them. That keeps a core-only program freestanding and free of console or
 allocator glue requirements.
+
+## Panicking
+
+`core::panic` owns Omega's portable answer to "this must not happen". The
+entry point is the `panic$` macro:
+
+```omega
+panic$();
+panic$("index out of bounds");
+```
+
+It builds a `PanicInfo` at the call site and hands it to the `PanicHandler`
+gap, which returns `never`, so `panic$(...)` is a diverging expression usable
+anywhere one is:
+
+```omega
+exposed struct PanicInfo {
+    exposed source_file: *str;
+    exposed line: u32;
+    exposed column: u32;
+    exposed message: *str;
+}
+
+gap PanicHandler {
+    shared panic(info: *PanicInfo) => never;
+}
+```
+
+The location comes from `core::builtins`' `file$`/`line$`/`column$` macros,
+which describe the outermost invocation -- so it names *your* `panic$` call,
+not a line in `core`. With no argument the message is `""`.
+
+Like every other gap, the final program or platform package supplies the one
+`glue`. Core neither allocates, formats, prints, nor terminates, and there is
+deliberately no default handler: print-and-exit is right for a hosted program
+and wrong for a board that should reset or blink an LED.
+
+```omega
+import core::panic::PanicInfo;
+import std::io::eprintln;
+
+foreign(c) exit(code: i32) => never;
+
+glue core::panic::PanicHandler {
+    panic(info: *PanicInfo) => never {
+        eprintln$(info.source_file, ":", info.line, ": panic: ", info.message);
+        exit(101)
+    }
+}
+```
+
+A program that never reaches a `panic$` emits no reference to the handler and
+therefore needs no panic glue, exactly as for the allocator and console gaps.
+
+The message is optional but not variadic: passing more than one is a compile
+error naming `PANIC_TAKES_AT_MOST_ONE_MESSAGE`. Omega has no optional macro
+parameter yet, so the macro encodes "zero or one" with a trailing variadic and
+a compile-time guard; see
+[`../issues/language-limitations.md`](../issues/language-limitations.md).
 
 ## Deliberate boundary with `std`
 

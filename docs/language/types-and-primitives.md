@@ -57,6 +57,8 @@ spin_forever() => never {
 
 A declaration returning `never` must not complete normally. A diverging expression is compatible with any expected expression type because it never produces a value. Calls to `never`-returning functions and `loop` expressions with no reachable `break` are therefore usable in otherwise value-producing contexts.
 
+A block expression that cannot complete normally -- because its tail expression diverges, or because it has no tail and its last statement diverges -- is itself a diverging expression, and is likewise usable wherever one is.
+
 `never` is not a storable value type: it is invalid as a local/field/parameter type, generic argument, or aggregate member type.
 
 A `foreign` declaration returning `never` is a contract with foreign code. If that foreign function returns, program behavior is invalid.

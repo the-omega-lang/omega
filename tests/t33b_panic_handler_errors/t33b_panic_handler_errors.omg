@@ -1,0 +1,31 @@
+import core::panic::PanicInfo;
+
+foreign(c) exit(code: i32) => never;
+
+glue core::panic::PanicHandler {
+	panic(info: *PanicInfo) => never { exit(1) }
+}
+
+# The handler is `shared` to core, so `panic$` stays the only ordinary source
+# entry point: an application cannot call the raw gap function itself.
+raw_handler_call() => never {
+	mut info := PanicInfo {
+		source_file = "here";
+		line = 1;
+		column = 1;
+		message = "direct";
+	};
+	core::panic::PanicHandler::panic(&info)
+}
+
+# The message is an ordinary `*str` field assignment, checked by the ordinary
+# type rules rather than by anything panic-specific.
+wrong_message_type() => never {
+	panic$(42)
+}
+
+main() => void {
+	# The message is optional, not variadic: more than one is rejected at
+	# compile time rather than silently keeping the last.
+	panic$("first", "second");
+}

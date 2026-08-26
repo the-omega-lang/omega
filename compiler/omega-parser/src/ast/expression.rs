@@ -74,6 +74,11 @@ pub struct AddressOfExpr {
 #[derive(Debug, Clone)]
 pub struct RevealExpr {
     pub base: ExpressionNode,
+    /// The `reveal` keyword's own expansion origin. A macro definition may
+    /// only transfer its private dependencies through a `reveal` it wrote
+    /// itself, which is exactly a `reveal` sharing the dependency path's
+    /// origin.
+    pub origin: Origin,
 }
 
 #[derive(Debug, Clone)]

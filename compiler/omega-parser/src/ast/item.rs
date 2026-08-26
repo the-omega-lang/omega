@@ -276,4 +276,50 @@ pub struct MacroDefinitionStmt {
     pub signature: MacroSignature,
     pub body: Vec<MacroBodyPiece>,
     pub defining_module: Vec<Ident>,
+    /// Set only for the canonical `core::builtins` declarations, whose empty
+    /// bodies the compiler substitutes instead of expanding as templates.
+    /// Bound from the defining module and name, so a same-named macro
+    /// declared anywhere else stays an ordinary template.
+    pub builtin: Option<MacroBuiltin>,
+}
+
+/// A macro whose expansion the compiler supplies. Each one substitutes an
+/// ordinary literal token at the invocation site, so nothing downstream of
+/// macro expansion needs to know these exist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MacroBuiltin {
+    File,
+    Line,
+    Column,
+}
+
+impl MacroBuiltin {
+    /// The module whose declarations of `NAMES` are the compiler-backed
+    /// ones. Every other module's same-named macro is an ordinary template.
+    pub const MODULE: [&'static str; 2] = ["core", "builtins"];
+
+    pub fn canonical(defining_module: &[Ident], name: &Ident) -> Option<Self> {
+        if defining_module.len() != Self::MODULE.len()
+            || !defining_module
+                .iter()
+                .zip(Self::MODULE)
+                .all(|(segment, expected)| segment.as_ref() == expected)
+        {
+            return None;
+        }
+        match name.as_ref() {
+            "file" => Some(Self::File),
+            "line" => Some(Self::Line),
+            "column" => Some(Self::Column),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::File => "file",
+            Self::Line => "line",
+            Self::Column => "column",
+        }
+    }
 }

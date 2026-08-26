@@ -189,6 +189,16 @@ Remaining known conformance/spec issues:
   for items, is a macro `alias` (see [`aliases.md`](../language/aliases.md)).
   [macros.md](../language/macros.md), [visibility.md](../language/visibility.md)
 
+- **A macro body can only reach another module's macro through an `alias`,
+  not an `import`.** The environment `omega-driver` registers for a module --
+  the one a nested invocation inside that module's macro bodies resolves in --
+  is built from the module's own definitions and its macro aliases. Its
+  `import` statements bind names only for invocations written directly in that
+  file, and the module may not have been expanded yet when another package
+  expands one of its macros. `runtime/core/panic.omg` therefore aliases
+  `core::builtins`' location macros instead of importing them.
+  [macros.md](../language/macros.md)
+
 - **Importing a macro leaves a spurious `unused import` warning.** Macro
   names are resolved and consumed by the pre-pass in `omega-driver`'s
   `Driver::macro_env`, entirely before HIR exists, so the ordinary

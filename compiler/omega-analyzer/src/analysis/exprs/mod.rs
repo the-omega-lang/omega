@@ -23,7 +23,7 @@ impl<'r> Analyzer<'r> {
 
         match &node.expr {
             HirExpr::Place(place) => self.analyze_place_read(id, span, place, expected),
-            HirExpr::Reveal(inner) => self.analyze_reveal(id, span, inner, expected),
+            HirExpr::Reveal(reveal) => self.analyze_reveal(id, span, reveal, expected),
             HirExpr::Comp(inner) => self.analyze_comp(id, span, inner, expected),
             HirExpr::Number(number) => self.analyze_number(id, span, number, expected),
             HirExpr::Bool(b) => literal(ResolvedType::Bool, CheckedExpr::Bool(*b)),
@@ -44,7 +44,10 @@ impl<'r> Analyzer<'r> {
 
             HirExpr::Codeblock(block) => {
                 let checked = self.analyze_block(block, expected)?;
-                let r#type = Self::block_type(&checked).unwrap_or(ResolvedType::Void);
+                // A block that cannot complete normally produces no value, so
+                // it is a diverging expression and usable wherever one is --
+                // see docs/language/types-and-primitives.md.
+                let r#type = Self::block_type(&checked).unwrap_or(ResolvedType::Never);
                 literal(r#type, CheckedExpr::Codeblock(checked))
             }
 
@@ -259,11 +262,11 @@ impl<'r> Analyzer<'r> {
         &mut self,
         id: HirId,
         span: Span,
-        inner: &HirExprNode,
+        reveal: &HirReveal,
         expected: Option<&ResolvedType>,
     ) -> Option<CheckedExprNode> {
-        self.reveals.begin();
-        let result = self.analyze_expr(inner, expected);
+        self.reveals.begin(reveal.origin);
+        let result = self.analyze_expr(&reveal.base, expected);
         if !self.reveals.finish() {
             self.warn(id, span, AnalysisWarningKind::UnnecessaryReveal);
         }
@@ -416,10 +419,10 @@ impl<'r> Analyzer<'r> {
         call: &HirFunctionCall,
         expected: Option<&ResolvedType>,
     ) -> Option<CheckedExprNode> {
-        let (reveal_depth, _) = Self::strip_reveal(&call.callee);
-        if reveal_depth != 0 {
+        let (reveal_origins, _) = Self::strip_reveal(&call.callee);
+        if !reveal_origins.is_empty() {
             return self.with_reveal_bypass(
-                reveal_depth,
+                &reveal_origins,
                 call.callee.id,
                 call.callee.span,
                 |this| this.analyze_call_core(node_id, span, call, expected),

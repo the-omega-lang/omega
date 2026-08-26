@@ -59,8 +59,8 @@ use omega_hir::{
     HirCompoundAssign, HirDeclaration, HirEnumDef, HirExpr, HirExprNode, HirField, HirFor,
     HirForIn, HirFunctionCall, HirFunctionDef, HirId, HirIf, HirInlineAsm, HirItem, HirMatch,
     HirMatchArm, HirParam, HirPattern, HirPatternValue, HirPlace, HirPlaceRoot, HirProjection,
-    HirRange, HirRangeEnd, HirSlice, HirSpecDef, HirStmt, HirStructDef, HirStructLiteral,
-    HirStructLiteralField, HirUnionDef, HirWalrusDeclaration, LogicalOp,
+    HirRange, HirRangeEnd, HirReveal, HirSlice, HirSpecDef, HirStmt, HirStructDef,
+    HirStructLiteral, HirStructLiteralField, HirUnionDef, HirWalrusDeclaration, LogicalOp,
 };
 use omega_parser::prelude::{
     ExprPath, Ident, NumberBase, NumberExpr, Origin, Path, QualifiedSpecPath, SelfMode, Span, Type,
@@ -387,23 +387,47 @@ impl<'r> Analyzer<'r> {
         path: &Path,
         absolute: &[Ident],
     ) -> bool {
-        let Some(macro_visibility) = self.resolver.macro_origin_visibility(path.origin) else {
-            return true;
-        };
         let Some(item_visibility) = self.resolver.declared_item_visibility(absolute) else {
             return true;
         };
+        let item = absolute
+            .last()
+            .expect("absolute item path has a name")
+            .clone();
+        self.check_macro_dependency_level(id, span, path.origin, item, item_visibility)
+    }
+
+    /// The macro dependency-leak rule for a dependency whose visibility is
+    /// already known: a macro body may not reach a declaration narrower than
+    /// the macro itself, because callers would then see through it.
+    ///
+    /// The one deliberate exception is a `reveal` the macro definition wrote
+    /// itself, identified by sharing the dependency path's expansion origin.
+    /// A caller-side `reveal` around the invocation carries a different
+    /// origin, so it can never authorize the transfer.
+    pub(super) fn check_macro_dependency_level(
+        &mut self,
+        id: HirId,
+        span: Span,
+        origin: Origin,
+        item: Ident,
+        item_visibility: Visibility,
+    ) -> bool {
+        let Some(macro_visibility) = self.resolver.macro_origin_visibility(origin) else {
+            return true;
+        };
         if item_visibility >= macro_visibility {
+            return true;
+        }
+        if self.reveals.has_origin(origin) {
+            self.reveals.mark_used();
             return true;
         }
         self.error(
             id,
             span,
             AnalysisErrorKind::MacroDependencyTooPrivate {
-                item: absolute
-                    .last()
-                    .expect("absolute item path has a name")
-                    .clone(),
+                item,
                 macro_visibility,
                 item_visibility,
             },

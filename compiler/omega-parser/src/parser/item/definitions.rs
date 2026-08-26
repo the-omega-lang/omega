@@ -211,7 +211,7 @@ pub fn parse_spec_def(
     while matches!(p.peek(), TokenKind::Ident(_)) {
         match parse_spec_function(
             p,
-            SpecMemberVisibility::Allowed {
+            SpecMemberVisibility::Inherited {
                 spec_visibility: visibility,
             },
         ) {
@@ -232,37 +232,41 @@ pub fn parse_spec_def(
 
 #[derive(Clone, Copy)]
 enum SpecMemberVisibility {
-    Allowed { spec_visibility: Visibility },
-    Rejected,
+    /// A spec member defaults to its spec's visibility and may not exceed it.
+    Inherited { spec_visibility: Visibility },
+    /// A gap has no visibility of its own, so its members default to
+    /// `exposed` and are capped by nothing.
+    DefaultExposed,
 }
 
 fn parse_spec_function(p: &mut Parser, policy: SpecMemberVisibility) -> Option<SpecFunctionStmt> {
     let parsed_visibility = parse_optional_visibility(p);
-    let visibility = match policy {
-        SpecMemberVisibility::Allowed { spec_visibility } => match parsed_visibility {
-            ParsedVisibility::Explicit { visibility, span } => {
-                if visibility > spec_visibility {
-                    p.error_at(
-                        span,
-                        ParseErrorKind::SpecMethodVisibilityExceedsSpec {
-                            member_visibility: visibility,
-                            spec_visibility,
-                        },
-                    );
-                }
-                visibility
+    let visibility = match (policy, parsed_visibility) {
+        (
+            SpecMemberVisibility::Inherited { spec_visibility },
+            ParsedVisibility::Explicit { visibility, span },
+        ) => {
+            if visibility > spec_visibility {
+                p.error_at(
+                    span,
+                    ParseErrorKind::SpecMethodVisibilityExceedsSpec {
+                        member_visibility: visibility,
+                        spec_visibility,
+                    },
+                );
             }
-            // No modifier written -- a spec member inherits its spec's own
-            // visibility by default, unlike every other declaration kind
-            // (which defaults to `hidden`).
-            ParsedVisibility::Hidden => spec_visibility,
-        },
-        SpecMemberVisibility::Rejected => {
-            if let ParsedVisibility::Explicit { span, .. } = parsed_visibility {
-                p.error_at(span, ParseErrorKind::GapOrGlueVisibility);
-            }
-            Visibility::Hidden
+            visibility
         }
+        // No modifier written -- a spec member inherits its spec's own
+        // visibility by default, unlike every other declaration kind
+        // (which defaults to `hidden`).
+        (SpecMemberVisibility::Inherited { spec_visibility }, ParsedVisibility::Hidden) => {
+            spec_visibility
+        }
+        (SpecMemberVisibility::DefaultExposed, ParsedVisibility::Explicit { visibility, .. }) => {
+            visibility
+        }
+        (SpecMemberVisibility::DefaultExposed, ParsedVisibility::Hidden) => Visibility::Exposed,
     };
     let explicit_hidden_span = parsed_visibility.explicit_hidden_span();
     let ident = p.expect_ident()?;
@@ -328,7 +332,7 @@ pub(super) fn parse_gap_def(p: &mut Parser) -> Option<GapStmt> {
         // error and the rest of the gap still parses. The loop always
         // consumes at least the leading identifier `parse_spec_function`
         // starts on, so recovery can never stall here.
-        let Some(function) = parse_spec_function(p, SpecMemberVisibility::Rejected) else {
+        let Some(function) = parse_spec_function(p, SpecMemberVisibility::DefaultExposed) else {
             recovery::synchronize_to_statement_boundary(p);
             continue;
         };

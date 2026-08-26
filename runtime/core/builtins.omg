@@ -1,0 +1,13 @@
+# Compiler-implemented macros. Each expands to an ordinary literal describing
+# the site of the invocation that reached it, so a wrapper macro such as
+# `core::panic::panic` reports its own caller rather than this file.
+#
+# Only these exact declarations are compiler-backed: a same-named macro
+# declared elsewhere is an ordinary template. Their bodies are empty because
+# there is no template to expand.
+
+exposed macro file() => { }
+
+exposed macro line() => { }
+
+exposed macro column() => { }

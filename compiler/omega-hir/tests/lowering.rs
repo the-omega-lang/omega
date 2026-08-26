@@ -2,7 +2,7 @@ use omega_hir::{
     HirExpr, HirItem, HirPlaceRoot, HirProjection, HirRangeEnd, HirStmt, ModuleId, lower_module,
 };
 use omega_parser::SourceModule;
-use omega_parser::prelude::SelfMode;
+use omega_parser::prelude::{SelfMode, Visibility};
 
 fn lower(source: &str) -> omega_hir::HirModule {
     let ast = SourceModule::parse(source).expect("test source must parse");
@@ -341,4 +341,23 @@ fn a_chained_try_lowers_to_nested_try_nodes() {
         panic!("expected the inner try");
     };
     assert!(matches!(inner.base.expr, HirExpr::Place(_)));
+}
+
+#[test]
+fn gap_function_visibility_survives_lowering() {
+    let module = lower(
+        "gap Capability {\n\
+             implicit() => void;\n\
+             shared package_wide() => void;\n\
+             hidden declaring_module() => void;\n\
+         }",
+    );
+    let HirItem::Gap(gap) = &module.items[0] else {
+        panic!("expected a lowered gap");
+    };
+    let visibilities: Vec<Visibility> = gap.functions.iter().map(|f| f.visibility).collect();
+    assert_eq!(
+        visibilities,
+        vec![Visibility::Exposed, Visibility::Shared, Visibility::Hidden]
+    );
 }
