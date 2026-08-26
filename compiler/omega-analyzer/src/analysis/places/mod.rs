@@ -233,12 +233,13 @@ impl<'r> Analyzer<'r> {
         let mut projections = Vec::with_capacity(place.projections.len());
         for projection in &place.projections {
             current_type = match projection {
-                HirProjection::FieldAccess(field) => self.resolve_field_projection(
+                HirProjection::FieldAccess(field, origin) => self.resolve_field_projection(
                     node_id,
                     span,
                     &mut projections,
                     &current_type,
                     field,
+                    *origin,
                     &mut mutable,
                 )?,
                 HirProjection::Index(index) => self.project_index(

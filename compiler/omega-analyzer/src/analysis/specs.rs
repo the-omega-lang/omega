@@ -421,7 +421,7 @@ impl<'r> Analyzer<'r> {
             let c = cell.borrow();
             (c.visibility, c.module_path.clone())
         };
-        if !self.check_visibility(visibility, &declaring_module) {
+        if !self.check_visibility(visibility, &declaring_module, path.origin) {
             self.error(
                 id,
                 span,

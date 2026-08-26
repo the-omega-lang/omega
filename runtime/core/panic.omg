@@ -43,6 +43,6 @@ exposed macro panic($message: expr...) => {
 			comp PANIC_TAKES_AT_MOST_ONE_MESSAGE := 0;
 			info.message = $message;
 		}
-		reveal PanicHandler::panic(&info)
+		PanicHandler::panic(&info)
 	}
 }

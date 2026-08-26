@@ -1,0 +1,8 @@
+exposed struct Box {
+	# Hidden: only `model` may name this field, whoever holds the value.
+	tag: i32;
+
+	exposed make() => Box {
+		Box { tag = 7; }
+	}
+}

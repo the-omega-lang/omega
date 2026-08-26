@@ -136,11 +136,6 @@ pub enum AnalysisErrorKind {
     BreakOutsideLoop,
     ContinueOutsideLoop,
     ModuleResolution(crate::resolver::ResolveError),
-    MacroDependencyTooPrivate {
-        item: Ident,
-        macro_visibility: omega_parser::prelude::Visibility,
-        item_visibility: omega_parser::prelude::Visibility,
-    },
     NotAValue(Vec<Ident>),
     UnresolvedGenericParam(Ident),
     GenericParamFromFatPointer {
@@ -727,17 +722,6 @@ impl fmt::Display for AnalysisErrorKind {
             Self::BreakOutsideLoop => write!(f, "'break' outside of a loop"),
             Self::ContinueOutsideLoop => write!(f, "'continue' outside of a loop"),
             Self::ModuleResolution(e) => write!(f, "{e}"),
-            Self::MacroDependencyTooPrivate {
-                item,
-                macro_visibility,
-                item_visibility,
-            } => write!(
-                f,
-                "macro-visible item '{}' is {} but its macro is {}",
-                item.as_ref(),
-                item_visibility,
-                macro_visibility
-            ),
             Self::NotAValue(path) => write!(f, "'{}' is a type, not a value", join(path)),
             Self::UnresolvedGenericParam(ident) => write!(
                 f,

@@ -982,8 +982,8 @@ fn a_chained_alias_bound_is_enforced_from_every_link() {
 }
 
 #[test]
-fn an_exposed_macro_alias_cannot_smuggle_a_narrower_dependency() {
-    let errors = TestPackage::with_modules(
+fn an_exposed_macro_alias_transfers_only_the_capability_to_invoke() {
+    TestPackage::with_modules(
         r#"
         import self::helper::public_seeded;
 
@@ -1000,18 +1000,13 @@ fn an_exposed_macro_alias_cannot_smuggle_a_narrower_dependency() {
                 hidden_seed() + ($extra)
             }
 
+            # The alias re-exports the name; expansion still happens with
+            # `helper`'s own rights, so the hidden dependency stays hidden.
             exposed alias public_seeded = seeded;
             "#,
         )],
     )
-    .expect_errors();
-    assert!(
-        analysis_errors(&errors)
-            .iter()
-            .any(|kind| matches!(kind, AnalysisErrorKind::MacroDependencyTooPrivate { .. })),
-        "an exposed alias makes the macro exposed for dependency checks: {}",
-        rendered(&errors)
-    );
+    .expect_ok();
 }
 
 #[test]

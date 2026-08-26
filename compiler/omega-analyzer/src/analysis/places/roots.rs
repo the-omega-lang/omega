@@ -83,7 +83,7 @@ impl<'r> Analyzer<'r> {
         }
 
         if origin.0.is_none()
-            && let Some(set) = self.resolve_bare_overload_candidates(ident)
+            && let Some(set) = self.resolve_bare_overload_candidates(ident, origin)
         {
             let (root, r#type) = self.resolve_bare_overload_root(node_id, span, set, expected)?;
             return Some((root, r#type, false));
@@ -101,10 +101,7 @@ impl<'r> Analyzer<'r> {
         // module alias referenced this way, like no alias at all, falls
         // through to the implicit own-module assumption --
         // `resolve_qualified_value` reports whichever precise error fits.
-        let resolution_module = self
-            .resolver
-            .macro_origin_module(origin)
-            .unwrap_or_else(|| self.module_path.clone());
+        let resolution_module = self.origin_module(origin);
         let alias = match self
             .resolver
             .resolve_import_alias(&resolution_module, ident)

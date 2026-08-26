@@ -171,6 +171,7 @@ impl Lowerer {
                     .map(|f| HirStructLiteralField {
                         name: f.name.clone(),
                         name_span: f.name_span,
+                        name_origin: f.name_origin,
                         value: self.lower_expr(&f.value),
                     })
                     .collect();
@@ -261,9 +262,10 @@ impl Lowerer {
             },
             Expression::FieldAccess(access) => {
                 let mut place = self.lower_place_chain(&access.base);
-                place
-                    .projections
-                    .push(HirProjection::FieldAccess(access.field.clone()));
+                place.projections.push(HirProjection::FieldAccess(
+                    access.field.clone(),
+                    access.field_origin,
+                ));
                 place
             }
             Expression::Index(index_expr) => {

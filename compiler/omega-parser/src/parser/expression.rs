@@ -268,12 +268,13 @@ fn parse_postfix_loop(p: &mut Parser, mut expr: ExpressionNode) -> Option<Expres
             TokenKind::Dot => {
                 p.advance();
                 let field_span = p.peek_span();
-                let field = p.expect_ident()?;
+                let (field, field_origin) = p.expect_ident_with_origin()?;
                 let span = expr.span.to(field_span);
                 expr = ExpressionNode {
                     expression: Expression::FieldAccess(Box::new(FieldAccessExpr {
                         base: expr,
                         field,
+                        field_origin,
                     })),
                     span,
                 };
@@ -732,7 +733,7 @@ fn parse_struct_literal(
     let mut fields = Vec::new();
     while matches!(p.peek(), TokenKind::Ident(_)) {
         let name_span = p.peek_span();
-        let name = p.expect_ident()?;
+        let (name, name_origin) = p.expect_ident_with_origin()?;
         p.expect(&TokenKind::Eq, "'='");
         // Inside the literal's braces, a nested struct literal is
         // unambiguous again even if this one sits in condition position.
@@ -741,6 +742,7 @@ fn parse_struct_literal(
         fields.push(StructLiteralField {
             name,
             name_span,
+            name_origin,
             value,
         });
     }

@@ -121,6 +121,7 @@ impl<'r> Analyzer<'r> {
             namespace,
             &sig,
             expected,
+            path.origin,
         ))
     }
 
@@ -209,6 +210,7 @@ impl<'r> Analyzer<'r> {
         namespace: FunctionNamespace,
         sig: &GenericOwnerFunctionSignature,
         expected: Option<&ResolvedType>,
+        origin: Origin,
     ) -> Option<CheckedExprNode> {
         let (checked_args, subst) = self.infer_generic_args(
             &sig.owner_generics,
@@ -281,7 +283,7 @@ impl<'r> Analyzer<'r> {
         let (owner_module_path, owner_id) = owner_type
             .declaring_owner()
             .unwrap_or_else(|| (Vec::new(), node_id));
-        if !self.check_member_visibility(method.visibility, &owner_module_path, owner_id) {
+        if !self.check_member_visibility(method.visibility, &owner_module_path, owner_id, origin) {
             self.error(
                 node_id,
                 span,

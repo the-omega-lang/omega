@@ -14,6 +14,14 @@ use indexmap::IndexMap;
 use omega_hir::HirId;
 use omega_parser::prelude::*;
 
+/// Whether an active `reveal` speaks for syntax carrying a given origin.
+///
+/// Type resolution asks this per written name rather than once per spelling:
+/// `enum A | B`, a function type, and `spec A + B` can each mix names a macro
+/// body authored with names its caller substituted, and a `reveal` only ever
+/// authorizes the environment it was written in.
+pub type RevealAuthority<'a> = &'a dyn Fn(Origin) -> bool;
+
 #[derive(Debug, Clone)]
 pub struct VarBinding {
     pub decl_id: HirId,
@@ -229,6 +237,7 @@ impl Context {
         resolver: &mut dyn ModuleResolver,
         module_path: &[Ident],
         options: ResolveItemOptions,
+        reveals: RevealAuthority<'_>,
     ) -> Result<ResolvedFunctionType, TypeResolutionError> {
         let params = fntype
             .params
@@ -239,6 +248,7 @@ impl Context {
                     resolver,
                     module_path,
                     options.through_indirection(),
+                    reveals,
                 )
                 .map(|r#type| ResolvedFunctionParam {
                     name: param.name,
@@ -260,6 +270,7 @@ impl Context {
                 resolver,
                 module_path,
                 options.through_indirection(),
+                reveals,
             )?),
             is_variadic: fntype.is_variadic,
             self_mode: fntype.self_mode,
@@ -365,6 +376,7 @@ impl Context {
         resolver: &mut dyn ModuleResolver,
         module_path: &[Ident],
         options: ResolveItemOptions,
+        reveals: RevealAuthority<'_>,
     ) -> Result<ResolvedType, TypeResolutionError> {
         // Type-form aliases expand before any contextual rule below sees the
         // type, so an aliased spelling and a literal one are indistinguishable
@@ -372,13 +384,20 @@ impl Context {
         let typ = crate::aliases::expand_type_alias(resolver, module_path, typ)
             .map_err(TypeResolutionError::ModuleResolution)?;
         match typ {
-            Type::Named(path) => self.resolve_named_type(path, resolver, module_path, options),
+            Type::Named(path) => {
+                self.resolve_named_type(path, resolver, module_path, options, reveals)
+            }
             Type::Generic(path, args) => {
-                self.resolve_generic_type(path, args, resolver, module_path, options)
+                self.resolve_generic_type(path, args, resolver, module_path, options, reveals)
             }
-            Type::Pointer(pointee, mutable) => {
-                self.resolve_pointer_type(*pointee, mutable, resolver, module_path, options)
-            }
+            Type::Pointer(pointee, mutable) => self.resolve_pointer_type(
+                *pointee,
+                mutable,
+                resolver,
+                module_path,
+                options,
+                reveals,
+            ),
             Type::SpecStatic(members) => {
                 let name = match members.first() {
                     Some(Type::Named(path)) | Some(Type::Generic(path, _)) => path.head.clone(),
@@ -391,6 +410,7 @@ impl Context {
                 resolver,
                 module_path,
                 options,
+                reveals,
             )?)),
             Type::InferredArray(_) => Err(TypeResolutionError::BareUnsizedArray),
             Type::UnknownSizeArray(_) => Err(TypeResolutionError::BareUnknownSizeArray),
@@ -398,11 +418,11 @@ impl Context {
                 let size = size
                     .parse::<u32>()
                     .map_err(|_| TypeResolutionError::InvalidArraySize(size.clone()))?;
-                let item = self.resolve_type(*item, resolver, module_path, options)?;
+                let item = self.resolve_type(*item, resolver, module_path, options, reveals)?;
                 Ok(ResolvedType::SizedArray(Box::new(item), size))
             }
             Type::AnonymousEnum(members) => {
-                self.resolve_anonymous_enum_type(members, resolver, module_path, options)
+                self.resolve_anonymous_enum_type(members, resolver, module_path, options, reveals)
             }
         }
     }
@@ -421,12 +441,13 @@ impl Context {
         resolver: &mut dyn ModuleResolver,
         module_path: &[Ident],
         options: ResolveItemOptions,
+        reveals: RevealAuthority<'_>,
     ) -> Result<ResolvedType, TypeResolutionError> {
         let mut resolved = Vec::with_capacity(members.len());
         for member in members {
             // A member is stored inline, exactly like an aggregate field, so
             // it faces the same value-type restrictions.
-            match self.resolve_type(member, resolver, module_path, options)? {
+            match self.resolve_type(member, resolver, module_path, options, reveals)? {
                 ResolvedType::Spec(spec) => {
                     let name = spec.borrow().name.clone();
                     return Err(TypeResolutionError::SpecUsedAsValueType(name));
@@ -453,13 +474,16 @@ impl Context {
         resolver: &mut dyn ModuleResolver,
         module_path: &[Ident],
         options: ResolveItemOptions,
+        reveals: RevealAuthority<'_>,
     ) -> Result<ResolvedType, TypeResolutionError> {
         let resolution_module = resolver
             .macro_origin_module(path.origin)
             .unwrap_or_else(|| module_path.to_vec());
+        let options =
+            options.bypassing_visibility(options.bypasses_visibility() || reveals(path.origin));
         let resolved = {
             if let Some(resolved) =
-                self.try_resolve_enum_variant_type(&path, resolver, module_path, options)?
+                self.try_resolve_enum_variant_type(&path, resolver, module_path, options, reveals)?
             {
                 resolved
             } else if path.is_unqualified() {
@@ -581,6 +605,7 @@ impl Context {
         resolver: &mut dyn ModuleResolver,
         module_path: &[Ident],
         options: ResolveItemOptions,
+        reveals: RevealAuthority<'_>,
     ) -> Result<ResolvedType, TypeResolutionError> {
         let resolution_module = resolver
             .macro_origin_module(path.origin)
@@ -589,9 +614,17 @@ impl Context {
             let resolved_args = args
                 .into_iter()
                 .map(|arg| {
-                    self.resolve_type(arg, resolver, module_path, options.through_indirection())
+                    self.resolve_type(
+                        arg,
+                        resolver,
+                        module_path,
+                        options.through_indirection(),
+                        reveals,
+                    )
                 })
                 .collect::<Result<Vec<_>, _>>()?;
+            let options =
+                options.bypassing_visibility(options.bypasses_visibility() || reveals(path.origin));
             let access = self.resolve_absolute_item_path(resolver, &path, module_path)?;
             let options = access.options(options);
             let absolute = access.absolute;
@@ -629,6 +662,7 @@ impl Context {
         resolver: &mut dyn ModuleResolver,
         module_path: &[Ident],
         options: ResolveItemOptions,
+        reveals: RevealAuthority<'_>,
     ) -> Result<ResolvedType, TypeResolutionError> {
         // The pointee decides between a pointer and a dynamic spec object, so
         // it must be expanded here rather than on the recursive call below.
@@ -636,21 +670,36 @@ impl Context {
             .map_err(TypeResolutionError::ModuleResolution)?;
         match pointee_type {
             Type::InferredArray(item) => {
-                let item =
-                    self.resolve_type(*item, resolver, module_path, options.through_indirection())?;
+                let item = self.resolve_type(
+                    *item,
+                    resolver,
+                    module_path,
+                    options.through_indirection(),
+                    reveals,
+                )?;
                 Ok(ResolvedType::Slice {
                     item: Box::new(item),
                     mutable,
                 })
             }
             Type::UnknownSizeArray(item) => {
-                let item =
-                    self.resolve_type(*item, resolver, module_path, options.through_indirection())?;
+                let item = self.resolve_type(
+                    *item,
+                    resolver,
+                    module_path,
+                    options.through_indirection(),
+                    reveals,
+                )?;
                 Ok(ResolvedType::Array(Box::new(item), mutable))
             }
-            Type::SpecStatic(members) => {
-                self.resolve_spec_object_type(members, mutable, resolver, module_path, options)
-            }
+            Type::SpecStatic(members) => self.resolve_spec_object_type(
+                members,
+                mutable,
+                resolver,
+                module_path,
+                options,
+                reveals,
+            ),
             Type::Named(path) if path.is_unqualified() && path.head.as_ref() == "str" => {
                 Ok(ResolvedType::Str { mutable })
             }
@@ -660,6 +709,7 @@ impl Context {
                     resolver,
                     module_path,
                     options.through_indirection(),
+                    reveals,
                 )? {
                     ResolvedType::Str { .. } => Ok(ResolvedType::Str { mutable }),
                     ResolvedType::Array(item, _) => Ok(ResolvedType::Slice { item, mutable }),
@@ -671,8 +721,13 @@ impl Context {
                 }
             }
             other => {
-                let resolved =
-                    self.resolve_type(other, resolver, module_path, options.through_indirection())?;
+                let resolved = self.resolve_type(
+                    other,
+                    resolver,
+                    module_path,
+                    options.through_indirection(),
+                    reveals,
+                )?;
                 Ok(ResolvedType::Pointer {
                     pointee: Box::new(resolved),
                     mutable,
@@ -693,6 +748,7 @@ impl Context {
         resolver: &mut dyn ModuleResolver,
         module_path: &[Ident],
         options: ResolveItemOptions,
+        reveals: RevealAuthority<'_>,
     ) -> Result<ResolvedType, TypeResolutionError> {
         let mut applications = Vec::with_capacity(members.len());
         for member in members {
@@ -702,13 +758,27 @@ impl Context {
             };
             let resolved_args = type_args
                 .into_iter()
-                .map(|a| self.resolve_type(a, resolver, module_path, options.through_indirection()))
+                .map(|a| {
+                    self.resolve_type(
+                        a,
+                        resolver,
+                        module_path,
+                        options.through_indirection(),
+                        reveals,
+                    )
+                })
                 .collect::<Result<Vec<_>, _>>()?;
             let member_name = match &member {
                 Type::Named(path) | Type::Generic(path, _) => path.head.clone(),
                 _ => Ident("<spec>".to_string()),
             };
-            match self.resolve_type(member, resolver, module_path, options.through_indirection())? {
+            match self.resolve_type(
+                member,
+                resolver,
+                module_path,
+                options.through_indirection(),
+                reveals,
+            )? {
                 ResolvedType::Spec(spec) => {
                     if !spec.borrow().is_object_safe {
                         return Err(TypeResolutionError::SpecNotObjectSafe(member_name));
@@ -733,6 +803,7 @@ impl Context {
         resolver: &mut dyn ModuleResolver,
         module_path: &[Ident],
         options: ResolveItemOptions,
+        reveals: RevealAuthority<'_>,
     ) -> Result<Option<ResolvedType>, TypeResolutionError> {
         let Some((variant_name, prefix_tail)) = path.tail.split_last() else {
             return Ok(None);
@@ -746,7 +817,7 @@ impl Context {
         let Ok(ResolvedType::Enum {
             cell,
             variant: None,
-        }) = self.resolve_type(prefix, resolver, module_path, options)
+        }) = self.resolve_type(prefix, resolver, module_path, options, reveals)
         else {
             return Ok(None);
         };

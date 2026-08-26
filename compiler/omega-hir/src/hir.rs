@@ -529,6 +529,7 @@ pub struct HirStructLiteral {
 pub struct HirStructLiteralField {
     pub name: Ident,
     pub name_span: Span,
+    pub name_origin: Origin,
     pub value: HirExprNode,
 }
 
@@ -638,7 +639,7 @@ pub enum HirPlaceRoot {
 
 #[derive(Debug, Clone)]
 pub enum HirProjection {
-    FieldAccess(Ident),
+    FieldAccess(Ident, Origin),
     Index(Box<HirExprNode>),
     Deref,
 }

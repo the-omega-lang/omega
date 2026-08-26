@@ -2,7 +2,9 @@ use omega_hir::{
     HirExpr, HirItem, HirPlaceRoot, HirProjection, HirRangeEnd, HirStmt, ModuleId, lower_module,
 };
 use omega_parser::SourceModule;
-use omega_parser::prelude::{SelfMode, Visibility};
+use omega_parser::macros;
+use omega_parser::prelude::{Origin, SelfMode, Visibility};
+use std::collections::HashMap;
 
 fn lower(source: &str) -> omega_hir::HirModule {
     let ast = SourceModule::parse(source).expect("test source must parse");
@@ -165,9 +167,9 @@ fn a_projection_chain_flattens_in_source_order() {
         matches!(
             place.projections.as_slice(),
             [
-                HirProjection::FieldAccess(_),
+                HirProjection::FieldAccess(..),
                 HirProjection::Index(_),
-                HirProjection::FieldAccess(_)
+                HirProjection::FieldAccess(..)
             ]
         ),
         "expected .y then [0] then .z, got {:?}",
@@ -360,4 +362,49 @@ fn gap_function_visibility_survives_lowering() {
         visibilities,
         vec![Visibility::Exposed, Visibility::Shared, Visibility::Hidden]
     );
+}
+
+#[test]
+fn member_name_provenance_survives_lowering() {
+    let ast = macros::expand(
+        SourceModule::parse(
+            r#"
+            macro read($v: expr) => { $v.tag }
+            main() => i32 { read$(outer.own) }
+            "#,
+        )
+        .expect("test source must parse"),
+        &HashMap::new(),
+    )
+    .expect("test macro must expand");
+    let module = lower_module(ModuleId(0), &ast);
+
+    let f = module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            HirItem::FunctionDefinition(f) if f.name.as_ref() == "main" => Some(f),
+            _ => None,
+        })
+        .expect("expected the expanded main function");
+    let HirExpr::Place(place) = &f
+        .body
+        .tail
+        .as_ref()
+        .expect("main ends in an expression")
+        .expr
+    else {
+        panic!("expected a place");
+    };
+    let [
+        HirProjection::FieldAccess(substituted, caller_origin),
+        HirProjection::FieldAccess(authored, macro_origin),
+    ] = place.projections.as_slice()
+    else {
+        panic!("expected `.own` then `.tag`, got {:?}", place.projections);
+    };
+    assert_eq!(substituted.as_ref(), "own");
+    assert_eq!(*caller_origin, Origin::default());
+    assert_eq!(authored.as_ref(), "tag");
+    assert!(macro_origin.0.is_some());
 }

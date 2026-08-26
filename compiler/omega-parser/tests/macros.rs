@@ -2,7 +2,7 @@ use omega_parser::{
     SourceModule,
     lexer::{TokenKind, tokenize},
     macros,
-    prelude::{Expression, Item, Statement},
+    prelude::{Expression, Item, Origin, Statement},
 };
 use std::collections::HashMap;
 
@@ -396,4 +396,75 @@ fn import_in_a_macro_body_is_rejected_at_definition_time() {
             .to_string()
             .contains("imports are not allowed in macro bodies")
     }));
+}
+
+/// The trailing expression of the expanded `main`, which is where these
+/// cases put the syntax whose provenance is under test.
+fn expanded_main_tail(module: &SourceModule) -> &omega_parser::prelude::ExpressionNode {
+    module
+        .nodes
+        .iter()
+        .find_map(|node| match &node.item {
+            Item::FunctionDefinition(f) if f.ident.as_ref() == "main" => {
+                f.codeblock.tail.as_deref()
+            }
+            _ => None,
+        })
+        .expect("expected `main` to end in an expression")
+}
+
+#[test]
+fn macro_authored_member_names_keep_their_expansion_origin() {
+    let module = expand(
+        r#"
+        macro read($v: expr) => { $v.tag }
+        main() => i32 { read$(outer.own) }
+        "#,
+    );
+    let node = expanded_main_tail(&module);
+    let Expression::FieldAccess(authored) = &node.expression else {
+        panic!("expected the macro-authored `.tag`");
+    };
+    let Expression::FieldAccess(substituted) = &authored.base.expression else {
+        panic!("expected the caller's substituted `.own`");
+    };
+    assert_eq!(authored.field.as_ref(), "tag");
+    assert!(
+        authored.field_origin.0.is_some(),
+        "a macro-authored member name carries its expansion origin"
+    );
+    assert_eq!(substituted.field.as_ref(), "own");
+    assert_eq!(
+        substituted.field_origin,
+        Origin::default(),
+        "a substituted member name keeps the caller's origin"
+    );
+}
+
+#[test]
+fn macro_authored_struct_literal_fields_keep_their_expansion_origin() {
+    let module = expand(
+        r#"
+        macro build($v: expr) => { Box { tag = $v; } }
+        main() => i32 { build$(Inner { own = 1; }) }
+        "#,
+    );
+    let node = expanded_main_tail(&module);
+    let Expression::StructLiteral(authored) = &node.expression else {
+        panic!("expected the macro-authored `Box` literal");
+    };
+    assert_eq!(authored.fields[0].name.as_ref(), "tag");
+    assert!(
+        authored.fields[0].name_origin.0.is_some(),
+        "a macro-authored field name carries its expansion origin"
+    );
+    let Expression::StructLiteral(substituted) = &authored.fields[0].value.expression else {
+        panic!("expected the caller's substituted `Inner` literal");
+    };
+    assert_eq!(substituted.fields[0].name.as_ref(), "own");
+    assert_eq!(
+        substituted.fields[0].name_origin,
+        Origin::default(),
+        "a substituted field name keeps the caller's origin"
+    );
 }

@@ -53,6 +53,7 @@ impl<'r> Analyzer<'r> {
         projections: &mut Vec<CheckedProjection>,
         current_type: &ResolvedType,
         field: &Ident,
+        origin: Origin,
         mutable: &mut bool,
     ) -> Option<ResolvedType> {
         if let Some(member) = Self::open_refined_anonymous(projections, current_type, mutable) {
@@ -62,6 +63,7 @@ impl<'r> Analyzer<'r> {
                 projections,
                 &member,
                 field,
+                origin,
                 mutable,
             );
         }
@@ -86,16 +88,23 @@ impl<'r> Analyzer<'r> {
             ResolvedType::SpecObject { mutable, .. } => {
                 self.project_spec_object_field(node_id, span, projections, &base, field, *mutable)
             }
-            ResolvedType::Enum { cell, variant } => {
-                self.project_enum_field(node_id, span, projections, cell, *variant, &base, field)
-            }
+            ResolvedType::Enum { cell, variant } => self.project_enum_field(
+                node_id,
+                span,
+                projections,
+                cell,
+                *variant,
+                &base,
+                field,
+                origin,
+            ),
             ResolvedType::Union(cell) => {
                 let cell = cell.clone();
-                self.project_union_field(node_id, span, projections, &cell, &base, field)
+                self.project_union_field(node_id, span, projections, &cell, &base, field, origin)
             }
             ResolvedType::Struct(cell) => {
                 let cell = cell.clone();
-                self.project_struct_field(node_id, span, projections, &cell, &base, field)
+                self.project_struct_field(node_id, span, projections, &cell, &base, field, origin)
             }
             ResolvedType::AnonymousEnum { .. } => {
                 self.error(
@@ -173,6 +182,7 @@ impl<'r> Analyzer<'r> {
         variant: Option<usize>,
         base: &ResolvedType,
         field: &Ident,
+        origin: Origin,
     ) -> Option<ResolvedType> {
         // Borrow released before the `&mut self` call below.
         let member = Self::find_enum_member(&cell.borrow(), variant, field);
@@ -182,7 +192,7 @@ impl<'r> Analyzer<'r> {
             return None;
         };
         if let Some(owner) = member.owner {
-            self.require_visible_member(node_id, span, field, base, owner)?;
+            self.require_visible_member(node_id, span, field, base, owner, origin)?;
         }
         projections.push(member.projection);
         Some(member.r#type)
@@ -296,6 +306,7 @@ impl<'r> Analyzer<'r> {
         cell: &Rc<RefCell<ResolvedUnionType>>,
         base: &ResolvedType,
         field: &Ident,
+        origin: Origin,
     ) -> Option<ResolvedType> {
         let (found, owner_module, owner_id) = {
             let u = cell.borrow();
@@ -314,7 +325,7 @@ impl<'r> Analyzer<'r> {
             module_path: owner_module,
             id: owner_id,
         };
-        self.require_visible_member(node_id, span, field, base, owner)?;
+        self.require_visible_member(node_id, span, field, base, owner, origin)?;
         projections.push(CheckedProjection::UnionField {
             field: field.clone(),
             index,
@@ -331,6 +342,7 @@ impl<'r> Analyzer<'r> {
         cell: &Rc<RefCell<ResolvedStructType>>,
         base: &ResolvedType,
         field: &Ident,
+        origin: Origin,
     ) -> Option<ResolvedType> {
         let (found, owner_module, owner_id) = {
             let s = cell.borrow();
@@ -349,7 +361,7 @@ impl<'r> Analyzer<'r> {
             module_path: owner_module,
             id: owner_id,
         };
-        self.require_visible_member(node_id, span, field, base, owner)?;
+        self.require_visible_member(node_id, span, field, base, owner, origin)?;
         projections.push(CheckedProjection::FieldAccess {
             field: field.clone(),
             index,
@@ -376,8 +388,9 @@ impl<'r> Analyzer<'r> {
         field: &Ident,
         base: &ResolvedType,
         owner: MemberOwner,
+        origin: Origin,
     ) -> Option<()> {
-        if self.check_member_visibility(owner.visibility, &owner.module_path, owner.id) {
+        if self.check_member_visibility(owner.visibility, &owner.module_path, owner.id, origin) {
             return Some(());
         }
         self.error(

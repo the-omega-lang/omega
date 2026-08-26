@@ -1,0 +1,15 @@
+error: 'tag' on 'Box' is not visible here
+  --> tests/t18b_macro_visibility_errors/t18b_macro_visibility_errors.omg:10:12
+   |
+10 |     reveal read_tag$(b)
+   |            ^^^^^^^^^^^^ `tag` is not visible from this module
+   |
+   = help: mark the field `exposed`/`shared` on `Box`, or bypass with `reveal`
+
+error: 't18b_macro_visibility_errors::vault::secret' is not visible here
+  --> tests/t18b_macro_visibility_errors/t18b_macro_visibility_errors.omg:15:5
+   |
+15 |     call_secret$()
+   |     ^^^^^^^^^^^^^^ not visible from this module
+
+error: could not compile the program due to 2 previous errors

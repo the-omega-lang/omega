@@ -47,6 +47,7 @@ impl<'r> Analyzer<'r> {
                 &ItemAccess::gated(Self::core_range_path("Range")),
                 &[element],
                 true,
+                Origin::default(),
             )
             .ok()?
         else {
@@ -117,6 +118,7 @@ impl<'r> Analyzer<'r> {
                 &ItemAccess::gated(Self::core_range_path("Bounded")),
                 &[],
                 true,
+                Origin::default(),
             )
             .ok()?
         else {

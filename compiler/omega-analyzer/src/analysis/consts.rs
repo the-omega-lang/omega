@@ -131,11 +131,13 @@ impl<'r> Analyzer<'r> {
         };
 
         if let Some(suffix) = &n.explicit_type {
+            let reveals = &self.reveals;
             let suffixed = self.context.resolve_type(
                 Type::Named(suffix.clone().into()),
                 &mut *self.resolver,
                 &self.module_path,
-                ResolveItemOptions::INDIRECT.bypassing_visibility(self.reveals.active()),
+                ResolveItemOptions::INDIRECT,
+                &|origin| reveals.allows(origin),
             );
             match suffixed {
                 Ok(t) if t == *expected => {}

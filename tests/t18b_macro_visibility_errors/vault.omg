@@ -1,0 +1,5 @@
+# Hidden by default, and never imported: the only reference to it anywhere
+# is the one `helper::call_secret$` writes.
+secret() => i32 {
+	7
+}

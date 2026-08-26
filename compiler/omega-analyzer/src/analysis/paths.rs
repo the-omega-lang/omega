@@ -7,19 +7,20 @@ impl<'r> Analyzer<'r> {
         span: Span,
         path: &Path,
     ) -> Option<std::rc::Rc<crate::resolved_type::ResolvedGap>> {
-        let access = match self.context.resolve_absolute_item_path(
-            &mut *self.resolver,
-            path,
-            &self.module_path,
-        ) {
-            Ok(access) => access,
-            Err(error) => {
-                self.error(id, span, AnalysisErrorKind::UnresolvedType(error));
-                return None;
-            }
-        };
+        let accessor = self.path_module(path);
+        let access =
+            match self
+                .context
+                .resolve_absolute_item_path(&mut *self.resolver, path, &accessor)
+            {
+                Ok(access) => access,
+                Err(error) => {
+                    self.error(id, span, AnalysisErrorKind::UnresolvedType(error));
+                    return None;
+                }
+            };
         let absolute = access.absolute.clone();
-        match self.resolve_item_checked(&access, &[], true) {
+        match self.resolve_item_checked(&access, &[], true, path.origin) {
             Ok(ResolvedItem::Gap(gap)) => Some(gap),
             Ok(_) => {
                 self.error(
@@ -96,13 +97,10 @@ impl<'r> Analyzer<'r> {
         expected: Option<&ResolvedType>,
     ) -> Option<(CheckedPlaceRoot, ResolvedType, bool)> {
         let absolute = access.absolute.clone();
-        if !self.check_macro_dependency_visibility(node_id, span, written_path, &absolute) {
-            return None;
-        }
         // Selecting one overload as a value uses the same authorized
         // candidate set calling it does, so the two cannot disagree about
         // which candidates exist.
-        if let Ok(Some(set)) = self.overload_set(accessor, &access) {
+        if let Ok(Some(set)) = self.overload_set(accessor, &access, written_path.origin) {
             let signatures: Vec<(HirId, ResolvedFunctionType)> = set
                 .candidates
                 .iter()
@@ -182,7 +180,12 @@ impl<'r> Analyzer<'r> {
             Err(ResolveError::UnknownModule(missing))
                 if missing.len() + 1 == absolute.len() && missing == absolute[..missing.len()] =>
             {
-                match self.resolve_item_checked(&ItemAccess::gated(missing.clone()), &[], true) {
+                match self.resolve_item_checked(
+                    &ItemAccess::gated(missing.clone()),
+                    &[],
+                    true,
+                    written_path.origin,
+                ) {
                     Ok(ResolvedItem::Type(t)) => self
                         .resolve_type_member(
                             node_id,
@@ -190,6 +193,7 @@ impl<'r> Analyzer<'r> {
                             &t,
                             &absolute[missing.len()..],
                             expected,
+                            written_path.origin,
                         )
                         .map(|(root, r#type)| (root, r#type, false)),
                     Ok(ResolvedItem::Gap(gap)) => self
@@ -269,10 +273,18 @@ impl<'r> Analyzer<'r> {
                     &ResolvedType::Str { mutable: false },
                     &path.tail,
                     expected,
+                    path.origin,
                 );
             }
             if let Some(head_type) = self.context.find_defined_type(&path.head).cloned() {
-                return self.resolve_type_member(node_id, span, &head_type, &path.tail, expected);
+                return self.resolve_type_member(
+                    node_id,
+                    span,
+                    &head_type,
+                    &path.tail,
+                    expected,
+                    path.origin,
+                );
             }
         }
 
@@ -286,7 +298,14 @@ impl<'r> Analyzer<'r> {
             None => {
                 let alias = self.resolve_path_alias_or_error(node_id, span, path)?;
                 if let Some(ImportTarget::Item(_, ResolvedItem::Type(t))) = alias {
-                    return self.resolve_type_member(node_id, span, &t, &path.tail, expected);
+                    return self.resolve_type_member(
+                        node_id,
+                        span,
+                        &t,
+                        &path.tail,
+                        expected,
+                        path.origin,
+                    );
                 }
                 if let Some(ImportTarget::Item(_, ResolvedItem::Gap(gap))) = alias {
                     return self.resolve_gap_member(node_id, span, path, &gap, &path.tail);
@@ -327,17 +346,26 @@ impl<'r> Analyzer<'r> {
                         bypass_visibility: access.bypass_visibility,
                     },
                     &type_args,
+                    path.origin,
                 )
             }
             None => self.resolve_item_checked_with_ambient_fallback(
                 std::slice::from_ref(&path.head),
                 &access,
                 &[],
+                path.origin,
             ),
         };
         let kind = match result {
             Ok(ResolvedItem::Type(t)) => {
-                return self.resolve_type_member(node_id, span, &t, &path.tail, expected);
+                return self.resolve_type_member(
+                    node_id,
+                    span,
+                    &t,
+                    &path.tail,
+                    expected,
+                    path.origin,
+                );
             }
             Ok(ResolvedItem::Gap(gap)) => {
                 return self.resolve_gap_member(node_id, span, path, &gap, &path.tail);
@@ -399,7 +427,7 @@ impl<'r> Analyzer<'r> {
                 None
             }
             Ok(ResolvedItem::Type(t)) => {
-                self.resolve_type_member(node_id, span, &t, rest, expected)
+                self.resolve_type_member(node_id, span, &t, rest, expected, expr_path.path.origin)
             }
             Ok(ResolvedItem::Value {
                 r#type,
@@ -508,8 +536,8 @@ impl<'r> Analyzer<'r> {
 
     /// Selects one function of a gap. `written_path` is the path as the
     /// programmer spelled it, so a gap member reached from a macro body is
-    /// checked against the macro's definition module and against the macro
-    /// dependency-leak rule, not against wherever the expansion landed.
+    /// checked against the macro's definition module, not against wherever
+    /// the expansion landed.
     fn resolve_gap_member(
         &mut self,
         node_id: HirId,
@@ -547,32 +575,22 @@ impl<'r> Analyzer<'r> {
             function.fn_type.clone(),
         );
         let accessor = self.path_module(written_path);
-        if !Self::visibility_allows(visibility, &gap.module_path, &accessor) {
-            if !self.reveals.active() {
-                self.error(
-                    node_id,
-                    span,
-                    AnalysisErrorKind::ModuleResolution(ResolveError::NotVisible {
-                        module: gap
-                            .module_path
-                            .iter()
-                            .cloned()
-                            .chain(std::iter::once(gap.name.clone()))
-                            .collect(),
-                        item: member.clone(),
-                    }),
-                );
-                return None;
-            }
-            self.reveals.mark_used();
-        }
-        if !self.check_macro_dependency_level(
-            node_id,
-            span,
-            written_path.origin,
-            member.clone(),
-            visibility,
-        ) {
+        if !Self::visibility_allows(visibility, &gap.module_path, &accessor)
+            && !self.revealed(written_path.origin)
+        {
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::ModuleResolution(ResolveError::NotVisible {
+                    module: gap
+                        .module_path
+                        .iter()
+                        .cloned()
+                        .chain(std::iter::once(gap.name.clone()))
+                        .collect(),
+                    item: member.clone(),
+                }),
+            );
             return None;
         }
         let r#type = ResolvedType::Function(fn_type);
@@ -682,6 +700,7 @@ impl<'r> Analyzer<'r> {
         r#type: &ResolvedType,
         rest: &[Ident],
         expected: Option<&ResolvedType>,
+        origin: Origin,
     ) -> Option<(CheckedPlaceRoot, ResolvedType)> {
         let (namespace, member, deeper) = Self::select_function_namespace(rest);
 
@@ -786,7 +805,7 @@ impl<'r> Analyzer<'r> {
         }
 
         let method = self.select_uncalled_function(node_id, span, member, candidates, expected)?;
-        if !self.check_member_visibility(method.visibility, &owner_module_path, owner_id) {
+        if !self.check_member_visibility(method.visibility, &owner_module_path, owner_id, origin) {
             self.error(
                 node_id,
                 span,

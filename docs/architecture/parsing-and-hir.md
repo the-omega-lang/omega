@@ -104,10 +104,9 @@ The driver constructs the module-visible macro environment. `omega_parser::macro
 `ExpansionState` records definition-site provenance for macro-authored tokens:
 
 - defining module;
-- macro visibility;
 - per-module macro environments used for nested expansion.
 
-This provenance later lets semantic path resolution honor definition-site lookup and ensure a macro does not expose a dependency narrower than the macro itself.
+Semantic analysis consumes exactly this provenance for both questions it decides about an origin-bearing reference: which module it resolves in, and which module's rights its visibility check uses. Member names (`.field`, method names, struct-literal field names) carry the same origin so those checks do not fall back to the invocation site.
 
 The driver also passes the `omega_diagnostics::SourceFile` of the module being expanded. That is the only source context expansion has, and it is what the compiler-implemented `core::builtins` macros read: they call `SourceFile::line_col` rather than carrying a second location algorithm, and they are substituted at the call span macro-authored tokens already carry, so a builtin written inside another macro's body describes the outer invocation. An expansion path with no source context (the parser's template-only convenience entry point) fails a builtin invocation explicitly rather than fabricating a location.
 
@@ -209,7 +208,7 @@ Prefer desugaring at HIR when the transformation is syntax-only and lets later p
 
 ### Macro behavior
 
-Start in `macros.rs` for definitions/substitution/provenance or `macros/expander.rs` for recursive AST traversal/reparse, plus the parser entry point for the expansion position. Cross into the driver only if macro visibility/environment construction changes.
+Start in `macros.rs` for definitions/substitution/provenance or `macros/expander.rs` for recursive AST traversal/reparse, plus the parser entry point for the expansion position. Cross into the driver only if macro environment construction changes.
 
 ### New identity-bearing construct
 
@@ -240,7 +239,7 @@ Specific child spans are intentional. Fields, parameters, names, signatures, and
 
 ### Macro spans and provenance
 
-`Span` itself has no source-file identity. A macro definition may come from another module, so definition-module byte offsets cannot safely survive as ordinary spans inside the caller's expanded AST: rendering them against the caller's source would point at unrelated text. Macro-authored generated tokens therefore use invocation/call-site spans for diagnostics while separate origin metadata preserves definition-site module/visibility provenance for resolution. Substituted argument tokens retain caller provenance.
+`Span` itself has no source-file identity. A macro definition may come from another module, so definition-module byte offsets cannot safely survive as ordinary spans inside the caller's expanded AST: rendering them against the caller's source would point at unrelated text. Macro-authored generated tokens therefore use invocation/call-site spans for diagnostics while separate origin metadata preserves definition-site module provenance for resolution. Substituted argument tokens retain caller provenance.
 
 Macro *definitions* also carry a compiler-backed discriminator, bound from the canonical `(defining module, declared name)` pair by the one shared binding path both the expander and the driver's definition cache use. Classification therefore cannot disagree between a cached definition and a re-collected one, and it survives the clone a macro `alias` performs. The declaration-shape contract is checked where a declaration is bound to its module, so an alias is not mistaken for a second canonical declaration.
 

@@ -1,0 +1,19 @@
+import self::helper::read_tag;
+import self::helper::call_secret;
+import self::model::Box;
+
+# A caller's `reveal` authorizes what the caller wrote, not what the macro
+# body wrote: the expansion's own references keep the definition site's
+# rights, so this stays an ordinary field-visibility error.
+caller_reveal_does_not_reach_the_macro_body() => i32 {
+	b := Box::make();
+	reveal read_tag$(b)
+}
+
+# The same for a declaration the macro's own module may not name.
+macro_body_cannot_name_a_hidden_sibling() => i32 {
+	call_secret$()
+}
+
+main() => void {
+}

@@ -14,10 +14,6 @@ impl ModuleResolver for NoResolver {
         None
     }
 
-    fn macro_origin_visibility(&self, _origin: Origin) -> Option<Visibility> {
-        None
-    }
-
     fn resolve_explicit_anchor(
         &self,
         _origin_module: &[Ident],

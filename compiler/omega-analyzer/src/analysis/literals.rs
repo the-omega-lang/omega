@@ -223,7 +223,12 @@ impl<'r> Analyzer<'r> {
                     );
                     return None;
                 };
-                if !self.check_member_visibility(visibility, &declaring_module, owner_id) {
+                if !self.check_member_visibility(
+                    visibility,
+                    &declaring_module,
+                    owner_id,
+                    field.name_origin,
+                ) {
                     self.error(
                         node_id,
                         field.name_span,
@@ -303,7 +308,12 @@ impl<'r> Analyzer<'r> {
                 ok = false;
                 continue;
             };
-            if !self.check_member_visibility(visibility, declaring_module, owner_id) {
+            if !self.check_member_visibility(
+                visibility,
+                declaring_module,
+                owner_id,
+                field.name_origin,
+            ) {
                 self.error(
                     node_id,
                     field.name_span,
@@ -443,6 +453,7 @@ impl<'r> Analyzer<'r> {
                     &sig,
                     &lit.fields,
                     expected,
+                    plain.origin,
                 )?;
                 let resolved = match result {
                     Ok(ResolvedItem::Type(t)) => t,
@@ -506,8 +517,9 @@ impl<'r> Analyzer<'r> {
                     &sig,
                     &lit.fields,
                     expected,
+                    plain.origin,
                 )?,
-                _ => self.resolve_item_checked(&access, &[], true),
+                _ => self.resolve_item_checked(&access, &[], true, plain.origin),
             };
             let first_error = match whole_result {
                 Ok(ResolvedItem::Type(t)) => {
@@ -546,8 +558,9 @@ impl<'r> Analyzer<'r> {
                         &sig,
                         &lit.fields,
                         expected,
+                        plain.origin,
                     )?,
-                    _ => self.resolve_item_checked(&prefix_access, &[], true),
+                    _ => self.resolve_item_checked(&prefix_access, &[], true, plain.origin),
                 };
                 if let Ok(ResolvedItem::Type(t)) = variant_result {
                     return self.literal_target_from_type(
@@ -600,11 +613,13 @@ impl<'r> Analyzer<'r> {
                 &sig,
                 &lit.fields,
                 expected,
+                plain.origin,
             )?,
             None => self.resolve_item_checked_with_ambient_fallback(
                 std::slice::from_ref(&plain.head),
                 &access,
                 &[],
+                plain.origin,
             ),
         };
         let kind = match result {
@@ -665,6 +680,7 @@ impl<'r> Analyzer<'r> {
         sig: &GenericLiteralSignature,
         lit_fields: &[HirStructLiteralField],
         expected: Option<&ResolvedType>,
+        origin: Origin,
     ) -> Option<Result<ResolvedItem, ResolveError>> {
         let type_args = self.infer_literal_type_args(
             node_id,
@@ -674,7 +690,7 @@ impl<'r> Analyzer<'r> {
             lit_fields,
             expected,
         )?;
-        Some(self.resolve_item_checked_with_ambient_fallback(prefix, access, &type_args))
+        Some(self.resolve_item_checked_with_ambient_fallback(prefix, access, &type_args, origin))
     }
 
     pub(super) fn infer_literal_type_args(
@@ -867,12 +883,14 @@ impl<'r> Analyzer<'r> {
             );
         };
 
+        let reveals = &self.reveals;
         let resolved_type = match &n.explicit_type {
             Some(explicit_type) => match self.context.resolve_type(
                 Type::Named(explicit_type.clone().into()),
                 &mut *self.resolver,
                 &self.module_path,
-                ResolveItemOptions::INDIRECT.bypassing_visibility(self.reveals.active()),
+                ResolveItemOptions::INDIRECT,
+                &|origin| reveals.allows(origin),
             ) {
                 Ok(r#type) if r#type.numeric_kind(self.target.pointer_bits()).is_some() => r#type,
                 _ => {

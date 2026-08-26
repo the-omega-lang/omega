@@ -458,3 +458,39 @@ Shape problems in `omega-driver` and `omega-analyzer` that still need a delibera
   old fixed-buffer I/O helpers had to do; the current `std::io::read_line`
   loops with a sentinel flag instead.
   [control-flow.md](../language/control-flow-and-operators.md)
+
+- **A number literal's type suffix is resolved as a named type, so
+  user-declared names can be used as suffixes and macro-authored suffixes
+  are not hygienic.** The lexical chapter restricts a suffix to
+  `usize`, `isize`, and `u`/`i`/`f` followed by decimal digits, and says semantic analysis decides whether the result is
+  a supported *primitive*; the `invalid numeric type` diagnostic lists the
+  same closed set. But `analyze_number` and `const_number` instead call
+  `resolve_type(Type::Named(suffix))` and accept anything with a numeric
+  kind, so a shape-matching name that is not a primitive — `u7`, `i9`,
+  `f13`, `u1024` — resolves to a user declaration. `alias u7 = u8;` makes
+  `10u7` compile. Because the suffix is a bare `Ident` with no expansion
+  origin, it is also resolved in the *invocation* module: a macro body
+  writing `10u7` picks up the caller's `u7` if the caller has one, and
+  otherwise fails to find its own. The fix is to match the suffix against
+  the primitive table directly rather than resolving it as a type, which
+  also removes the module/`reveal`/origin question from both sites.
+  [lexical-structure.md](../language/lexical-structure.md)
+
+- **A `reveal` that type resolution actually needs is still reported as
+  unnecessary.** `resolve_type_or_error_in` asks whether a `reveal`
+  authorizes the written name and passes the answer into `resolve_type` as
+  a visibility bypass, but never marks the reveal frame used. The two
+  other bypass routes do: `resolve_item_checked` marks it post hoc when
+  the resolved item turns out not to be visible, and member checks reach
+  it through `revealed()`. So a `reveal` in *type* position -- a cast
+  target, an annotation, any type spelling naming something not visible at
+  the use site -- compiles correctly and then warns `unnecessary 'reveal'
+  -- this 'reveal' never suppresses anything`. Removing it as the warning
+  advises fails to compile; the same `reveal` over a member access warns
+  correctly. Fixing it means the authority passed into type resolution has
+  to be able to mark frames, which conflicts with the `&mut dyn
+  ModuleResolver` borrow held across the same call. This is a concrete
+  instance of the architectural gap recorded under "`reveal` still has no
+  backstop for the 'every position must remember' invariant" in
+  [design-debt.md](design-debt.md).
+  [visibility.md](../language/visibility.md)

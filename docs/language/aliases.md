@@ -214,10 +214,10 @@ An alias may name a macro. The alias is a compile-time name binding only:
 expansion uses the original macro's body and definition module, so hygiene and
 definition-site name resolution are unchanged.
 
-The **alias's** visibility is the effective visibility of the aliased macro for
-dependency checks. An `exposed` alias of a macro whose body depends on a
-narrower declaration is therefore rejected, exactly as an `exposed` macro with
-that body would be. A macro alias target obeys the same per-link chain
+The alias's visibility gates who may invoke the macro under the alias name;
+expansion still happens with the original definition site's rights, so an
+`exposed` alias of a hidden macro transfers the capability to invoke it and
+nothing more. A macro alias target obeys the same per-link chain
 visibility rule as any other alias: naming a hidden macro through a chain of
 aliases requires every link, not just the outermost one, to be visible from
 whichever module names it. See [`macros.md`](macros.md).

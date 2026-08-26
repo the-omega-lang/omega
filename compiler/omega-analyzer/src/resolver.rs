@@ -376,8 +376,6 @@ impl ResolveItemOptions {
 pub trait ModuleResolver {
     fn macro_origin_module(&self, origin: Origin) -> Option<Vec<Ident>>;
 
-    fn macro_origin_visibility(&self, origin: Origin) -> Option<Visibility>;
-
     /// Resolves a `Path`'s explicit anchor (`root::`/`self::`/`super::`)
     /// relative to `origin_module`. Returns `None` when the path carries no
     /// explicit anchor, so the caller falls back to its own unanchored

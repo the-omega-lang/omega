@@ -1,8 +1,8 @@
-# Package-wide visibility, but not imported by name anywhere else; only
-# reachable here through the macro below.
-shared secret := 7;
+# Hidden: no other module may name it, not even through the exposed macro
+# below, whose body is nevertheless authored right here.
+secret := 7;
 
-shared macro read_secret() => {
+exposed macro read_secret() => {
 	secret
 }
 

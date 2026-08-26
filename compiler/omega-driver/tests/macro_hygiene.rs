@@ -1,5 +1,6 @@
 use omega_analyzer::Target;
-use omega_analyzer::error::AnalysisErrorKind;
+use omega_analyzer::error::{AnalysisErrorKind, TypeResolutionError};
+use omega_analyzer::resolver::ResolveError;
 use omega_driver::{CompileError, Driver};
 use omega_parser::prelude::Ident;
 use std::fs;
@@ -34,6 +35,16 @@ impl TestPackage {
             .compile(&[Ident("main".into())], Target::DEFAULT)
             .expect("package should compile");
     }
+
+    fn compile_errors(&self, expectation: &str) -> Vec<CompileError> {
+        match Driver::new(self.0.clone(), None, vec![], Target::DEFAULT)
+            .expect("construct driver")
+            .compile(&[Ident("main".into())], Target::DEFAULT)
+        {
+            Ok(_) => panic!("{expectation}"),
+            Err(errors) => errors,
+        }
+    }
 }
 
 impl Drop for TestPackage {
@@ -64,7 +75,7 @@ fn macro_body_items_resolve_in_its_definition_module() {
 }
 
 #[test]
-fn an_exposed_macro_cannot_name_a_hidden_item() {
+fn an_exposed_macro_may_name_a_hidden_item_of_its_own_module() {
     let package = TestPackage::new(
         r#"
         import self::helper::apply;
@@ -74,71 +85,232 @@ fn an_exposed_macro_cannot_name_a_hidden_item() {
     package.child(
         "helper",
         r#"
+        # Hidden, and the caller cannot name it; the macro body is authored
+        # here, so ordinary definition-site visibility is all it needs.
         secret(value: i32) => i32 { value }
         exposed macro apply($value: expr) => { secret($value) }
-        "#,
-    );
-    let result = Driver::new(package.0.clone(), None, vec![], Target::DEFAULT)
-        .expect("construct driver")
-        .compile(&[Ident("main".into())], Target::DEFAULT);
-    let errors = match result {
-        Ok(_) => panic!("an exposed macro may not expose a hidden dependency"),
-        Err(errors) => errors,
-    };
-    assert!(errors.iter().any(|error| matches!(
-        error,
-        CompileError::Analysis { errors, .. }
-            if errors.iter().any(|error| matches!(error.kind, AnalysisErrorKind::MacroDependencyTooPrivate { .. }))
-    )));
-}
-
-#[test]
-fn a_definition_authored_reveal_transfers_the_macro_s_own_dependency() {
-    let package = TestPackage::new(
-        r#"
-        import self::helper::apply;
-        entry_fn() => i32 { apply$(1) }
-        "#,
-    );
-    package.child(
-        "helper",
-        r#"
-        secret(value: i32) => i32 { value }
-        # The `reveal` is written by the definition, so it shares the
-        # expansion origin of the path it authorizes.
-        exposed macro apply($value: expr) => { reveal secret($value) }
         "#,
     );
     package.compile();
 }
 
 #[test]
-fn a_caller_side_reveal_cannot_transfer_a_macro_s_private_dependency() {
+fn a_definition_authored_reveal_reaches_past_the_definition_site() {
     let package = TestPackage::new(
         r#"
-        import self::helper::apply;
-        entry_fn() => i32 { reveal apply$(1) }
+        import self::helper::read_tag;
+        import self::model::Box;
+        entry_fn() => i32 { b := Box::make(); read_tag$(b) }
+        "#,
+    );
+    package.child(
+        "model",
+        r#"
+        exposed struct Box {
+            tag: i32;
+
+            exposed make() => Box { Box { tag = 7; } }
+        }
         "#,
     );
     package.child(
         "helper",
         r#"
-        secret(value: i32) => i32 { value }
-        exposed macro apply($value: expr) => { secret($value) }
+        # `Box::tag` is hidden to `helper` as much as to `main`, so the macro
+        # definition itself has to ask for the bypass.
+        exposed macro read_tag($value: expr) => { reveal $value.tag }
         "#,
     );
-    let result = Driver::new(package.0.clone(), None, vec![], Target::DEFAULT)
-        .expect("construct driver")
-        .compile(&[Ident("main".into())], Target::DEFAULT);
-    let errors = match result {
-        Ok(_) => panic!("a caller's reveal may not weaken the macro definition's obligation"),
-        Err(errors) => errors,
-    };
+    package.compile();
+}
+
+#[test]
+fn a_caller_side_reveal_cannot_reach_a_macro_s_inaccessible_dependency() {
+    let package = TestPackage::new(
+        r#"
+        import self::helper::read_tag;
+        import self::model::Box;
+        entry_fn() => i32 { b := Box::make(); reveal read_tag$(b) }
+        "#,
+    );
+    package.child(
+        "model",
+        r#"
+        exposed struct Box {
+            tag: i32;
+
+            exposed make() => Box { Box { tag = 7; } }
+        }
+        "#,
+    );
+    package.child(
+        "helper",
+        r#"
+        exposed macro read_tag($value: expr) => { $value.tag }
+        "#,
+    );
+    let errors = package.compile_errors("a caller's reveal may not authorize the macro's own body");
     assert!(errors.iter().any(|error| matches!(
         error,
         CompileError::Analysis { errors, .. }
-            if errors.iter().any(|error| matches!(error.kind, AnalysisErrorKind::MacroDependencyTooPrivate { .. }))
+            if errors.iter().any(|error| matches!(
+                error.kind,
+                AnalysisErrorKind::FieldNotVisible { .. }
+            ))
     )));
+}
+
+#[test]
+fn a_definition_authored_reveal_reaches_past_a_multi_root_type_spelling() {
+    let package = TestPackage::new(
+        r#"
+        import self::helper::widen;
+        entry_fn() => i32 { n := 7; e := widen$(n); 0 }
+        "#,
+    );
+    package.child("model", "struct Secret { exposed v: i32; }");
+    package.child(
+        "helper",
+        r#"
+        # `enum A | B` has no single root name, so the reveal has to be matched
+        # against the origin of the member that actually needs it.
+        exposed macro widen($x: expr) => { reveal <enum root::model::Secret | i32>$x }
+        "#,
+    );
+    package.compile();
+}
+
+#[test]
+fn a_caller_side_reveal_cannot_authorize_a_macro_authored_type_spelling() {
+    let package = TestPackage::new(
+        r#"
+        import self::helper::widen;
+        entry_fn() => i32 { n := 7; e := reveal widen$(n); 0 }
+        "#,
+    );
+    package.child("model", "struct Secret { exposed v: i32; }");
+    package.child(
+        "helper",
+        r#"
+        exposed macro widen($x: expr) => { <enum root::model::Secret | i32>$x }
+        "#,
+    );
+    let errors =
+        package.compile_errors("a caller's reveal may not authorize a macro-authored type");
+    assert!(errors.iter().any(|error| matches!(
+        error,
+        CompileError::Analysis { errors, .. }
+            if errors.iter().any(|error| matches!(
+                error.kind,
+                AnalysisErrorKind::UnresolvedType(TypeResolutionError::ModuleResolution(
+                    ResolveError::NotVisible { .. }
+                ))
+            ))
+    )));
+}
+
+#[test]
+fn a_caller_side_reveal_still_authorizes_its_own_substituted_type() {
+    let package = TestPackage::new(
+        r#"
+        import self::helper::widen;
+        entry_fn() => i32 { n := 7; e := reveal widen$(root::model::Secret, n); 0 }
+        "#,
+    );
+    package.child("model", "struct Secret { exposed v: i32; }");
+    package.child(
+        "helper",
+        r#"
+        # `$T` carries the caller's origin even though the `enum` spelling
+        # around it is macro-authored, so the caller's reveal reaches it.
+        exposed macro widen($T: type, $x: expr) => { <enum $T | i32>$x }
+        "#,
+    );
+    package.compile();
+}
+
+#[test]
+fn a_macro_authored_member_name_does_not_inherit_the_invocation_site_owner() {
+    let package = TestPackage::new(
+        r#"
+        import self::helper::read_tag;
+        struct Box {
+            tag: i32;
+
+            exposed make() => Box { Box { tag = 7; } }
+            # `read_tag$` expands inside `Box`'s own method, but the `.tag`
+            # token it writes was authored in `helper`, which owns nothing.
+            exposed leak(*self) => i32 { read_tag$(self) }
+        }
+        entry_fn() => i32 { b := Box::make(); b.leak() }
+        "#,
+    );
+    package.child(
+        "helper",
+        r#"
+        exposed macro read_tag($value: expr) => { $value.tag }
+        "#,
+    );
+    let errors = package.compile_errors("a macro-authored member name has no owner-only privilege");
+    assert!(errors.iter().any(|error| matches!(
+        error,
+        CompileError::Analysis { errors, .. }
+            if errors.iter().any(|error| matches!(
+                error.kind,
+                AnalysisErrorKind::FieldNotVisible { .. }
+            ))
+    )));
+}
+
+#[test]
+fn a_macro_authored_member_name_may_reveal_a_hidden_member_itself() {
+    let package = TestPackage::new(
+        r#"
+        import self::helper::read_tag;
+        struct Box {
+            tag: i32;
+
+            exposed make() => Box { Box { tag = 7; } }
+            exposed leak(*self) => i32 { read_tag$(self) }
+        }
+        entry_fn() => i32 { b := Box::make(); b.leak() }
+        "#,
+    );
+    package.child(
+        "helper",
+        r#"
+        exposed macro read_tag($value: expr) => { reveal $value.tag }
+        "#,
+    );
+    package.compile();
+}
+
+#[test]
+fn a_macro_authored_member_name_reaches_a_shared_member_of_its_own_package() {
+    let package = TestPackage::new(
+        r#"
+        import self::helper::read_tag;
+        import self::model::Box;
+        entry_fn() => i32 { b := Box::make(); read_tag$(b) }
+        "#,
+    );
+    package.child(
+        "model",
+        r#"
+        exposed struct Box {
+            shared tag: i32;
+
+            exposed make() => Box { Box { tag = 7; } }
+        }
+        "#,
+    );
+    package.child(
+        "helper",
+        r#"
+        exposed macro read_tag($value: expr) => { $value.tag }
+        "#,
+    );
+    package.compile();
 }
 
 #[test]

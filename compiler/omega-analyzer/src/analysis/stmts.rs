@@ -569,6 +569,7 @@ impl<'r> Analyzer<'r> {
                     &mut tag_projections,
                     &next_type,
                     &Ident("tag".to_string()),
+                    Origin::default(),
                     &mut false,
                 )?;
                 let tag_place = CheckedPlace {
@@ -699,6 +700,7 @@ impl<'r> Analyzer<'r> {
                 &mut value_projections,
                 &refined,
                 &Ident("value".to_string()),
+                Origin::default(),
                 &mut false,
             )?;
             let value_read = CheckedExprNode {
@@ -792,6 +794,13 @@ impl<'r> Analyzer<'r> {
         }
     }
 
+    // The protocol member name is synthesized, so there is no token to take
+    // an origin from: it gets the default origin and is therefore checked
+    // with the invocation site's rights. That is sound only while every
+    // member the `for` desugaring touches is exposed -- `core`'s
+    // `Iterator`/`ToIterator` and `Option`'s `value`. Narrowing one would
+    // make a macro-authored `for` lose its definition-site rights and
+    // inherit the invocation site's owner privilege for a hidden member.
     fn synthesize_method_call(
         &mut self,
         root: HirPlaceRoot,
@@ -803,7 +812,10 @@ impl<'r> Analyzer<'r> {
             span,
             expr: HirExpr::Place(HirPlace {
                 root,
-                projections: vec![HirProjection::FieldAccess(Ident(method.to_string()))],
+                projections: vec![HirProjection::FieldAccess(
+                    Ident(method.to_string()),
+                    Origin::default(),
+                )],
             }),
         };
         let call = HirExprNode {

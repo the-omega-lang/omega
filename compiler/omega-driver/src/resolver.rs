@@ -415,10 +415,6 @@ impl ModuleResolver for Driver {
         self.modules.macro_origin_module(origin)
     }
 
-    fn macro_origin_visibility(&self, origin: omega_parser::prelude::Origin) -> Option<Visibility> {
-        self.modules.macro_origin_visibility(origin)
-    }
-
     fn resolve_explicit_anchor(
         &self,
         origin_module: &[Ident],

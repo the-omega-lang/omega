@@ -1,0 +1,11 @@
+# The macro body is authored here, so `.tag` is checked with `helper`'s
+# rights. `helper` does not own `Box`, so the field stays out of reach.
+exposed macro read_tag($value: expr) => {
+	$value.tag
+}
+
+# `vault::secret` is hidden, and hidden means its own module only -- being
+# named from a macro body changes nothing about that.
+exposed macro call_secret() => {
+	super::vault::secret()
+}

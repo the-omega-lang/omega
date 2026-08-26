@@ -123,12 +123,12 @@ impl<'r> Analyzer<'r> {
 
         let member = match &callee.expr {
             HirExpr::Place(place) => match place.projections.last() {
-                Some(HirProjection::FieldAccess(field)) => Some((place, field)),
+                Some(HirProjection::FieldAccess(field, origin)) => Some((place, field, *origin)),
                 _ => None,
             },
             _ => None,
         };
-        let Some((place, field)) = member else {
+        let Some((place, field, field_origin)) = member else {
             let checked = self.analyze_expr(callee, None)?;
             let fn_type = self.require_callable(callee.id, callee.span, checked.r#type.clone())?;
             return Some(CalleeResolution::Ordinary(ResolvedCallee {
@@ -267,21 +267,22 @@ impl<'r> Analyzer<'r> {
                     }
                 }
             }
-            return self.resolve_field_callee(callee, field, receiver);
+            return self.resolve_field_callee(callee, field, field_origin, receiver);
         }
-        self.resolve_method_callee(callee, field, receiver, members, args)
+        self.resolve_method_callee(callee, field, field_origin, receiver, members, args)
     }
 
     fn resolve_method_callee(
         &mut self,
         callee: &HirExprNode,
         field: &Ident,
+        field_origin: Origin,
         receiver: Receiver,
         methods: Vec<ResolvedMethod>,
         args: &[HirExprNode],
     ) -> Option<CalleeResolution> {
         let (method, checked_args) = self.pick_method(callee, field, methods, args)?;
-        self.require_method_visible(callee, field, &receiver.r#type, &method)?;
+        self.require_method_visible(callee, field, field_origin, &receiver.r#type, &method)?;
 
         let self_mode = method
             .fn_type
@@ -351,6 +352,7 @@ impl<'r> Analyzer<'r> {
         &mut self,
         callee: &HirExprNode,
         field: &Ident,
+        field_origin: Origin,
         receiver_type: &ResolvedType,
         method: &ResolvedMethod,
     ) -> Option<()> {
@@ -358,7 +360,8 @@ impl<'r> Analyzer<'r> {
             .autoderef()
             .declaring_owner()
             .unwrap_or_else(|| (Vec::new(), callee.id));
-        let visible = self.check_member_visibility(method.visibility, &module_path, owner_id);
+        let visible =
+            self.check_member_visibility(method.visibility, &module_path, owner_id, field_origin);
         if visible {
             return Some(());
         }
@@ -554,6 +557,7 @@ impl<'r> Analyzer<'r> {
         &mut self,
         callee: &HirExprNode,
         field: &Ident,
+        field_origin: Origin,
         receiver: Receiver,
     ) -> Option<CalleeResolution> {
         if let CheckedPlaceRoot::Variable {
@@ -585,6 +589,7 @@ impl<'r> Analyzer<'r> {
             &mut projections,
             &base_type,
             field,
+            field_origin,
             &mut false,
         )?;
         let checked = CheckedExprNode {

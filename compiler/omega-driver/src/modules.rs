@@ -95,13 +95,6 @@ impl ModuleStore {
             .map(ToOwned::to_owned)
     }
 
-    pub fn macro_origin_visibility(
-        &self,
-        origin: omega_parser::prelude::Origin,
-    ) -> Option<omega_parser::prelude::Visibility> {
-        self.macro_expansions.macro_visibility(origin)
-    }
-
     /// One shared origin per module naming that module as the place syntax
     /// carrying it must resolve in. Alias expansion stamps it onto a target
     /// type so the target keeps resolving at its declaration site.
@@ -239,8 +232,8 @@ impl Driver {
     /// which cannot exist yet: indexing a module requires its HIR, and its HIR
     /// requires this environment. The expansion keeps the target macro's body
     /// and defining module for hygiene, but takes the alias's name and
-    /// visibility so an `exposed` alias of a hidden macro is checked as the
-    /// exposed macro it now is.
+    /// visibility, which gate who may invoke the alias -- never what the
+    /// body may reach.
     fn bind_macro_aliases(
         &mut self,
         path: &[Ident],

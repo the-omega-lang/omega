@@ -563,6 +563,7 @@ impl<'a> Expander<'a> {
             Expression::FieldAccess(access) => Expression::FieldAccess(Box::new(FieldAccessExpr {
                 base: self.expand_expr(access.base)?,
                 field: access.field,
+                field_origin: access.field_origin,
             })),
             Expression::Index(index) => Expression::Index(Box::new(IndexExpr {
                 base: self.expand_expr(index.base)?,
@@ -655,6 +656,7 @@ impl<'a> Expander<'a> {
                         Ok(StructLiteralField {
                             name: f.name,
                             name_span: f.name_span,
+                            name_origin: f.name_origin,
                             value: self.expand_expr(f.value)?,
                         })
                     })

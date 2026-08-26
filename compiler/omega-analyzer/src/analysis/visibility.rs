@@ -11,10 +11,6 @@ struct RevealFrame {
 }
 
 impl RevealState {
-    pub fn active(&self) -> bool {
-        !self.frames.is_empty()
-    }
-
     pub fn begin(&mut self, origin: Origin) {
         self.frames.push(RevealFrame {
             origin,
@@ -22,12 +18,13 @@ impl RevealState {
         });
     }
 
-    /// Whether some active `reveal` was written by the same macro expansion
-    /// that produced `origin`. A caller-written `reveal` around a macro
-    /// invocation never matches, so it cannot authorize what the macro
-    /// definition itself was not allowed to expose.
-    pub fn has_origin(&self, origin: Origin) -> bool {
-        origin.0.is_some() && self.frames.iter().any(|frame| frame.origin == origin)
+    /// Whether an active `reveal` authorizes syntax carrying `origin`. A
+    /// `reveal` only ever speaks for the environment it was written in, so a
+    /// caller-written `reveal` around a macro invocation cannot authorize the
+    /// macro's own definition-origin references, and a macro-written `reveal`
+    /// cannot authorize the caller's substituted syntax.
+    pub fn allows(&self, origin: Origin) -> bool {
+        self.frames.iter().any(|frame| frame.origin == origin)
     }
 
     pub fn mark_used(&mut self) {
@@ -45,19 +42,35 @@ impl RevealState {
 }
 
 impl<'r> Analyzer<'r> {
-    pub(crate) fn check_visibility(
-        &mut self,
-        visibility: Visibility,
-        declaring_module: &[Ident],
-    ) -> bool {
-        if Self::visibility_allows(visibility, declaring_module, &self.module_path) {
-            return true;
-        }
-        if self.reveals.active() {
+    /// The module whose rights a piece of syntax carrying `origin` is
+    /// checked with: the macro or alias definition module that authored it,
+    /// or the module currently being analyzed for ordinary source syntax.
+    pub(crate) fn origin_module(&self, origin: Origin) -> Vec<Ident> {
+        self.resolver
+            .macro_origin_module(origin)
+            .unwrap_or_else(|| self.module_path.clone())
+    }
+
+    /// Whether a `reveal` may bypass a failed check on syntax carrying
+    /// `origin`, recording the bypass so an unused `reveal` still warns.
+    pub(crate) fn revealed(&mut self, origin: Origin) -> bool {
+        if self.reveals.allows(origin) {
             self.reveals.mark_used();
             return true;
         }
         false
+    }
+
+    pub(crate) fn check_visibility(
+        &mut self,
+        visibility: Visibility,
+        declaring_module: &[Ident],
+        origin: Origin,
+    ) -> bool {
+        if Self::visibility_allows(visibility, declaring_module, &self.origin_module(origin)) {
+            return true;
+        }
+        self.revealed(origin)
     }
 
     pub(super) fn visibility_allows(
@@ -72,24 +85,26 @@ impl<'r> Analyzer<'r> {
         }
     }
 
+    /// Member access uses the rights of the member token's own origin. The
+    /// owner-only rule for a `hidden` member therefore does not lend the
+    /// analyzed declaration's privilege to a member name a macro authored
+    /// elsewhere; such a name is only ever authorized by a `reveal` the macro
+    /// body wrote itself.
     pub(crate) fn check_member_visibility(
         &mut self,
         visibility: Visibility,
         declaring_module: &[Ident],
         owner_id: HirId,
+        origin: Origin,
     ) -> bool {
         let allowed = match visibility {
-            Visibility::Hidden => self.current_owner == Some(owner_id),
-            _ => Self::visibility_allows(visibility, declaring_module, &self.module_path),
+            Visibility::Hidden => self.current_owner == Some(owner_id) && origin.0.is_none(),
+            _ => Self::visibility_allows(visibility, declaring_module, &self.origin_module(origin)),
         };
         if allowed {
             return true;
         }
-        if self.reveals.active() {
-            self.reveals.mark_used();
-            return true;
-        }
-        false
+        self.revealed(origin)
     }
 
     /// The origins of the `reveal` prefixes wrapping `expr`, outermost
@@ -164,21 +179,21 @@ mod tests {
         reveals.begin(origin(1));
         reveals.begin(origin(2));
 
-        assert!(reveals.has_origin(origin(1)));
-        assert!(reveals.has_origin(origin(2)));
-        assert!(!reveals.has_origin(origin(3)));
+        assert!(reveals.allows(origin(1)));
+        assert!(reveals.allows(origin(2)));
+        assert!(!reveals.allows(origin(3)));
 
         reveals.finish();
-        assert!(!reveals.has_origin(origin(2)));
-        assert!(reveals.has_origin(origin(1)));
+        assert!(!reveals.allows(origin(2)));
+        assert!(reveals.allows(origin(1)));
     }
 
     #[test]
-    fn a_source_written_reveal_never_matches_a_macro_dependency() {
+    fn a_source_written_reveal_authorizes_source_syntax_only() {
         let mut reveals = RevealState::default();
         reveals.begin(Origin::default());
 
-        assert!(reveals.active());
-        assert!(!reveals.has_origin(Origin::default()));
+        assert!(reveals.allows(Origin::default()));
+        assert!(!reveals.allows(origin(1)));
     }
 }

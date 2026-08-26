@@ -97,7 +97,8 @@ Macro-generated tokens follow a narrow origin-based hygiene model:
 
 - names and paths written in the macro body resolve from the macro definition's module/lexical environment;
 - tokens substituted from a macro argument retain the caller's origin and resolve in the caller's environment;
-- a nested macro invocation written in the macro body resolves in the definition environment, while a nested invocation supplied as an argument resolves from the caller.
+- a nested macro invocation written in the macro body resolves in the definition environment, while a nested invocation supplied as an argument resolves from the caller;
+- visibility follows the same boundary as name resolution: a reference written in the macro body -- including a member name, a gap function, or a struct-literal field -- is checked with the definition module's rights, while substituted syntax is checked with the caller's. A `reveal` authorizes only references sharing its own origin. See [`visibility.md`](visibility.md).
 
 Generated declarations remain ordinary declarations and therefore participate in normal redeclaration/overload rules. Generic parameters and `Self` are substitution-bound rather than ordinary captured lexical names.
 
@@ -155,6 +156,6 @@ the caller's import namespace would be incoherent.
 
 An `alias` may name a macro. The alias is a compile-time name binding only:
 expansion still uses the original macro's body and definition environment, so
-hygiene is unchanged. The alias's own visibility is the effective visibility of
-the aliased macro, both for who may invoke it and for the dependency rule
-above. See [`aliases.md`](aliases.md).
+hygiene is unchanged. The alias's own visibility gates who may invoke it under
+the alias name; it does not change what the body may reach. See
+[`aliases.md`](aliases.md).

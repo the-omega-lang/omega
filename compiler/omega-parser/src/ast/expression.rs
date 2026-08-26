@@ -52,6 +52,10 @@ pub struct ExpressionNode {
 pub struct FieldAccessExpr {
     pub base: ExpressionNode,
     pub field: Ident,
+    /// The `.field` token's own provenance, which is the macro definition
+    /// site for a macro-authored member name and the caller's for a
+    /// substituted one. Member visibility is decided with these rights.
+    pub field_origin: Origin,
 }
 
 #[derive(Debug, Clone)]
@@ -74,10 +78,9 @@ pub struct AddressOfExpr {
 #[derive(Debug, Clone)]
 pub struct RevealExpr {
     pub base: ExpressionNode,
-    /// The `reveal` keyword's own expansion origin. A macro definition may
-    /// only transfer its private dependencies through a `reveal` it wrote
-    /// itself, which is exactly a `reveal` sharing the dependency path's
-    /// origin.
+    /// The `reveal` keyword's own expansion origin. A `reveal` authorizes
+    /// only references sharing it, so the bypass never crosses the boundary
+    /// between a macro body and its caller in either direction.
     pub origin: Origin,
 }
 
@@ -311,6 +314,7 @@ pub struct StructLiteralExpr {
 pub struct StructLiteralField {
     pub name: Ident,
     pub name_span: Span,
+    pub name_origin: Origin,
     pub value: ExpressionNode,
 }
 

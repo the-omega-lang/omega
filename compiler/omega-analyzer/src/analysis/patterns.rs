@@ -207,6 +207,7 @@ impl<'r> Analyzer<'r> {
             &mut tag_projections,
             scrutinee_type,
             &Ident("tag".to_string()),
+            Origin::default(),
             &mut false,
         )?;
         let tag_place = CheckedPlace {

@@ -58,7 +58,7 @@ impl<'r> Analyzer<'r> {
                 Some(ImportTarget::Item(_, ResolvedItem::Type(_))) => None,
                 Some(ImportTarget::ItemPath(access)) => Some(access.clone()),
                 _ => Some(ItemAccess::gated(
-                    self.module_path
+                    accessor
                         .iter()
                         .cloned()
                         .chain(std::iter::once(path.head.clone()))
@@ -67,7 +67,7 @@ impl<'r> Analyzer<'r> {
             },
         };
         let r#type = match owner {
-            Some(access) => match self.resolve_item_checked(&access, &[], true) {
+            Some(access) => match self.resolve_item_checked(&access, &[], true, path.origin) {
                 Ok(ResolvedItem::Type(t)) => t,
                 _ => return Intercepted::Declined,
             },
@@ -101,8 +101,12 @@ impl<'r> Analyzer<'r> {
         let (owner_module_path, owner_id) = r#type
             .declaring_owner()
             .unwrap_or_else(|| (Vec::new(), node_id));
-        if !self.check_member_visibility(overloads[winner].visibility, &owner_module_path, owner_id)
-        {
+        if !self.check_member_visibility(
+            overloads[winner].visibility,
+            &owner_module_path,
+            owner_id,
+            path.origin,
+        ) {
             self.error(
                 node_id,
                 span,
@@ -134,8 +138,9 @@ impl<'r> Analyzer<'r> {
         &mut self,
         accessor: &[Ident],
         access: &ItemAccess,
+        origin: Origin,
     ) -> Result<Option<ResolvedOverloadSet>, ResolveError> {
-        let revealed = self.reveals.active();
+        let revealed = self.reveals.allows(origin);
         let access = ItemAccess {
             absolute: access.absolute.clone(),
             bypass_visibility: access.bypass_visibility || revealed,
@@ -144,9 +149,10 @@ impl<'r> Analyzer<'r> {
         if revealed
             && let Some(set) = &set
             && let Some((_, module)) = set.absolute.split_last()
-            && set.candidates.iter().any(|candidate| {
-                !Self::visibility_allows(candidate.visibility, module, &self.module_path)
-            })
+            && set
+                .candidates
+                .iter()
+                .any(|candidate| !Self::visibility_allows(candidate.visibility, module, accessor))
         {
             self.reveals.mark_used();
         }
@@ -156,25 +162,26 @@ impl<'r> Analyzer<'r> {
     pub(crate) fn resolve_bare_overload_candidates(
         &mut self,
         ident: &Ident,
+        origin: Origin,
     ) -> Option<ResolvedOverloadSet> {
+        let accessor = self.origin_module(origin);
         let alias = self
             .resolver
-            .resolve_import_alias(&self.module_path, ident)
+            .resolve_import_alias(&accessor, ident)
             .ok()
             .flatten();
         let access = match alias {
             Some(ImportTarget::ItemPath(access)) => access,
             Some(ImportTarget::Item(absolute, _)) => ItemAccess::gated(absolute),
             _ => ItemAccess::gated(
-                self.module_path
+                accessor
                     .iter()
                     .cloned()
                     .chain(std::iter::once(ident.clone()))
                     .collect(),
             ),
         };
-        let accessor = self.module_path.clone();
-        self.overload_set(&accessor, &access).ok().flatten()
+        self.overload_set(&accessor, &access, origin).ok().flatten()
     }
 
     pub(crate) fn resolve_overloaded_call(
@@ -203,7 +210,7 @@ impl<'r> Analyzer<'r> {
         // found, never in which candidates the caller may then choose
         // between.
         let set = if path.is_unqualified() {
-            let Some(set) = self.resolve_bare_overload_candidates(&path.head) else {
+            let Some(set) = self.resolve_bare_overload_candidates(&path.head, path.origin) else {
                 return Intercepted::Declined;
             };
             set
@@ -214,7 +221,7 @@ impl<'r> Analyzer<'r> {
                 ModuleQualifiedPath::NotModule => return Intercepted::Declined,
                 ModuleQualifiedPath::Failed => return Intercepted::Claimed(None),
             };
-            match self.overload_set(&accessor, &access) {
+            match self.overload_set(&accessor, &access, path.origin) {
                 Ok(Some(set)) => set,
                 Ok(None) => return Intercepted::Declined,
                 Err(e) => {

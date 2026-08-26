@@ -61,21 +61,24 @@ An alias changes nothing about its target: the target declaration's own visibili
 
 ## Macros
 
-A macro body may not use declarations less visible than the macro itself in a way that would expose them to callers. In particular, an `exposed` macro cannot smuggle a `shared` or hidden dependency across package boundaries. Caller-side `reveal` does not retroactively weaken the macro definition's own visibility obligations. An alias of a macro is checked with the **alias's** visibility, so an `exposed` alias of a hidden macro carries the same obligation.
-
-A macro definition may make that transfer **deliberately** by writing `reveal` in its own body:
+A macro's `hidden`/`shared`/`exposed` modifier says who may name and invoke the macro. It says nothing about what the macro body may reach: every visibility-bearing reference the body writes is checked as ordinary code written in the module the macro was **defined** in, exactly like the name resolution of that same reference. An `exposed` macro may therefore wrap a hidden helper of its own module or a `shared` package API, just as an `exposed` function may.
 
 ```omega
-# In `core::panic`. `PanicHandler::panic` is `shared`, but this exposed macro
-# is allowed to wrap it because the `reveal` is part of the definition.
+# In `core::panic`. `PanicHandler::panic` is `shared` to `core`, and the
+# macro body is authored inside `core::panic`, so it may call the handler
+# while application source may only reach it through `panic$`.
 exposed macro panic($message: expr...) => {
-    { ... reveal PanicHandler::panic(&info) }
+    { ... PanicHandler::panic(&info) }
 }
 ```
 
-The exception is narrow: a `reveal` authorizes a narrower dependency only when it and the dependency's path come from the **same macro expansion**. A `reveal` written by the caller around the invocation carries the caller's own origin instead, so `reveal some_macro$()` still cannot make an otherwise-invalid macro valid. This makes the capability transfer a decision of the macro's author, who is also the one who can be held to it.
+Syntax substituted by the caller keeps the caller's origin and is checked with the caller's rights. This cuts both ways for `reveal`: a `reveal` authorizes only references sharing its own origin, so a caller's `reveal some_macro$()` cannot reach anything inside the expansion, and a `reveal` the macro body writes cannot reach into the caller's substituted arguments. A macro body that needs a declaration genuinely invisible at its definition site writes its own `reveal`; a body that reaches something it is not allowed to see and does not reveal it fails with the ordinary visibility error for the rule it broke.
 
-The same rule applies to a gap function named from a macro body, so gap-function visibility is not a way around the macro dependency rule.
+The `hidden` member rule stays owner-only under the same reading: a member name written by a macro body does not inherit the privilege of whatever declaration the expansion happens to land in. A macro is a module-level declaration and owns nothing, so a macro-authored name for a `hidden` member always needs a `reveal` the body writes itself, even when the owner is declared in the macro's own module.
+
+The same rules apply to a gap function named from a macro body.
+
+An alias of a macro re-exports the name; the alias's visibility gates who may invoke it, while expansion still uses the original definition site's rights.
 
 ## Specs and conformance
 

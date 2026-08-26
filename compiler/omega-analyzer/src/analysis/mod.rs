@@ -200,9 +200,7 @@ pub(super) enum ModuleQualifiedPath {
 
 impl<'r> Analyzer<'r> {
     pub(super) fn path_module(&self, path: &Path) -> Vec<Ident> {
-        self.resolver
-            .macro_origin_module(path.origin)
-            .unwrap_or_else(|| self.module_path.clone())
+        self.origin_module(path.origin)
     }
 
     /// Resolves `path`'s explicit anchor, if it has one. Every item-like
@@ -378,61 +376,6 @@ impl<'r> Analyzer<'r> {
                 None
             }
         }
-    }
-
-    pub(super) fn check_macro_dependency_visibility(
-        &mut self,
-        id: HirId,
-        span: Span,
-        path: &Path,
-        absolute: &[Ident],
-    ) -> bool {
-        let Some(item_visibility) = self.resolver.declared_item_visibility(absolute) else {
-            return true;
-        };
-        let item = absolute
-            .last()
-            .expect("absolute item path has a name")
-            .clone();
-        self.check_macro_dependency_level(id, span, path.origin, item, item_visibility)
-    }
-
-    /// The macro dependency-leak rule for a dependency whose visibility is
-    /// already known: a macro body may not reach a declaration narrower than
-    /// the macro itself, because callers would then see through it.
-    ///
-    /// The one deliberate exception is a `reveal` the macro definition wrote
-    /// itself, identified by sharing the dependency path's expansion origin.
-    /// A caller-side `reveal` around the invocation carries a different
-    /// origin, so it can never authorize the transfer.
-    pub(super) fn check_macro_dependency_level(
-        &mut self,
-        id: HirId,
-        span: Span,
-        origin: Origin,
-        item: Ident,
-        item_visibility: Visibility,
-    ) -> bool {
-        let Some(macro_visibility) = self.resolver.macro_origin_visibility(origin) else {
-            return true;
-        };
-        if item_visibility >= macro_visibility {
-            return true;
-        }
-        if self.reveals.has_origin(origin) {
-            self.reveals.mark_used();
-            return true;
-        }
-        self.error(
-            id,
-            span,
-            AnalysisErrorKind::MacroDependencyTooPrivate {
-                item,
-                macro_visibility,
-                item_visibility,
-            },
-        );
-        false
     }
 
     pub fn new(
@@ -1058,24 +1001,24 @@ impl<'r> Analyzer<'r> {
         }
     }
 
+    /// Resolves an item with the rights of whoever authored the syntax that
+    /// named it: `origin` selects the accessor module, so a macro body reaches
+    /// its own module's declarations wherever the expansion lands.
     fn resolve_item_checked(
         &mut self,
         access: &ItemAccess,
         type_args: &[ResolvedType],
         indirect: bool,
+        origin: Origin,
     ) -> Result<ResolvedItem, ResolveError> {
-        let bypass = self.reveals.active();
+        let accessor = self.origin_module(origin);
+        let bypass = self.reveals.allows(origin);
         let options = access
             .options(ResolveItemOptions::with_indirection(indirect).bypassing_visibility(bypass));
-        let result =
-            self.resolver
-                .resolve_item(&self.module_path, &access.absolute, type_args, options);
-        if bypass
-            && result.is_ok()
-            && !self
-                .resolver
-                .is_item_visible(&self.module_path, &access.absolute)
-        {
+        let result = self
+            .resolver
+            .resolve_item(&accessor, &access.absolute, type_args, options);
+        if bypass && result.is_ok() && !self.resolver.is_item_visible(&accessor, &access.absolute) {
             self.reveals.mark_used();
         }
         result
@@ -1086,17 +1029,19 @@ impl<'r> Analyzer<'r> {
         prefix: &[Ident],
         access: &ItemAccess,
         type_args: &[ResolvedType],
+        origin: Origin,
     ) -> Result<ResolvedItem, ResolveError> {
-        let result = self.resolve_item_checked(access, type_args, true);
+        let result = self.resolve_item_checked(access, type_args, true, origin);
         match (prefix, &result) {
             ([single], Err(ResolveError::UnknownItem { .. })) => {
-                match self
-                    .resolver
-                    .ambient_core_candidates(&self.module_path, single)?
-                {
-                    Some(ambient) => {
-                        self.resolve_item_checked(&ItemAccess::gated(ambient), type_args, true)
-                    }
+                let accessor = self.origin_module(origin);
+                match self.resolver.ambient_core_candidates(&accessor, single)? {
+                    Some(ambient) => self.resolve_item_checked(
+                        &ItemAccess::gated(ambient),
+                        type_args,
+                        true,
+                        origin,
+                    ),
                     None => result,
                 }
             }
@@ -1292,12 +1237,13 @@ impl<'r> Analyzer<'r> {
         module: &[Ident],
     ) -> Option<ResolvedType> {
         self.check_alias_generic_bounds(id, span, typ, module);
-        let bypass = self.reveals.active();
+        let reveals = &self.reveals;
         match self.context.resolve_type(
             typ.to_owned(),
             &mut *self.resolver,
             module,
-            ResolveItemOptions::with_indirection(indirect).bypassing_visibility(bypass),
+            ResolveItemOptions::with_indirection(indirect),
+            &|origin| reveals.allows(origin),
         ) {
             Ok(resolved) => Some(resolved),
             Err(err) => {
