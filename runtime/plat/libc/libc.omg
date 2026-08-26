@@ -69,3 +69,58 @@ glue core::platform::StandardInput {
         }
     }
 }
+
+# Panic policy for a hosted libc target: report the site on stderr, then
+# `abort`. `abort` rather than `exit` because a panic means an invariant the
+# program was built on no longer holds -- running `atexit` handlers and stdio
+# flushes on top of that broken state is not cleanup, and the resulting
+# SIGABRT leaves a core dump for the debugger. A freestanding target that
+# wants a trap, a reset, or a status LED supplies its own glue instead.
+shared foreign(c) abort() => never;
+
+# Issued in pieces rather than assembled in one buffer: the message is an
+# arbitrary `*str`, and truncating it would lose exactly what the panic
+# exists to report. A handler that is already terminating has nowhere to
+# report a failed write, so it stops instead of retrying forever.
+panic_write(bytes: *[]u8) => void {
+    mut written: i32 = 0;
+    while written < bytes.length {
+        rest := &bytes[written..];
+        count := write(2, <*u8>rest, <usize>rest.length);
+        if count <= 0isize { break; }
+        written = written + <i32>count;
+    }
+}
+
+# Digits are produced least-significant first, so they are filled in from the
+# end of the buffer and sliced from there. `plat` sits below `std` and cannot
+# reach `std::fmt`, and a `u32` needs at most ten decimal digits.
+panic_write_u32(value: u32) => void {
+    mut digits: [10]u8;
+    mut start: i32 = 10;
+    mut current := value;
+    loop {
+        start = start - 1;
+        digits[start] = 48u8 + <u8>(current % 10u32);
+        current = current / 10u32;
+        if current == 0u32 { break; }
+    }
+    panic_write(&digits[start..]);
+}
+
+glue core::panic::PanicHandler {
+    panic(info: *PanicInfo) => never {
+        panic_write(b"panicked at ");
+        panic_write(info.source_file.as_bytes());
+        panic_write(b":");
+        panic_write_u32(info.line);
+        panic_write(b":");
+        panic_write_u32(info.column);
+        if !info.message.is_empty() {
+            panic_write(b": ");
+            panic_write(info.message.as_bytes());
+        }
+        panic_write(b"\n");
+        abort()
+    }
+}

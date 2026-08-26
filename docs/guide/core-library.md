@@ -138,9 +138,16 @@ which describe the outermost invocation -- so it names *your* `panic$` call,
 not a line in `core`. With no argument the message is `""`.
 
 Like every other gap, the final program or platform package supplies the one
-`glue`. Core neither allocates, formats, prints, nor terminates, and there is
-deliberately no default handler: print-and-exit is right for a hosted program
+`glue`. Core neither allocates, formats, prints, nor terminates, and declares
+no default handler of its own: print-and-abort is right for a hosted program
 and wrong for a board that should reset or blink an LED.
+
+A build that registers `plat` gets the hosted answer for free -- its libc
+platform ships the panic glue described in
+[platform glue](platform-glue.md). Because a gap takes exactly one glue
+project-wide, that also means an application linking `plat` cannot add its own
+panic policy on top; a program that wants a different one is built without
+`plat`'s, and writes it itself:
 
 ```omega
 import core::panic::PanicInfo;

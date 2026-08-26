@@ -1,21 +1,9 @@
 import std::io::println;
-import core::panic::PanicInfo;
 
-foreign(c) exit(code: i32) => never;
-
-# Panic policy belongs to the final program: core declares the capability and
-# never chooses print-and-exit, trap, or reset for it.
-glue core::panic::PanicHandler {
-	panic(info: *PanicInfo) => never {
-		println$("panic-message: ", info.message);
-		println$("panic-has-file: ", !info.source_file.is_empty());
-		println$("panic-has-location: ", info.line > 0 && info.column > 0);
-		exit(0)
-	}
-}
-
-# The message is optional. This never runs -- the first panic below does not
-# return -- but it must still compile.
+# `plat` supplies the one `glue core::panic::PanicHandler` for this hosted
+# target, so the panic below reaches libc's handler rather than an
+# application-supplied one. The message is optional: `no_message` never runs
+# -- the panic in `main` does not return -- but it must still compile.
 no_message() => never {
 	panic$()
 }

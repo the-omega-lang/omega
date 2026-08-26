@@ -1,11 +1,5 @@
 import core::panic::PanicInfo;
 
-foreign(c) exit(code: i32) => never;
-
-glue core::panic::PanicHandler {
-	panic(info: *PanicInfo) => never { exit(1) }
-}
-
 # The handler is `shared` to core, so `panic$` stays the only ordinary source
 # entry point: an application cannot call the raw gap function itself.
 raw_handler_call() => never {

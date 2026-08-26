@@ -84,6 +84,10 @@ class TestModule
   def expected_stderr_path
     @path.join("expected.stderr")
   end
+
+  def expected_status_path
+    @path.join("expected.status")
+  end
 end
 
 class TestResult
@@ -261,17 +265,39 @@ class TestRunner
       execution.stderr
     )
 
-    unless execution.success?
-      failures.unshift(
-        indent_message("program exited with status #{execution.status.exitstatus}")
-      )
-    end
+    status_failure = compare_expected_status(test, execution.status)
+    failures.unshift(status_failure) if status_failure
 
     TestResult.new(test, failures, now - start)
   end
 
   def indent_message(text)
     "    #{Color.yellow(text)}"
+  end
+
+  # A program that terminates on a signal has no exit code of its own, so it
+  # reports the shell's `128 + signal` convention instead. Without an
+  # `expected.status` file, exiting successfully remains the requirement.
+  def status_code(status)
+    status.exitstatus || 128 + status.termsig
+  end
+
+  def compare_expected_status(test, status)
+    actual = status_code(status)
+
+    unless test.expected_status_path.file?
+      return nil if status.success?
+
+      return indent_message("program exited with status #{actual}")
+    end
+
+    expected = File.read(test.expected_status_path).strip.to_i
+    return nil if actual == expected
+
+    indent_message(
+      "program exited with status #{actual}, expected #{expected} " \
+        "(#{test.expected_status_path.basename})"
+    )
   end
 
   def compare_expected_output(test, stdout, stderr)
@@ -358,11 +384,15 @@ class TestRunner
     FRAME
   end
 
+  # `rlimit_core: 0` because a case may assert an abnormal termination through
+  # `expected.status`: a panicking program reaching libc's `abort` would
+  # otherwise drop a core file into the repository on every run.
   def capture(*command)
     stdout, stderr, status = Open3.capture3(
       *command,
       chdir: ROOT_DIR.to_s,
-      binmode: true
+      binmode: true,
+      rlimit_core: 0
     )
 
     CommandResult.new(stdout, stderr, status)

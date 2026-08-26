@@ -43,6 +43,7 @@ tests/
     hello_world.omg
     expected.stdout
     expected.stderr
+    expected.status
 ```
 
 `bin/test-runner` discovers those directories and, for each selected case:
@@ -50,7 +51,7 @@ tests/
 1. invokes `bin/omgc-debug` on the test package, registering the current `core`, `std`, and `plat` source packages as externs;
 2. if compilation succeeds, links the produced object with the prebuilt runtime objects;
 3. executes the resulting program;
-4. compares any present `expected.stdout` and `expected.stderr` files byte-for-byte with the relevant captured output.
+4. compares any present `expected.stdout` and `expected.stderr` files byte-for-byte with the relevant captured output, and any present `expected.status` file with the program's termination status.
 
 The runner keeps captured output in memory. Per-test object/executable artifacts live under `<artifacts>/tests/<case>/`, where `<artifacts>` defaults to `target/` and can be overridden with `OMEGA_ARTIFACTS_DIR`.
 
@@ -63,9 +64,12 @@ Use this layer when the claim is about accepted/rejected Omega source or observa
 Expectation files are optional and exact:
 
 - `expected.stdout` checks stdout;
-- `expected.stderr` checks stderr.
+- `expected.stderr` checks stderr;
+- `expected.status` checks the termination status of a successfully linked program.
 
-If compilation fails, the current runner compares the compiler's stdout/stderr against the same expectation files. A compile failure without `expected.stderr` is treated as unexpected. If compilation succeeds, link failure is always a test failure, and a successfully linked program must exit successfully in addition to matching any expected streams.
+If compilation fails, the current runner compares the compiler's stdout/stderr against the same expectation files. A compile failure without `expected.stderr` is treated as unexpected. If compilation succeeds, link failure is always a test failure.
+
+Without `expected.status`, a successfully linked program must exit successfully in addition to matching any expected streams. `expected.status` replaces that requirement with an exact decimal comparison, so a case may assert a deliberately abnormal termination -- a panic reaching the hosted handler, for example. A program killed by a signal has no exit code of its own and reports the shell's `128 + signal` convention instead, so `abort` is `134`.
 
 Because the same files can describe compiler output for a negative test or program output for a successful test, keep each case intentionally single-purpose. If future test needs make that convention ambiguous, extend the runner deliberately rather than inferring intent from filenames or compiler behavior.
 

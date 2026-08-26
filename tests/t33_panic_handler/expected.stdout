@@ -1,4 +1,1 @@
 before-panic
-panic-message: boom
-panic-has-file: true
-panic-has-location: true

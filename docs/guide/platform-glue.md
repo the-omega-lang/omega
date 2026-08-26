@@ -25,10 +25,10 @@ runtime/plat/
     libc.omg      # honestly named — compiles/registers as "plat" via alias
 ```
 
-`libc.omg` declares everything this platform needs directly: five
-`shared foreign(c)` declarations for libc's `malloc`/`free`/`realloc` and
-`write`/`read`, plus glue declarations for the allocator and three console
-capabilities.
+`libc.omg` declares everything this platform needs directly: six
+`shared foreign(c)` declarations for libc's `malloc`/`free`/`realloc`,
+`write`/`read`, and `abort`, plus glue declarations for the allocator, the
+three console capabilities, and the panic handler.
 A deliberate, real name collision lives here — the marker's own
 `free`/`realloc` methods share their literal names with the raw foreign
 declarations they call — confirmed safe rather than assumed: a bare call inside a
@@ -84,7 +84,7 @@ just the one platform that exists right now, at its own honest path.
   error handling beyond a straight pass-through — the gap's own signature
   has no failure channel (no `Option`/`Result`) to put anything else in;
   a `NULL` from `malloc`/`realloc` is returned as-is.
-- The five `foreign(c)` declarations themselves are `shared` (package-wide,
+- The six `foreign(c)` declarations themselves are `shared` (package-wide,
   not `exposed`): implementation detail, not part of any public surface.
 - **Console glue** — `StandardOutput` and `StandardError` forward their byte
   slice to `write(2)` on descriptors 1 and 2; `StandardInput` forwards its
@@ -92,6 +92,21 @@ just the one platform that exists right now, at its own honest path.
   `Option<usize>::None`; every non-negative result, including zero, becomes
   `Some { value = count }`. `std::io` owns the public `Stdout`, `Stderr`, and
   `Stdin` markers that use these gaps.
+- **Panic glue** — `core::panic::PanicHandler` writes
+  `panicked at <file>:<line>:<column>: <message>` (the `: <message>` part only
+  when the message is non-empty) to descriptor 2, then calls libc's `abort`.
+  `abort` rather than `exit`: a panic means an invariant the program was built
+  on no longer holds, so running `atexit` handlers and stdio flushes on top of
+  that state is not cleanup, and the resulting `SIGABRT` leaves a core dump to
+  debug from. The bytes go out in pieces through the raw `write(2)` rather than
+  through a fixed buffer, since truncating the message would lose exactly what
+  the panic exists to report, and `plat` sits below `std` so it cannot use
+  `std::fmt` to render the line and column.
+
+  A gap accepts one glue project-wide, so registering `plat` *is* choosing this
+  policy: an application that wants a different one (a trap, a reset, a status
+  LED) supplies its own glue in a build that does not register `plat`, rather
+  than adding a second one. See [the core library](core-library.md#panicking).
 
 ## Building it
 

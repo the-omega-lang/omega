@@ -94,7 +94,8 @@ registry, object, or dynamic dispatch.
 
 `runtime/core/platform.omg` supplies the allocator and console gaps and
 `runtime/core/panic.omg` supplies `PanicHandler`. `runtime/plat/libc/` is an
-ordinary external package that supplies the libc-backed glue for the platform
-gaps; panic policy is left to the final program.
+ordinary external package that supplies the libc-backed glue for all of them,
+including a hosted panic policy; a program wanting a different one is built
+without that package rather than adding a second glue.
 See [`plat`](../guide/platform-glue.md) for that implementation and
 [the core library](../guide/core-library.md) for the public core layout.

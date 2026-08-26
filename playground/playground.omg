@@ -25,4 +25,5 @@ main() => void {
 	fnptr := MyStruct::self::member_function;
 	mystruct := MyStruct { number = 10; };
 	fnptr(&mystruct);
+	panic$("testing the panic macro");
 }
