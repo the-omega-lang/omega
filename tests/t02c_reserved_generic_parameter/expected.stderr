@@ -1,0 +1,37 @@
+error: 'u8' is a built-in type name and cannot be declared here
+ --> tests/t02c_reserved_generic_parameter/t02c_reserved_generic_parameter.omg:4:1
+  |
+4 |   identity<u8>(value: u8) => u8 {
+  |  _^
+5 | |     value
+6 | | }
+  | |_^ `u8` names a language type
+  |
+  = note: the primitive spellings and `str` are reserved for module, item, alias, import, and generic-parameter names
+  = help: choose a different name; `u8` still works as a type wherever a type is written
+
+error: 'u8' is a built-in type name and cannot be declared here
+ --> tests/t02c_reserved_generic_parameter/t02c_reserved_generic_parameter.omg:4:1
+  |
+4 |   identity<u8>(value: u8) => u8 {
+  |  _^
+5 | |     value
+6 | | }
+  | |_^ `u8` names a language type
+  |
+  = note: the primitive spellings and `str` are reserved for module, item, alias, import, and generic-parameter names
+  = help: choose a different name; `u8` still works as a type wherever a type is written
+
+error: 'u8' is a built-in type name and cannot be declared here
+ --> tests/t02c_reserved_generic_parameter/t02c_reserved_generic_parameter.omg:4:1
+  |
+4 |   identity<u8>(value: u8) => u8 {
+  |  _^
+5 | |     value
+6 | | }
+  | |_^ `u8` names a language type
+  |
+  = note: the primitive spellings and `str` are reserved for module, item, alias, import, and generic-parameter names
+  = help: choose a different name; `u8` still works as a type wherever a type is written
+
+error: could not compile the program due to 3 previous errors

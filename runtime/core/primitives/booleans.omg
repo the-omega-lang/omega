@@ -1,4 +1,4 @@
-# `core::primitives::bool` -- `bool`'s declaration site.
+# `core::primitives::booleans` -- `bool`'s declaration site.
 #
 # One bit of information, stored in one byte. Its operators are `==`/`!=`,
 # `&`/`|`/`^`, the short-circuiting `&&`/`||`, and unary `!`. `&`/`|`/`^`

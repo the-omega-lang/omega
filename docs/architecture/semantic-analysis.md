@@ -79,6 +79,8 @@ A `Context` tracks nested `LexicalScope`s containing facts such as:
 - usage/write information for warnings;
 - narrowing/widening state used by control flow/patterns.
 
+A scope keeps every declaration made in it, in source order, plus an index of which binding each hygienic `(Ident, Origin)` key currently resolves to. Shadowing therefore changes name lookup only: a shadowed declaration keeps its own `HirId`, its own storage identity, and its own unused/`mut` diagnostics. Declaration sites choose between `DeclarationPolicy::Shadow` (local declarations, refinement re-declarations) and `DeclarationPolicy::Unique` (parameters, module-scope declarations), which is what keeps duplicate parameters an error while same-block locals shadow.
+
 Resolution order distinguishes lexical locals/types from module-level names. Module aliases and top-level declarations are not copied wholesale into every analyzer context; the resolver is queried when local scope lookup does not answer the question.
 
 Declared `alias` names are erased during this resolution rather than represented. `omega_analyzer::aliases::normalize_type` is the one canonical alias-application operation, and it works on the **whole** written type rather than only its root: it walks pointers, arrays, function parameters/results, spec conjunction members and generic arguments, and expands every alias application it finds. `apply_alias_once` under it binds one alias template's full effective argument list (explicit arguments plus defaults, using the same default/arity rule ordinary generic items use) and returns that layer's substituted RHS.

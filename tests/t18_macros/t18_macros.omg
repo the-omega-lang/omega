@@ -2,6 +2,7 @@ import std::io::println;
 import self::defs::read_secret;
 import self::defs::make_doubler;
 import self::defs::re_export;
+import self::defs::line;
 
 make_doubler$(i32, double_i32);
 
@@ -55,4 +56,8 @@ main() => void {
 	# makes it nameable here, proving path capture, substitution, reparse,
 	# and downstream resolution work together.
 	println$("magic: ", magic());
+
+	# An exposed `core` macro is an ambient fallback, so an explicit import
+	# of the same invocation name replaces it.
+	println$("imported-macro-over-ambient: ", line$());
 }

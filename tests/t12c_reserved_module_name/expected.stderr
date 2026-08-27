@@ -1,3 +1,9 @@
+error: 'i32' under module 't12c_reserved_module_name' is not a valid Omega module name
+= help: rename `i32` to a valid Omega identifier (ASCII letters/digits/underscore, not starting with a digit); `root`, `self`, and `super` are reserved for import navigation and the primitive spellings plus `str` are reserved for language types; Omega does not normalize module names automatically
+
 error: 'root' under module 't12c_reserved_module_name' is not a valid Omega module name
-= help: rename `root` to a valid Omega identifier (ASCII letters/digits/underscore, not starting with a digit) other than `root`, `self`, or `super`, which are reserved for import navigation; Omega does not normalize module names automatically
+= help: rename `root` to a valid Omega identifier (ASCII letters/digits/underscore, not starting with a digit); `root`, `self`, and `super` are reserved for import navigation and the primitive spellings plus `str` are reserved for language types; Omega does not normalize module names automatically
+
+error: 'str' under module 't12c_reserved_module_name' is not a valid Omega module name
+= help: rename `str` to a valid Omega identifier (ASCII letters/digits/underscore, not starting with a digit); `root`, `self`, and `super` are reserved for import navigation and the primitive spellings plus `str` are reserved for language types; Omega does not normalize module names automatically
 

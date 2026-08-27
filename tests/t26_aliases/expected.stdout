@@ -20,3 +20,4 @@ imported-macro-alias: 42
 bound-alias: 23
 static-param-alias: 23
 dynamic-alias: 23
+ambient-name-hidden-by-alias: 4 9

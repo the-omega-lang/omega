@@ -31,6 +31,9 @@ gap PanicHandler {
 	shared panic(info: *PanicInfo) => never;
 }
 
+# The message parameter is variadic because Omega has no optional macro
+# parameter; passing more than one silently keeps the last. See
+# docs/issues/language-limitations.md.
 exposed macro panic($message: expr...) => {
 	{
 		mut info := PanicInfo {
@@ -40,7 +43,6 @@ exposed macro panic($message: expr...) => {
 			message = "";
 		};
 		$...(){
-			comp PANIC_TAKES_AT_MOST_ONE_MESSAGE := 0;
 			info.message = $message;
 		}
 		PanicHandler::panic(&info)

@@ -12,3 +12,4 @@ anchored-alias: 9
 anchored-static: 0
 anchored-super: 14
 anchored-static-super: 4
+import-hides-ambient: 3 11

@@ -1,0 +1,20 @@
+import std::io::println;
+
+# Shadowing is a fresh binding, so the newest binding's own mutability
+# decides whether it may be written -- the shadowed `mut` does not carry over.
+write_after_privilege_drop() => i32 {
+	mut x := 1;
+	x := x + 1;
+	x = 5;
+	x
+}
+
+# A parameter list is a declaration set that must name each parameter once,
+# so parameters do not shadow one another.
+duplicate_parameters(a: i32, a: i32) => i32 {
+	a
+}
+
+main() => void {
+	println$(write_after_privilege_drop(), duplicate_parameters(1, 2));
+}

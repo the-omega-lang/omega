@@ -36,7 +36,7 @@ use crate::{
         CheckedStructLiteral, CheckedStructLiteralField, CheckedUnionConstruct, CheckedUnionDef,
         CheckedWhile, NumberValue, Storage,
     },
-    context::{Context, LexicalScope, VarBinding},
+    context::{Context, DeclarationPolicy, LexicalScope, VarBinding},
     error::{
         AnalysisError, AnalysisErrorKind, AnalysisWarning, AnalysisWarningKind, TypeResolutionError,
     },
@@ -401,8 +401,19 @@ impl<'r> Analyzer<'r> {
 
         let mut seen_generics = HashSet::new();
         for (ident, resolved_type) in generics {
-            let dup = context.current_scope_has_type(ident) || !seen_generics.insert(ident);
-            if dup {
+            // `str` is a language type name with no scalar entry in
+            // `Context`, so this cannot be a lookup in the installed types.
+            if crate::context::is_reserved_type_name(ident.as_ref()) {
+                errors.push(AnalysisError::new(
+                    owner.id,
+                    owner.span,
+                    AnalysisErrorKind::ReservedTypeName {
+                        name: ident.clone(),
+                    },
+                ));
+                continue;
+            }
+            if !seen_generics.insert(ident) {
                 errors.push(AnalysisError::new(
                     owner.id,
                     owner.span,
@@ -411,9 +422,9 @@ impl<'r> Analyzer<'r> {
                         previous: None,
                     },
                 ));
-            } else {
-                context.define_type(ident.clone(), resolved_type.clone());
+                continue;
             }
+            context.define_type(ident.clone(), resolved_type.clone());
         }
 
         Self {
@@ -921,6 +932,7 @@ impl<'r> Analyzer<'r> {
         r#type: ResolvedType,
         storage: Storage,
         mutable: bool,
+        policy: DeclarationPolicy,
     ) -> Option<()> {
         self.declare_binding_impl(
             ident,
@@ -935,6 +947,7 @@ impl<'r> Analyzer<'r> {
                 used: false,
                 written: false,
             },
+            policy,
         )
     }
 
@@ -946,8 +959,18 @@ impl<'r> Analyzer<'r> {
         origin: Origin,
         r#type: ResolvedType,
         value: crate::resolved_type::ConstValue,
+        policy: DeclarationPolicy,
     ) -> Option<()> {
-        self.declare_binding(id, span, ident, origin, r#type, Storage::Comp, false)?;
+        self.declare_binding(
+            id,
+            span,
+            ident,
+            origin,
+            r#type,
+            Storage::Comp,
+            false,
+            policy,
+        )?;
         self.context.set_comp_value(id, value);
         Some(())
     }
@@ -975,6 +998,10 @@ impl<'r> Analyzer<'r> {
                 used: false,
                 written: false,
             },
+            // A refinement scope re-declares the same name under a proved
+            // narrower type; it is a shadow of the binding it refines, not a
+            // competing declaration.
+            DeclarationPolicy::Shadow,
         )
     }
 
@@ -983,9 +1010,10 @@ impl<'r> Analyzer<'r> {
         ident: &Ident,
         origin: Origin,
         binding: VarBinding,
+        policy: DeclarationPolicy,
     ) -> Option<()> {
         let (id, span) = (binding.decl_id, binding.span);
-        match self.context.declare(ident.clone(), origin, binding) {
+        match self.context.declare(ident.clone(), origin, binding, policy) {
             Ok(()) => Some(()),
             Err((name, previous)) => {
                 self.error(

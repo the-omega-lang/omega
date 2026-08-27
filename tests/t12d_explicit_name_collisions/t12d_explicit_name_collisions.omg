@@ -1,0 +1,14 @@
+# Declarations, aliases, and imports all make an explicit claim on the same
+# module-scope namespace, so two claims on one name collide whichever forms
+# they take and in whichever order they appear. The later claim is reported.
+import self::helper::Thing;
+
+struct Thing {
+	exposed value: i32;
+}
+
+alias Marker = i32;
+
+import self::helper::Marker;
+
+main() => void {}

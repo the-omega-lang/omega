@@ -1,0 +1,26 @@
+error: 'Thing' is declared multiple times in this scope
+ --> tests/t12d_explicit_name_collisions/t12d_explicit_name_collisions.omg:6:1
+  |
+4 |   import self::helper::Thing;
+  |   --------------------------- `Thing` first declared here
+5 |   
+6 |   struct Thing {
+  |  _^
+7 | |     exposed value: i32;
+8 | | }
+  | |_^ `Thing` declared again here
+  |
+  = note: this declaration context requires each name to be declared once
+
+error: 'Marker' is declared multiple times in this scope
+  --> tests/t12d_explicit_name_collisions/t12d_explicit_name_collisions.omg:12:1
+   |
+10 | alias Marker = i32;
+   | ------------------- `Marker` first declared here
+11 | 
+12 | import self::helper::Marker;
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Marker` declared again here
+   |
+   = note: this declaration context requires each name to be declared once
+
+error: could not compile the program due to 2 previous errors

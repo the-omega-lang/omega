@@ -37,6 +37,16 @@ pub enum CompileError {
         first: ModulePath,
         second: ModulePath,
     },
+    /// Two explicit bindings -- definitions, macro aliases, or imports --
+    /// claim the same name in one module's macro namespace. Ambient `core`
+    /// macros are fallback names and are not explicit bindings, so replacing
+    /// one is not a collision.
+    MacroNameCollision {
+        module: ModulePath,
+        name: Ident,
+        previous: Span,
+        span: Span,
+    },
     EmptyPackage {
         root: PathBuf,
         expected: PathBuf,
@@ -52,6 +62,7 @@ impl CompileError {
             Self::Parse { module, .. }
             | Self::MacroExpansion { module, .. }
             | Self::Analysis { module, .. } => Some(module),
+            Self::MacroNameCollision { module, .. } => Some(module),
             Self::DuplicateModuleIdentity { .. }
             | Self::AmbiguousPreludeMacro { .. }
             | Self::EmptyPackage { .. } => None,
@@ -92,6 +103,22 @@ impl CompileError {
                     "a package root is its own root module, so its file is named after the \
                      directory and sits directly inside it; if this package still uses the older \
                      nested layout, move '<root>/<name>/*.omg' up into '<root>/'",
+                ),
+            ],
+            Self::MacroNameCollision {
+                name,
+                previous,
+                span,
+                ..
+            } => vec![
+                Diagnostic::error(format!(
+                    "macro '{}' is bound more than once in this module",
+                    name.as_ref()
+                ))
+                .with_label(*span, format!("`{}` bound again here", name.as_ref()))
+                .with_secondary_label(*previous, format!("`{}` first bound here", name.as_ref()))
+                .with_note(
+                    "macro definitions, macro aliases, and macro imports share one namespace; only an ambient `core` macro may be replaced",
                 ),
             ],
             Self::AmbiguousPreludeMacro {

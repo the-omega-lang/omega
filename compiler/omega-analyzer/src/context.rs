@@ -34,16 +34,32 @@ pub struct VarBinding {
     pub written: bool,
 }
 
+/// Whether a declaration site allows an earlier binding of the same hygienic
+/// name to be shadowed. Local declarations do; declaration sets that must name
+/// each member exactly once -- parameters, module-scope items -- do not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeclarationPolicy {
+    Shadow,
+    Unique,
+}
+
 #[derive(Debug, Clone)]
 pub struct LexicalScope {
-    declared_variables: IndexMap<(Ident, Origin), VarBinding>,
+    /// Every declaration made in this scope, in source order. A shadowed
+    /// declaration stays here so it still gets its own unused/`mut`
+    /// diagnostics.
+    declarations: Vec<((Ident, Origin), VarBinding)>,
+    /// Index into `declarations` of the binding each hygienic name currently
+    /// resolves to.
+    visible: IndexMap<(Ident, Origin), usize>,
     defined_types: IndexMap<Ident, ResolvedType>,
 }
 
 impl LexicalScope {
     fn new() -> Self {
         Self {
-            declared_variables: IndexMap::new(),
+            declarations: Vec::new(),
+            visible: IndexMap::new(),
             defined_types: IndexMap::new(),
         }
     }
@@ -53,27 +69,57 @@ impl LexicalScope {
         ident: Ident,
         origin: Origin,
         binding: VarBinding,
+        policy: DeclarationPolicy,
     ) -> Result<(), (Ident, Span)> {
-        if let Some(existing) = self.declared_variables.get(&(ident.clone(), origin)) {
-            return Err((ident, existing.span));
+        let key = (ident, origin);
+        if policy == DeclarationPolicy::Unique
+            && let Some(existing) = self.get(&key)
+        {
+            return Err((key.0, existing.span));
         }
-        self.declared_variables.insert((ident, origin), binding);
+        self.declarations.push((key.clone(), binding));
+        self.visible.insert(key, self.declarations.len() - 1);
         Ok(())
     }
 
+    fn get(&self, key: &(Ident, Origin)) -> Option<&VarBinding> {
+        self.visible.get(key).map(|&i| &self.declarations[i].1)
+    }
+
+    fn get_mut(&mut self, key: &(Ident, Origin)) -> Option<&mut VarBinding> {
+        let index = *self.visible.get(key)?;
+        Some(&mut self.declarations[index].1)
+    }
+
+    /// Every declaration in this scope, shadowed ones included, in source
+    /// order.
     pub fn bindings(&self) -> impl Iterator<Item = (&(Ident, Origin), &VarBinding)> {
-        self.declared_variables.iter()
+        self.declarations
+            .iter()
+            .map(|(key, binding)| (key, binding))
+    }
+
+    fn names(&self) -> impl Iterator<Item = &Ident> {
+        self.declarations.iter().map(|((ident, _), _)| ident)
     }
 }
 
 /// The ambiently-bound primitive type names every scope carries, independent
-/// of any import or declaration. Shared with callers outside this crate
-/// (structural alias-declaration validation) that need to recognize a
-/// primitive name without constructing a full `Context`.
-pub const BUILTIN_TYPE_NAMES: &[&str] = &[
+/// of any import or declaration.
+const BUILTIN_TYPE_NAMES: &[&str] = &[
     "void", "never", "bool", "char", "i8", "i16", "i32", "i64", "isize", "u8", "u16", "u32", "u64",
     "usize", "f32", "f64",
 ];
+
+/// Whether `name` is a spelling the language owns as a type. This is
+/// `BUILTIN_TYPE_NAMES` plus `str`, which is a builtin type name even though
+/// `Context` installs no scalar entry for it (it is only legal behind a
+/// pointer). Name-binding restrictions must consult this rather than the
+/// scalar table, so a module, alias, import, or generic parameter can never
+/// claim a language type spelling.
+pub fn is_reserved_type_name(name: &str) -> bool {
+    BUILTIN_TYPE_NAMES.contains(&name) || name == "str"
+}
 
 #[derive(Debug, Clone)]
 pub struct Context {
@@ -151,7 +197,7 @@ impl Context {
         self.scopes
             .iter()
             .rev()
-            .find_map(|scope| scope.declared_variables.get(&key))
+            .find_map(|scope| scope.get(&key))
             .or_else(|| {
                 if ident.as_ref() != "self" || origin == Origin::default() {
                     return None;
@@ -160,7 +206,7 @@ impl Context {
                 self.scopes
                     .iter()
                     .rev()
-                    .find_map(|scope| scope.declared_variables.get(&root_key))
+                    .find_map(|scope| scope.get(&root_key))
             })
     }
 
@@ -194,14 +240,19 @@ impl Context {
         self.scopes
             .iter_mut()
             .rev()
-            .find_map(|scope| scope.declared_variables.get_mut(key))
+            .find_map(|scope| scope.get_mut(key))
     }
 
+    /// The innermost, latest binding carrying `decl_id`. A refinement scope
+    /// re-declares the original `decl_id` under a narrowed type, so the
+    /// innermost match is the one whose state a use site must update.
     fn binding_mut(&mut self, decl_id: HirId) -> Option<&mut VarBinding> {
         self.scopes.iter_mut().rev().find_map(|scope| {
             scope
-                .declared_variables
-                .values_mut()
+                .declarations
+                .iter_mut()
+                .rev()
+                .map(|(_, binding)| binding)
                 .find(|binding| binding.decl_id == decl_id)
         })
     }
@@ -214,12 +265,7 @@ impl Context {
     }
 
     pub fn similar_variable_name(&self, target: &Ident) -> Option<Ident> {
-        best_match(
-            target,
-            self.scopes
-                .iter()
-                .flat_map(|scope| scope.declared_variables.keys().map(|(ident, _)| ident)),
-        )
+        best_match(target, self.scopes.iter().flat_map(LexicalScope::names))
     }
 
     pub fn similar_type_name(&self, target: &Ident) -> Option<Ident> {
@@ -844,19 +890,12 @@ impl Context {
         ident: Ident,
         origin: Origin,
         binding: VarBinding,
+        policy: DeclarationPolicy,
     ) -> Result<(), (Ident, Span)> {
         self.scopes
             .last_mut()
             .expect("context always has a root scope")
-            .declare(ident, origin, binding)
-    }
-
-    pub fn current_scope_has_type(&self, name: &Ident) -> bool {
-        self.scopes
-            .last()
-            .expect("context always has a root scope")
-            .defined_types
-            .contains_key(name)
+            .declare(ident, origin, binding, policy)
     }
 
     pub fn define_type(&mut self, name: Ident, r#type: ResolvedType) {

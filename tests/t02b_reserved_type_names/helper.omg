@@ -1,0 +1,3 @@
+exposed marker() => i32 {
+	0
+}

@@ -20,6 +20,8 @@ A `comp` binding is immutable. `mut comp name := ...` is invalid because a subst
 
 A non-`comp` binding may still have a `comp` initializer; in that case only the initializer is evaluated at compile time and the binding itself is an ordinary runtime place.
 
+A local `comp` binding is an ordinary lexical binding for name-resolution purposes: it shadows an earlier binding of the same name and may itself be shadowed, by another `comp` binding or by a runtime one. See [`bindings-and-mutability.md`](bindings-and-mutability.md). Module-scope `comp` bindings are not shadowable, like every other module-scope declaration.
+
 ## Global bindings
 
 Module-scope bindings may be storage-less `comp` values or real globals:

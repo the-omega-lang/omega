@@ -1,0 +1,10 @@
+# A generic type parameter binds a type name, so it may not spell a language
+# type either. The rule is checked where the generic list is registered, so
+# the diagnostic repeats once per query that registers it.
+identity<u8>(value: u8) => u8 {
+	value
+}
+
+main() => void {
+	unused := identity(<u8>1);
+}

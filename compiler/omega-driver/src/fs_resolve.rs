@@ -81,15 +81,18 @@ fn resolve_segment(dir: &Path, name: &Ident) -> Result<ModuleLocation, SegmentEr
 }
 
 /// Whether `name` is legal as a module/package identity: a valid Omega
-/// identifier that is not one of the three import-navigation spellings.
-/// Those spellings stay usable as ordinary contextual identifiers
-/// everywhere else (bindings, fields, item names, ...); they are excluded
-/// here only because reusing them as a module identity would make
-/// `root::`/`self::`/`super::` ambiguous between navigation and a literal
-/// module segment.
+/// identifier that is neither one of the three import-navigation spellings
+/// nor a language type spelling. Those spellings stay usable as ordinary
+/// contextual identifiers everywhere else (bindings, fields, item names,
+/// ...); they are excluded here only because reusing one as a module
+/// identity would make `root::`/`self::`/`super::` ambiguous between
+/// navigation and a literal segment, or `i32::`/`str::` ambiguous between
+/// the language type and a module.
 pub fn is_valid_module_name(name: &str) -> bool {
     use omega_parser::parser::contextual::{ROOT, SELF, SUPER};
-    omega_parser::lexer::is_valid_identifier(name) && ![ROOT, SELF, SUPER].contains(&name)
+    omega_parser::lexer::is_valid_identifier(name)
+        && ![ROOT, SELF, SUPER].contains(&name)
+        && !omega_analyzer::is_reserved_type_name(name)
 }
 
 /// Whether `dir`'s subtree contains any `.omg` source, at any depth. Used to
@@ -344,8 +347,10 @@ mod tests {
     }
 
     #[test]
-    fn root_self_and_super_are_invalid_module_names_but_other_contextual_words_are_not() {
-        for reserved in ["root", "self", "super"] {
+    fn navigation_and_type_spellings_are_invalid_module_names_but_other_contextual_words_are_not() {
+        for reserved in [
+            "root", "self", "super", "i32", "bool", "str", "void", "never", "f64",
+        ] {
             assert!(
                 !is_valid_module_name(reserved),
                 "{reserved} should be rejected"
@@ -360,8 +365,8 @@ mod tests {
     }
 
     #[test]
-    fn a_source_bearing_file_named_root_self_or_super_is_rejected() {
-        for reserved in ["root", "self", "super"] {
+    fn a_source_bearing_file_named_with_a_reserved_spelling_is_rejected() {
+        for reserved in ["root", "self", "super", "i32", "str"] {
             let root = TestDir::new();
             let name = root.name();
             root.write(&format!("{reserved}.omg"));
@@ -379,8 +384,8 @@ mod tests {
     }
 
     #[test]
-    fn a_source_bearing_directory_named_root_self_or_super_is_rejected() {
-        for reserved in ["root", "self", "super"] {
+    fn a_source_bearing_directory_named_with_a_reserved_spelling_is_rejected() {
+        for reserved in ["root", "self", "super", "bool", "str"] {
             let root = TestDir::new();
             let name = root.name();
             root.write(&format!("{reserved}/child.omg"));

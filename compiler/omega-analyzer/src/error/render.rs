@@ -60,7 +60,7 @@ impl AnalysisErrorKind {
             Self::UnresolvedInnerExpression => d.with_label(span, "could not resolve this expression"),
             Self::Redeclaration { name, previous } => {
                 let d = d.with_label(span, format!("`{}` declared again here", name.as_ref())).with_note(
-                    "a name can only be declared once per scope; shadowing an outer scope is allowed",
+                    "this declaration context requires each name to be declared once",
                 );
                 match previous {
                     Some(previous) => {
@@ -69,6 +69,12 @@ impl AnalysisErrorKind {
                     None => d,
                 }
             }
+            Self::ReservedTypeName { name } => d
+                .with_label(span, format!("`{}` names a language type", name.as_ref()))
+                .with_note(
+                    "the primitive spellings and `str` are reserved for module, item, alias, import, and generic-parameter names",
+                )
+                .with_help(format!("choose a different name; `{}` still works as a type wherever a type is written", name.as_ref())),
             Self::AssignmentTargetNotAPlace => d
                 .with_label(span, "cannot assign to this expression")
                 .with_note("only variables, fields, indexes, and dereferences can be assigned to"),
@@ -918,7 +924,7 @@ pub fn resolve_error_diagnostic(error: &ResolveError, span: Option<Span>) -> Dia
         }
         ResolveError::InvalidModuleName { invalid, .. } => {
             with_label(d, "not a valid Omega module name".to_string()).with_help(format!(
-                "rename `{invalid}` to a valid Omega identifier (ASCII letters/digits/underscore, not starting with a digit) other than `root`, `self`, or `super`, which are reserved for import navigation; Omega does not normalize module names automatically"
+                "rename `{invalid}` to a valid Omega identifier (ASCII letters/digits/underscore, not starting with a digit); `root`, `self`, and `super` are reserved for import navigation and the primitive spellings plus `str` are reserved for language types; Omega does not normalize module names automatically"
             ))
         }
         ResolveError::LoadFailed { .. } => with_label(d, "imported from here".to_string()),
@@ -944,6 +950,8 @@ pub fn resolve_error_diagnostic(error: &ResolveError, span: Option<Span>) -> Dia
                 missing.iter().map(Ident::as_ref).collect::<Vec<_>>().join(", ")
             ))
         }
+        ResolveError::InvalidAliasGenericParam { param, .. } => with_label(d, format!("`{}` cannot be a generic parameter here", param.as_ref()))
+            .with_note("an alias's generic parameters are ordinary type-parameter names: each must be distinct and none may spell a language type"),
         ResolveError::InvalidAliasTarget { type_position: true, .. } => with_label(d, "not a type or spec".to_string())
             .with_note("this path sits inside type syntax, where an alias names a type or spec -- the wider bare-path alias namespace does not reach here")
             .with_help("name a type or spec, or forward the declaration with a bare non-generic alias instead"),

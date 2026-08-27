@@ -24,3 +24,9 @@ exposed magic() => i32 {
 exposed macro re_export($path: path, $ident: ident) => {
 	alias $ident = $path::$ident;
 }
+
+# Same invocation name as the ambient `core::builtins::line$`, which is an
+# exposed `core` macro and therefore only a fallback binding.
+exposed macro line() => {
+	4242
+}

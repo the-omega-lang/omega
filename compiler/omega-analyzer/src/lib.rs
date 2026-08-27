@@ -6,7 +6,7 @@ pub mod annotations;
 pub mod checked;
 pub mod comp_eval;
 mod context;
-pub use context::BUILTIN_TYPE_NAMES;
+pub use context::{DeclarationPolicy, is_reserved_type_name};
 pub mod dead_code;
 pub mod error;
 mod exhaustiveness;

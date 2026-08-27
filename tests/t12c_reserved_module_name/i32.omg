@@ -1,0 +1,5 @@
+# `i32` names a language type, so it may not also be a module identity:
+# `i32::` must keep denoting the type's own namespace.
+exposed marker() => i32 {
+	0
+}

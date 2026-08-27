@@ -1,3 +1,9 @@
 exposed greeting() => *str {
 	"hello from helper"
 }
+
+# An explicitly imported name hides the ambient `core` spelling in the
+# importing module.
+exposed struct Result {
+	exposed tag: i32;
+}

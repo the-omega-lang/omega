@@ -1,4 +1,4 @@
-# `core::primitives::char` -- Unicode scalar values and their core behavior.
+# `core::primitives::chars` -- Unicode scalar values and their core behavior.
 # `char::from_u32` is the supported checked path from a codepoint (rejects
 # out-of-range values and UTF-16 surrogates); see docs/issues/known-issues.md
 # for why it is not an enforcement boundary.

@@ -1,5 +1,6 @@
 use crate::{Driver, ModulePath};
 use indexmap::IndexMap;
+use omega_analyzer::DeclarationPolicy;
 use omega_analyzer::analysis::{AnalysisSite, Analyzer, item_site, item_visibility};
 use omega_analyzer::annotations::ResolvedAnnotations;
 use omega_analyzer::checked::{CheckedItem, Storage};

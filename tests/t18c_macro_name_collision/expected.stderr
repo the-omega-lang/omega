@@ -1,0 +1,15 @@
+error: macro 'shout' is bound more than once in this module
+ --> tests/t18c_macro_name_collision/t18c_macro_name_collision.omg:6:1
+  |
+4 |   import self::defs::shout;
+  |   ------------------------- `shout` first bound here
+5 |   
+6 |   macro shout($x: expr) => {
+  |  _^
+7 | |     ($x) + 2
+8 | | }
+  | |_^ `shout` bound again here
+  |
+  = note: macro definitions, macro aliases, and macro imports share one namespace; only an ambient `core` macro may be replaced
+
+error: could not compile the program due to 1 previous error

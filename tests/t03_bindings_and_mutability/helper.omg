@@ -1,0 +1,2 @@
+# Provides a name for the importing module to shadow with a local binding.
+exposed shadowed_import: i32 = 300;

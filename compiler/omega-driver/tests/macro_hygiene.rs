@@ -367,3 +367,32 @@ fn a_macro_invocation_passed_as_an_argument_resolves_at_the_call_site() {
     );
     package.compile();
 }
+
+#[test]
+fn a_macro_repetition_may_redeclare_its_own_local_each_time() {
+    let package = TestPackage::new(
+        r#"
+        import self::helper::sum_each;
+        entry_fn() => i32 { sum_each$(1, 2, 3) }
+        "#,
+    );
+    package.child(
+        "helper",
+        r#"
+        # Every repetition expands into the same caller block under the same
+        # macro origin, so `item` shadows the previous repetition's binding
+        # rather than colliding with it.
+        exposed macro sum_each($value: expr...) => {
+            {
+                mut total := 0;
+                $...(){
+                    item := $value;
+                    total += item;
+                }
+                total
+            }
+        }
+        "#,
+    );
+    package.compile();
+}

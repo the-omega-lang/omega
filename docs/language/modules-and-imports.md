@@ -94,6 +94,14 @@ This ambient lookup is a fallback, not license for arbitrary dependency names to
 
 Exposed macros in `core` participate in the same ambient fallback. Imported macros bind their ordinary invocation name; qualified macro invocation syntax is not required.
 
+Because ambient `core` names are a fallback, an explicit binding in the same namespace hides them. A module-scope declaration, alias, or import named `Result` is the `Result` that module means, and an imported macro replaces an ambient `core` macro of the same invocation name. Hiding an ambient name does not alter the underlying `core` declaration: the qualified path (`core::result::Result`) keeps resolving wherever visibility permits.
+
+## Explicit module-scope names are not shadowable
+
+Module scope has no source-order shadowing. Within one namespace of one module, declarations, aliases, and imports all make an *explicit* claim on a name, and two explicit claims on the same name are a redeclaration regardless of which forms are involved or which order they appear in. The later claim is the one reported. Function overloads remain the only same-name exception among ordinary declarations, and macros have their own separate namespace in which the same rule applies among explicit macro definitions, macro aliases, and macro imports.
+
+An import claims its bound name whether or not its target resolves, so a failed import does not silently hand the name to a competing declaration.
+
 ## Name resolution and visibility
 
 Resolution must preserve declaration identity, not merely textual names. Imported and local declarations with the same spelling must not become accidentally interchangeable if their module/spec identity differs.

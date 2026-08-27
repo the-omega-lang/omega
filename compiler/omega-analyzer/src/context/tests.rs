@@ -60,3 +60,146 @@ fn unknown_convention_name_is_rejected() {
         TypeResolutionError::UnknownCallingConvention { .. }
     ));
 }
+
+fn binding(local: u32, r#type: ResolvedType, mutable: bool) -> VarBinding {
+    VarBinding {
+        decl_id: HirId {
+            module: omega_hir::ModuleId(0),
+            local,
+        },
+        storage: Storage::Local,
+        r#type,
+        span: Span::new(local as usize, local as usize + 1),
+        narrowed: false,
+        mutable,
+        used: false,
+        written: false,
+    }
+}
+
+fn declare(ctx: &mut Context, name: &str, local: u32, r#type: ResolvedType, mutable: bool) {
+    ctx.declare(
+        Ident(name.into()),
+        Origin::default(),
+        binding(local, r#type, mutable),
+        DeclarationPolicy::Shadow,
+    )
+    .expect("a shadowing declaration never collides");
+}
+
+#[test]
+fn a_shadowing_declaration_wins_the_name_but_both_stay_in_the_scope() {
+    let mut ctx = Context::new(Target::DEFAULT);
+    ctx.enter_scope();
+    declare(&mut ctx, "x", 1, ResolvedType::I32, true);
+    declare(&mut ctx, "x", 2, ResolvedType::Bool, false);
+
+    let found = ctx
+        .find_variable(&Ident("x".into()), Origin::default())
+        .expect("`x` is bound");
+    assert_eq!(found.decl_id.local, 2);
+    assert_eq!(found.r#type, ResolvedType::Bool);
+    assert!(!found.mutable);
+
+    let scope = ctx.leave_scope();
+    let declared: Vec<u32> = scope.bindings().map(|(_, b)| b.decl_id.local).collect();
+    assert_eq!(
+        declared,
+        vec![1, 2],
+        "both declarations keep their identity"
+    );
+}
+
+#[test]
+fn a_unique_declaration_still_rejects_a_second_binding_of_the_same_name() {
+    let mut ctx = Context::new(Target::DEFAULT);
+    ctx.enter_scope();
+    declare(&mut ctx, "p", 1, ResolvedType::I32, false);
+    let err = ctx
+        .declare(
+            Ident("p".into()),
+            Origin::default(),
+            binding(2, ResolvedType::I32, false),
+            DeclarationPolicy::Unique,
+        )
+        .expect_err("a unique declaration collides");
+    assert_eq!(err.0, Ident("p".into()));
+    assert_eq!(err.1, Span::new(1, 2), "the first declaration is reported");
+}
+
+#[test]
+fn leaving_an_inner_scope_reveals_the_outer_binding() {
+    let mut ctx = Context::new(Target::DEFAULT);
+    ctx.enter_scope();
+    declare(&mut ctx, "x", 1, ResolvedType::I32, false);
+    ctx.enter_scope();
+    declare(&mut ctx, "x", 2, ResolvedType::Bool, false);
+    assert_eq!(
+        ctx.find_variable(&Ident("x".into()), Origin::default())
+            .unwrap()
+            .decl_id
+            .local,
+        2
+    );
+    ctx.leave_scope();
+    assert_eq!(
+        ctx.find_variable(&Ident("x".into()), Origin::default())
+            .unwrap()
+            .decl_id
+            .local,
+        1
+    );
+}
+
+#[test]
+fn a_shadowed_binding_is_still_reachable_by_its_own_hir_id() {
+    let mut ctx = Context::new(Target::DEFAULT);
+    ctx.enter_scope();
+    declare(&mut ctx, "x", 1, ResolvedType::I32, true);
+    ctx.mark_used(HirId {
+        module: omega_hir::ModuleId(0),
+        local: 1,
+    });
+    declare(&mut ctx, "x", 2, ResolvedType::I32, true);
+    ctx.mark_written(HirId {
+        module: omega_hir::ModuleId(0),
+        local: 2,
+    });
+
+    let scope = ctx.leave_scope();
+    let state: Vec<(u32, bool, bool)> = scope
+        .bindings()
+        .map(|(_, b)| (b.decl_id.local, b.used, b.written))
+        .collect();
+    assert_eq!(state, vec![(1, true, false), (2, false, true)]);
+}
+
+#[test]
+fn a_macro_origin_name_does_not_shadow_the_same_spelling_from_the_caller() {
+    let mut ctx = Context::new(Target::DEFAULT);
+    ctx.enter_scope();
+    declare(&mut ctx, "x", 1, ResolvedType::I32, false);
+    let macro_origin = Origin(Some(ExpansionId(7)));
+    ctx.declare(
+        Ident("x".into()),
+        macro_origin,
+        binding(2, ResolvedType::Bool, false),
+        DeclarationPolicy::Shadow,
+    )
+    .unwrap();
+
+    assert_eq!(
+        ctx.find_variable(&Ident("x".into()), Origin::default())
+            .unwrap()
+            .decl_id
+            .local,
+        1
+    );
+    assert_eq!(
+        ctx.find_variable(&Ident("x".into()), macro_origin)
+            .unwrap()
+            .decl_id
+            .local,
+        2
+    );
+}

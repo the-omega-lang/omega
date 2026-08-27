@@ -6,3 +6,10 @@ bump-mut-self: 2
 value-of-deref: 2
 mutable-places: 100 201
 compound-assign: 40
+shadow-privilege-drop: 12
+shadow-type-change: twelve
+shadow-comp: 6
+shadow-inner-scope: 2
+shadow-outer-restored: 1
+module-names: 100 200 300
+local-over-module-names: 1 2 3

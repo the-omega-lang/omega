@@ -1,5 +1,7 @@
 import std::io::println;
 import self::helper;
+import self::helper::Result;
+import self::fallible;
 import self::mymodule;
 import self::mymodule::thing::something;
 import self::mymodule::other::other_greeting;
@@ -79,4 +81,10 @@ main() => void {
 	println$("anchored-static: ", root::Point::origin().x);
 	println$("anchored-super: ", mymodule::other::anchored_from_nested());
 	println$("anchored-static-super: ", mymodule::other::anchored_static_from_nested());
+
+	# An ambient `core` name is a fallback: the explicit import wins, while
+	# the qualified core path still resolves.
+	imported_result := Result { tag = 3; };
+	core_result: core::result::Result<i32, *str> = fallible::ok(11);
+	println$("import-hides-ambient: ", imported_result.tag, " ", fallible::ok_value(core_result));
 }

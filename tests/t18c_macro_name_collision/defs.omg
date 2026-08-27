@@ -1,0 +1,3 @@
+exposed macro shout($x: expr) => {
+	($x) + 1
+}

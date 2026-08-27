@@ -57,3 +57,15 @@ exposed struct Held<T> {
 exposed macro shout($x: expr) => {
 	($x) + 1
 }
+
+# `Result` is ambient here: this module declares nothing that hides it.
+exposed make_ok(value: i32) => Result<i32, *str> {
+	Result::Ok { value = value; }
+}
+
+exposed ok_value(r: Result<i32, *str>, fallback: i32) => i32 {
+	match r {
+		Result::Ok => r.value,
+		Result::Err => fallback,
+	}
+}

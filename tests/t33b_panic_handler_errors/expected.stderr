@@ -12,13 +12,4 @@ error: mismatched types: cannot assign 'i32' to a target of type '*str'
    |
    = note: Omega has no implicit conversions; the value must have exactly the target's type
 
-error: 'PANIC_TAKES_AT_MOST_ONE_MESSAGE' is declared multiple times in this scope
-  --> tests/t33b_panic_handler_errors/t33b_panic_handler_errors.omg:24:5
-   |
-24 |     panic$("first", "second");
-   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^ `PANIC_TAKES_AT_MOST_ONE_MESSAGE` declared again here
-   |     -------------------------- `PANIC_TAKES_AT_MOST_ONE_MESSAGE` first declared here
-   |
-   = note: a name can only be declared once per scope; shadowing an outer scope is allowed
-
-error: could not compile the program due to 3 previous errors
+error: could not compile the program due to 2 previous errors

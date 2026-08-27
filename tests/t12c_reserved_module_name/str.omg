@@ -1,0 +1,5 @@
+# `str` is a builtin type spelling too, even though it is only usable behind
+# a pointer, so it is reserved from module identities on the same grounds.
+exposed marker() => i32 {
+	0
+}

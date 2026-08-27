@@ -9,6 +9,17 @@ alias Count = i32;
 # An alias chain keeps the final target's identity, not the spelling used.
 alias Tally = Count;
 
+# An ambient `core` name is a fallback binding, so an explicit alias in this
+# module hides it. The qualified path still reaches the core declaration.
+alias Result = Count;
+
+# The alias hides the ambient spelling, but the qualified path still names
+# the core declaration -- this signature is the ordinary `core` type, which
+# `child` (where `Result` is still ambient) produces and consumes.
+core_ok(value: i32) => core::result::Result<i32, *str> {
+	child::make_ok(value)
+}
+
 # --- structural (non-path) targets ----------------------------------------
 alias Bytes = *[]u8;
 
@@ -195,4 +206,10 @@ main() => void {
 	println$("bound-alias: ", bounded(&foo));
 	println$("static-param-alias: ", static_param(foo));
 	println$("dynamic-alias: ", dynamic_param(&foo));
+
+	hidden_ambient: Result = 4;
+	println$(
+		"ambient-name-hidden-by-alias: ",
+		hidden_ambient, " ", child::ok_value(core_ok(9), 0)
+	);
 }

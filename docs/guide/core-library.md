@@ -55,8 +55,8 @@ compiled object: definitions from `core.o` must be linked when used.
   | `core::primitives::numerics` | `i8`–`i64`/`isize`, `u8`–`u64`/`usize`, `f32`/`f64` |
   | `core::primitives::strings` | `str` |
   | `core::primitives::slices` | `[]T` |
-  | `core::primitives::char` | `char` |
-  | `core::primitives::bool` | `bool` |
+  | `core::primitives::chars` | `char` |
+  | `core::primitives::booleans` | `bool` |
   | `core::primitives::valueless` | `void`, `never` |
 
   Type *constructors* (`*T`, `[N]T`, `[?]T`) have no block, since they are not
@@ -76,7 +76,7 @@ compiled object: definitions from `core.o` must be linked when used.
   `is_empty`, `as_bytes`, `starts_with`, `ends_with`, and `contains`.
   Equality, hashing, and display of `str` are standard-library
   conformances.
-- **`core::primitives::char`** supplies `from_u32`, ASCII classifiers/case
+- **`core::primitives::chars`** supplies `from_u32`, ASCII classifiers/case
   mapping, UTF-8 encoded length, and the `Ord`/`Successor`/`Bounded`
   conformances used by generic range iteration. The alphabetic and whitespace
   classifiers are intentionally ASCII-only; Unicode tables do not belong in
@@ -166,10 +166,10 @@ glue core::panic::PanicHandler {
 A program that never reaches a `panic$` emits no reference to the handler and
 therefore needs no panic glue, exactly as for the allocator and console gaps.
 
-The message is optional but not variadic: passing more than one is a compile
-error naming `PANIC_TAKES_AT_MOST_ONE_MESSAGE`. Omega has no optional macro
-parameter yet, so the macro encodes "zero or one" with a trailing variadic and
-a compile-time guard; see
+The message is meant to be optional, but Omega has no optional macro parameter
+yet, so `panic$` declares a trailing variadic instead. Pass zero or one message;
+passing more currently compiles and keeps the last one rather than reporting an
+arity error, which is tracked in
 [`../issues/language-limitations.md`](../issues/language-limitations.md).
 
 ## Deliberate boundary with `std`

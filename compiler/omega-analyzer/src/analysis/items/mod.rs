@@ -83,6 +83,7 @@ impl<'r> Analyzer<'r> {
         &mut self,
         decl: &HirDeclaration,
         storage: Storage,
+        policy: DeclarationPolicy,
     ) -> Option<CheckedDeclaration> {
         // A global's type is never itself embedded inline into another
         // type's layout (it isn't a struct field), so it can never be part
@@ -96,6 +97,7 @@ impl<'r> Analyzer<'r> {
             resolved_type.clone(),
             storage,
             decl.mutable,
+            policy,
         )?;
         Some(CheckedDeclaration {
             id: decl.id,
@@ -209,6 +211,7 @@ impl<'r> Analyzer<'r> {
             r#type.clone(),
             Storage::Global,
             mutable,
+            DeclarationPolicy::Unique,
         )?;
         Some(CheckedDeclaration {
             id,
@@ -321,6 +324,7 @@ impl<'r> Analyzer<'r> {
             resolved_type.clone(),
             storage,
             false,
+            DeclarationPolicy::Unique,
         )?;
         Some((resolved_type, annotations))
     }
@@ -461,6 +465,7 @@ impl<'r> Analyzer<'r> {
             resolved_type.clone(),
             Storage::Parameter,
             false,
+            DeclarationPolicy::Unique,
         )?;
         Some(CheckedParam {
             id: param.id,

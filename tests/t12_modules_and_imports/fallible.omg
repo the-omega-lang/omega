@@ -1,0 +1,12 @@
+# Nothing here claims `Result`, so the ambient `core` name still resolves and
+# this module produces the ordinary core type.
+exposed ok(value: i32) => Result<i32, *str> {
+	Result::Ok { value = value; }
+}
+
+exposed ok_value(r: Result<i32, *str>) => i32 {
+	match r {
+		Result::Ok => r.value,
+		Result::Err => 0,
+	}
+}

@@ -138,6 +138,7 @@ impl<'r> Analyzer<'r> {
             resolved_type.clone(),
             Storage::Local,
             decl.mutable,
+            DeclarationPolicy::Shadow,
         )?;
         let checked_decl = CheckedDeclaration {
             id: decl.id,
@@ -180,7 +181,15 @@ impl<'r> Analyzer<'r> {
                 return None;
             }
             let value = self.eval_comp(w.id, &checked_value)?;
-            self.declare_comp_binding(w.id, w.span, &w.ident, w.origin, r#type, value)?;
+            self.declare_comp_binding(
+                w.id,
+                w.span,
+                &w.ident,
+                w.origin,
+                r#type,
+                value,
+                DeclarationPolicy::Shadow,
+            )?;
             return Some(vec![]);
         }
 
@@ -192,6 +201,7 @@ impl<'r> Analyzer<'r> {
             r#type.clone(),
             Storage::Local,
             w.mutable,
+            DeclarationPolicy::Shadow,
         )?;
 
         let declaration = CheckedStmt::Declaration(CheckedDeclaration {
@@ -226,7 +236,7 @@ impl<'r> Analyzer<'r> {
     fn analyze_stmt(&mut self, stmt: &HirStmt) -> Option<Vec<CheckedStmt>> {
         match stmt {
             HirStmt::Declaration(decl) => self
-                .analyze_declaration(decl, Storage::Local)
+                .analyze_declaration(decl, Storage::Local, DeclarationPolicy::Shadow)
                 .map(|d| vec![CheckedStmt::Declaration(d)]),
             HirStmt::DeclarationWithInit(decl, value) => self
                 .analyze_declaration_with_init(decl, value)
@@ -450,6 +460,7 @@ impl<'r> Analyzer<'r> {
                 iter_type.clone(),
                 Storage::Local,
                 true,
+                DeclarationPolicy::Shadow,
             );
             let (iter_decl, iter_assign) =
                 this.synthetic_declaration(iter_id, f.span, "$iter", iter_type.clone(), iter_init);
@@ -558,6 +569,7 @@ impl<'r> Analyzer<'r> {
                     next_type.clone(),
                     Storage::Local,
                     false,
+                    DeclarationPolicy::Shadow,
                 );
                 let (next_decl, next_assign) =
                     this.synthetic_declaration(next_id, f.span, "$next", next_type.clone(), next);
@@ -727,6 +739,7 @@ impl<'r> Analyzer<'r> {
                 value_type.clone(),
                 Storage::Local,
                 f.mutable,
+                DeclarationPolicy::Shadow,
             );
             let (binding_decl, binding_assign) = this.synthetic_declaration(
                 binding_id,

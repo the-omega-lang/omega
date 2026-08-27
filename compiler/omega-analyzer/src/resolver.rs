@@ -175,6 +175,17 @@ pub enum ResolveError {
         name: Ident,
         candidates: Vec<Vec<Ident>>,
     },
+    /// An `alias`'s own generic parameter list binds a name it may not:
+    /// a language type spelling, or one it already bound. Alias placeholders
+    /// are validated symbolically here rather than through the analyzer's
+    /// generic registration, so the rule has to be restated at this site.
+    InvalidAliasGenericParam {
+        module: Vec<Ident>,
+        declared: Ident,
+        param: Ident,
+        /// Predicate completing "generic parameter '<param>' ...".
+        reason: &'static str,
+    },
     /// An `alias` whose target is a declaration kind an alias never names.
     InvalidAliasTarget {
         module: Vec<Ident>,
@@ -301,6 +312,18 @@ impl fmt::Display for ResolveError {
                     spec.as_ref()
                 )
             }
+            Self::InvalidAliasGenericParam {
+                module,
+                declared,
+                param,
+                reason,
+            } => write!(
+                f,
+                "generic parameter '{}' of alias '{}::{}' {reason}",
+                param.as_ref(),
+                join(module),
+                declared.as_ref()
+            ),
             Self::InvalidAliasTarget {
                 module,
                 declared,

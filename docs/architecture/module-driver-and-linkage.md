@@ -109,16 +109,23 @@ A namespace-only directory module has a valid empty `HirModule` and no own sourc
 - import alias table;
 - declared-`alias` table.
 
+Declarations, aliases, and imports are separate tables but one namespace, so
+`index_items` walks the module's items once in source order and settles every
+name through a single claim table. Two claims on one name collide whichever
+forms they take, and the later one is reported; function-vs-function is the
+one deliberate exception, which becomes an overload group. An import claims its
+bound name here, before its target is resolved, so a failed import cannot
+silently hand its name to a competing declaration.
+
 Declared aliases are indexed separately from concrete items on purpose: an
 alias is a name without a declaration, so it must never enter item resolution,
-body checking, or an emission sweep. A collision between an alias name and a
-concrete declaration is an ordinary redeclaration. An alias name may still be
-*imported* directly (`import module::SomeAlias;`) like any other name --
+body checking, or an emission sweep. An alias name may still be *imported*
+directly (`import module::SomeAlias;`) like any other name --
 `resolve_import_target` checks the alias index before assuming an indexed
 concrete item, gates the import on the alias's own visibility, and defers the
 rest to the same lazy alias query ordinary references use.
 
-The local item index is published before imports are fully indexed, because resolving annotations/import metadata may re-enter lookup for the same module. This ordering prevents infinite recursive indexing.
+The local item index is published before imports are fully indexed, because resolving annotations/import metadata may re-enter lookup for the same module. This ordering prevents infinite recursive indexing. `index_imports` then resolves the targets of exactly the imports that won their name.
 
 ## Import resolution
 
@@ -233,6 +240,13 @@ An alias target's explicit anchor (`root::`/`self::`/`super::`) is resolved
 through the same `Driver::resolve_explicit_anchor` helper ordinary paths,
 imports, and macro-alias targets all share, rather than a parser- or
 alias-specific reimplementation.
+
+`macro_env` overlays a module's explicit macro bindings onto the ambient
+exposed `core` macros. Ambient entries are fallback names, so a definition,
+macro alias, or macro import replaces one; two explicit bindings of the same
+name are a `MacroNameCollision` instead. The three forms are therefore
+collected in one source-order pass over the raw AST rather than layered by
+insertion order.
 
 Macro aliases are bound earlier, while the pre-expansion macro environment is
 built, because indexing a module needs its HIR and its HIR needs that

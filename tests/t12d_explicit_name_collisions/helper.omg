@@ -1,0 +1,5 @@
+exposed struct Thing {
+	exposed value: i32;
+}
+
+exposed alias Marker = i32;

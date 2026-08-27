@@ -1,4 +1,10 @@
 import std::io::println;
+import self::helper::shadowed_import;
+
+# Module-scope names a local binding hides below.
+shadowed_global: i32 = 100;
+
+shadowed_function() => i32 { 200 }
 
 struct Counter {
 	exposed value: i32;
@@ -92,4 +98,40 @@ main() => void {
 	++n;      # 41
 	--n;      # 40
 	println$("compound-assign: ", n);
+
+	# --- shadowing ----------------------------------------------------------
+	# A declaration is a fresh binding whose initializer is analyzed before
+	# the new binding exists, so this reads the previous `s` and drops `mut`.
+	mut s := 1;
+	s += 1;
+	s := s + 10;
+	println$("shadow-privilege-drop: ", s);
+
+	# The fresh binding carries its own type.
+	s := "twelve";
+	println$("shadow-type-change: ", s);
+
+	comp SHADOW := 2;
+	comp SHADOW := SHADOW * 3;
+	println$("shadow-comp: ", SHADOW);
+
+	# An inner scope's binding disappears with the scope; the same-block
+	# shadow above does not come back.
+	scoped := 1;
+	{
+		scoped := scoped + 1;
+		println$("shadow-inner-scope: ", scoped);
+	}
+	println$("shadow-outer-restored: ", scoped);
+
+	# A local binding hides a module-scope global, a function name, and an
+	# imported name in the value namespace.
+	println$("module-names: ", shadowed_global, " ", shadowed_function(), " ", shadowed_import);
+	shadowed_global := 1;
+	shadowed_function := 2;
+	shadowed_import := 3;
+	println$(
+		"local-over-module-names: ",
+		shadowed_global, " ", shadowed_function, " ", shadowed_import
+	);
 }

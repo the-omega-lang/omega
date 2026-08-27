@@ -16,6 +16,48 @@ A binding is immutable unless marked `mut`. `:=` infers the binding's type from 
 
 `mut` is contextual syntax. It does not make `mut` globally unavailable as an identifier outside positions where the grammar recognizes a mutability modifier.
 
+## Shadowing
+
+A local declaration always introduces a **fresh binding**. It never writes to an
+existing one, so a declaration may reuse a name already bound in the same block
+or in an enclosing scope:
+
+```omega
+mut x := read_privileged();
+x := x.narrow();      # fresh immutable binding; the initializer reads the old one
+```
+
+The rules are:
+
+- **Initializer first.** A declaration's initializer is analyzed in the
+  environment that exists immediately *before* the declaration, so `x := x`
+  reads the previous binding. The new binding becomes visible from the
+  declaration onward; an uninitialized declaration (`x : i32;`) shadows from
+  that point too.
+- **Fresh identity.** The new binding has its own type, mutability, and storage,
+  each subject to its ordinary rules. Shadowing may drop `mut`, add `mut`, or
+  change the type. The shadowed binding keeps its own identity and is unaffected.
+- **No escape within a block.** Once a name is shadowed in the same block, later
+  source in that block cannot name the older binding again.
+- **Inner scopes restore.** A binding introduced in a nested block disappears
+  when that block ends, revealing the outer binding again.
+- **Locals win over module names.** A local binding hides a module-scope
+  declaration, function, or imported value of the same spelling for value and
+  call lookup. Shadowing does not merge namespaces: a local value binding does
+  not replace a type spelling.
+- **Ordinary cost.** Shadowing introduces no move, freeze, or storage-reuse
+  semantics. `x := x` is an ordinary initialization from the previous binding
+  and costs exactly what that initialization costs.
+
+Declaration sets that require unique names are unaffected: two parameters of the
+same function, two fields of a struct, or two module-scope declarations of the
+same name remain errors. Macro hygiene is also unaffected: a name authored by a
+macro body and a caller-authored name with the same spelling are different
+bindings, and neither shadows the other.
+
+Local `comp` bindings shadow under the same rules; see
+[`compile-time-evaluation.md`](compile-time-evaluation.md).
+
 ## What may be mutable
 
 Mutability is expressed independently for:

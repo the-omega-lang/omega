@@ -1,0 +1,10 @@
+# Macros have their own namespace, but within it a definition, a macro
+# alias, and a macro import are all explicit bindings: only an ambient
+# `core` macro may be replaced, never another explicit binding.
+import self::defs::shout;
+
+macro shout($x: expr) => {
+	($x) + 2
+}
+
+main() => void {}

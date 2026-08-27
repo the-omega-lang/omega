@@ -69,6 +69,8 @@ Expectation files are optional and exact:
 
 If compilation fails, the current runner compares the compiler's stdout/stderr against the same expectation files. A compile failure without `expected.stderr` is treated as unexpected. If compilation succeeds, link failure is always a test failure.
 
+Only a *failed* compilation exposes compiler output to these files; once compilation succeeds the runner compares the linked program's own streams, so warnings emitted by a successful compile are invisible here. Assert warning behavior in the owning crate's tests (`compiler/omega-driver/tests/` for whole-package warnings) instead.
+
 Without `expected.status`, a successfully linked program must exit successfully in addition to matching any expected streams. `expected.status` replaces that requirement with an exact decimal comparison, so a case may assert a deliberately abnormal termination -- a panic reaching the hosted handler, for example. A program killed by a signal has no exit code of its own and reports the shell's `128 + signal` convention instead, so `abort` is `134`.
 
 Because the same files can describe compiler output for a negative test or program output for a successful test, keep each case intentionally single-purpose. If future test needs make that convention ambiguous, extend the runner deliberately rather than inferring intent from filenames or compiler behavior.

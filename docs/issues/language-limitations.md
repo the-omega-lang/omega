@@ -246,13 +246,13 @@ Normative chapter: [`../language/marker-types.md`](../language/marker-types.md)
 
 Normative chapter: [`../language/macros.md`](../language/macros.md)
 
-- **A macro parameter cannot be optional.** The only way to accept "zero or
-  one argument" is a trailing variadic parameter plus a compile-time guard
-  that rejects a second one. `core::panic::panic$` does exactly this, so
-  `panic$("a", "b")` reports a redeclaration of the guard binding
-  (`PANIC_TAKES_AT_MOST_ONE_MESSAGE`) rather than an arity error naming the
-  macro. The rejection is deliberate and reliable; only the diagnostic is
-  worse than it would be with real optional parameters.
+- **A macro parameter cannot be optional, and arity cannot be constrained.**
+  A macro that accepts "zero or one argument" has to declare a trailing
+  variadic parameter, which also accepts two or more. `core::panic::panic$` is
+  the case in the runtime: `panic$("a", "b")` compiles and keeps the last
+  message instead of reporting an arity error. Constraining this needs
+  structural macro support -- optional parameters, or a declared arity bound --
+  not a guard inside the expansion.
 
 
 ## The standard library

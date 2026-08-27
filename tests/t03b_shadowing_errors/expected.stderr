@@ -1,0 +1,18 @@
+error: cannot mutate 'x': not declared 'mut'
+ --> tests/t03b_shadowing_errors/t03b_shadowing_errors.omg:8:5
+  |
+8 |     x = 5;
+  |     ^^^^^ `x` is not declared `mut`
+  |
+  = help: declare it `mut x`
+
+error: 'a' is declared multiple times in this scope
+  --> tests/t03b_shadowing_errors/t03b_shadowing_errors.omg:14:30
+   |
+14 | duplicate_parameters(a: i32, a: i32) => i32 {
+   |                      ------ `a` first declared here
+   |                              ^^^^^^ `a` declared again here
+   |
+   = note: this declaration context requires each name to be declared once
+
+error: could not compile the program due to 2 previous errors

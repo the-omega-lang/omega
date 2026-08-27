@@ -19,7 +19,5 @@ wrong_message_type() => never {
 }
 
 main() => void {
-	# The message is optional, not variadic: more than one is rejected at
-	# compile time rather than silently keeping the last.
-	panic$("first", "second");
+	panic$("only");
 }

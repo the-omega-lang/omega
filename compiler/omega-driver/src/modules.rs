@@ -13,7 +13,7 @@ use omega_parser::prelude::{
     AliasItem, AliasTarget, Ident, ImportStmt, Item, ParseError, Path, PathAnchor, SourceModule,
 };
 use omega_parser::prelude::{MacroDefinitionStmt, Visibility};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 pub(crate) struct ParsedModule {
@@ -30,6 +30,10 @@ pub(crate) struct ModuleIndex {
     /// without a declaration: it must never reach item resolution, emission,
     /// or any other concrete-item sweep.
     pub aliases: IndexMap<Ident, usize>,
+    /// Item indices of the imports that won their name in the shared
+    /// module-scope claim pass. Import *targets* resolve in a later phase, so
+    /// the names they bind are settled here and consulted there.
+    claimed_imports: Vec<usize>,
 }
 
 impl ModuleIndex {
@@ -61,6 +65,10 @@ pub(crate) struct ModuleStore {
     modules: HashMap<ModulePath, ParsedModule>,
     asts: HashMap<ModulePath, Rc<SourceModule>>,
     macro_defs: HashMap<ModulePath, Rc<HashMap<Ident, MacroDefinitionStmt>>>,
+    /// Which of a module's macro bindings came from an `alias` rather than a
+    /// `macro` definition. An ordinary type/function alias never appears here,
+    /// so the macro namespace stays separate from the ordinary one.
+    macro_alias_names: HashMap<ModulePath, Rc<HashSet<Ident>>>,
     macro_expansions: omega_parser::macros::ExpansionState,
     sources: HashMap<ModulePath, Rc<SourceFile>>,
     failures: HashMap<ModulePath, LoadFailure>,
@@ -213,7 +221,10 @@ impl Driver {
                         definitions.insert(definition.name.clone(), definition);
                     }
                 }
-                self.bind_macro_aliases(path, &ast, &mut definitions);
+                let aliased = self.bind_macro_aliases(path, &ast, &mut definitions);
+                self.modules
+                    .macro_alias_names
+                    .insert(path.to_vec(), Rc::new(aliased));
                 definitions
             }
         };
@@ -225,6 +236,16 @@ impl Driver {
             .macro_defs
             .insert(path.to_vec(), definitions.clone());
         Ok(definitions)
+    }
+
+    /// The names this module binds in the macro namespace through an `alias`.
+    /// Only meaningful after `module_macros` has run for `path`.
+    fn macro_alias_names(&self, path: &[Ident]) -> Rc<HashSet<Ident>> {
+        self.modules
+            .macro_alias_names
+            .get(path)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Binds macro names reached through an `alias`. This runs before macro
@@ -239,7 +260,8 @@ impl Driver {
         path: &[Ident],
         ast: &SourceModule,
         definitions: &mut HashMap<Ident, MacroDefinitionStmt>,
-    ) {
+    ) -> HashSet<Ident> {
+        let mut bound: HashSet<Ident> = HashSet::new();
         let declared: Vec<AliasItem> = ast
             .nodes
             .iter()
@@ -249,7 +271,7 @@ impl Driver {
             })
             .collect();
         if declared.is_empty() {
-            return;
+            return bound;
         }
         let imports: Vec<ImportStmt> = ast
             .nodes
@@ -281,6 +303,7 @@ impl Driver {
                                 ..definition
                             },
                         );
+                        bound.insert(declared.ident);
                         bound_any = true;
                     }
                     None => deferred.push(declared),
@@ -288,7 +311,7 @@ impl Driver {
             }
             remaining = deferred;
             if !bound_any || remaining.is_empty() {
-                return;
+                return bound;
             }
         }
     }
@@ -414,88 +437,87 @@ impl Driver {
         Ok(definitions)
     }
 
+    /// The macro environment a module's own source expands in: the ambient
+    /// exposed `core` macros, overlaid with this module's explicit bindings.
+    ///
+    /// Ambient entries are fallback names, so a definition, macro alias, or
+    /// macro import replaces one. Two explicit bindings of the same name are a
+    /// collision instead, which is why the three forms are collected in one
+    /// source-order pass rather than layered by insertion order.
     fn macro_env(
         &mut self,
         path: &[Ident],
     ) -> Result<HashMap<Ident, MacroDefinitionStmt>, CompileError> {
+        let resolve_failed = |error| CompileError::Resolve {
+            error,
+            importer: None,
+        };
         let mut environment = (*self.prelude_macros()?).clone();
+        let own = self.module_macros(path).map_err(resolve_failed)?;
         if path.first().map(Ident::as_ref) == Some("core") {
-            let own = self
-                .module_macros(path)
-                .map_err(|error| CompileError::Resolve {
-                    error,
-                    importer: None,
-                })?;
             for name in own.keys() {
                 environment.remove(name);
             }
         }
 
-        let location = self
-            .roots
-            .locate(path)
-            .map_err(|error| CompileError::Resolve {
-                error,
-                importer: None,
-            })?;
-        let imports = match location.own_file {
-            None => vec![],
-            Some(file) => {
-                let ast = self
-                    .ensure_ast(path, &file)
-                    .map_err(|error| CompileError::Resolve {
-                        error,
-                        importer: None,
-                    })?;
-                ast.nodes
-                    .iter()
-                    .filter_map(|node| match &node.item {
-                        Item::Import(import) => Some(import.clone()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-            }
+        let location = self.roots.locate(path).map_err(resolve_failed)?;
+        let Some(file) = location.own_file else {
+            return Ok(environment);
         };
+        let ast = self.ensure_ast(path, &file).map_err(resolve_failed)?;
+        let aliased = self.macro_alias_names(path);
 
-        for import in imports {
-            let absolute = match self.import_absolute_path(path, &import.path) {
-                Ok(path) => path,
-                Err(_) => continue,
+        let mut explicit: HashMap<Ident, Span> = HashMap::new();
+        for node in &ast.nodes {
+            let bound = match &node.item {
+                Item::MacroDefinition(definition) => own.get(&definition.name).cloned(),
+                // Only an alias whose target actually resolved to a macro
+                // binds in this namespace; an ordinary type/function alias
+                // that happens to share a spelling with a macro does not.
+                Item::Alias(declared) if aliased.contains(&declared.ident) => {
+                    own.get(&declared.ident).cloned()
+                }
+                Item::Import(import) => self.imported_macro(path, import),
+                _ => continue,
             };
-            if self.roots.module_exists(&absolute) || absolute.len() < 2 {
-                continue;
-            }
-            let module = absolute[..absolute.len() - 1].to_vec();
-            let name = absolute.last().expect("non-empty import path").clone();
-            if !self.roots.module_exists(&module) {
-                continue;
-            }
-            let definitions = match self.module_macros(&module) {
-                Ok(definitions) => definitions,
-                Err(_) => continue,
-            };
-            let Some(definition) = definitions.get(&name) else {
+            let Some(definition) = bound else {
                 continue;
             };
-            // The same rule the alias-target lookup applies, so `reveal`
-            // cannot mean one thing when the macro is invoked and another
-            // when it is immediately aliased.
-            if import.reveal || Self::visibility_allows(definition.visibility, &module, path) {
-                environment
-                    .entry(name)
-                    .or_insert_with(|| definition.clone());
+            let name = definition.name.clone();
+            if let Some(previous) = explicit.insert(name.clone(), node.span) {
+                return Err(CompileError::MacroNameCollision {
+                    module: path.to_vec(),
+                    name,
+                    previous,
+                    span: node.span,
+                });
             }
-        }
-
-        // A macro reached through this module's own aliases. Real definitions
-        // in the same map are re-collected (identically) by the expander from
-        // the AST; only the alias bindings actually depend on being here.
-        if let Ok(own) = self.module_macros(path) {
-            for (name, definition) in own.iter() {
-                environment.insert(name.clone(), definition.clone());
-            }
+            environment.insert(name, definition);
         }
         Ok(environment)
+    }
+
+    /// The macro `import` binds in `path`, if it binds one at all.
+    fn imported_macro(
+        &mut self,
+        path: &[Ident],
+        import: &ImportStmt,
+    ) -> Option<MacroDefinitionStmt> {
+        let absolute = self.import_absolute_path(path, &import.path).ok()?;
+        if self.roots.module_exists(&absolute) || absolute.len() < 2 {
+            return None;
+        }
+        let module = absolute[..absolute.len() - 1].to_vec();
+        let name = absolute.last().expect("non-empty import path").clone();
+        if !self.roots.module_exists(&module) {
+            return None;
+        }
+        let definition = self.module_macros(&module).ok()?.get(&name)?.clone();
+        // The same rule the alias-target lookup applies, so `reveal` cannot
+        // mean one thing when the macro is invoked and another when it is
+        // immediately aliased.
+        (import.reveal || Self::visibility_allows(definition.visibility, &module, path))
+            .then_some(definition)
     }
 
     pub(crate) fn parse_module(&mut self, path: &[Ident]) -> Result<Rc<HirModule>, ResolveError> {
@@ -591,31 +613,61 @@ impl Driver {
         Ok(())
     }
 
+    /// The name an item claims in the module's ordinary namespace, or `None`
+    /// for an item that binds no such name (`conform`, `glue`, `primitive`).
+    fn claimed_name(item: &HirItem) -> Option<Ident> {
+        match item {
+            HirItem::Alias(declared) => Some(declared.name.clone()),
+            HirItem::Import(import) => Some(
+                import
+                    .path
+                    .tail
+                    .last()
+                    .cloned()
+                    .unwrap_or_else(|| import.path.head.clone()),
+            ),
+            _ => item_name(item),
+        }
+    }
+
+    /// Indexes a module's declarations, aliases, and import bindings in one
+    /// source-order pass. Declarations, aliases, and imports all make an
+    /// *explicit* claim on the same module-scope namespace, so two claims on a
+    /// name collide whichever forms they take; function overloads are the one
+    /// deliberate exception. Scanning them together is what keeps the reported
+    /// collision the later claim regardless of which kind came first.
     fn index_items(&mut self, path: &[Ident], hir: &HirModule) -> ModuleIndex {
         let mut items: IndexMap<Ident, usize> = IndexMap::new();
         let mut overloads: IndexMap<Ident, Vec<usize>> = IndexMap::new();
         let mut aliases: IndexMap<Ident, usize> = IndexMap::new();
+        let mut claimed_imports: Vec<usize> = Vec::new();
+        let mut claims: IndexMap<Ident, usize> = IndexMap::new();
         let is_function = |i: usize| matches!(&hir.items[i], HirItem::FunctionDefinition(_));
 
         for (i, item) in hir.items.iter().enumerate() {
-            if let HirItem::Alias(declared) = item {
-                match aliases.entry(declared.name.clone()) {
-                    Entry::Vacant(entry) => {
-                        entry.insert(i);
-                    }
-                    Entry::Occupied(first) => {
-                        let (_, previous) = item_id_span(&hir.items[*first.get()]);
-                        self.report_redeclaration(path, item, declared.name.clone(), previous);
-                    }
-                }
-                continue;
-            }
-            let Some(name) = item_name(item) else {
+            let Some(name) = Self::claimed_name(item) else {
                 continue;
             };
-            let first_index = match items.entry(name.clone()) {
+            if omega_analyzer::is_reserved_type_name(name.as_ref()) {
+                let (id, span) = item_id_span(item);
+                self.diagnostics.error(
+                    path,
+                    AnalysisError::new(id, span, AnalysisErrorKind::ReservedTypeName { name }),
+                );
+                continue;
+            }
+            let first_index = match claims.entry(name.clone()) {
                 Entry::Vacant(entry) => {
                     entry.insert(i);
+                    match item {
+                        HirItem::Alias(_) => {
+                            aliases.insert(name, i);
+                        }
+                        HirItem::Import(_) => claimed_imports.push(i),
+                        _ => {
+                            items.insert(name, i);
+                        }
+                    }
                     continue;
                 }
                 Entry::Occupied(first) => *first.get(),
@@ -631,19 +683,12 @@ impl Driver {
             }
         }
 
-        // An alias competes for the same top-level name space as ordinary
-        // declarations, so a collision is an ordinary redeclaration.
-        for (name, &alias_index) in &aliases {
-            if let Some(&item_index) = items.get(name) {
-                let (_, previous) = item_id_span(&hir.items[item_index]);
-                self.report_redeclaration(path, &hir.items[alias_index], name.clone(), previous);
-            }
-        }
         ModuleIndex {
             items,
             overloads,
             imports: IndexMap::new(),
             aliases,
+            claimed_imports,
         }
     }
 
@@ -668,11 +713,16 @@ impl Driver {
         );
     }
 
+    /// Resolves the targets of the imports that won their name in
+    /// `index_items`. Only their targets are resolved here: an import that
+    /// lost its name binds nothing, and one whose target fails to resolve
+    /// still keeps the name it claimed.
     fn index_imports(&mut self, path: &[Ident], hir: &HirModule) -> IndexMap<Ident, ImportEntry> {
         let mut imports: IndexMap<Ident, ImportEntry> = IndexMap::new();
-        for item in &hir.items {
-            let HirItem::Import(import) = item else {
-                continue;
+        let claimed = self.modules.index(path).claimed_imports.clone();
+        for i in claimed {
+            let HirItem::Import(import) = &hir.items[i] else {
+                unreachable!("the claimed-import list only ever points at imports");
             };
             let alias = import
                 .path
@@ -713,32 +763,16 @@ impl Driver {
                 },
             );
 
-            match imports.entry(alias) {
-                Entry::Occupied(existing) => {
-                    let previous = existing.get().span;
-                    let name = existing.key().clone();
-                    self.diagnostics.error(
-                        path,
-                        AnalysisError::new(
-                            import.id,
-                            import.span,
-                            AnalysisErrorKind::Redeclaration {
-                                name,
-                                previous: Some(previous),
-                            },
-                        ),
-                    );
-                }
-                Entry::Vacant(entry) => {
-                    entry.insert(ImportEntry {
-                        id: import.id,
-                        span: import.span,
-                        target,
-                        suppress,
-                        reveal: import.reveal,
-                    });
-                }
-            }
+            imports.insert(
+                alias,
+                ImportEntry {
+                    id: import.id,
+                    span: import.span,
+                    target,
+                    suppress,
+                    reveal: import.reveal,
+                },
+            );
         }
         imports
     }

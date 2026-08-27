@@ -21,6 +21,18 @@ f32 f64
 
 Primitive types may receive methods through `primitive Type { ... }`; see [`specs-and-conformance.md`](specs-and-conformance.md).
 
+### Reserved type spellings
+
+The primitive spellings above, plus `str`, are reserved wherever binding them would create a competing module, path, or type name:
+
+- a package or module identity (so `i32::` and `str::` always mean the language type, never a module segment);
+- a module-scope declaration, alias, or import name;
+- a generic type parameter, including an alias's own generic parameters.
+
+The restriction is a name-binding rule, not a lexer keyword: these spellings stay available in unrelated namespaces, such as local value bindings, struct fields, enum variants, method names, and macro names. Using a primitive as an alias *target* (`alias Count = i32;`) is likewise unaffected — only the newly bound name is restricted.
+
+`primitive i32 { ... }` and `primitive str { ... }` extension blocks remain legal: they extend the builtin type rather than declare a competing name.
+
 ## Numeric literal inference
 
 An unsuffixed numeric literal first uses an expected type when one is available and compatible with the literal's family. Integer-looking literals do not silently become floating-point values and floating-point-looking literals do not silently become integers.

@@ -178,6 +178,30 @@ impl Driver {
         result
     }
 
+    /// Alias placeholders never reach `Analyzer::new_in`, so the rules that
+    /// govern every other generic parameter list are restated here.
+    fn check_alias_generic_params(
+        module_path: &[Ident],
+        declared: &Ident,
+        placeholders: &[Ident],
+    ) -> Result<(), ResolveError> {
+        let invalid = |param: &Ident, reason| ResolveError::InvalidAliasGenericParam {
+            module: module_path.to_vec(),
+            declared: declared.clone(),
+            param: param.clone(),
+            reason,
+        };
+        for (i, param) in placeholders.iter().enumerate() {
+            if omega_analyzer::is_reserved_type_name(param.as_ref()) {
+                return Err(invalid(param, "is a built-in type name"));
+            }
+            if placeholders[..i].contains(param) {
+                return Err(invalid(param, "is declared more than once"));
+            }
+        }
+        Ok(())
+    }
+
     fn compute_alias(
         &mut self,
         module_path: &[Ident],
@@ -213,6 +237,7 @@ impl Driver {
         // never used: an alias declaration is not just a lazy forwarding
         // rule, its target must be legal on its own.
         let placeholders: Vec<Ident> = declared.generics.iter().map(|g| g.ident.clone()).collect();
+        Self::check_alias_generic_params(module_path, &declared.name, &placeholders)?;
         for param in &declared.generics {
             for bound in &param.bounds {
                 self.validate_alias_spec_type(module_path, &declared, &placeholders, bound)?;
@@ -364,8 +389,7 @@ impl Driver {
         // resolution at every use site, exactly as it is for a literal
         // (non-aliased) `*str`, so this pass only has to recognize the name.
         if path.is_unqualified()
-            && (omega_analyzer::BUILTIN_TYPE_NAMES.contains(&path.head.as_ref())
-                || path.head.as_ref() == "str"
+            && (omega_analyzer::is_reserved_type_name(path.head.as_ref())
                 || path.head.as_ref() == "Self")
         {
             Self::check_generic_arity(module_path, &path.head, &[], args.len())?;

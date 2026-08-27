@@ -1,0 +1,14 @@
+# The primitive spellings and `str` are reserved wherever binding them would
+# create a competing module, path, or type name.
+import self::helper::void;
+
+struct str {
+	exposed value: i32;
+}
+
+alias i32 = bool;
+
+# An alias's own generic parameters are ordinary type-parameter names.
+alias Wrapper<f32> = *f32;
+
+main() => void {}

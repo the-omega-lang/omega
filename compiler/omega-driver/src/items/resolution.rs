@@ -264,7 +264,7 @@ impl Driver {
                     module,
                     &substitution,
                     AnalysisSite::new(decl.id, decl.span),
-                    |a| a.analyze_declaration(decl, Storage::Global),
+                    |a| a.analyze_declaration(decl, Storage::Global, DeclarationPolicy::Unique),
                 )
                 .map(|c| ResolvedItem::Value {
                     r#type: c.r#type,

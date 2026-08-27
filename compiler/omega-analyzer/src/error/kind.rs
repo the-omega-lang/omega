@@ -45,6 +45,12 @@ pub enum AnalysisErrorKind {
         name: Ident,
         previous: Option<Span>,
     },
+    /// A name-binding position tried to claim a spelling the language owns as
+    /// a type. Distinct from `Redeclaration` because there is no source
+    /// declaration to point at.
+    ReservedTypeName {
+        name: Ident,
+    },
     AssignmentTargetNotAPlace,
     AssignmentTypeMismatch {
         target: ResolvedType,
@@ -598,6 +604,11 @@ impl fmt::Display for AnalysisErrorKind {
                     name.as_ref()
                 )
             }
+            Self::ReservedTypeName { name } => write!(
+                f,
+                "'{}' is a built-in type name and cannot be declared here",
+                name.as_ref()
+            ),
             Self::AssignmentTargetNotAPlace => {
                 write!(f, "invalid assignment target")
             }

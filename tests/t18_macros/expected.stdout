@@ -8,3 +8,4 @@ print-each: 3
 call-with-args: 6
 read-secret: 7
 magic: 55
+imported-macro-over-ambient: 4242
