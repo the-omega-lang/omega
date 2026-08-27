@@ -96,11 +96,8 @@ impl<'ctx> Codegen<'ctx> {
                             }
                         };
                         // LLVM returns multiple leaves as one aggregate value that must be unpacked.
-                        let leaves = leaf::llvm_leaves(
-                            self.context,
-                            &fn_type.return_type,
-                            self.pointer_bytes(),
-                        );
+                        let leaves =
+                            leaf::llvm_leaves(self.context, &fn_type.return_type, self.target);
                         if leaves.len() > 1 {
                             (0..leaves.len())
                                 .map(|i| {
@@ -146,6 +143,7 @@ impl<'ctx> Codegen<'ctx> {
                 let vtable_ptr = base_leaves[1].into_pointer_value();
 
                 let fnaddr = self.aligned_load_ptr(
+                    self.fn_ptr_type(),
                     vtable_ptr,
                     *slot_index as u32 * self.pointer_bytes(),
                     self.pointer_bytes(),
@@ -193,11 +191,8 @@ impl<'ctx> Codegen<'ctx> {
                                 unreachable!("a non-void call always returns a value")
                             }
                         };
-                        let leaves = leaf::llvm_leaves(
-                            self.context,
-                            &fn_type.return_type,
-                            self.pointer_bytes(),
-                        );
+                        let leaves =
+                            leaf::llvm_leaves(self.context, &fn_type.return_type, self.target);
                         if leaves.len() > 1 {
                             (0..leaves.len())
                                 .map(|i| {
@@ -233,12 +228,7 @@ impl<'ctx> Codegen<'ctx> {
 
             MirExpr::Sizeof(target_type) => {
                 let size = layout::total_bytes(target_type, self.pointer_bytes());
-                let int_ty: BasicTypeEnum = if self.pointer_bytes() == 8 {
-                    self.context.i64_type().into()
-                } else {
-                    self.context.i32_type().into()
-                };
-                vec![int_ty.into_int_type().const_int(size as u64, false).into()]
+                vec![self.size_type().const_int(size as u64, false).into()]
             }
 
             MirExpr::Char(c) => vec![self.context.i32_type().const_int(*c as u64, false).into()],
@@ -491,7 +481,7 @@ impl<'ctx> Codegen<'ctx> {
                     }
                 };
                 // Cast the integer-domain result back when the expression type is a pointer.
-                let want = leaf::llvm_leaves(self.context, &node.r#type, self.pointer_bytes());
+                let want = leaf::llvm_leaves(self.context, &node.r#type, self.target);
                 let result = match want.first() {
                     Some(want) => self.reinterpret_leaf(result, *want),
                     None => result,
@@ -566,11 +556,11 @@ impl<'ctx> Codegen<'ctx> {
 
                 let mut chunk_offset = payload_offset;
                 for raw_leaf in &chunk_leaves {
-                    let llvm_ty = leaf::llvm_type(self.context, *raw_leaf, self.pointer_bytes());
+                    let llvm_ty = leaf::llvm_type(self.context, *raw_leaf, self.target);
                     let zero = match llvm_ty {
                         BasicTypeEnum::IntType(it) => it.const_zero().into(),
                         BasicTypeEnum::FloatType(ft) => ft.const_zero().into(),
-                        BasicTypeEnum::PointerType(_) => self.ptr_type().const_null().into(),
+                        BasicTypeEnum::PointerType(pointer) => pointer.const_null().into(),
                         _ => unreachable!("a payload chunk is always a scalar"),
                     };
                     self.store_scalars(&slot, chunk_offset, &[zero], 1);
@@ -601,11 +591,11 @@ impl<'ctx> Codegen<'ctx> {
                 for raw_leaf in
                     omega_analyzer::layout::leaves_of(&node.r#type, self.pointer_bytes())
                 {
-                    let llvm_ty = leaf::llvm_type(self.context, raw_leaf, self.pointer_bytes());
+                    let llvm_ty = leaf::llvm_type(self.context, raw_leaf, self.target);
                     let zero = match llvm_ty {
                         BasicTypeEnum::IntType(it) => it.const_zero().into(),
                         BasicTypeEnum::FloatType(ft) => ft.const_zero().into(),
-                        BasicTypeEnum::PointerType(_) => self.ptr_type().const_null().into(),
+                        BasicTypeEnum::PointerType(pointer) => pointer.const_null().into(),
                         _ => unreachable!("a union chunk is always a scalar"),
                     };
                     self.store_scalars(&slot, chunk_offset, &[zero], 1);
@@ -689,24 +679,13 @@ impl<'ctx> Codegen<'ctx> {
                     None => full_len,
                 };
 
-                let ptr_int: BasicTypeEnum = if self.pointer_bytes() == 8 {
-                    self.context.i64_type().into()
-                } else {
-                    self.context.i32_type().into()
-                };
-                let start_ext = self
-                    .builder
-                    .build_int_z_extend(
-                        start_val.into_int_value(),
-                        ptr_int.into_int_type(),
-                        "start",
-                    )
-                    .unwrap();
+                // Slice bounds are analyzer-checked to be `i32`, so they widen as signed.
+                let start_ext = self.to_size_int(start_val.into_int_value(), true, "start");
                 let byte_offset = self
                     .builder
                     .build_int_mul(
                         start_ext,
-                        ptr_int.into_int_type().const_int(elem_size as u64, true),
+                        self.size_type().const_int(elem_size as u64, true),
                         "byteoff",
                     )
                     .unwrap();
@@ -741,13 +720,12 @@ impl<'ctx> Codegen<'ctx> {
                 if *kind == CastKind::Discard {
                     return vec![];
                 }
-                let target_ir =
-                    leaf::llvm_leaves(self.context, target_type, self.pointer_bytes())[0];
+                let target_ir = leaf::llvm_leaves(self.context, target_type, self.target)[0];
                 match kind {
                     CastKind::Discard => unreachable!("returned above"),
                     CastKind::Reinterpret => {
                         let target_leaves =
-                            leaf::llvm_leaves(self.context, target_type, self.pointer_bytes());
+                            leaf::llvm_leaves(self.context, target_type, self.target);
                         base_leaves
                             .into_iter()
                             .zip(target_leaves)
@@ -802,7 +780,7 @@ impl<'ctx> Codegen<'ctx> {
                     CastKind::FloatToInt { signed } => {
                         let from = base_leaves[0].into_float_value().get_type();
                         let to = if target_ir.is_pointer_type() {
-                            leaf::size_type(self.context, self.pointer_bytes())
+                            self.size_type()
                         } else {
                             target_ir.into_int_type()
                         };
@@ -855,14 +833,9 @@ impl<'ctx> Codegen<'ctx> {
                     ],
                     CastKind::SpecNarrow { slot_offset } => {
                         let byte_offset = *slot_offset as i64 * self.pointer_bytes() as i64;
-                        let ptr_int: BasicTypeEnum = if self.pointer_bytes() == 8 {
-                            self.context.i64_type().into()
-                        } else {
-                            self.context.i32_type().into()
-                        };
                         let vtable = self.gep(
                             base_leaves[1].into_pointer_value(),
-                            ptr_int.into_int_type().const_int(byte_offset as u64, true),
+                            self.size_type().const_int(byte_offset as u64, true),
                         );
                         vec![base_leaves[0], vtable.into()]
                     }
@@ -886,7 +859,7 @@ impl<'ctx> Codegen<'ctx> {
             }
         };
         match raw_leaf {
-            Leaf::Ptr => {
+            Leaf::Ptr | Leaf::FnPtr => {
                 let width = self.pointer_bytes() * 8;
                 let int_ty = int_of_width(width);
                 let int_value = match value {
@@ -894,11 +867,15 @@ impl<'ctx> Codegen<'ctx> {
                     NumberValue::Unsigned(v) => int_ty.const_int(*v, false),
                     NumberValue::Float(_) => unreachable!("a pointer literal is never a float"),
                 };
-                int_value.const_to_pointer(self.ptr_type()).into()
+                let pointer_type = match raw_leaf {
+                    Leaf::FnPtr => self.fn_ptr_type(),
+                    _ => self.ptr_type(),
+                };
+                int_value.const_to_pointer(pointer_type).into()
             }
             // `usize`/`isize` use pointer-width bits but remain integer values, not pointers.
             Leaf::Size => {
-                let int_ty = leaf::size_type(self.context, self.pointer_bytes());
+                let int_ty = self.size_type();
                 match value {
                     NumberValue::Signed(v) => int_ty.const_int(*v as u64, true).into(),
                     NumberValue::Unsigned(v) => int_ty.const_int(*v, false).into(),
@@ -973,7 +950,11 @@ impl<'ctx> Codegen<'ctx> {
         };
         if target.is_pointer_type() {
             self.builder
-                .build_int_to_ptr(value.into_int_value(), self.ptr_type(), "inttoptr")
+                .build_int_to_ptr(
+                    value.into_int_value(),
+                    target.into_pointer_type(),
+                    "inttoptr",
+                )
                 .expect("inttoptr always succeeds")
                 .as_basic_value_enum()
         } else {
@@ -981,6 +962,9 @@ impl<'ctx> Codegen<'ctx> {
         }
     }
 
+    /// A pointer leaf and a code-pointer leaf are the same Omega value shape but
+    /// can live in different LLVM address spaces, so reinterpreting between them
+    /// is an `addrspacecast` rather than a no-op on a Harvard target.
     fn reinterpret_leaf(
         &self,
         value: BasicValueEnum<'ctx>,
@@ -990,10 +974,21 @@ impl<'ctx> Codegen<'ctx> {
             (true, false) => self.to_int_operand(value).as_basic_value_enum(),
             (false, true) => self
                 .builder
-                .build_int_to_ptr(value.into_int_value(), self.ptr_type(), "inttoptr")
+                .build_int_to_ptr(value.into_int_value(), want.into_pointer_type(), "inttoptr")
                 .expect("inttoptr always succeeds")
                 .as_basic_value_enum(),
-            _ => value,
+            (true, true) => {
+                let from = value.into_pointer_value();
+                let want = want.into_pointer_type();
+                if from.get_type() == want {
+                    return value;
+                }
+                self.builder
+                    .build_address_space_cast(from, want, "addrspacecast")
+                    .expect("addrspacecast always succeeds")
+                    .as_basic_value_enum()
+            }
+            (false, false) => value,
         }
     }
 
@@ -1023,7 +1018,7 @@ impl<'ctx> Codegen<'ctx> {
 
     fn to_int_operand(&self, v: BasicValueEnum<'ctx>) -> inkwell::values::IntValue<'ctx> {
         if v.is_pointer_value() {
-            let int_ty = leaf::size_type(self.context, self.pointer_bytes());
+            let int_ty = self.size_type();
             self.builder
                 .build_ptr_to_int(v.into_pointer_value(), int_ty, "ptrtoint")
                 .expect("ptrtoint always succeeds")
@@ -1084,19 +1079,15 @@ impl<'ctx> Codegen<'ctx> {
 
     fn aligned_load_ptr(
         &self,
+        pointer_type: inkwell::types::PointerType<'ctx>,
         base: PointerValue<'ctx>,
         offset: u32,
         align: u32,
     ) -> PointerValue<'ctx> {
-        let int_ty: BasicTypeEnum = if self.pointer_bytes() == 8 {
-            self.context.i64_type().into()
-        } else {
-            self.context.i32_type().into()
-        };
-        let ptr = self.gep(base, int_ty.into_int_type().const_int(offset as u64, false));
+        let ptr = self.gep(base, self.size_type().const_int(offset as u64, false));
         let value = self
             .builder
-            .build_load(self.ptr_type(), ptr, "")
+            .build_load(pointer_type, ptr, "")
             .expect("load always succeeds");
         if let Some(inst) = value.as_instruction_value() {
             let _ = inst.set_alignment(align);

@@ -325,11 +325,11 @@ impl<'ctx> Codegen<'ctx> {
 
                 let mut chunk_offset = 0u32;
                 for raw_leaf in omega_analyzer::layout::leaves_of(r#type, self.pointer_bytes()) {
-                    let llvm_ty = leaf::llvm_type(self.context, raw_leaf, self.pointer_bytes());
+                    let llvm_ty = leaf::llvm_type(self.context, raw_leaf, self.target);
                     let zero = match llvm_ty {
                         BasicTypeEnum::IntType(it) => it.const_zero().into(),
                         BasicTypeEnum::FloatType(ft) => ft.const_zero().into(),
-                        BasicTypeEnum::PointerType(_) => self.ptr_type().const_null().into(),
+                        BasicTypeEnum::PointerType(pointer) => pointer.const_null().into(),
                         _ => unreachable!("a union chunk is always a scalar"),
                     };
                     self.store_scalars(&slot, chunk_offset, &[zero], 1);

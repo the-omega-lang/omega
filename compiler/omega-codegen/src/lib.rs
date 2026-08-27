@@ -12,12 +12,7 @@ pub use request::{CodegenRequest, EmitOutput};
 
 pub fn generate(request: CodegenRequest) -> Result<EmitOutput, String> {
     preflight::preflight(&request)?;
-    if !llvm::supports(request.target) {
-        return Err(format!(
-            "target '{}' is not supported by this compiler's LLVM backend",
-            request.target
-        ));
-    }
-
+    // Whether a target can be emitted is decided by LLVM target-machine
+    // construction inside `llvm::generate`, not by a support list kept here.
     llvm::generate(request)
 }

@@ -193,25 +193,14 @@ impl<'ctx> Codegen<'ctx> {
                         ),
                     };
 
-                    let mut index = self.process_expr(index_expr)[0].into_int_value();
-                    let ptr_int: BasicTypeEnum = if self.pointer_bytes() == 8 {
-                        self.context.i64_type().into()
-                    } else {
-                        self.context.i32_type().into()
-                    };
-                    if index.get_type() != ptr_int.into_int_type() {
-                        index = self
-                            .builder
-                            .build_int_z_extend(index, ptr_int.into_int_type(), "index")
-                            .expect("zext always succeeds");
-                    }
+                    let signed = self.is_signed(&index_expr.r#type);
+                    let index = self.process_expr(index_expr)[0].into_int_value();
+                    let index = self.to_size_int(index, signed, "index");
                     let scaled = self
                         .builder
                         .build_int_mul(
                             index,
-                            ptr_int
-                                .into_int_type()
-                                .const_int(element_size as u64, false),
+                            self.size_type().const_int(element_size as u64, false),
                             "offset",
                         )
                         .expect("mul always succeeds");
@@ -224,7 +213,7 @@ impl<'ctx> Codegen<'ctx> {
                 MirProjection::EnumTag { r#type } => {
                     let view = enum_view(&current_type, "EnumTag");
                     let tag_leaves =
-                        leaf::llvm_leaves(self.context, &view.tag_type, self.pointer_bytes()).len();
+                        leaf::llvm_leaves(self.context, &view.tag_type, self.target).len();
                     current = match current {
                         PlaceStorage::Values(values) => {
                             PlaceStorage::Values(values[..tag_leaves].to_vec())
@@ -240,12 +229,9 @@ impl<'ctx> Codegen<'ctx> {
                         PlaceStorage::Values(values) => {
                             let start = layout::enum_prefix_layout(&view, self.pointer_bytes())
                                 .leaf_starts[1 + *index];
-                            let len = leaf::llvm_leaves(
-                                self.context,
-                                &view.header[*index],
-                                self.pointer_bytes(),
-                            )
-                            .len();
+                            let len =
+                                leaf::llvm_leaves(self.context, &view.header[*index], self.target)
+                                    .len();
                             PlaceStorage::Values(values[start..start + len].to_vec())
                         }
                         PlaceStorage::Slot { slot, offset } => PlaceStorage::Slot {
@@ -271,7 +257,7 @@ impl<'ctx> Codegen<'ctx> {
                             let len = leaf::llvm_leaves(
                                 self.context,
                                 &view.dynamic_fields[*index],
-                                self.pointer_bytes(),
+                                self.target,
                             )
                             .len();
                             PlaceStorage::Values(values[start..start + len].to_vec())
@@ -420,7 +406,7 @@ impl<'ctx> Codegen<'ctx> {
         let mut result = Vec::new();
         let mut rel_offset = 0u32;
         for raw_leaf in omega_analyzer::layout::leaves_of(r#type, self.pointer_bytes()) {
-            let llvm_ty = leaf::llvm_type(self.context, raw_leaf, self.pointer_bytes());
+            let llvm_ty = leaf::llvm_type(self.context, raw_leaf, self.target);
             let value = match storage {
                 PlaceStorage::Slot { slot, offset } => {
                     let at = *offset + rel_offset;
@@ -497,12 +483,7 @@ impl<'ctx> Codegen<'ctx> {
     }
 
     fn byte_gep(&self, base: PointerValue<'ctx>, offset: u32) -> PointerValue<'ctx> {
-        let int_ty: BasicTypeEnum = if self.pointer_bytes() == 8 {
-            self.context.i64_type().into()
-        } else {
-            self.context.i32_type().into()
-        };
-        self.gep(base, int_ty.into_int_type().const_int(offset as u64, false))
+        self.gep(base, self.size_type().const_int(offset as u64, false))
     }
 
     pub(super) fn gep(

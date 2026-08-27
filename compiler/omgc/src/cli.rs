@@ -172,9 +172,9 @@ pub(crate) fn print_help() {
     help_option(colors, "-O<0-3>", "Optimization level (default: 0)");
     help_option(
         colors,
-        "--target=<triplet>",
+        "--target=<arch>-<os>",
         &format!(
-            "Target triplet, e.g. x86_64-unknown-linux (default: {})",
+            "Target to compile for, e.g. aarch64-linux or avr-none (default: {})",
             Target::DEFAULT
         ),
     );
@@ -200,6 +200,7 @@ pub(crate) fn print_help() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use omega_analyzer::{Arch, Os};
 
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| value.to_string()).collect()
@@ -240,6 +241,43 @@ mod tests {
         assert_eq!(parsed.externs.len(), 1);
         assert_eq!(parsed.externs[0].name.as_ref(), "core");
         assert_eq!(parsed.externs[0].dir, PathBuf::from("deps/core"));
+    }
+
+    #[test]
+    fn parses_every_requested_cross_compilation_target() {
+        for (flag, arch, os) in [
+            ("--target=aarch64-linux", Arch::Aarch64, Os::Linux),
+            ("--target=x86_64-windows", Arch::X86_64, Os::Windows),
+            ("--target=avr-none", Arch::Avr, Os::None),
+        ] {
+            let Ok(Command::Compile(parsed)) = parse(&args(&["src", "-o", "out.o", flag])) else {
+                panic!("expected {flag} to parse");
+            };
+            assert_eq!(parsed.target, Target { arch, os });
+        }
+    }
+
+    #[test]
+    fn omitting_the_target_flag_keeps_the_documented_default() {
+        let Ok(Command::Compile(parsed)) = parse(&args(&["src", "-o", "out.o"])) else {
+            panic!("expected compile command");
+        };
+        assert_eq!(parsed.target, Target::DEFAULT);
+    }
+
+    #[test]
+    fn rejects_unknown_and_malformed_targets() {
+        for invalid in [
+            "--target=sparc-linux",
+            "--target=avr-vxworks",
+            "--target=avr",
+            "--target=avr-macos",
+        ] {
+            assert!(
+                parse(&args(&["src", "-o", "out.o", invalid])).is_err(),
+                "{invalid} must be rejected before compilation"
+            );
+        }
     }
 
     #[test]

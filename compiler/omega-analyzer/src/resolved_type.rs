@@ -955,14 +955,15 @@ impl ResolvedType {
             Self::I16 => (i16::MIN as i128, i16::MAX as i128),
             Self::I32 => (i32::MIN as i128, i32::MAX as i128),
             Self::I64 => (i64::MIN as i128, i64::MAX as i128),
-            Self::ISize if pointer_bits == 32 => (i32::MIN as i128, i32::MAX as i128),
-            Self::ISize => (i64::MIN as i128, i64::MAX as i128),
+            Self::ISize => (
+                -(1i128 << (pointer_bits - 1)),
+                (1i128 << (pointer_bits - 1)) - 1,
+            ),
             Self::U8 => (u8::MIN as i128, u8::MAX as i128),
             Self::U16 => (u16::MIN as i128, u16::MAX as i128),
             Self::U32 => (u32::MIN as i128, u32::MAX as i128),
             Self::U64 => (u64::MIN as i128, u64::MAX as i128),
-            Self::USize if pointer_bits == 32 => (u32::MIN as i128, u32::MAX as i128),
-            Self::USize => (u64::MIN as i128, u64::MAX as i128),
+            Self::USize => (0, (1i128 << pointer_bits) - 1),
             _ => return None,
         })
     }

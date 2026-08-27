@@ -62,7 +62,7 @@ Method receiver shape is semantically explicit by this point; codegen should not
 
 ## Target vocabulary
 
-`omega_analyzer::Target` contains the compiler-wide architecture/OS choice and provides `pointer_bytes()` / `pointer_bits()`.
+`omega_analyzer::Target` contains the compiler-wide architecture/OS choice and provides `pointer_bytes()` / `pointer_bits()`. `Arch::supported_oses` is the one table of real architecture/OS pairs, and `Target::parse` rejects anything outside it; the type is not an open cross product of the two vocabularies.
 
 Width-sensitive semantic operations must take that target information rather than assuming host width.
 
@@ -74,7 +74,9 @@ Examples include:
 - compile-time arithmetic that depends on pointer width;
 - ABI leaf sizing.
 
-LLVM target triples are derived later from the shared target.
+Supported pointer widths are 16, 32 and 64 bits (`avr` is the 16-bit case), so a width-sensitive decision must be written for all three rather than branching on 64-vs-everything-else.
+
+LLVM target triples are derived later from the shared target. One `Target` chosen at the CLI reaches semantic analysis and the backend unchanged; no phase falls back to host width or a host triple.
 
 ## Layout ownership
 

@@ -53,7 +53,7 @@ impl<'ctx> Codegen<'ctx> {
                         .expect(
                             "analysis already rejected 'reg' operands that don't occupy exactly one register",
                         );
-                    let llvm_type = leaf::llvm_type(self.context, leaf, pointer_bytes);
+                    let llvm_type = leaf::llvm_type(self.context, leaf, self.target);
                     let constraint_class = register_class(self.target.arch, leaf);
                     let llvm_value = self.process_expr(value)[0];
                     let index = reg_operands.len();
@@ -157,6 +157,8 @@ fn register_class(arch: Arch, leaf: Leaf) -> &'static str {
         (Arch::Aarch64, true) => "w",
         (Arch::Riscv32 | Arch::Riscv64, false) => "r",
         (Arch::Riscv32 | Arch::Riscv64, true) => "f",
+        // AVR has no floating-point registers, so every operand class is `r`.
+        (Arch::Avr, _) => "r",
     }
 }
 
@@ -167,7 +169,12 @@ fn register_class(arch: Arch, leaf: Leaf) -> &'static str {
 fn status_clobbers(arch: Arch) -> &'static [&'static str] {
     match arch {
         Arch::X86_64 | Arch::X86 => &["~{dirflag}", "~{fpsr}", "~{flags}"],
-        Arch::Armv7 | Arch::Thumbv7em | Arch::Aarch64 | Arch::Riscv32 | Arch::Riscv64 => &[],
+        Arch::Armv7
+        | Arch::Thumbv7em
+        | Arch::Aarch64
+        | Arch::Riscv32
+        | Arch::Riscv64
+        | Arch::Avr => &[],
     }
 }
 

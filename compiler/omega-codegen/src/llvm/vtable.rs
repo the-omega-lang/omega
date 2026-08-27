@@ -36,8 +36,9 @@ impl<'ctx> Codegen<'ctx> {
                 function.as_global_value().as_pointer_value().into()
             })
             .collect();
-        let array_type = self.ptr_type().array_type(slots.len() as u32);
-        let init = self.ptr_type().const_array(
+        // Vtable slots hold code pointers; the vtable object itself is ordinary data.
+        let array_type = self.fn_ptr_type().array_type(slots.len() as u32);
+        let init = self.fn_ptr_type().const_array(
             &fn_ptrs
                 .iter()
                 .map(|v| v.into_pointer_value())

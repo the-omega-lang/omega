@@ -13,6 +13,11 @@ pub enum Leaf {
     F32,
     F64,
     Ptr,
+    /// A pointer to code rather than to data. It has the same width and ABI
+    /// shape as `Ptr`; the distinction exists so a backend targeting a
+    /// Harvard architecture can place code and data pointers in different
+    /// address spaces.
+    FnPtr,
     Size,
 }
 
@@ -25,7 +30,7 @@ impl Leaf {
             Leaf::I64 => 8,
             Leaf::F32 => 4,
             Leaf::F64 => 8,
-            Leaf::Ptr | Leaf::Size => pointer_bytes,
+            Leaf::Ptr | Leaf::FnPtr | Leaf::Size => pointer_bytes,
         }
     }
 }
@@ -110,9 +115,8 @@ pub fn leaves_of(ty: &ResolvedType, pointer_bytes: u32) -> Vec<Leaf> {
                 .collect()
         }
         ResolvedType::Slice { .. } | ResolvedType::Str { .. } => vec![Leaf::Ptr, Leaf::I32],
-        ResolvedType::Pointer { .. } | ResolvedType::Function(_) | ResolvedType::Array(_, _) => {
-            vec![Leaf::Ptr]
-        }
+        ResolvedType::Function(_) => vec![Leaf::FnPtr],
+        ResolvedType::Pointer { .. } | ResolvedType::Array(_, _) => vec![Leaf::Ptr],
         ResolvedType::Spec(_) => unreachable!("a spec definition is never itself a value type"),
         ResolvedType::SpecObject { .. } => vec![Leaf::Ptr, Leaf::Ptr],
     }

@@ -665,3 +665,49 @@ fn namespace_selection_separates_identical_signatures() {
         "Thing::same"
     );
 }
+
+#[test]
+fn pointer_sized_integer_domains_follow_the_target_width() {
+    for (bits, isize_domain, usize_domain) in [
+        (
+            16,
+            (i16::MIN as i128, i16::MAX as i128),
+            (0i128, u16::MAX as i128),
+        ),
+        (
+            32,
+            (i32::MIN as i128, i32::MAX as i128),
+            (0i128, u32::MAX as i128),
+        ),
+        (
+            64,
+            (i64::MIN as i128, i64::MAX as i128),
+            (0i128, u64::MAX as i128),
+        ),
+    ] {
+        assert_eq!(
+            ResolvedType::ISize.integer_domain(bits),
+            Some(isize_domain),
+            "isize at {bits} bits"
+        );
+        assert_eq!(
+            ResolvedType::USize.integer_domain(bits),
+            Some(usize_domain),
+            "usize at {bits} bits"
+        );
+    }
+}
+
+#[test]
+fn fixed_width_integer_domains_ignore_the_target_width() {
+    for bits in [16, 32, 64] {
+        assert_eq!(
+            ResolvedType::I32.integer_domain(bits),
+            Some((i32::MIN as i128, i32::MAX as i128))
+        );
+        assert_eq!(
+            ResolvedType::U64.integer_domain(bits),
+            Some((0, u64::MAX as i128))
+        );
+    }
+}

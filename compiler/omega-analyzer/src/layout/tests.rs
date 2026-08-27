@@ -166,3 +166,28 @@ fn a_member_merely_containing_an_anonymous_enum_lays_out_as_one_member() {
         total_bytes(&wrapper, POINTER_BYTES)
     );
 }
+
+#[test]
+fn a_function_value_is_one_pointer_width_code_pointer() {
+    let function = ResolvedType::Function(crate::resolved_type::ResolvedFunctionType {
+        params: Vec::new(),
+        return_type: Box::new(ResolvedType::Void),
+        is_variadic: false,
+        self_mode: None,
+        calling_convention: crate::resolved_type::CallingConvention::Omega,
+    });
+    let data_pointer = ResolvedType::Pointer {
+        pointee: Box::new(ResolvedType::I32),
+        mutable: false,
+    };
+
+    for pointer_bytes in [2, 4, 8] {
+        assert_eq!(leaves_of(&function, pointer_bytes), vec![Leaf::FnPtr]);
+        assert_eq!(leaves_of(&data_pointer, pointer_bytes), vec![Leaf::Ptr]);
+        assert_eq!(Leaf::FnPtr.bytes(pointer_bytes), pointer_bytes);
+        assert_eq!(
+            total_bytes(&function, pointer_bytes),
+            total_bytes(&data_pointer, pointer_bytes)
+        );
+    }
+}

@@ -15,6 +15,7 @@ pub enum Arch {
     Aarch64,
     Riscv32,
     Riscv64,
+    Avr,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +24,46 @@ pub enum Os {
     Linux,
     MacOs,
     Windows,
+}
+
+impl Arch {
+    /// The operating systems this architecture is actually built for. Every
+    /// architecture supports freestanding use; a hosted OS is listed only where
+    /// that OS really runs on the architecture, so a meaningless pair like
+    /// `avr-macos` is rejected rather than silently handed to the backend as an
+    /// invented triple.
+    pub fn supported_oses(self) -> &'static [Os] {
+        match self {
+            Arch::X86_64 | Arch::Aarch64 => &[Os::None, Os::Linux, Os::MacOs, Os::Windows],
+            Arch::X86 => &[Os::None, Os::Linux, Os::Windows],
+            Arch::Armv7 | Arch::Riscv32 | Arch::Riscv64 => &[Os::None, Os::Linux],
+            Arch::Thumbv7em | Arch::Avr => &[Os::None],
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Arch::X86_64 => "x86_64",
+            Arch::X86 => "x86",
+            Arch::Armv7 => "armv7",
+            Arch::Thumbv7em => "thumbv7em",
+            Arch::Aarch64 => "aarch64",
+            Arch::Riscv32 => "riscv32",
+            Arch::Riscv64 => "riscv64",
+            Arch::Avr => "avr",
+        }
+    }
+}
+
+impl Os {
+    pub fn name(self) -> &'static str {
+        match self {
+            Os::None => "none",
+            Os::Linux => "linux",
+            Os::MacOs => "macos",
+            Os::Windows => "windows",
+        }
+    }
 }
 
 impl Target {
@@ -35,6 +76,7 @@ impl Target {
         match self.arch {
             Arch::X86_64 | Arch::Aarch64 | Arch::Riscv64 => 8,
             Arch::X86 | Arch::Armv7 | Arch::Thumbv7em | Arch::Riscv32 => 4,
+            Arch::Avr => 2,
         }
     }
 
@@ -58,6 +100,7 @@ impl Target {
             "aarch64" => Arch::Aarch64,
             "riscv32" => Arch::Riscv32,
             "riscv64" => Arch::Riscv64,
+            "avr" => Arch::Avr,
             other => return Err(TargetParseError::UnknownArch(other.to_string())),
         };
         let os = match os_str {
@@ -67,28 +110,16 @@ impl Target {
             "windows" => Os::Windows,
             other => return Err(TargetParseError::UnknownOs(other.to_string())),
         };
+        if !arch.supported_oses().contains(&os) {
+            return Err(TargetParseError::UnsupportedPair { arch, os });
+        }
         Ok(Target { arch, os })
     }
 }
 
 impl fmt::Display for Target {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let arch = match self.arch {
-            Arch::X86_64 => "x86_64",
-            Arch::X86 => "x86",
-            Arch::Armv7 => "armv7",
-            Arch::Thumbv7em => "thumbv7em",
-            Arch::Aarch64 => "aarch64",
-            Arch::Riscv32 => "riscv32",
-            Arch::Riscv64 => "riscv64",
-        };
-        let os = match self.os {
-            Os::None => "none",
-            Os::Linux => "linux",
-            Os::MacOs => "macos",
-            Os::Windows => "windows",
-        };
-        write!(f, "{arch}-unknown-{os}")
+        write!(f, "{}-unknown-{}", self.arch.name(), self.os.name())
     }
 }
 
@@ -97,6 +128,7 @@ pub enum TargetParseError {
     Malformed(String),
     UnknownArch(String),
     UnknownOs(String),
+    UnsupportedPair { arch: Arch, os: Os },
 }
 
 impl fmt::Display for TargetParseError {
@@ -110,12 +142,27 @@ impl fmt::Display for TargetParseError {
             }
             TargetParseError::UnknownArch(a) => write!(
                 f,
-                "unknown target architecture '{a}' (expected `x86_64`, `x86`, `armv7`, `thumbv7em`, `aarch64`, `riscv32`, or `riscv64`)"
+                "unknown target architecture '{a}' (expected `x86_64`, `x86`, `armv7`, `thumbv7em`, `aarch64`, `riscv32`, `riscv64`, or `avr`)"
             ),
             TargetParseError::UnknownOs(o) => write!(
                 f,
                 "unknown target OS '{o}' (expected `none`/`freestanding`, `linux`, `macos`, or `windows`)"
             ),
+            TargetParseError::UnsupportedPair { arch, os } => {
+                let supported: Vec<String> = arch
+                    .supported_oses()
+                    .iter()
+                    .map(|os| format!("`{}`", os.name()))
+                    .collect();
+                write!(
+                    f,
+                    "there is no '{}' target for '{}' (`{}` supports {})",
+                    os.name(),
+                    arch.name(),
+                    arch.name(),
+                    supported.join(", ")
+                )
+            }
         }
     }
 }
@@ -149,6 +196,8 @@ mod tests {
         round_trips("aarch64-linux", Arch::Aarch64, Os::Linux);
         round_trips("riscv32-none", Arch::Riscv32, Os::None);
         round_trips("riscv64-linux", Arch::Riscv64, Os::Linux);
+        round_trips("avr-none", Arch::Avr, Os::None);
+        round_trips("avr-unknown-none", Arch::Avr, Os::None);
         round_trips("riscv32-freestanding", Arch::Riscv32, Os::None);
         round_trips("x86_64-unknown-linux", Arch::X86_64, Os::Linux);
         round_trips("x86_64-unknown-none", Arch::X86_64, Os::None);
@@ -168,6 +217,7 @@ mod tests {
             (Arch::Armv7, 4),
             (Arch::Thumbv7em, 4),
             (Arch::Riscv32, 4),
+            (Arch::Avr, 2),
         ] {
             assert_eq!(
                 Target {
@@ -191,10 +241,66 @@ mod tests {
     }
 
     #[test]
+    fn every_supported_pair_parses_and_round_trips() {
+        for arch in [
+            Arch::X86_64,
+            Arch::X86,
+            Arch::Armv7,
+            Arch::Thumbv7em,
+            Arch::Aarch64,
+            Arch::Riscv32,
+            Arch::Riscv64,
+            Arch::Avr,
+        ] {
+            assert!(
+                arch.supported_oses().contains(&Os::None),
+                "{arch:?} must support freestanding use"
+            );
+            for &os in arch.supported_oses() {
+                round_trips(&format!("{}-{}", arch.name(), os.name()), arch, os);
+            }
+        }
+    }
+
+    #[test]
+    fn an_architecture_rejects_an_os_it_does_not_run() {
+        for (spelling, arch) in [
+            ("avr-linux", "avr"),
+            ("avr-macos", "avr"),
+            ("thumbv7em-linux", "thumbv7em"),
+            ("riscv64-windows", "riscv64"),
+            ("armv7-macos", "armv7"),
+            ("x86-macos", "x86"),
+        ] {
+            let error = Target::parse(spelling)
+                .expect_err(&format!("{spelling} is not a real target"))
+                .to_string();
+            assert!(
+                error.contains(arch) && error.contains("`none`"),
+                "{spelling} must be rejected with the OSes {arch} does support: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_default_target_is_a_supported_pair() {
+        assert!(
+            Target::DEFAULT
+                .arch
+                .supported_oses()
+                .contains(&Target::DEFAULT.os)
+        );
+        assert_eq!(
+            Target::parse("x86_64-linux").expect("the default spelling parses"),
+            Target::DEFAULT
+        );
+    }
+
+    #[test]
     fn unknown_names_list_the_supported_set() {
         let arch = Target::parse("sparc-linux").unwrap_err().to_string();
         assert!(
-            arch.contains("x86_64") && arch.contains("riscv32"),
+            arch.contains("x86_64") && arch.contains("riscv32") && arch.contains("avr"),
             "{arch}"
         );
         let os = Target::parse("x86_64-vxworks").unwrap_err().to_string();

@@ -22,11 +22,12 @@ use omega_analyzer::{Arch, Os, Target as OmegaTarget};
 use omega_hir::HirId;
 use std::collections::HashMap;
 
-pub(crate) fn supports(_target: OmegaTarget) -> bool {
-    true
-}
-
 fn triple_for(target: OmegaTarget) -> String {
+    // LLVM spells generic AVR with its own canonical triple rather than the
+    // `-none-elf` form the other freestanding targets use.
+    if target.arch == Arch::Avr && target.os == Os::None {
+        return "avr-unknown-unknown".to_string();
+    }
     let arch = match target.arch {
         Arch::X86_64 => "x86_64",
         Arch::X86 => "i686",
@@ -35,12 +36,23 @@ fn triple_for(target: OmegaTarget) -> String {
         Arch::Aarch64 => "aarch64",
         Arch::Riscv32 => "riscv32",
         Arch::Riscv64 => "riscv64",
+        Arch::Avr => "avr",
     };
     match target.os {
         Os::None => format!("{arch}-unknown-none-elf"),
         Os::Linux => format!("{arch}-unknown-linux-gnu"),
         Os::MacOs => format!("{arch}-apple-macosx"),
         Os::Windows => format!("{arch}-pc-windows-msvc"),
+    }
+}
+
+/// PIC keeps independently emitted objects linkable across separate
+/// compilation on the hosted targets. AVR has no position-independent code
+/// model, so it takes LLVM's own default relocation mode instead.
+fn reloc_mode(target: OmegaTarget) -> RelocMode {
+    match target.arch {
+        Arch::Avr => RelocMode::Default,
+        _ => RelocMode::PIC,
     }
 }
 
@@ -102,8 +114,7 @@ impl<'ctx> Codegen<'ctx> {
                 "generic",
                 "",
                 llvm_opt_level(opt_level),
-                // Use PIC so independently emitted objects link consistently across separate compilation.
-                RelocMode::PIC,
+                reloc_mode(target),
                 inkwell::targets::CodeModel::Default,
             )
             .ok_or_else(|| format!("failed to build a code generator for target '{target}'"))?;
@@ -187,6 +198,59 @@ impl<'ctx> Codegen<'ctx> {
 
     pub(super) fn ptr_type(&self) -> inkwell::types::PointerType<'ctx> {
         leaf::ptr_type(self.context)
+    }
+
+    pub(super) fn fn_ptr_type(&self) -> inkwell::types::PointerType<'ctx> {
+        leaf::fn_ptr_type(self.context, self.target)
+    }
+
+    /// The pointer-sized integer type used for `usize`/`isize` values and for
+    /// every byte offset the backend computes.
+    pub(super) fn size_type(&self) -> inkwell::types::IntType<'ctx> {
+        leaf::size_type(self.context, self.target)
+    }
+
+    /// Resizes an index or length to the target's pointer-sized integer type so
+    /// it can scale into a byte offset. Narrowing is as ordinary as widening
+    /// here: a 16-bit target reaches this with indices wider than its pointers.
+    /// Widening follows the source type's signedness, so that an index the
+    /// program can write as negative keeps the same meaning at every pointer
+    /// width rather than becoming a huge positive offset on the wider ones.
+    pub(super) fn to_size_int(
+        &self,
+        value: inkwell::values::IntValue<'ctx>,
+        signed: bool,
+        name: &str,
+    ) -> inkwell::values::IntValue<'ctx> {
+        let size_type = self.size_type();
+        match value
+            .get_type()
+            .get_bit_width()
+            .cmp(&size_type.get_bit_width())
+        {
+            std::cmp::Ordering::Less if signed => self
+                .builder
+                .build_int_s_extend(value, size_type, name)
+                .expect("sext always succeeds"),
+            std::cmp::Ordering::Less => self
+                .builder
+                .build_int_z_extend(value, size_type, name)
+                .expect("zext always succeeds"),
+            std::cmp::Ordering::Greater => self
+                .builder
+                .build_int_truncate(value, size_type, name)
+                .expect("trunc always succeeds"),
+            std::cmp::Ordering::Equal => value,
+        }
+    }
+
+    /// Whether an integer-typed value must be widened as signed. Non-numeric
+    /// types never reach a byte-offset computation.
+    pub(super) fn is_signed(&self, ty: &ResolvedType) -> bool {
+        matches!(
+            ty.numeric_kind(self.target.pointer_bits()),
+            Some(omega_analyzer::resolved_type::NumericKind::Signed(_))
+        )
     }
 
     pub(super) fn pointer_bytes(&self) -> u32 {

@@ -208,7 +208,7 @@ If a new unsupported construct belongs above codegen, put the rejection here or 
 
 ### Target support check
 
-`llvm::supports(target)` is checked before emission. The shared compiler target vocabulary can be broader than what a given LLVM build actually supports.
+LLVM target-machine construction is the single authority on whether a target can be emitted: the shared compiler target vocabulary can be broader than what a given LLVM build supports, so `Target::from_triple`/`create_target_machine` decide it in `mod.rs` and report a normal unsupported-target error before any module is emitted. There is no second hard-coded support matrix, and a target is never rejected merely for differing from the host.
 
 ## Shared ABI and layout
 
@@ -224,12 +224,12 @@ See [`abi-and-representation.md`](abi-and-representation.md).
 
 `src/llvm/` is split by concern:
 
-- `mod.rs` — target machine/triple/data layout setup, shared codegen state, final output;
+- `mod.rs` — target machine/triple/data layout setup, shared codegen state, final output. The triple is derived from the shared Omega target (`avr-none` maps to LLVM's canonical `avr-unknown-unknown`), the target machine's triple/data layout are installed on the module before any declaration is created, and the relocation model is PIC for the hosted targets and LLVM's default for AVR, which has no position-independent code model;
 - `item.rs` — declarations/definitions/globals/externs;
 - `function.rs` — function CFG/block emission;
 - `expr.rs` — computation/calls/casts/aggregate construction;
 - `place.rs` — address/storage/projection loads and stores;
-- `leaf.rs` — abstract leaf -> LLVM types;
+- `leaf.rs` — abstract leaf -> LLVM types, resolved against the active target: one helper maps the 16/32/64-bit pointer-sized integer, and one maps the code-pointer leaf to the target's program address space (see [`abi-and-representation.md`](abi-and-representation.md));
 - `vtable.rs` — dynamic-spec table materialization;
 - `inline_asm.rs` — `MirExpr::InlineAsm` lowering: register-class/constraint selection and `$name`/`$N` -> LLVM template-slot binding.
 
@@ -243,7 +243,7 @@ The completed LLVM module is always verified before output. A verifier failure i
 
 `MirExpr::InlineAsm` (always `void`-typed, carrying `reg`/`const` operands, `clobber` strings, and the raw template) is the only MIR node whose associated text is never optimized or reinterpreted by Omega. `inline_asm.rs` lowers each `reg` to an early-clobber read-write LLVM constraint (`+&<class>` or `+&{<physical>}`) so the register allocator never assumes an unread value survives past the asm, discards every resulting SSA value, and appends conservative `~{memory}` plus (on X86/X86-64) the `~{dirflag},~{fpsr},~{flags}` status clobbers alongside any user-declared `clobber(...)`. `$name`/`$N` bindings are rewritten directly in the template string: a `reg` becomes the LLVM operand's own `$N` slot (numbered by constraint order, independent of Omega's source binding numbering -- see [`inline-assembly.md`](../language/inline-assembly.md)), and a `const` becomes the analyzer's pre-rendered literal text. `$$` is left untouched because LLVM's own inline-asm template syntax already defines it as one literal `$`. The resulting `inkwell::create_inline_asm` value is always invoked through `build_indirect_call`, matching the LLVM 15+ callable-value requirement for inline asm.
 
-Register-class selection is centralized in `inline_asm.rs` as the one place with target-conditional (`Arch`) codegen logic; every `Arch` Omega currently supports (`X86_64`, `X86`, `Armv7`, `Thumbv7em`, `Aarch64`, `Riscv32`, `Riscv64`) maps each accepted scalar/pointer leaf to a generic LLVM constraint letter. X86/X86-64 asm is always parsed as LLVM's Intel dialect; other targets use their LLVM backend's one defined dialect. Object/assembly emission failure (an integrated-assembler rejection of user-authored instructions/registers) is a `Result` propagated out of `Codegen::finish`, not a panic -- unlike the rest of codegen, invalid inline-asm text is a legitimate user error, not a compiler-bug precondition violation.
+Register-class selection is centralized in `inline_asm.rs` as the one place with target-conditional (`Arch`) codegen logic; every `Arch` Omega currently supports (`X86_64`, `X86`, `Armv7`, `Thumbv7em`, `Aarch64`, `Riscv32`, `Riscv64`, `Avr`) maps each accepted scalar/pointer leaf to a generic LLVM constraint letter. X86/X86-64 asm is always parsed as LLVM's Intel dialect; other targets use their LLVM backend's one defined dialect. Object/assembly emission failure (an integrated-assembler rejection of user-authored instructions/registers) is a `Result` propagated out of `Codegen::finish`, not a panic -- unlike the rest of codegen, invalid inline-asm text is a legitimate user error, not a compiler-bug precondition violation.
 
 ### Naked functions
 

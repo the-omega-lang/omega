@@ -4,6 +4,17 @@ Concrete current compiler/library bugs and unsupported cases. Resolved issues ar
 
 ## Codegen
 
+- **`avr-none` object emission can fail at `-O0` on functions with several
+  live pointers.** LLVM 21.1's AVR backend runs the fast register allocator
+  at `-O0`, and AVR's tiny pointer-register file makes it give up with
+  `ran out of registers during register allocation` on shapes Omega emits
+  routinely -- a spec-object call, for example, holds a data pointer, a
+  vtable pointer and a loaded code pointer live at once. This is upstream
+  behaviour, not an Omega lowering defect: `llc -O0` fails identically on
+  the exact IR `omgc --emit=ir` produces, while `-O1` and above allocate it
+  successfully. It surfaces as a normal emission error, so build AVR
+  packages at `-O1` or higher until the backend's `-O0` path improves.
+
 - **A range-driven `for` loop no longer compiles to a bare three-clause
   loop, and will not until MIR-level optimization exists.** `for i in 0..<n`
   used to be intercepted by a dedicated analyzer desugaring that emitted a

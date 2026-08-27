@@ -25,13 +25,15 @@ Typical shapes include:
 | fixed integers/floats | matching scalar leaf |
 | `isize` / `usize` | target pointer-width integer leaf |
 | thin pointer / unsized-array pointer | one pointer leaf |
-| function value / function pointer | one pointer leaf |
+| function value / function pointer | one code-pointer leaf |
 | slice / `str` pointer | data pointer + length |
 | `[N]T` | N repetitions of `T`'s leaves, inline |
 | struct | field leaves + explicit layout padding |
 | union | opaque payload chunks covering largest member |
 | enum | tag/header/dynamic prefix + opaque payload region |
 | dynamic spec object | data pointer + vtable pointer |
+
+A code-pointer leaf has the same width, count and ABI position as an ordinary pointer leaf; the distinction exists only so a backend can tell a pointer to code from a pointer to data. On a Harvard target those live in different LLVM address spaces (AVR: code in the program address space, data in address space 0), so function values, vtable slots and indirect calls carry the program address space while the vtable object itself, `sret` destinations and every other data pointer stay in address space 0. Reinterpreting between a function value and a thin raw pointer is then an LLVM `addrspacecast`. That is backend representation work: it is not an ABI adapter, it does not change the Omega size or leaf count of either side, and it is invisible in the source language. Where code and data share one address space the same cast is a no-op.
 
 The exact functions live in `omega_analyzer::layout`; this table is a routing summary, not a replacement for the code.
 

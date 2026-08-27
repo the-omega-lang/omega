@@ -31,11 +31,10 @@ impl<'ctx> Codegen<'ctx> {
         if matches!(abi.ret, AbiReturn::Indirect) {
             param_types.push(self.ptr_type().as_basic_type_enum());
         }
-        let pb = self.pointer_bytes();
         param_types.extend(
             abi.params
                 .iter()
-                .map(|raw_leaf| leaf::llvm_type(self.context, *raw_leaf, pb)),
+                .map(|raw_leaf| leaf::llvm_type(self.context, *raw_leaf, self.target)),
         );
         let param_types: Vec<inkwell::types::BasicMetadataTypeEnum> =
             param_types.into_iter().map(Into::into).collect();
@@ -45,14 +44,14 @@ impl<'ctx> Codegen<'ctx> {
                 .void_type()
                 .fn_type(&param_types, fn_type.is_variadic),
             AbiReturn::Direct(leaves) => match leaves.as_slice() {
-                [single] => leaf::llvm_type(self.context, *single, pb)
+                [single] => leaf::llvm_type(self.context, *single, self.target)
                     .fn_type(&param_types, fn_type.is_variadic),
                 multiple => self
                     .context
                     .struct_type(
                         &multiple
                             .iter()
-                            .map(|raw_leaf| leaf::llvm_type(self.context, *raw_leaf, pb))
+                            .map(|raw_leaf| leaf::llvm_type(self.context, *raw_leaf, self.target))
                             .collect::<Vec<_>>(),
                         false,
                     )
@@ -260,8 +259,7 @@ impl<'ctx> Codegen<'ctx> {
             .iter()
             .enumerate()
             .flat_map(|(i, local)| {
-                let value_count =
-                    leaf::llvm_leaves(self.context, &local.r#type, self.pointer_bytes()).len();
+                let value_count = leaf::llvm_leaves(self.context, &local.r#type, self.target).len();
                 vec![i; value_count]
             })
             .collect();
