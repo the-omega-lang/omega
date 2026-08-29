@@ -1,8 +1,11 @@
 import std::io::println;
-import self::defs::read_secret;
-import self::defs::make_doubler;
-import self::defs::re_export;
-import self::defs::line;
+# A group binds one macro per leaf, and `as` renames only the local
+# invocation name.
+import self::defs::{ read_secret, make_doubler, re_export, line, shout as yell };
+
+# The macro environment is built from raw AST before HIR exists, so a macro
+# alias must resolve through the renamed grouped import too.
+alias echo = yell;
 
 make_doubler$(i32, double_i32);
 
@@ -60,4 +63,8 @@ main() => void {
 	# An exposed `core` macro is an ambient fallback, so an explicit import
 	# of the same invocation name replaces it.
 	println$("imported-macro-over-ambient: ", line$());
+
+	# The renamed import is the only binding for that macro here, and the
+	# alias reaches the same definition through the local name.
+	println$("renamed-macro-import: ", yell$(), " ", echo$());
 }

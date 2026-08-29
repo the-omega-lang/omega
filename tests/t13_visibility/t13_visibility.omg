@@ -1,10 +1,16 @@
 import std::io::println;
-import self::child;
-import self::child::Mammal;
-import self::child::Greeter;
-import self::child::Dog;
-import reveal self::child::HiddenAlias;
-import reveal self::child::HiddenTemplate;
+# `reveal` is scoped to the import-tree node it is written on and inherited
+# by every leaf beneath it. `HiddenAlias` is revealed on its own; the whole
+# `secrets` subtree is revealed at once; the exposed siblings are untouched
+# and still resolve under ordinary visibility.
+import self::child::{
+	self,
+	Mammal,
+	Greeter,
+	Dog,
+	reveal HiddenAlias,
+	reveal secrets::{ HiddenTemplate, HiddenPair },
+};
 
 main() => void {
 	# `exposed` and `shared` are both reachable across modules within the
@@ -56,4 +62,9 @@ main() => void {
 	revealed := HiddenAlias { data = 11; };
 	revealed_template := HiddenTemplate<i32> { value = 12; };
 	println$("revealed-alias-import: ", revealed.data, " ", revealed_template.value);
+
+	# The second leaf of the same revealed subtree inherited the bypass too,
+	# without any `reveal` of its own.
+	revealed_pair := HiddenPair { left = 13; right = 14; };
+	println$("revealed-subtree-import: ", revealed_pair.left, " ", revealed_pair.right);
 }

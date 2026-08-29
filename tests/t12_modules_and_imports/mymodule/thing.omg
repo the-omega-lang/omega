@@ -1,7 +1,12 @@
 # `root::` explicitly starts at the current package root, independent of
-# how deeply nested the importing module is.
-import root::helper;
+# how deeply nested the importing module is. The group renames both the
+# module itself, through its `self` leaf, and one of its items.
+import root::helper::{ self as base, greeting as hello };
 
 exposed something() => *str {
-	helper::greeting()
+	hello()
+}
+
+exposed renamed_module_greeting() => *str {
+	base::greeting()
 }

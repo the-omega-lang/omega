@@ -177,3 +177,299 @@ fn anchored_expression_path_parses() {
     };
     assert_eq!(expr_path.path.anchor, Some(PathAnchor::Root));
 }
+
+// Import trees: `as` renaming, recursive brace groups, the group-local `self`
+// leaf, and subtree-scoped `reveal`. The parser keeps the written shape;
+// `ImportStmt::leaves` is the flat binding view every consumer uses.
+
+fn parse_errors(source: &str) -> Vec<String> {
+    match SourceModule::parse(source) {
+        Ok(_) => panic!("expected this import to be rejected"),
+        Err(errors) => errors.iter().map(ToString::to_string).collect(),
+    }
+}
+
+/// Every binding an import denotes, as `(path, bound name, reveal)`.
+fn leaves(source: &str) -> Vec<(Vec<String>, String, bool)> {
+    import(source)
+        .leaves()
+        .iter()
+        .map(|leaf| {
+            (
+                leaf.path
+                    .segments()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect(),
+                leaf.name.to_string(),
+                leaf.reveal,
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn standalone_rename_binds_only_the_new_name() {
+    assert_eq!(
+        leaves("import thing::Thing as ImportedThing;"),
+        [(
+            vec!["thing".into(), "Thing".into()],
+            "ImportedThing".into(),
+            false
+        )]
+    );
+}
+
+#[test]
+fn group_flattens_to_independent_bindings_in_textual_order() {
+    assert_eq!(
+        leaves("import thing::{ First, Second as Two, sub::{ Third, Fourth as Four } };"),
+        [
+            (vec!["thing".into(), "First".into()], "First".into(), false),
+            (vec!["thing".into(), "Second".into()], "Two".into(), false),
+            (
+                vec!["thing".into(), "sub".into(), "Third".into()],
+                "Third".into(),
+                false
+            ),
+            (
+                vec!["thing".into(), "sub".into(), "Fourth".into()],
+                "Four".into(),
+                false
+            ),
+        ]
+    );
+}
+
+#[test]
+fn multi_segment_group_entry_extends_the_prefix() {
+    assert_eq!(
+        leaves("import thing::{ deep::nested::Item };"),
+        [(
+            vec![
+                "thing".into(),
+                "deep".into(),
+                "nested".into(),
+                "Item".into()
+            ],
+            "Item".into(),
+            false
+        )]
+    );
+}
+
+#[test]
+fn self_leaf_binds_the_enclosing_prefix() {
+    assert_eq!(
+        leaves("import thing::{ self, Thing };"),
+        [
+            (vec!["thing".into()], "thing".into(), false),
+            (vec!["thing".into(), "Thing".into()], "Thing".into(), false),
+        ]
+    );
+    assert_eq!(
+        leaves("import thing::{ self as TheModule };"),
+        [(vec!["thing".into()], "TheModule".into(), false)]
+    );
+    assert_eq!(
+        leaves("import thing::{ sub::{ self, Item } };"),
+        [
+            (vec!["thing".into(), "sub".into()], "sub".into(), false),
+            (
+                vec!["thing".into(), "sub".into(), "Item".into()],
+                "Item".into(),
+                false
+            ),
+        ]
+    );
+}
+
+#[test]
+fn reveal_is_inherited_by_every_descendant_leaf() {
+    assert_eq!(
+        leaves("import reveal abc::{ A, sub::{ B, C } };"),
+        [
+            (vec!["abc".into(), "A".into()], "A".into(), true),
+            (
+                vec!["abc".into(), "sub".into(), "B".into()],
+                "B".into(),
+                true
+            ),
+            (
+                vec!["abc".into(), "sub".into(), "C".into()],
+                "C".into(),
+                true
+            ),
+        ]
+    );
+}
+
+#[test]
+fn reveal_on_a_subtree_stops_at_that_subtree() {
+    assert_eq!(
+        leaves("import abc::{ reveal A, B };"),
+        [
+            (vec!["abc".into(), "A".into()], "A".into(), true),
+            (vec!["abc".into(), "B".into()], "B".into(), false),
+        ]
+    );
+    assert_eq!(
+        leaves("import abc::{ reveal sub::{ A, B }, C };"),
+        [
+            (
+                vec!["abc".into(), "sub".into(), "A".into()],
+                "A".into(),
+                true
+            ),
+            (
+                vec!["abc".into(), "sub".into(), "B".into()],
+                "B".into(),
+                true
+            ),
+            (vec!["abc".into(), "C".into()], "C".into(), false),
+        ]
+    );
+}
+
+#[test]
+fn redundant_nested_reveal_yields_one_revealed_leaf() {
+    assert_eq!(
+        leaves("import reveal thing::{ reveal A };"),
+        [(vec!["thing".into(), "A".into()], "A".into(), true)]
+    );
+}
+
+#[test]
+fn reveal_self_follows_the_same_inheritance_rule() {
+    assert_eq!(
+        leaves("import thing::{ reveal self, Other };"),
+        [
+            (vec!["thing".into()], "thing".into(), true),
+            (vec!["thing".into(), "Other".into()], "Other".into(), false),
+        ]
+    );
+}
+
+#[test]
+fn group_prefixes_accept_every_anchor() {
+    let anchored = import("import self::module::{ A };");
+    assert_eq!(anchored.path.anchor, Some(PathAnchor::SelfModule));
+    assert_eq!(
+        leaves("import self::module::{ A };"),
+        [(vec!["module".into(), "A".into()], "A".into(), false)]
+    );
+
+    assert_eq!(
+        import("import root::module::{ A };").path.anchor,
+        Some(PathAnchor::Root)
+    );
+    assert_eq!(
+        import("import super::super::module::{ A };").path.anchor,
+        Some(PathAnchor::Super(2))
+    );
+}
+
+#[test]
+fn trailing_commas_are_allowed_in_groups() {
+    assert_eq!(
+        leaves("import thing::{ A, sub::{ B, }, };"),
+        [
+            (vec!["thing".into(), "A".into()], "A".into(), false),
+            (
+                vec!["thing".into(), "sub".into(), "B".into()],
+                "B".into(),
+                false
+            ),
+        ]
+    );
+}
+
+#[test]
+fn as_remains_an_ordinary_identifier_outside_the_connector_position() {
+    assert_eq!(
+        leaves("import as::thing::as;"),
+        [(
+            vec!["as".into(), "thing".into(), "as".into()],
+            "as".into(),
+            false
+        )]
+    );
+    assert_eq!(
+        leaves("import thing::{ as };"),
+        [(vec!["thing".into(), "as".into()], "as".into(), false)]
+    );
+    assert_eq!(
+        leaves("import thing::Thing as as;"),
+        [(vec!["thing".into(), "Thing".into()], "as".into(), false)]
+    );
+    SourceModule::parse("as() => i32 { 1 }").expect("`as` is still an item name");
+}
+
+#[test]
+fn leaf_spans_point_at_the_group_entry() {
+    let source = "import thing::{ First, Second as Two };";
+    let import = import(source);
+    let spans: Vec<&str> = import
+        .leaves()
+        .iter()
+        .map(|leaf| &source[leaf.span.start..leaf.span.end])
+        .collect();
+    assert_eq!(spans, ["First", "Second as Two"]);
+}
+
+#[test]
+fn ungrouped_import_leaf_spans_the_whole_statement() {
+    let source = "import thing::Thing;";
+    let import = import(source);
+    let leaf = &import.leaves()[0];
+    assert_eq!(&source[leaf.span.start..leaf.span.end], source);
+}
+
+#[test]
+fn empty_group_is_rejected() {
+    assert!(
+        parse_errors("import thing::{};")
+            .iter()
+            .any(|e| e.contains("at least one name"))
+    );
+}
+
+#[test]
+fn renaming_a_group_prefix_is_rejected() {
+    assert!(
+        parse_errors("import thing::{ sub as other::{ A } };")
+            .iter()
+            .any(|e| e.contains("only a complete import binding"))
+    );
+}
+
+#[test]
+fn non_terminal_self_is_rejected() {
+    for source in [
+        "import thing::{ self::Item };",
+        "import thing::{ self::{ Item } };",
+    ] {
+        assert!(
+            parse_errors(source)
+                .iter()
+                .any(|e| e.contains("cannot be extended")),
+            "expected a non-terminal `self` diagnostic for {source}"
+        );
+    }
+}
+
+#[test]
+fn anchor_only_group_prefix_is_rejected() {
+    for source in [
+        "import self::{ thing };",
+        "import root::{ thing };",
+        "import super::{ thing };",
+    ] {
+        assert!(
+            parse_errors(source)
+                .iter()
+                .any(|e| e.contains("identifier")),
+            "expected an anchor-only group prefix to be rejected for {source}"
+        );
+    }
+}

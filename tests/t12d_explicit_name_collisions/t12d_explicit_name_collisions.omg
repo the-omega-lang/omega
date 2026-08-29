@@ -11,4 +11,27 @@ alias Marker = i32;
 
 import self::helper::Marker;
 
+# `as` moves the claim onto the local name: the target's own tail is no
+# longer claimed, so the local declaration of `Other` is free while the
+# renamed binding is what a later `Renamed` declaration collides with.
+import self::helper::Other as Renamed;
+
+struct Renamed {
+	exposed value: i32;
+}
+
+struct Other {
+	exposed value: i32;
+}
+
+# Two leaves of one group are independent claims, so claiming one name twice
+# collides at the later leaf exactly as two separate imports would.
+import self::helper::{ First as Dup, Second as Dup };
+
+# A leaf whose target fails to resolve reports that failure on its own and
+# still reserves the name it bound.
+import nosuchpackage::{ Thing as Reserved };
+
+alias Reserved = i32;
+
 main() => void {}

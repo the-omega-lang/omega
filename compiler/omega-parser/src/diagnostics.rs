@@ -141,6 +141,15 @@ impl ParseError {
                 .with_label(self.span, "imports are not allowed in macro bodies")
                 .with_note("macro-body names resolve in the macro's definition module")
                 .with_help("import this name beside the macro definition instead"),
+            ParseErrorKind::EmptyImportGroup => Diagnostic::error("an import group must import at least one name")
+                .with_label(self.span, "this group is empty")
+                .with_help("write the names to import inside the braces, or drop the group"),
+            ParseErrorKind::ImportAliasOnPrefix => Diagnostic::error("only a complete import binding can be renamed with 'as'")
+                .with_label(self.span, "this 'as' renames a path prefix, not a binding")
+                .with_help("rename each imported name inside the group instead"),
+            ParseErrorKind::ImportSelfNotTerminal => Diagnostic::error("'self' in an import group binds the enclosing prefix and cannot be extended")
+                .with_label(self.span, "this 'self' is followed by more path segments")
+                .with_help("write the segments as their own group entry, or use 'self' alone to bind the prefix"),
             ParseErrorKind::UnterminatedAsmBody => Diagnostic::error("unterminated inline assembly body")
                 .with_label(self.span, "this asm body never closes")
                 .with_help("add a closing `}` that matches the opening `{` after `=>`"),
@@ -226,6 +235,9 @@ pub enum ParseErrorKind {
     InvalidMacroSeparator,
     NestedMacroRepetition,
     ImportInMacroBody,
+    EmptyImportGroup,
+    ImportAliasOnPrefix,
+    ImportSelfNotTerminal,
     UnterminatedAsmBody,
     ForeignConventionOnBinding,
     NestedForeignBlock,

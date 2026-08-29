@@ -3,3 +3,15 @@ exposed struct Thing {
 }
 
 exposed alias Marker = i32;
+
+exposed struct Other {
+	exposed value: i32;
+}
+
+exposed struct First {
+	exposed value: i32;
+}
+
+exposed struct Second {
+	exposed value: i32;
+}

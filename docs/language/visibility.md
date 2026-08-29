@@ -9,7 +9,7 @@ struct HiddenByDefault { ... }
 hidden struct AlsoHiddenByDefault { ... }
 
 reveal some_module::hidden_thing();
-import reveal some_package;
+import reveal some_module::hidden_thing;
 ```
 
 Omega has three declaration visibility levels plus a use-site bypass:
@@ -43,11 +43,29 @@ reveal value.hidden_field = 10;
 p := &mut reveal value.hidden_field;
 ```
 
-It can also be used in imports:
+It can also be used in imports, where it authorizes binding a name the
+importing module could not otherwise reach:
 
 ```omega
-import reveal lib::hidden_module;
+# `lib::Secret` is hidden; this import is what carries the bypass, and the
+# bound name stays usable afterwards.
+import reveal lib::Secret;
 ```
+
+An import is a tree, and `reveal` is scoped to the node it is written on: a
+terminal binding's effective bypass is the logical OR of every `reveal` from
+the root of the tree down to it. Revealing a subtree therefore reveals every
+binding beneath it, and nothing beside it:
+
+```omega
+import lib::{ reveal Secret, Public };            # only `Secret` is revealed
+import lib::{ reveal internals::{ A, B }, C };    # `A` and `B`, but not `C`
+```
+
+Interior nodes of an import tree bind nothing, so `reveal` on a prefix says
+only that the bindings beneath it inherit the bypass. Physical modules have no
+visibility modifier and nothing about them is revealed; see
+[`modules-and-imports.md`](modules-and-imports.md).
 
 The bypass applies only to the syntactic use wrapped by `reveal`; it does not change the declaration itself or grant permanent visibility to later code.
 

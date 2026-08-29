@@ -141,13 +141,26 @@ HIR lowering may perform structural transforms that require no semantic facts, b
 
 ### Current HIR desugarings
 
-HIR lowering owns three important source-shape normalizations:
+HIR lowering owns four important source-shape normalizations:
 
 1. **Synthetic `self` insertion.** Member functions receive the parameter shape implied by `SelfMode`.
 2. **By-value `mut self` shadowing.** It becomes an implicit mutable local shadow at the beginning of the body, avoiding a separate downstream “mutable parameter” concept.
 3. **Place-chain flattening.** Nested field/index/deref AST expressions that form an assignable/addressable place become `HirPlace { root, projections }`.
+4. **Import-tree flattening.** One `ImportStmt` becomes one `HirImport` per terminal binding.
 
 Static-spec parameter normalization (`f(x: spec A + B)` becoming one fresh bounded generic) is deliberately **not** here. It has to run after alias expansion, so that `f(x: AB)` and the literal spelling normalize identically, and expanding an alias needs cross-module resolution HIR does not have. It now lives at the analyzer/driver seam -- see [`semantic-analysis.md`](semantic-analysis.md).
+
+`ImportStmt` keeps the written import tree -- nested brace groups, per-node
+`reveal`, `as` renames, and the group-local `self` entry -- because the raw
+macro environment has to read imports before HIR exists. The tree is turned
+into bindings in exactly one place, `ImportStmt::leaves`, which appends nested
+prefixes, ORs `reveal` down each branch, derives the local bound name, and
+yields leaves in textual depth-first order without resolving anything. Lowering
+consumes that view to emit one `HirImport` per leaf, each with its own `HirId`,
+full target path, explicit bound name, effective `reveal`, entry span, and a
+copy of the source item's annotations; brace groups do not exist past HIR. The
+driver's pre-HIR macro binding uses that same traversal rather than walking the
+tree again -- see [`module-driver-and-linkage.md`](module-driver-and-linkage.md).
 
 An `alias` lowers one-for-one to `HirAlias` with its target left structurally unresolved: only semantic analysis can tell whether a path names a module, type, function, or macro, and only the use site can tell a static spec bound from a dynamic-object pointee.
 

@@ -1,11 +1,14 @@
 use crate::ast::annotation::AnnotationNode;
-use crate::ast::item::{AliasItem, AliasTarget, ImportStmt, Item, ItemNode};
+use crate::ast::identifier::{Ident, Path};
+use crate::ast::item::{
+    AliasItem, AliasTarget, ImportKind, ImportNode, ImportStmt, Item, ItemNode,
+};
 use crate::ast::r#type::Type;
 use crate::ast::visibility::Visibility;
 use crate::diagnostics::{ParseErrorKind, Span};
 use crate::lexer::TokenKind;
 use crate::parser::macro_syntax::{parse_macro_definition, parse_macro_invocation};
-use crate::parser::{Parser, contextual, parse_path, recovery};
+use crate::parser::{Parser, contextual, parse_path_anchor, recovery};
 
 #[derive(Clone, Copy)]
 enum ParsedVisibility {
@@ -245,14 +248,103 @@ fn parse_alias_def(
 }
 
 fn parse_import(p: &mut Parser, annotations: Vec<AnnotationNode>) -> Option<ImportStmt> {
+    let start = p.peek_span();
     p.expect(&TokenKind::Import, "'import'");
     let reveal = p.eat_contextual(contextual::REVEAL);
-    let path = parse_path(p)?;
+    let anchor = parse_path_anchor(p);
+    let (head, origin) = p.expect_ident_with_origin()?;
+    let tail = parse_import_segments(p)?;
+    let path = Path {
+        anchor,
+        head,
+        tail,
+        origin,
+    };
+    let kind = parse_import_kind(p)?;
     p.expect_terminator(&TokenKind::Semi, "';'");
     Some(ImportStmt {
         annotations,
         reveal,
         path,
+        span: start.to(p.last_span()),
+        kind,
+    })
+}
+
+/// Path segments after the first one, stopping before a `::{` group so the
+/// caller can attach it. An import prefix is otherwise an ordinary path.
+fn parse_import_segments(p: &mut Parser) -> Option<Vec<Ident>> {
+    let mut segments = Vec::new();
+    while p.check(&TokenKind::ColonColon) && !matches!(p.peek_at(1), TokenKind::LBrace) {
+        p.advance();
+        segments.push(p.expect_ident()?);
+    }
+    Some(segments)
+}
+
+/// What follows a prefix: a `::{ ... }` group, an `as` rename, or nothing.
+fn parse_import_kind(p: &mut Parser) -> Option<ImportKind> {
+    if p.check(&TokenKind::ColonColon) {
+        p.advance();
+        return p.descend(parse_import_group).map(ImportKind::Group);
+    }
+    if !p.eat_contextual(contextual::AS) {
+        return Some(ImportKind::Leaf { alias: None });
+    }
+    let alias = p.expect_ident()?;
+    if p.check(&TokenKind::ColonColon) {
+        p.error(ParseErrorKind::ImportAliasOnPrefix);
+        return None;
+    }
+    Some(ImportKind::Leaf { alias: Some(alias) })
+}
+
+fn parse_import_group(p: &mut Parser) -> Option<Vec<ImportNode>> {
+    let open = p.peek_span();
+    p.expect(&TokenKind::LBrace, "'{'");
+    let mut entries = Vec::new();
+    while !p.check(&TokenKind::RBrace) {
+        if p.is_eof() {
+            p.error_at(open, ParseErrorKind::UnterminatedGroup { open: '{' });
+            return None;
+        }
+        entries.push(parse_import_entry(p)?);
+        if !p.eat(&TokenKind::Comma) {
+            break;
+        }
+    }
+    p.expect(&TokenKind::RBrace, "'}'");
+    if entries.is_empty() {
+        p.error_at(open.to(p.last_span()), ParseErrorKind::EmptyImportGroup);
+        return None;
+    }
+    Some(entries)
+}
+
+fn parse_import_entry(p: &mut Parser) -> Option<ImportNode> {
+    let start = p.peek_span();
+    let reveal = p.eat_contextual(contextual::REVEAL);
+    let segments = if p.at_contextual(contextual::SELF) {
+        if matches!(p.peek_at(1), TokenKind::ColonColon) {
+            p.error_at(
+                start.to(p.peek_span()),
+                ParseErrorKind::ImportSelfNotTerminal,
+            );
+            return None;
+        }
+        p.advance();
+        Vec::new()
+    } else {
+        let mut segments = vec![p.expect_ident()?];
+        segments.extend(parse_import_segments(p)?);
+        segments
+    };
+    let kind = parse_import_kind(p)?;
+    Some(ImportNode {
+        reveal,
+        segments,
+        span: start.to(p.last_span()),
+        kind,
     })
 }
 

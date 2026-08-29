@@ -130,13 +130,23 @@ impl Lowerer {
                 generics: Self::lower_generics(&alias.generics),
                 target: alias.target.clone(),
             }),
-            Item::Import(import) => HirItem::Import(HirImport {
-                id: self.ids.next(),
-                span: node.span,
-                annotations: Self::lower_annotations(&import.annotations),
-                reveal: import.reveal,
-                path: import.path.clone(),
-            }),
+            Item::Import(import) => {
+                let annotations = Self::lower_annotations(&import.annotations);
+                return import
+                    .leaves()
+                    .into_iter()
+                    .map(|leaf| {
+                        HirItem::Import(HirImport {
+                            id: self.ids.next(),
+                            span: leaf.span,
+                            annotations: annotations.clone(),
+                            reveal: leaf.reveal,
+                            name: leaf.name,
+                            path: leaf.path,
+                        })
+                    })
+                    .collect();
+            }
             Item::MacroDefinition(_) | Item::MacroInvocation(_) => {
                 unreachable!(
                     "macros are fully expanded (definitions removed, invocations replaced by \

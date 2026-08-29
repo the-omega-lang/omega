@@ -33,6 +33,18 @@ import self::simplemodule;
 import self::mymodule::thing::something2;
 import root::simplemodule;
 import super::sibling;
+
+# `as` renames only the local binding; `Display` is not also bound.
+import std::fmt::Display as Show;
+
+# A brace group is a tree of prefixes and bindings. `self` binds the
+# enclosing prefix itself, and it is the only way to rename a prefix.
+import self::mymodule::{ self, thing::something2, other::{ First, Second as Two } };
+import self::mymodule::{ self as m };
+
+# `reveal` is inherited by every binding under the node it is written on.
+import reveal self::mymodule::{ Hidden, thing::AlsoHidden };
+import self::mymodule::{ reveal Hidden, Ordinary };
 ```
 
 See [`../language/lexical-structure.md`](../language/lexical-structure.md) and [`../language/modules-and-imports.md`](../language/modules-and-imports.md).

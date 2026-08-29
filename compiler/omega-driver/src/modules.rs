@@ -10,7 +10,7 @@ use omega_diagnostics::{SourceFile, Span};
 use omega_hir::{HirGenericParam, HirId, HirItem, HirModule, ModuleId};
 use omega_parser::macros::MacroError;
 use omega_parser::prelude::{
-    AliasItem, AliasTarget, Ident, ImportStmt, Item, ParseError, Path, PathAnchor, SourceModule,
+    AliasItem, AliasTarget, Ident, ImportLeaf, Item, ParseError, Path, PathAnchor, SourceModule,
 };
 use omega_parser::prelude::{MacroDefinitionStmt, Visibility};
 use std::collections::{HashMap, HashSet};
@@ -273,13 +273,14 @@ impl Driver {
         if declared.is_empty() {
             return bound;
         }
-        let imports: Vec<ImportStmt> = ast
+        let imports: Vec<ImportLeaf> = ast
             .nodes
             .iter()
             .filter_map(|node| match &node.item {
-                Item::Import(import) => Some(import.clone()),
+                Item::Import(import) => Some(import.leaves()),
                 _ => None,
             })
+            .flatten()
             .collect();
 
         // A chain may be written in any order, so binding repeats until no
@@ -324,7 +325,7 @@ impl Driver {
     fn raw_macro_target(
         &mut self,
         path: &[Ident],
-        imports: &[ImportStmt],
+        imports: &[ImportLeaf],
         target: &Path,
         local: &HashMap<Ident, MacroDefinitionStmt>,
     ) -> Option<MacroDefinitionStmt> {
@@ -365,11 +366,9 @@ impl Driver {
         self.gate_macro_target(path, &absolute, &name, local)
     }
 
-    /// The import that binds `name` in the importing module, if any.
-    fn binding_import<'i>(imports: &'i [ImportStmt], name: &Ident) -> Option<&'i ImportStmt> {
-        imports
-            .iter()
-            .find(|import| import.path.tail.last().unwrap_or(&import.path.head) == name)
+    /// The import leaf that binds `name` in the importing module, if any.
+    fn binding_import<'i>(imports: &'i [ImportLeaf], name: &Ident) -> Option<&'i ImportLeaf> {
+        imports.iter().find(|import| &import.name == name)
     }
 
     /// The named macro binding in `module`, visible from `accessor`, or
@@ -469,39 +468,55 @@ impl Driver {
 
         let mut explicit: HashMap<Ident, Span> = HashMap::new();
         for node in &ast.nodes {
-            let bound = match &node.item {
-                Item::MacroDefinition(definition) => own.get(&definition.name).cloned(),
+            // An import tree binds one name per leaf, so a group contributes
+            // several bindings from one item, each with its own span.
+            let bound: Vec<(Ident, Span, MacroDefinitionStmt)> = match &node.item {
+                Item::MacroDefinition(definition) => own
+                    .get(&definition.name)
+                    .map(|d| (definition.name.clone(), node.span, d.clone()))
+                    .into_iter()
+                    .collect(),
                 // Only an alias whose target actually resolved to a macro
                 // binds in this namespace; an ordinary type/function alias
                 // that happens to share a spelling with a macro does not.
-                Item::Alias(declared) if aliased.contains(&declared.ident) => {
-                    own.get(&declared.ident).cloned()
-                }
-                Item::Import(import) => self.imported_macro(path, import),
+                Item::Alias(declared) if aliased.contains(&declared.ident) => own
+                    .get(&declared.ident)
+                    .map(|d| (declared.ident.clone(), node.span, d.clone()))
+                    .into_iter()
+                    .collect(),
+                Item::Import(import) => import
+                    .leaves()
+                    .into_iter()
+                    .filter_map(|leaf| {
+                        let definition = self.imported_macro(path, &leaf)?;
+                        Some((leaf.name, leaf.span, definition))
+                    })
+                    .collect(),
                 _ => continue,
             };
-            let Some(definition) = bound else {
-                continue;
-            };
-            let name = definition.name.clone();
-            if let Some(previous) = explicit.insert(name.clone(), node.span) {
-                return Err(CompileError::MacroNameCollision {
-                    module: path.to_vec(),
-                    name,
-                    previous,
-                    span: node.span,
-                });
+            for (name, span, definition) in bound {
+                if let Some(previous) = explicit.insert(name.clone(), span) {
+                    return Err(CompileError::MacroNameCollision {
+                        module: path.to_vec(),
+                        name,
+                        previous,
+                        span,
+                    });
+                }
+                // A renamed import changes only the invocation name; the
+                // definition keeps its own module, body, visibility, and
+                // builtin identity.
+                environment.insert(name.clone(), MacroDefinitionStmt { name, ..definition });
             }
-            environment.insert(name, definition);
         }
         Ok(environment)
     }
 
-    /// The macro `import` binds in `path`, if it binds one at all.
+    /// The macro one import leaf binds in `path`, if it binds one at all.
     fn imported_macro(
         &mut self,
         path: &[Ident],
-        import: &ImportStmt,
+        import: &ImportLeaf,
     ) -> Option<MacroDefinitionStmt> {
         let absolute = self.import_absolute_path(path, &import.path).ok()?;
         if self.roots.module_exists(&absolute) || absolute.len() < 2 {
@@ -618,14 +633,7 @@ impl Driver {
     fn claimed_name(item: &HirItem) -> Option<Ident> {
         match item {
             HirItem::Alias(declared) => Some(declared.name.clone()),
-            HirItem::Import(import) => Some(
-                import
-                    .path
-                    .tail
-                    .last()
-                    .cloned()
-                    .unwrap_or_else(|| import.path.head.clone()),
-            ),
+            HirItem::Import(import) => Some(import.name.clone()),
             _ => item_name(item),
         }
     }
@@ -719,17 +727,18 @@ impl Driver {
     /// still keeps the name it claimed.
     fn index_imports(&mut self, path: &[Ident], hir: &HirModule) -> IndexMap<Ident, ImportEntry> {
         let mut imports: IndexMap<Ident, ImportEntry> = IndexMap::new();
+        // Every leaf of one import tree carries a copy of the same written
+        // annotations, so they are resolved once per source item -- keyed by
+        // where they were written -- and the result is reused. Resolving them
+        // per leaf would report a malformed annotation once per binding the
+        // group happens to produce.
+        let mut resolved_annotations: HashMap<Span, Vec<Ident>> = HashMap::new();
         let claimed = self.modules.index(path).claimed_imports.clone();
         for i in claimed {
             let HirItem::Import(import) = &hir.items[i] else {
                 unreachable!("the claimed-import list only ever points at imports");
             };
-            let alias = import
-                .path
-                .tail
-                .last()
-                .cloned()
-                .unwrap_or_else(|| import.path.head.clone());
+            let alias = import.name.clone();
             let target = match self.import_absolute_path(path, &import.path) {
                 Ok(target) => target,
                 Err(e) => {
@@ -745,23 +754,33 @@ impl Driver {
                 }
             };
             let annotations = import.annotations.clone();
-            let suppress = self.analyze(
-                path,
-                &[],
-                AnalysisSite::new(import.id, import.span),
-                |analyzer| {
-                    annotations::resolve(
-                        analyzer,
-                        import.id,
-                        &annotations,
-                        ItemKind::Import,
-                        false,
-                        false,
-                        annotations::ManglingMode::Enabled,
-                    )
-                    .suppress
-                },
-            );
+            let written = annotations.first().map(|annotation| annotation.span);
+            let suppress = match written.and_then(|at| resolved_annotations.get(&at)) {
+                Some(suppress) => suppress.clone(),
+                None => {
+                    let suppress = self.analyze(
+                        path,
+                        &[],
+                        AnalysisSite::new(import.id, import.span),
+                        |analyzer| {
+                            annotations::resolve(
+                                analyzer,
+                                import.id,
+                                &annotations,
+                                ItemKind::Import,
+                                false,
+                                false,
+                                annotations::ManglingMode::Enabled,
+                            )
+                            .suppress
+                        },
+                    );
+                    if let Some(at) = written {
+                        resolved_annotations.insert(at, suppress.clone());
+                    }
+                    suppress
+                }
+            };
 
             imports.insert(
                 alias,

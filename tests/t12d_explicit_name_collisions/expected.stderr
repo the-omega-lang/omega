@@ -23,4 +23,46 @@ error: 'Marker' is declared multiple times in this scope
    |
    = note: this declaration context requires each name to be declared once
 
-error: could not compile the program due to 2 previous errors
+error: 'Renamed' is declared multiple times in this scope
+  --> tests/t12d_explicit_name_collisions/t12d_explicit_name_collisions.omg:19:1
+   |
+17 |   import self::helper::Other as Renamed;
+   |   -------------------------------------- `Renamed` first declared here
+18 |   
+19 |   struct Renamed {
+   |  _^
+20 | |     exposed value: i32;
+21 | | }
+   | |_^ `Renamed` declared again here
+   |
+   = note: this declaration context requires each name to be declared once
+
+error: 'Dup' is declared multiple times in this scope
+  --> tests/t12d_explicit_name_collisions/t12d_explicit_name_collisions.omg:29:38
+   |
+29 | import self::helper::{ First as Dup, Second as Dup };
+   |                        ------------ `Dup` first declared here
+   |                                      ^^^^^^^^^^^^^ `Dup` declared again here
+   |
+   = note: this declaration context requires each name to be declared once
+
+error: 'Reserved' is declared multiple times in this scope
+  --> tests/t12d_explicit_name_collisions/t12d_explicit_name_collisions.omg:35:1
+   |
+33 | import nosuchpackage::{ Thing as Reserved };
+   |                         ----------------- `Reserved` first declared here
+34 | 
+35 | alias Reserved = i32;
+   | ^^^^^^^^^^^^^^^^^^^^^ `Reserved` declared again here
+   |
+   = note: this declaration context requires each name to be declared once
+
+error: 'nosuchpackage' is not a known top-level package (unprefixed imports are top-level; use `root::`, `self::`, or `super::` for local navigation, or register a dependency with --import=nosuchpackage:<path>)
+  --> tests/t12d_explicit_name_collisions/t12d_explicit_name_collisions.omg:33:25
+   |
+33 | import nosuchpackage::{ Thing as Reserved };
+   |                         ^^^^^^^^^^^^^^^^^ not a known top-level package
+   |
+   = help: unprefixed imports are top-level; use `root::`, `self::`, or `super::` to navigate within a package, or pass --import=nosuchpackage:<path> to register a dependency
+
+error: could not compile the program due to 6 previous errors

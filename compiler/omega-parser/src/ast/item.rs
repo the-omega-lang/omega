@@ -229,11 +229,92 @@ pub struct PrimitiveStmt {
     pub functions: Vec<FunctionDefinitionStmt>,
 }
 
+/// An `import` item, kept in the shape it was written: a root prefix plus a
+/// tree of brace groups beneath it. Nothing here is resolved; [`Self::leaves`]
+/// is the one place the tree is turned into the flat bindings it denotes.
 #[derive(Debug, Clone)]
 pub struct ImportStmt {
     pub annotations: Vec<AnnotationNode>,
     pub reveal: bool,
     pub path: Path,
+    /// The whole `import ... ;` statement, which is also the leaf span when
+    /// the root prefix is itself the only binding.
+    pub span: Span,
+    pub kind: ImportKind,
+}
+
+#[derive(Debug, Clone)]
+pub enum ImportKind {
+    /// A terminal binding, renamed by `as` when the alias is present.
+    Leaf {
+        alias: Option<Ident>,
+    },
+    Group(Vec<ImportNode>),
+}
+
+/// One entry of a brace group.
+#[derive(Debug, Clone)]
+pub struct ImportNode {
+    pub reveal: bool,
+    /// Segments appended to the enclosing prefix. Empty for the `self` entry,
+    /// which binds the enclosing prefix itself.
+    pub segments: Vec<Ident>,
+    pub span: Span,
+    pub kind: ImportKind,
+}
+
+/// One terminal binding an import tree denotes: the complete target path, the
+/// name it binds locally, and the `reveal` it inherited from its ancestors.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportLeaf {
+    pub path: Path,
+    pub name: Ident,
+    pub reveal: bool,
+    pub span: Span,
+}
+
+impl ImportStmt {
+    /// Every binding this import makes, in textual depth-first order. This is
+    /// a structural view of the written syntax: it appends nested prefixes,
+    /// inherits `reveal` down each branch, and derives local names, but it
+    /// resolves nothing and checks no visibility.
+    pub fn leaves(&self) -> Vec<ImportLeaf> {
+        let mut leaves = Vec::new();
+        collect_import_leaves(&self.path, self.reveal, &self.kind, self.span, &mut leaves);
+        leaves
+    }
+}
+
+fn collect_import_leaves(
+    prefix: &Path,
+    reveal: bool,
+    kind: &ImportKind,
+    span: Span,
+    leaves: &mut Vec<ImportLeaf>,
+) {
+    match kind {
+        ImportKind::Leaf { alias } => leaves.push(ImportLeaf {
+            name: alias
+                .clone()
+                .unwrap_or_else(|| prefix.tail.last().unwrap_or(&prefix.head).clone()),
+            path: prefix.clone(),
+            reveal,
+            span,
+        }),
+        ImportKind::Group(entries) => {
+            for entry in entries {
+                let mut nested = prefix.clone();
+                nested.tail.extend(entry.segments.iter().cloned());
+                collect_import_leaves(
+                    &nested,
+                    reveal || entry.reveal,
+                    &entry.kind,
+                    entry.span,
+                    leaves,
+                );
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

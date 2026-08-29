@@ -2773,3 +2773,229 @@ fn an_import_can_traverse_an_intermediate_module_alias() {
     )
     .expect_ok();
 }
+
+// Import trees: every leaf is an independent binding for use tracking,
+// suppression, name claiming, and the `reveal` capability.
+
+fn unused_imports(program: &omega_driver::CompiledProgram) -> Vec<String> {
+    program
+        .warnings
+        .iter()
+        .filter_map(|(_, warning)| match &warning.kind {
+            omega_analyzer::error::AnalysisWarningKind::UnusedImport { alias } => {
+                Some(alias.to_string())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_used_renamed_import_is_tracked_under_its_local_name() {
+    let program = TestPackage::with_modules(
+        r#"
+        import self::helper::Remote as Local;
+
+        entry_fn() => i32 {
+            value: Local = Local { field = 1; };
+            value.field
+        }
+        "#,
+        &[(
+            "helper",
+            r#"
+            exposed struct Remote {
+                exposed field: i32;
+            }
+            "#,
+        )],
+    )
+    .expect_ok();
+    assert!(
+        unused_imports(&program).is_empty(),
+        "a renamed import used under its local name must not warn as unused: {:?}",
+        unused_imports(&program)
+    );
+}
+
+#[test]
+fn grouped_import_siblings_are_used_independently() {
+    let program = TestPackage::with_modules(
+        r#"
+        import self::helper::{ Used, Unused };
+
+        entry_fn() => i32 {
+            value: Used = Used { field = 1; };
+            value.field
+        }
+        "#,
+        &[(
+            "helper",
+            r#"
+            exposed struct Used {
+                exposed field: i32;
+            }
+
+            exposed struct Unused {
+                exposed field: i32;
+            }
+            "#,
+        )],
+    )
+    .expect_ok();
+    assert_eq!(unused_imports(&program), ["Unused"]);
+}
+
+#[test]
+fn suppressing_unused_import_on_a_group_covers_every_leaf() {
+    let program = TestPackage::with_modules(
+        r#"
+        @suppress(unused_import)
+        import self::helper::{ First, Second };
+
+        entry_fn() => i32 { 0 }
+        "#,
+        &[(
+            "helper",
+            r#"
+            exposed struct First {
+                exposed field: i32;
+            }
+
+            exposed struct Second {
+                exposed field: i32;
+            }
+            "#,
+        )],
+    )
+    .expect_ok();
+    assert!(
+        unused_imports(&program).is_empty(),
+        "a group-level suppression must apply to every leaf it generates: {:?}",
+        unused_imports(&program)
+    );
+}
+
+#[test]
+fn a_revealed_renamed_import_of_a_hidden_alias_resolves_lazily() {
+    TestPackage::with_modules(
+        r#"
+        import reveal self::helper::{ Secret as Local };
+
+        entry_fn() => i32 {
+            value: Local = Local { field = 1; };
+            value.field
+        }
+        "#,
+        &[(
+            "helper",
+            r#"
+            exposed struct Remote {
+                exposed field: i32;
+            }
+
+            alias Secret = Remote;
+            "#,
+        )],
+    )
+    .expect_ok();
+}
+
+#[test]
+fn a_leaf_reveal_does_not_extend_to_its_siblings() {
+    let errors = TestPackage::with_modules(
+        r#"
+        import self::helper::{ reveal Revealed, Hidden };
+
+        entry_fn() => i32 {
+            a: Revealed = Revealed { field = 1; };
+            b: Hidden = Hidden { field = 2; };
+            a.field + b.field
+        }
+        "#,
+        &[(
+            "helper",
+            r#"
+            exposed struct Remote {
+                exposed field: i32;
+            }
+
+            alias Revealed = Remote;
+
+            alias Hidden = Remote;
+            "#,
+        )],
+    )
+    .expect_errors();
+    let not_visible: Vec<String> = resolve_errors(&errors)
+        .iter()
+        .filter_map(|error| match error {
+            ResolveError::NotVisible { item, .. } => Some(item.to_string()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !not_visible.is_empty() && not_visible.iter().all(|item| item == "Hidden"),
+        "only the sibling outside the revealed subtree is gated: {}",
+        rendered(&errors)
+    );
+}
+
+#[test]
+fn a_renamed_macro_import_binds_the_local_invocation_name() {
+    TestPackage::with_modules(
+        r#"
+        import self::helper::{ shout as yell };
+
+        alias echo = yell;
+
+        entry_fn() => i32 { echo$() }
+        "#,
+        &[(
+            "helper",
+            r#"
+            exposed macro shout() => { 7 }
+            "#,
+        )],
+    )
+    .expect_ok();
+}
+
+#[test]
+fn a_malformed_annotation_on_a_group_is_reported_once() {
+    let errors = TestPackage::with_modules(
+        r#"
+        @nosuchannotation
+        import self::helper::{ First, Second, Third };
+
+        entry_fn() => i32 { 0 }
+        "#,
+        &[(
+            "helper",
+            r#"
+            exposed struct First {
+                exposed field: i32;
+            }
+
+            exposed struct Second {
+                exposed field: i32;
+            }
+
+            exposed struct Third {
+                exposed field: i32;
+            }
+            "#,
+        )],
+    )
+    .expect_errors();
+    let unknown = analysis_errors(&errors)
+        .iter()
+        .filter(|kind| matches!(kind, AnalysisErrorKind::UnknownAnnotation { .. }))
+        .count();
+    assert_eq!(
+        unknown,
+        1,
+        "one written annotation must be diagnosed once, not once per generated leaf: {}",
+        rendered(&errors)
+    );
+}

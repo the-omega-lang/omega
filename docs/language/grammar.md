@@ -77,11 +77,25 @@ Expression-path generic arguments are only syntactically committed where the fol
 ## Imports
 
 ```ebnf
-import      = "import", [ "reveal" ], path, ";" ;
+import       = "import", [ "reveal" ], path, import-tail, ";" ;
+
+import-tail  = [ "as", identifier ]
+             | "::", import-group ;
+
+import-group = "{", import-entry, { ",", import-entry }, [ "," ], "}" ;
+
+import-entry = [ "reveal" ],
+               ( "self", [ "as", identifier ]
+               | identifier, { "::", identifier }, import-tail ) ;
 ```
 
 An import's `path` is an ordinary anchored or unanchored path; an unanchored
-import is top-level-by-default, unlike an unanchored path elsewhere. Module/import meaning is specified in [`modules-and-imports.md`](modules-and-imports.md).
+import is top-level-by-default, unlike an unanchored path elsewhere. A group
+attaches to that path, so a group needs at least one written segment:
+`self::{ ... }`, `root::{ ... }`, and `super::{ ... }` are not import
+prefixes. `as` renames only a terminal binding, and `self` is a terminal
+group entry naming the enclosing prefix; neither may be followed by further
+path segments or by a group. Module/import meaning is specified in [`modules-and-imports.md`](modules-and-imports.md).
 
 ## Foreign items
 

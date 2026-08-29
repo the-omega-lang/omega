@@ -1,10 +1,15 @@
 import std::io::println;
-import self::helper;
-import self::helper::Result;
-import self::fallible;
-import self::mymodule;
-import self::mymodule::thing::something;
-import self::mymodule::other::other_greeting;
+# A brace group is an ordered tree of prefixes and terminal bindings: this
+# binds `helper` (through the group-local `self` leaf) and `helper::Result`
+# exactly as two separate imports would.
+import self::helper::{ self, Result };
+# `as` renames only the local binding; the target keeps its own identity.
+import self::fallible as fall;
+import self::mymodule::{
+	self,
+	thing::{ something, renamed_module_greeting },
+	other::other_greeting,
+};
 
 # Declarations the anchored-path section below names through `root::` and
 # `self::` from this module, and through `super::super::` from a nested one.
@@ -47,10 +52,11 @@ main() => void {
 	# unprefixed imports are always top-level package identities.
 	println$("helper-greeting: ", helper::greeting());
 
-	# `import self::mymodule;` makes the module path available; `import
-	# self::mymodule::thing::something;` separately binds one item's final name.
+	# The `self` leaf of the group makes the module path available, while the
+	# nested subgroup separately binds two of its descendants' names.
 	println$("mymodule-label: ", mymodule::label());
 	println$("something-import: ", something());
+	println$("renamed-module-import: ", renamed_module_greeting());
 
 	# `mymodule::other` reaches `helper` through a chained `super::super::`
 	# from two logical levels down -- the same target `thing.omg` reaches
@@ -85,6 +91,6 @@ main() => void {
 	# An ambient `core` name is a fallback: the explicit import wins, while
 	# the qualified core path still resolves.
 	imported_result := Result { tag = 3; };
-	core_result: core::result::Result<i32, *str> = fallible::ok(11);
-	println$("import-hides-ambient: ", imported_result.tag, " ", fallible::ok_value(core_result));
+	core_result: core::result::Result<i32, *str> = fall::ok(11);
+	println$("import-hides-ambient: ", imported_result.tag, " ", fall::ok_value(core_result));
 }

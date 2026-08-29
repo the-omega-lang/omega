@@ -86,11 +86,15 @@ pub struct HirGenericParam {
 }
 
 #[derive(Debug, Clone)]
+/// One terminal binding of an import tree. Brace groups do not survive
+/// lowering: each leaf becomes an independent import of `path` bound as
+/// `name`, carrying the `reveal` it inherited from its ancestors.
 pub struct HirImport {
     pub id: HirId,
     pub span: Span,
     pub annotations: Vec<HirAnnotation>,
     pub reveal: bool,
+    pub name: Ident,
     pub path: Path,
 }
 

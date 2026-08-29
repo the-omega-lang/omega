@@ -1,10 +1,10 @@
 # Chained `super::` removes one logical module segment per occurrence;
 # two hops from `mymodule::other` reach the package root, the same target
 # `thing.omg` reaches with `root::helper`.
-import super::super::helper;
+import super::super::helper::{ greeting as hello };
 
 exposed other_greeting() => *str {
-	helper::greeting()
+	hello()
 }
 
 # Chained `super::` in an ordinary value path, not an import: two hops from

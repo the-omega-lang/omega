@@ -115,7 +115,10 @@ name through a single claim table. Two claims on one name collide whichever
 forms they take, and the later one is reported; function-vs-function is the
 one deliberate exception, which becomes an overload group. An import claims its
 bound name here, before its target is resolved, so a failed import cannot
-silently hand its name to a competing declaration.
+silently hand its name to a competing declaration. That bound name is
+`HirImport::name`, not the target's final segment: `as` renames the claim, and
+a brace group has already been flattened into one `HirImport` per binding, so
+every leaf claims, resolves, warns, and fails independently.
 
 Declared aliases are indexed separately from concrete items on purpose: an
 alias is a name without a declaration, so it must never enter item resolution,
@@ -253,7 +256,13 @@ built, because indexing a module needs its HIR and its HIR needs that
 environment. That binding works from raw AST -- `raw_macro_target` resolves an
 anchored target through `Driver::resolve_explicit_anchor`, resolves a bare
 target against this module's own definitions and then its imports, and rejects
-a target macro binding not visible from the alias declaration module. `reveal`
+a target macro binding not visible from the alias declaration module. Raw
+imports are consumed through `ImportStmt::leaves`, the same parser-owned
+traversal HIR lowering uses, so path concatenation, local names, inherited
+`reveal`, and leaf order cannot drift between the two. Both this lookup and
+`macro_env` match on a leaf's local bound name and insert under it, while the
+macro definition keeps its own defining module, body, visibility, and builtin
+identity -- a rename changes the invocation binding only. `reveal`
 on the import is honoured identically there and in `macro_env`, so it cannot
 mean one thing when a macro is invoked and another when it is immediately
 aliased. Expansion reuses the target macro's body and defining module for

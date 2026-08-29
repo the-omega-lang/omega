@@ -34,13 +34,15 @@ macro alias
 The following are lexed as ordinary identifiers and acquire special meaning only in grammar-defined positions:
 
 ```text
-mut comp self reveal sizeof in exposed shared hidden
+mut comp self reveal sizeof in as exposed shared hidden
 marker gap glue meet primitive root super
 expr type ident path
 asm reg const clobber
 ```
 
 An implementation must therefore not globally reserve contextual keywords; they remain usable as identifiers where the grammar does not consume them contextually.
+
+`as` is recognized only as the rename connector of an import tree; see [`modules-and-imports.md`](modules-and-imports.md). It remains an ordinary identifier everywhere else, including as a path segment or an item name.
 
 `asm`, `reg`, `const`, and `clobber` are recognized only as the head of an inline-assembly statement/descriptor; see [`inline-assembly.md`](inline-assembly.md). The raw text inside an `asm` body is not tokenized by this chapter's rules at all — see that chapter for its opaque capture behavior.
 

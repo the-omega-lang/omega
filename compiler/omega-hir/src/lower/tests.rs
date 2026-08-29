@@ -102,3 +102,70 @@ fn foreign_block_convention_applies_only_to_direct_function_entries() {
         "a direct block entry must inherit the block's convention"
     );
 }
+
+#[test]
+fn import_tree_lowers_to_one_flat_binding_per_leaf() {
+    let source = "@suppress(unused_import)\n\
+                  import reveal thing::{ self as Mod, First, sub::{ Second as Two } };";
+    let hir = lower(source);
+    let bindings: Vec<(Vec<String>, String, bool, usize, &str)> = hir
+        .items
+        .iter()
+        .map(|item| {
+            let HirItem::Import(import) = item else {
+                panic!("expected every lowered item to be an import");
+            };
+            (
+                import
+                    .path
+                    .segments()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect(),
+                import.name.to_string(),
+                import.reveal,
+                import.annotations.len(),
+                &source[import.span.start..import.span.end],
+            )
+        })
+        .collect();
+
+    assert_eq!(
+        bindings,
+        [
+            (vec!["thing".into()], "Mod".into(), true, 1, "self as Mod"),
+            (
+                vec!["thing".into(), "First".into()],
+                "First".into(),
+                true,
+                1,
+                "First"
+            ),
+            (
+                vec!["thing".into(), "sub".into(), "Second".into()],
+                "Two".into(),
+                true,
+                1,
+                "Second as Two"
+            ),
+        ]
+    );
+}
+
+#[test]
+fn each_import_leaf_gets_its_own_hir_id() {
+    let hir = lower("import thing::{ A, B };");
+    let ids: Vec<_> = hir
+        .items
+        .iter()
+        .map(|item| {
+            let HirItem::Import(import) = item else {
+                panic!("expected an import");
+            };
+            import.id
+        })
+        .collect();
+
+    assert_eq!(ids.len(), 2);
+    assert_ne!(ids[0], ids[1]);
+}

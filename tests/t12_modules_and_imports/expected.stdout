@@ -1,6 +1,7 @@
 helper-greeting: hello from helper
 mymodule-label: mymodule root
 something-import: hello from helper
+renamed-module-import: hello from helper
 chained-super-import: hello from helper
 ambient-option: 7
 anchored-value: 7 7

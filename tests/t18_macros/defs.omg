@@ -30,3 +30,9 @@ exposed macro re_export($path: path, $ident: ident) => {
 exposed macro line() => {
 	4242
 }
+
+# Imported under a different local name below; the definition keeps its own
+# module and body, only the invocation binding changes.
+exposed macro shout() => {
+	99
+}

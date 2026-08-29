@@ -45,15 +45,28 @@ import self::mymodule::thing::something;
 import root::simplemodule;
 import super::helper;
 import super::super::helper;
+
+import thing::Thing as ImportedThing;
+import thing::{ self, First, Second as Two, sub::{ Third, Fourth as Four } };
+import reveal abc::{ A, sub::{ B, C } };
 ```
 
 Grammar:
 
 ```ebnf
-import = "import", [ "reveal" ],
-         [ "root", "::" | "self", "::" | { "super", "::" } ],
-         path,
-         ";" ;
+import       = "import", [ "reveal" ],
+               [ "root", "::" | "self", "::" | { "super", "::" } ],
+               path, import-tail,
+               ";" ;
+
+import-tail  = [ "as", identifier ]
+             | "::", import-group ;
+
+import-group = "{", import-entry, { ",", import-entry }, [ "," ], "}" ;
+
+import-entry = [ "reveal" ],
+               ( "self", [ "as", identifier ]
+               | identifier, { "::", identifier }, import-tail ) ;
 ```
 
 `root::`, `self::`, and chained `super::` are not import-only syntax: they are
@@ -73,6 +86,85 @@ anchored by one of four mutually exclusive forms:
 The **unprefixed, top-level-by-default** reading above is specific to imports. An unanchored path written anywhere else (a type position, an expression, an alias target) keeps its own ordinary relative lookup rules instead -- it is not implicitly top-level. Only a path that actually writes `root::`, `self::`, or `super::` gets the anchored meaning described here, in any position.
 
 Importing an item binds its final name in the importing module. Importing a module makes that module path/name available according to normal resolution rules.
+
+## Import trees
+
+An `import` is an ordered tree: a source path prefix, optionally followed by a
+brace group of entries that extend that prefix, nested to any depth. Only the
+tree's *terminal* entries import anything; interior entries merely extend the
+prefix. A tree is exactly equivalent to writing each of its terminal bindings
+as its own `import` statement, in textual depth-first leaf order:
+
+```omega
+import thing::{ First, Second as Two, sub::{ Third, Fourth as Four } };
+```
+
+means the same as
+
+```omega
+import thing::First;
+import thing::Second as Two;
+import thing::sub::Third;
+import thing::sub::Fourth as Four;
+```
+
+A group must attach to a prefix with at least one written segment. `root::`,
+`self::`, and `super::` are anchors of the prefix, not prefixes of their own,
+so `import self::{ ... }` is not valid while `import self::thing::{ ... }` is.
+A group must contain at least one entry.
+
+### Renaming with `as`
+
+`as <identifier>` changes only the name the importing module binds. It never
+changes the target's identity, visibility, or symbol, and it is not a
+re-export: `import thing::Thing as ImportedThing;` resolves `thing::Thing` and
+claims `ImportedThing` alone, leaving `Thing` free for the importing module to
+use for something else.
+
+`as` renames a terminal binding only. An interior prefix cannot be renamed;
+a prefix is renamed by importing it through a `self` entry instead.
+
+### The `self` entry
+
+Inside a group, `self` is a terminal entry that binds the *enclosing prefix*
+itself. `import thing::{ self, Thing };` imports the module `thing` under its
+ordinary final name and also imports `thing::Thing`, and
+`import thing::{ self as TheModule };` binds that same prefix as
+`TheModule`. This `self` is an import-tree entry, not a path segment or an
+anchor: leading `self::` keeps its ordinary anchor meaning, `import self;` is
+unchanged, and `self` may not be followed by further segments or a group.
+
+### Scoped `reveal`
+
+`reveal` may be written on the whole import or on any group entry, including
+a terminal one. A terminal binding's effective `reveal` is the logical OR of
+every `reveal` written from the root of the tree down to it, so revealing a
+subtree deliberately reveals every binding beneath it:
+
+```omega
+import reveal abc::{ A, sub::{ B, C } };   # A, sub::B and sub::C are all revealed
+import abc::{ reveal A, B };               # only A is revealed
+import abc::{ reveal sub::{ A, B }, C };   # sub::A and sub::B, but not C
+```
+
+Interior entries create no import of their own, so `reveal` on a prefix means
+only that the bindings beneath it inherit the bypass. It says nothing about
+the prefix itself: physical modules carry no visibility modifier and there is
+nothing about a module to reveal. Writing `reveal` where the bypass is not
+needed is legal and simply redundant, including when it is written twice on
+one branch.
+
+### Each binding is independent
+
+Every terminal binding is its own import for target resolution, name claiming,
+collision reporting, unused-import tracking, and diagnostics. One failing
+binding neither suppresses nor merges its siblings, and it still claims the
+name it bound. Diagnostics point at the entry that caused them rather than at
+the whole statement.
+
+Annotations are written on the `import` item, not on entries, so an annotation
+such as `@suppress(unused_import)` applies to every binding that item
+produces.
 
 Imports do not automatically re-export what they import. Re-export is a separate, deliberate act: an `alias` declaration binds a name of its own, with its own visibility, to an existing declaration or module, and an `exposed alias` therefore makes its target nameable from outside the declaring module. An alias target resolves at the alias declaration site, so it does not need a matching import. An alias name may itself be imported directly (`import module::SomeAlias;`), exactly like an ordinary declaration; the alias's own visibility gates the import, and the imported name still resolves through the alias's own semantics. See [`aliases.md`](aliases.md) and [`visibility.md`](visibility.md).
 
@@ -98,7 +190,7 @@ Because ambient `core` names are a fallback, an explicit binding in the same nam
 
 ## Explicit module-scope names are not shadowable
 
-Module scope has no source-order shadowing. Within one namespace of one module, declarations, aliases, and imports all make an *explicit* claim on a name, and two explicit claims on the same name are a redeclaration regardless of which forms are involved or which order they appear in. The later claim is the one reported. Function overloads remain the only same-name exception among ordinary declarations, and macros have their own separate namespace in which the same rule applies among explicit macro definitions, macro aliases, and macro imports.
+Module scope has no source-order shadowing. Within one namespace of one module, declarations, aliases, and imports all make an *explicit* claim on a name -- an import claims the name it binds locally, which `as` renames, and two explicit claims on the same name are a redeclaration regardless of which forms are involved or which order they appear in. The later claim is the one reported. Function overloads remain the only same-name exception among ordinary declarations, and macros have their own separate namespace in which the same rule applies among explicit macro definitions, macro aliases, and macro imports.
 
 An import claims its bound name whether or not its target resolves, so a failed import does not silently hand the name to a competing declaration.
 

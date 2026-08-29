@@ -9,3 +9,4 @@ call-with-args: 6
 read-secret: 7
 magic: 55
 imported-macro-over-ambient: 4242
+renamed-macro-import: 99 99

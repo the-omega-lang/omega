@@ -80,9 +80,3 @@ meet Greeter for Dog {
 # A hidden alias: `reveal` on the import is the only way to bind this name
 # from another module, and the binding stays usable afterwards.
 alias HiddenAlias = Public;
-
-alias HiddenTemplate<T> = Held<T>;
-
-exposed struct Held<T> {
-	exposed value: T;
-}

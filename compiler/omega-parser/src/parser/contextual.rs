@@ -4,6 +4,7 @@ pub const SELF: &str = "self";
 pub const REVEAL: &str = "reveal";
 pub const SIZEOF: &str = "sizeof";
 pub const IN: &str = "in";
+pub const AS: &str = "as";
 pub const EXPOSED: &str = "exposed";
 pub const SHARED: &str = "shared";
 pub const HIDDEN: &str = "hidden";
@@ -24,6 +25,6 @@ pub const CONST: &str = "const";
 pub const CLOBBER: &str = "clobber";
 
 pub const ALL: &[&str] = &[
-    MUT, COMP, SELF, REVEAL, SIZEOF, IN, EXPOSED, SHARED, HIDDEN, MARKER, GAP, GLUE, MEET,
+    MUT, COMP, SELF, REVEAL, SIZEOF, IN, AS, EXPOSED, SHARED, HIDDEN, MARKER, GAP, GLUE, MEET,
     PRIMITIVE, ROOT, SUPER, EXPR, TYPE, IDENT, PATH, ASM, REG, CONST, CLOBBER,
 ];
