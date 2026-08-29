@@ -21,15 +21,24 @@ struct MyStruct {
 	}
 }
 
+ptr_cast<A, B>(ptr: *B) => *A {
+	<*A>ptr
+}
+
 main() => void {
 	fnptr := MyStruct::self::member_function;
 	mystruct := MyStruct { number = 10; };
 	fnptr(&mystruct);
 
-	# panic$("testing the panic macro");
-
 	shadow := 123;
 	println$("shadow: ", shadow);
 	shadow := "hello";
 	println$("shadow: ", shadow);
+
+	ptr := &shadow;
+	ptr2 := ptr_cast<u32>(ptr); # this should work; it currently does not.
+
+	panic$("testing the panic macro");
+	# This should give a warning for unreachable code; it does NOT currently.
+	unreachable := 123;
 }
