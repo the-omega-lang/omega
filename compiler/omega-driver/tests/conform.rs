@@ -4,7 +4,10 @@ use omega_analyzer::error::{AnalysisErrorKind, TypeResolutionError};
 use omega_analyzer::resolved_type::{ConstValue, FunctionNamespace};
 use omega_analyzer::resolver::ResolveError;
 use omega_driver::{CompileError, Driver, ExternRoot};
-use omega_parser::{macros::MacroError, prelude::Ident};
+use omega_parser::{
+    macros::{MacroError, MacroErrorKind},
+    prelude::Ident,
+};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -932,7 +935,11 @@ fn print_macro_requires_an_explicit_import() {
     assert!(errors.iter().any(|error| matches!(
         error,
         CompileError::MacroExpansion {
-            error: MacroError::UnknownMacro { name },
+            error:
+                MacroError {
+                    kind: MacroErrorKind::UnknownMacro { name },
+                    ..
+                },
             ..
         } if name.as_ref() == "println"
     )));

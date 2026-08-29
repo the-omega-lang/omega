@@ -3,7 +3,9 @@ use super::*;
 impl Driver {
     pub(super) fn report_unused_imports(&mut self, path: &[Ident], warnings: &mut TaggedWarnings) {
         for (alias, import) in &self.modules.index(path).imports {
-            if self.imports.was_used(path, alias) {
+            // A macro import is consumed by expansion, before HIR exists, so
+            // ordinary import-usage tracking never sees the use.
+            if self.imports.was_used(path, alias) || self.modules.invoked_macro(path, alias) {
                 continue;
             }
             let kind = AnalysisWarningKind::UnusedImport {

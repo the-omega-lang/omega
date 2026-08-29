@@ -7,6 +7,7 @@ use crate::checked::{
 use crate::resolved_type::{ConstValue, ResolvedType};
 use crate::resolver::ResolveError;
 use crate::target::Target;
+use omega_diagnostics::{SourceId, SourceSpan};
 use omega_hir::HirId;
 use omega_parser::prelude::{BinaryOp, Span};
 use std::collections::HashMap;
@@ -18,6 +19,12 @@ pub trait CompFunctionResolver {
         &mut self,
         decl_id: HirId,
     ) -> Result<Option<CheckedFunctionDef>, ResolveError>;
+
+    /// The file the body of `decl_id` was written in. Evaluation crosses
+    /// modules, so a trace entry has to record which source its span indexes.
+    fn function_source(&self, _decl_id: HirId) -> Option<SourceId> {
+        None
+    }
 }
 
 impl CompFunctionResolver for dyn crate::resolver::ModuleResolver + '_ {
@@ -26,6 +33,10 @@ impl CompFunctionResolver for dyn crate::resolver::ModuleResolver + '_ {
         decl_id: HirId,
     ) -> Result<Option<CheckedFunctionDef>, ResolveError> {
         crate::resolver::ModuleResolver::resolve_function_body(self, decl_id)
+    }
+
+    fn function_source(&self, decl_id: HirId) -> Option<SourceId> {
+        crate::resolver::ModuleResolver::function_source(self, decl_id)
     }
 }
 
@@ -72,7 +83,10 @@ impl std::fmt::Display for CompErrorKind {
 pub struct CompError {
     pub kind: CompErrorKind,
     pub span: Span,
-    pub trace: Vec<Span>,
+    /// The file `span` indexes, which is the module whose body evaluation
+    /// reached the failure -- not necessarily the one being analyzed.
+    pub source: Option<SourceId>,
+    pub trace: Vec<SourceSpan>,
 }
 
 enum Signal {
@@ -105,19 +119,22 @@ struct Interpreter<'r, R: CompFunctionResolver + ?Sized> {
     target: Target,
     fuel: u32,
     frames: Vec<Frame>,
-    call_trace: Vec<Span>,
+    source: Option<SourceId>,
+    call_trace: Vec<SourceSpan>,
 }
 
 pub fn eval<R: CompFunctionResolver + ?Sized>(
     resolver: &mut R,
     expr: &CheckedExprNode,
     target: Target,
+    source: Option<SourceId>,
 ) -> Result<ConstValue, CompError> {
     let mut interp = Interpreter {
         resolver,
         target,
         fuel: FUEL_LIMIT,
         frames: vec![Frame::default()],
+        source,
         call_trace: vec![],
     };
     let result = interp.eval_expr(expr);
@@ -144,6 +161,7 @@ pub fn eval<R: CompFunctionResolver + ?Sized>(
         Err(Outcome::Signal(_)) => Err(CompError {
             kind: CompErrorKind::EscapingControlFlow,
             span: expr.span,
+            source,
             trace: Vec::new(),
         }),
     }
@@ -154,6 +172,7 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
         Outcome::Error(CompError {
             kind,
             span,
+            source: self.source,
             trace: self.call_trace.clone(),
         })
     }
@@ -856,9 +875,16 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
         };
 
         self.tick(span)?;
-        self.call_trace.push(span);
+        if let Some(source) = self.source {
+            self.call_trace.push(SourceSpan::new(source, span));
+        }
+        let callee_source = self.resolver.function_source(*decl_id);
+        let caller_source = std::mem::replace(&mut self.source, callee_source);
         let result = self.call_function(&body, args);
-        self.call_trace.pop();
+        self.source = caller_source;
+        if self.source.is_some() {
+            self.call_trace.pop();
+        }
         result.map_err(|outcome| match outcome {
             Outcome::Signal(Signal::Return(_)) => {
                 unreachable!("call_function always converts its own Return signal into a value")

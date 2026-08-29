@@ -57,6 +57,13 @@ impl<'a> TokenCursor<'a> {
             .unwrap_or_else(|| self.tokens[self.pos].span)
     }
 
+    pub(super) fn peek_origin(&self) -> Origin {
+        if self.pending_gt.is_some() {
+            return Origin::default();
+        }
+        self.tokens[self.pos].origin
+    }
+
     pub(super) fn last_span(&self) -> Span {
         self.last_span
     }
@@ -77,6 +84,10 @@ impl<'a> TokenCursor<'a> {
             self.last_span = token.span;
         }
         token
+    }
+
+    pub(super) fn position(&self) -> usize {
+        self.pos
     }
 
     pub(super) fn mark(&self) -> CursorMark {

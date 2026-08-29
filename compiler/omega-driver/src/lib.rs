@@ -42,6 +42,10 @@ pub struct Driver {
     primitives: Primitives,
     conformances: Conformances,
     prelude_macros: Option<Rc<HashMap<Ident, MacroDefinitionStmt>>>,
+    /// Active analyzer runs, innermost last. A nested run started for a
+    /// concrete generic instantiation reads the enclosing entry to name the
+    /// use that demanded it.
+    analysis_stack: Vec<(ModulePath, omega_analyzer::analysis::AnalysisSite)>,
     target: Target,
 }
 
@@ -62,6 +66,7 @@ impl Driver {
             primitives: Primitives::default(),
             conformances: Conformances::default(),
             prelude_macros: None,
+            analysis_stack: Vec::new(),
             target,
         })
     }

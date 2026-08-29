@@ -466,6 +466,9 @@ pub struct HirWalrusDeclaration {
 pub struct HirExprNode {
     pub id: HirId,
     pub span: Span,
+    /// The syntax owner of the source construct this node came from. Nodes
+    /// the lowering synthesizes have no written syntax and keep the default.
+    pub origin: Origin,
     pub expr: HirExpr,
 }
 

@@ -572,6 +572,7 @@ impl<'r> Analyzer<'r> {
                     reason:
                         "calling a function stored in a 'comp' binding's field isn't supported yet"
                             .into(),
+                    failure: None,
                     trace: vec![],
                 },
             );

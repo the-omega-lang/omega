@@ -1,10 +1,21 @@
 use super::*;
 
+/// Whether a warning's claim survives generic substitution. Post-resolution
+/// coincidences are only true of one concrete instantiation, so reporting them
+/// would tell a generic author to delete code another instantiation needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WarningPolicy {
+    SourceStable,
+    SubstitutionCoincidence,
+}
+
 #[derive(Debug, Clone)]
 pub struct AnalysisWarning {
     pub node_id: HirId,
     pub span: Span,
     pub kind: AnalysisWarningKind,
+    pub source: Option<SourceId>,
+    pub authored: Option<AuthoredSite>,
 }
 
 impl AnalysisWarning {
@@ -13,10 +24,29 @@ impl AnalysisWarning {
             node_id,
             span,
             kind,
+            source: None,
+            authored: None,
         }
     }
 
+    pub fn in_source(mut self, source: Option<SourceId>) -> Self {
+        self.source = source;
+        self
+    }
+
+    pub fn authored_at(mut self, authored: Option<AuthoredSite>) -> Self {
+        self.authored = authored;
+        self
+    }
+
     pub fn to_diagnostic(&self) -> Diagnostic {
+        super::relocate(
+            self.build_diagnostic().in_source(self.source),
+            self.authored.as_ref(),
+        )
+    }
+
+    fn build_diagnostic(&self) -> Diagnostic {
         let d = Diagnostic::warning(self.kind.to_string());
         let d = match &self.kind {
             AnalysisWarningKind::UnreachableCode => d
@@ -128,6 +158,18 @@ pub enum AnalysisWarningKind {
 }
 
 impl AnalysisWarningKind {
+    /// A redundancy claim that only holds after substitution is not a claim
+    /// about the written source. Everything else describes the declaration
+    /// itself and stays true for every instantiation.
+    pub fn policy(&self) -> WarningPolicy {
+        match self {
+            Self::NoOpCast { .. } | Self::AlwaysTrueFalseComparison { .. } => {
+                WarningPolicy::SubstitutionCoincidence
+            }
+            _ => WarningPolicy::SourceStable,
+        }
+    }
+
     pub fn is_suppressible(&self) -> bool {
         !matches!(self, Self::UnfilledGap { .. })
     }

@@ -1,4 +1,5 @@
 use super::*;
+use omega_diagnostics::SourceSpan;
 
 impl Driver {
     pub(crate) fn conformance_for(
@@ -39,13 +40,31 @@ impl Driver {
             self.conformances
                 .reported_cycles
                 .push((target.lookup_key(), spec.borrow().id));
-            let mut chain: Vec<(String, Ident, Span)> = self
+            let goals: Vec<(String, Ident, ModulePath, Span)> = self
                 .conformances
                 .goals
                 .iter()
-                .map(|goal| (goal.target.to_string(), goal.spec_name.clone(), goal.span))
+                .map(|goal| {
+                    (
+                        goal.target.to_string(),
+                        goal.spec_name.clone(),
+                        goal.module.clone(),
+                        goal.span,
+                    )
+                })
                 .collect();
-            chain.push((target.to_string(), spec.borrow().name.clone(), active.span));
+            let active_module = active.module.clone();
+            let active_span = active.span;
+            let active_id = active.id;
+            let mut chain: Vec<(String, Ident, Option<SourceSpan>)> = goals
+                .into_iter()
+                .map(|(target, spec, module, span)| (target, spec, self.site(&module, span)))
+                .collect();
+            chain.push((
+                target.to_string(),
+                spec.borrow().name.clone(),
+                self.site(&active_module, active_span),
+            ));
             self.diagnostics.error(
                 &self
                     .conformances
@@ -55,8 +74,8 @@ impl Driver {
                     .map(|template| template.module.clone())
                     .unwrap_or_default(),
                 AnalysisError::new(
-                    active.id,
-                    active.span,
+                    active_id,
+                    active_span,
                     AnalysisErrorKind::ConformanceCycle {
                         target: target.to_string(),
                         spec: spec.borrow().name.clone(),
@@ -208,6 +227,7 @@ impl Driver {
                 target: target.lookup_key(),
                 spec: spec_id,
                 spec_name,
+                module: template.module.clone(),
                 span: template.conform.span,
             };
             self.with_conformance_goal(goal, |this| {

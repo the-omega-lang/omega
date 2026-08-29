@@ -1,7 +1,7 @@
 use super::{BLUE, RESET, Renderer};
 use crate::diagnostic::{Diagnostic, Label, LabelStyle, Severity};
 use crate::highlight::TokenClass;
-use crate::source::{SourceFile, TAB_WIDTH, display_column};
+use crate::source::{SourceFile, SourceId, SourceRegistry, TAB_WIDTH, display_column};
 use crate::span::Span;
 
 const MAX_MULTILINE_LINES: usize = 5;
@@ -11,37 +11,64 @@ const SYNTAX_NUMBER: &str = "\x1b[36m";
 const SYNTAX_COMMENT: &str = "\x1b[90m";
 
 impl Renderer {
-    pub(super) fn render_snippet(
+    /// Renders one `-->` section per source file the diagnostic labels, the
+    /// primary label's file first. Returns the shared gutter width, or 0 when
+    /// no label resolved to retained source.
+    pub(super) fn render_snippets(
         &self,
         out: &mut String,
         d: &Diagnostic,
-        file: &SourceFile,
+        sources: &SourceRegistry,
     ) -> usize {
-        let mut labels: Vec<&Label> = d.labels.iter().collect();
-        labels.sort_by_key(|l| (l.span.start, l.span.end));
+        let resolved = resolve_labels(d, sources);
+        if resolved.is_empty() {
+            return 0;
+        }
 
-        let last_line = |l: &Label| file.line_of(l.span.end.saturating_sub(1).max(l.span.start));
-        let width = labels
+        // Gutter width and the multi-line bar area are computed across every
+        // section so source columns line up between files.
+        let width = resolved
             .iter()
-            .map(|l| digits(last_line(l)))
+            .map(|(_, file, label)| digits(last_line(file, label)))
             .max()
             .unwrap_or(1);
-        // Every source line gets a 2-column bar area after the gutter when
-        // any label is multi-line, so `|` continuation bars have somewhere
-        // to live without shifting text between lines.
-        let pad = if labels
+        let pad = if resolved
             .iter()
-            .any(|l| last_line(l) > file.line_of(l.span.start))
+            .any(|(_, file, label)| last_line(file, label) > file.line_of(label.span.start))
         {
             2
         } else {
             0
         };
 
-        let primary = d
-            .primary_label()
-            .expect("render_snippet is only called with labels present");
-        let (loc_line, loc_col) = file.line_col(primary.span.start);
+        for (index, section) in sections(&resolved).into_iter().enumerate() {
+            if index > 0 {
+                out.push('\n');
+                self.push_empty_gutter(out, width);
+            }
+            self.render_section(out, d, section.file, &section.labels, width, pad);
+        }
+        width
+    }
+
+    fn render_section(
+        &self,
+        out: &mut String,
+        d: &Diagnostic,
+        file: &SourceFile,
+        labels: &[&Label],
+        width: usize,
+        pad: usize,
+    ) {
+        let mut labels = labels.to_vec();
+        labels.sort_by_key(|l| (l.span.start, l.span.end));
+
+        let anchor = labels
+            .iter()
+            .find(|l| l.style == LabelStyle::Primary)
+            .or_else(|| labels.first())
+            .expect("a section is only built from at least one label");
+        let (loc_line, loc_col) = file.line_col(anchor.span.start);
         out.push('\n');
         out.push_str(&" ".repeat(width));
         out.push_str(&self.paint(BLUE, "--> "));
@@ -64,7 +91,7 @@ impl Renderer {
         let mut last_printed: Option<usize> = None;
         for label in labels {
             let start_line = file.line_of(label.span.start);
-            let end_line = last_line(label);
+            let end_line = last_line(file, label);
             self.render_gap(out, &ctx, last_printed, start_line);
             if start_line == end_line {
                 if last_printed != Some(start_line) {
@@ -77,7 +104,6 @@ impl Renderer {
             }
             last_printed = Some(end_line);
         }
-        width
     }
 
     fn render_gap(&self, out: &mut String, ctx: &SnippetCtx, last: Option<usize>, next: usize) {
@@ -249,6 +275,62 @@ impl Renderer {
         }
         out
     }
+}
+
+type ResolvedLabel<'a> = (SourceId, &'a SourceFile, &'a Label);
+
+struct Section<'a> {
+    file: &'a SourceFile,
+    labels: Vec<&'a Label>,
+}
+
+/// Labels paired with the file they index. A label whose source is unknown to
+/// the registry is dropped rather than rendered against another file.
+fn resolve_labels<'a>(d: &'a Diagnostic, sources: &'a SourceRegistry) -> Vec<ResolvedLabel<'a>> {
+    d.labels
+        .iter()
+        .filter_map(|label| {
+            let id = label.source.or(d.source)?;
+            Some((id, sources.get(id)?, label))
+        })
+        .collect()
+}
+
+/// One section per source, the primary label's source first and the rest in
+/// first-label order.
+fn sections<'a>(resolved: &[ResolvedLabel<'a>]) -> Vec<Section<'a>> {
+    let primary = resolved
+        .iter()
+        .find(|(_, _, label)| label.style == LabelStyle::Primary)
+        .or_else(|| resolved.first())
+        .map(|&(id, _, _)| id);
+
+    let mut order: Vec<SourceId> = primary.into_iter().collect();
+    for &(id, _, _) in resolved {
+        if !order.contains(&id) {
+            order.push(id);
+        }
+    }
+
+    order
+        .into_iter()
+        .map(|id| Section {
+            file: resolved
+                .iter()
+                .find(|(candidate, _, _)| *candidate == id)
+                .map(|&(_, file, _)| file)
+                .expect("section ids come from the resolved labels"),
+            labels: resolved
+                .iter()
+                .filter(|(candidate, _, _)| *candidate == id)
+                .map(|&(_, _, label)| label)
+                .collect(),
+        })
+        .collect()
+}
+
+fn last_line(file: &SourceFile, label: &Label) -> usize {
+    file.line_of(label.span.end.saturating_sub(1).max(label.span.start))
 }
 
 struct SnippetCtx<'a> {

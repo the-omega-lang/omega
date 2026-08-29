@@ -155,20 +155,6 @@ Remaining known conformance/spec issues:
   same gap is always a hard error project-wide, with no way to shadow one
   intentionally. [gaps-and-glue.md](../language/gaps-and-glue.md)
 
-- **`MultipleGluesForGap` cannot point at the conflicting glue blocks.**
-  The error is anchored at the *gap*'s declaration (correctly — neither
-  glue is more at fault), and names each conflicting glue as
-  `<module path>#<internal HirId>`, e.g. `plat#1, other#1`. Within a single
-  module that degrades to `t#3, t#7`, which names nothing a reader can act
-  on. The real fix is a secondary diagnostic label at each glue's own span,
-  and those spans are in *different files* from the primary — the renderer
-  only supports same-file secondary labels today (`Redeclaration`'s
-  `previous: Option<Span>` is the only precedent). Resolving it means
-  either cross-file labels in `omega-diagnostics`, or having
-  `Driver::sweep_gaps` emit one additional `CompileError::Analysis` per
-  glue site in that glue's own module. Left alone because the choice
-  between those is a diagnostics-subsystem design decision, not a local fix.
-
 ## Macros
 
 - **`MAX_EXPANSIONS` does not actually prevent the stack overflow it
@@ -210,13 +196,6 @@ Remaining known conformance/spec issues:
   `core::builtins`' location macros instead of importing them.
   [macros.md](../language/macros.md)
 
-- **Importing a macro leaves a spurious `unused import` warning.** Macro
-  names are resolved and consumed by the pre-pass in `omega-driver`'s
-  `Driver::macro_env`, entirely before HIR exists, so the ordinary
-  import-usage tracking never observes the use and reports the import as
-  dead. Every cross-package macro import warns today.
-  [macros.md](../language/macros.md), [visibility.md](../language/visibility.md)
-
 ## Compiler internals
 
 - **Macro expansion still rebuilds the whole tree by value to recurse.**
@@ -254,7 +233,7 @@ Remaining known conformance/spec issues:
 
 Shape problems in `omega-driver` and `omega-analyzer` that still need a deliberate design change — full writeups in [design-debt.md](design-debt.md).
 
-- **Overloading needs a parallel item pipeline** because the ordinary item query key cannot identify one candidate inside an overload group. This also makes generic overloads structurally unsupported and can produce a rootless `ItemFailed` diagnostic for a generic/non-generic overload pair. Fixing it means changing resolver/query identity rather than adding another special case.
+- **Overloading needs a parallel item pipeline** because the ordinary item query key cannot identify one candidate inside an overload group. This also makes generic overloads structurally unsupported: a generic/non-generic overload pair still fails to compile, though it now reports the real reason rather than a rootless `ItemFailed`. Fixing it means changing resolver/query identity rather than adding another special case.
 
 - **Module paths and item paths are the same untyped `Vec<Ident>`**, so nothing in the type system prevents confusing a module identity with `module + item`. A distinct/interned path model would be cross-crate and is intentionally deferred.
 

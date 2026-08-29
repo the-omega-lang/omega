@@ -38,7 +38,8 @@ use crate::{
     },
     context::{Context, DeclarationPolicy, LexicalScope, VarBinding},
     error::{
-        AnalysisError, AnalysisErrorKind, AnalysisWarning, AnalysisWarningKind, TypeResolutionError,
+        AnalysisError, AnalysisErrorKind, AnalysisWarning, AnalysisWarningKind, AuthoredSite,
+        TypeResolutionError,
     },
     generics::{resolve_inferred_type_args, unify_generic_type},
     resolved_type::{
@@ -54,6 +55,7 @@ use crate::{
     },
     similarity::best_match,
 };
+use omega_diagnostics::{SourceId, SourceSpan};
 use omega_hir::{
     BinaryOp, HirAddressOf, HirAsmDescriptor, HirAsmDescriptorKind, HirBlock, HirCast,
     HirCompoundAssign, HirDeclaration, HirEnumDef, HirExpr, HirExprNode, HirField, HirFor,
@@ -76,6 +78,9 @@ pub struct Analyzer<'r> {
     context: Context,
     target: Target,
     resolver: &'r mut dyn ModuleResolver,
+    /// The file this analysis run's spans index.
+    source: Option<SourceId>,
+    mode: AnalysisMode,
     module_path: Vec<Ident>,
     current_return_type: ResolvedType,
     loop_stack: Vec<HirId>,
@@ -129,6 +134,33 @@ pub fn item_visibility(item: &HirItem) -> Visibility {
         }
         HirItem::Import(_) => {
             unreachable!("imports have no item-level visibility and are never looked up by name")
+        }
+    }
+}
+
+/// What this analysis run is: an ordinary declaration/body, or one concrete
+/// generic instantiation of a declaration. Diagnostic-only -- it never changes
+/// what the analyzer resolves, only what it is honest to report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AnalysisMode {
+    #[default]
+    Declaration,
+    GenericInstantiation {
+        /// The enclosing analysis that demanded this instantiation, when the
+        /// driver knows one.
+        requested_at: Option<SourceSpan>,
+    },
+}
+
+impl AnalysisMode {
+    pub fn is_generic_instantiation(self) -> bool {
+        matches!(self, Self::GenericInstantiation { .. })
+    }
+
+    fn requested_at(self) -> Option<SourceSpan> {
+        match self {
+            Self::Declaration => None,
+            Self::GenericInstantiation { requested_at } => requested_at,
         }
     }
 }
@@ -397,6 +429,7 @@ impl<'r> Analyzer<'r> {
         target: Target,
     ) -> Self {
         let mut context = Context::new(target);
+        let source = resolver.module_source(&module_path);
         let mut errors = Vec::new();
 
         let mut seen_generics = HashSet::new();
@@ -404,24 +437,30 @@ impl<'r> Analyzer<'r> {
             // `str` is a language type name with no scalar entry in
             // `Context`, so this cannot be a lookup in the installed types.
             if crate::context::is_reserved_type_name(ident.as_ref()) {
-                errors.push(AnalysisError::new(
-                    owner.id,
-                    owner.span,
-                    AnalysisErrorKind::ReservedTypeName {
-                        name: ident.clone(),
-                    },
-                ));
+                errors.push(
+                    AnalysisError::new(
+                        owner.id,
+                        owner.span,
+                        AnalysisErrorKind::ReservedTypeName {
+                            name: ident.clone(),
+                        },
+                    )
+                    .in_source(source),
+                );
                 continue;
             }
             if !seen_generics.insert(ident) {
-                errors.push(AnalysisError::new(
-                    owner.id,
-                    owner.span,
-                    AnalysisErrorKind::Redeclaration {
-                        name: ident.clone(),
-                        previous: None,
-                    },
-                ));
+                errors.push(
+                    AnalysisError::new(
+                        owner.id,
+                        owner.span,
+                        AnalysisErrorKind::Redeclaration {
+                            name: ident.clone(),
+                            previous: None,
+                        },
+                    )
+                    .in_source(source),
+                );
                 continue;
             }
             context.define_type(ident.clone(), resolved_type.clone());
@@ -432,6 +471,8 @@ impl<'r> Analyzer<'r> {
             warnings: vec![],
             context,
             resolver,
+            source,
+            mode: AnalysisMode::default(),
             module_path,
             target,
             current_return_type: ResolvedType::Void,
@@ -445,6 +486,17 @@ impl<'r> Analyzer<'r> {
             field_usage: crate::dead_code::FieldUsage::default(),
             bounds: bounds.to_vec(),
         }
+    }
+
+    pub fn in_mode(mut self, mode: AnalysisMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    /// The instantiation that demanded this run, for findings that only exist
+    /// because of one concrete substitution.
+    pub(crate) fn instantiation_site(&self) -> Option<SourceSpan> {
+        self.mode.requested_at()
     }
 
     pub fn pointer_bytes(&self) -> u32 {
@@ -472,14 +524,76 @@ impl<'r> Analyzer<'r> {
     }
 
     pub(crate) fn error(&mut self, node_id: HirId, span: Span, kind: AnalysisErrorKind) {
-        self.errors.push(AnalysisError::new(node_id, span, kind));
+        self.error_from(node_id, span, Origin::default(), kind);
     }
 
     pub(crate) fn warn(&mut self, node_id: HirId, span: Span, kind: AnalysisWarningKind) {
-        if !self.is_suppressed(&kind) {
-            self.warnings
-                .push(AnalysisWarning::new(node_id, span, kind));
+        self.warn_from(node_id, span, Origin::default(), kind);
+    }
+
+    /// The shared policy point for a finding about syntax whose provenance is
+    /// known: macro-authored syntax is diagnosed where it was written, while
+    /// syntax the caller substituted into an expansion stays at the caller.
+    pub(crate) fn error_from(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        origin: Origin,
+        kind: AnalysisErrorKind,
+    ) {
+        let authored = self.authored_site(origin);
+        self.errors.push(
+            AnalysisError::new(node_id, span, kind)
+                .in_source(self.source)
+                .authored_at(authored),
+        );
+    }
+
+    pub(crate) fn warn_from(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        origin: Origin,
+        kind: AnalysisWarningKind,
+    ) {
+        if self.is_suppressed(&kind) {
+            return;
         }
+        // A concrete instantiation is not the written source. A redundancy
+        // that only exists because substitution made two types equal must not
+        // be reported against a declaration other instantiations still need.
+        if self.mode.is_generic_instantiation()
+            && kind.policy() == crate::error::WarningPolicy::SubstitutionCoincidence
+        {
+            return;
+        }
+        let authored = self.authored_site(origin);
+        self.warnings.push(
+            AnalysisWarning::new(node_id, span, kind)
+                .in_source(self.source)
+                .authored_at(authored),
+        );
+    }
+
+    fn authored_site(&self, origin: Origin) -> Option<AuthoredSite> {
+        let authorship = self.resolver.macro_authorship(origin)?;
+        let at = SourceSpan::new(
+            self.resolver.module_source(&authorship.defining_module)?,
+            authorship.definition,
+        );
+        let expansion = authorship
+            .expansion
+            .into_iter()
+            .filter_map(|site| {
+                let source = self.resolver.module_source(&site.module)?;
+                Some((site.macro_name, SourceSpan::new(source, site.span)))
+            })
+            .collect();
+        Some(AuthoredSite {
+            macro_name: authorship.macro_name,
+            at,
+            expansion,
+        })
     }
 
     /// `hidden` is the implicit default everywhere except spec members

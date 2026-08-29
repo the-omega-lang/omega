@@ -79,8 +79,8 @@ fn macro_visibility_and_definition_expansion_are_reported() {
     )
     .unwrap_err();
     assert!(matches!(
-        error,
-        macros::MacroError::MacroDefinitionInExpansion { macro_name } if macro_name.0 == "inner"
+        error.kind,
+        macros::MacroErrorKind::MacroDefinitionInExpansion { macro_name } if macro_name.0 == "inner"
     ));
 }
 

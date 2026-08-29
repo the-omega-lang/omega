@@ -1,32 +1,43 @@
 use super::*;
 
 impl Driver {
+    /// Visits every module whose prerequisites resolved. A poisoned module has
+    /// no usable bindings, so its bodies are skipped rather than checked
+    /// against fabricated data; the modules around it still report.
     pub(super) fn check_bodies(
         &mut self,
         local: &[ModulePath],
-    ) -> Result<(CheckedModules, TaggedWarnings), Vec<CompileError>> {
+    ) -> (CheckedModules, TaggedWarnings) {
         let mut modules = Vec::with_capacity(local.len());
         let mut warnings = TaggedWarnings::new();
 
         for path in local {
-            let items = self.check_module_bodies(path, &mut warnings)?;
+            if self.diagnostics.is_poisoned(path) {
+                continue;
+            }
+            let items = self.check_module_bodies(path, &mut warnings);
             let id = self.modules.parsed(path).id;
             modules.push((path.clone(), CheckedModule { id, items }));
         }
 
-        Ok((modules, warnings))
+        (modules, warnings)
     }
 
     fn check_module_bodies(
         &mut self,
         path: &[Ident],
         warnings: &mut TaggedWarnings,
-    ) -> Result<Vec<CheckedItem>, Vec<CompileError>> {
+    ) -> Vec<CheckedItem> {
         let mut bodies: Vec<CheckedBody> = Vec::new();
 
         for (name, index) in self.modules.index(path).plain_items() {
-            if self.is_generic_template(path, &name).map_err(fatal)? {
-                continue;
+            match self.is_generic_template(path, &name) {
+                Ok(true) => continue,
+                Ok(false) => {}
+                Err(error) => {
+                    self.record_item_failure(path, error);
+                    continue;
+                }
             }
             bodies.extend(self.ensure_item_body(&ItemKey::new(path, &name, &[]), index));
         }
@@ -46,8 +57,7 @@ impl Driver {
         items.extend(self.check_glue_bodies(path, warnings));
         items.extend(self.check_primitive_bodies(path, warnings));
         items.extend(self.check_conformance_bodies(path, warnings));
-        self.report_unused_imports(path, warnings);
-        Ok(items)
+        items
     }
 
     fn check_glue_bodies(

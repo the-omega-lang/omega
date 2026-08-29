@@ -7,6 +7,7 @@ pub mod recovery;
 pub mod statement;
 pub mod r#type;
 
+use crate::ast::identifier::Origin;
 use crate::diagnostics::{ParseError, ParseErrorKind, Span};
 use crate::lexer::{Token, TokenKind};
 
@@ -97,12 +98,26 @@ impl<'a> Parser<'a> {
         self.cursor.last_span()
     }
 
+    /// The provenance of the token about to be consumed. Node constructors
+    /// use the token that introduces a construct as that construct's syntax
+    /// owner, so macro-authored syntax stays distinguishable from the
+    /// caller-written syntax substituted into it.
+    pub fn peek_origin(&self) -> Origin {
+        self.cursor.peek_origin()
+    }
+
     pub fn is_eof(&self) -> bool {
         matches!(self.peek(), TokenKind::Eof)
     }
 
     pub fn advance(&mut self) -> Token {
         self.cursor.advance()
+    }
+
+    /// How far the token stream has been consumed. Recovery compares it to
+    /// prove a step made progress rather than looping on the same token.
+    pub fn position(&self) -> usize {
+        self.cursor.position()
     }
 
     pub fn mark(&self) -> Mark {
@@ -247,6 +262,26 @@ pub struct BindingPrefix {
 }
 
 pub type BindingModifiers = BindingPrefix;
+
+/// Whether a `name := ...` / `name : T` binding (with optional `mut`/`comp`)
+/// begins here, without consuming the modifiers.
+pub fn binding_modifiers_follow(p: &Parser) -> bool {
+    if matches!(p.peek(), TokenKind::Ident(_))
+        && matches!(p.peek_at(1), TokenKind::ColonEq | TokenKind::Colon)
+    {
+        return true;
+    }
+    let mutable = p.at_contextual(contextual::MUT);
+    let comp_offset = usize::from(mutable);
+    let comp = p.at_contextual_at(comp_offset, contextual::COMP);
+    let modifier_count = usize::from(mutable) + usize::from(comp);
+    modifier_count > 0
+        && matches!(p.peek_at(modifier_count), TokenKind::Ident(_))
+        && matches!(
+            p.peek_at(modifier_count + 1),
+            TokenKind::ColonEq | TokenKind::Colon
+        )
+}
 
 pub fn parse_binding_modifiers(p: &mut Parser) -> Option<BindingModifiers> {
     if matches!(p.peek(), TokenKind::Ident(_))

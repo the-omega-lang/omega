@@ -6,7 +6,7 @@ use crate::hir::{
     HirStructLiteral, HirStructLiteralField, HirTry,
 };
 use omega_parser::prelude::{
-    Expression, ExpressionNode, Pattern, PatternValue, RangeEnd, RangeExpr, Span,
+    Expression, ExpressionNode, Origin, Pattern, PatternValue, RangeEnd, RangeExpr, Span,
 };
 
 impl Lowerer {
@@ -14,6 +14,7 @@ impl Lowerer {
         HirExprNode {
             id: self.ids.next(),
             span,
+            origin: Origin::default(),
             expr,
         }
     }
@@ -28,7 +29,15 @@ impl Lowerer {
         self.node(span, constructor(base))
     }
 
+    /// The written construct's own provenance travels with the node it
+    /// lowers to; nested expressions stamp their own as they are lowered.
     pub(super) fn lower_expr(&mut self, node: &ExpressionNode) -> HirExprNode {
+        let mut lowered = self.lower_expr_kind(node);
+        lowered.origin = node.origin;
+        lowered
+    }
+
+    fn lower_expr_kind(&mut self, node: &ExpressionNode) -> HirExprNode {
         match &node.expression {
             Expression::Path(_)
             | Expression::FieldAccess(_)

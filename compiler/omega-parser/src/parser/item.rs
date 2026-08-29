@@ -58,12 +58,72 @@ use functions::{
     parse_declaration_or_function_definition, parse_item_declaration_or_walrus,
     parse_optional_generics,
 };
+/// Whether a top-level item can begin at the current token. This is the same
+/// lookahead `parse_item` dispatches on, exposed so recovery resynchronizes
+/// against the real grammar instead of stopping at any identifier.
+pub(crate) fn starts_item(p: &Parser) -> bool {
+    if matches!(
+        p.peek(),
+        TokenKind::At
+            | TokenKind::Foreign
+            | TokenKind::Import
+            | TokenKind::Struct
+            | TokenKind::Enum
+            | TokenKind::Union
+            | TokenKind::Spec
+            | TokenKind::Macro
+            | TokenKind::Alias
+    ) {
+        return true;
+    }
+    if [contextual::EXPOSED, contextual::SHARED, contextual::HIDDEN]
+        .iter()
+        .any(|word| p.at_contextual(word))
+    {
+        return true;
+    }
+    if [
+        contextual::MARKER,
+        contextual::GAP,
+        contextual::GLUE,
+        contextual::MEET,
+        contextual::PRIMITIVE,
+    ]
+    .iter()
+    .any(|word| p.at_contextual(word))
+    {
+        return true;
+    }
+    if crate::parser::binding_modifiers_follow(p) {
+        return true;
+    }
+    // A bare name only begins an item when the next token commits it to a
+    // declaration, function definition, or macro invocation.
+    matches!(p.peek(), TokenKind::Ident(_))
+        && matches!(
+            p.peek_at(1),
+            TokenKind::LParen
+                | TokenKind::Lt
+                | TokenKind::Colon
+                | TokenKind::ColonEq
+                | TokenKind::Dollar
+        )
+}
+
 pub fn parse_source_module(p: &mut Parser) -> Vec<ItemNode> {
     let mut nodes = Vec::new();
     while !p.is_eof() {
         match parse_item(p) {
             Some(node) => nodes.push(node),
-            None => recovery::synchronize_to_item_boundary(p),
+            None => {
+                recovery::synchronize_to_item_boundary(p);
+                // Recovery leaves a closing brace for its enclosing block to
+                // consume; at module level there is no such block, so a stray
+                // one is discarded here rather than re-parsed forever.
+                if p.check(&TokenKind::RBrace) {
+                    p.advance();
+                }
+            }
         }
     }
     nodes

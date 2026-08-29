@@ -3,7 +3,9 @@ use crate::resolved_type::{
     ConstValue, ResolvedConformance, ResolvedFunctionType, ResolvedGap, ResolvedMethod,
     ResolvedSpecType, ResolvedType,
 };
+use omega_diagnostics::SourceId;
 use omega_hir::{HirGenericParam, HirId};
+use omega_parser::macros::MacroAuthorship;
 use omega_parser::prelude::{Ident, Origin, Path, Type, Visibility};
 use std::cell::RefCell;
 use std::fmt;
@@ -398,6 +400,24 @@ impl ResolveItemOptions {
 
 pub trait ModuleResolver {
     fn macro_origin_module(&self, origin: Origin) -> Option<Vec<Ident>>;
+
+    /// The retained source file of a module, when one has been read. Findings
+    /// use it to name the file their spans index, so a diagnostic can still
+    /// be rendered once it leaves the module it was produced in.
+    fn module_source(&self, _module: &[Ident]) -> Option<SourceId> {
+        None
+    }
+
+    /// Where syntax carrying `origin` was authored. `None` means the module
+    /// being analyzed wrote it, either directly or as a macro argument.
+    fn macro_authorship(&self, _origin: Origin) -> Option<MacroAuthorship> {
+        None
+    }
+
+    /// The file the body of `decl_id` was written in.
+    fn function_source(&self, _decl_id: HirId) -> Option<SourceId> {
+        None
+    }
 
     /// Resolves a `Path`'s explicit anchor (`root::`/`self::`/`super::`)
     /// relative to `origin_module`. Returns `None` when the path carries no

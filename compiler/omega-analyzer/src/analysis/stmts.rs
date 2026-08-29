@@ -64,9 +64,6 @@ impl<'r> Analyzer<'r> {
 
     pub(super) fn warn_unused_bindings(&mut self, scope: LexicalScope, is_params: bool) {
         for ((name, origin), binding) in scope.bindings() {
-            if origin.0.is_some() {
-                continue;
-            }
             if binding.narrowed || (is_params && name.as_ref() == "self") {
                 continue;
             }
@@ -76,11 +73,12 @@ impl<'r> Analyzer<'r> {
                 } else {
                     AnalysisWarningKind::UnusedVariable { name: name.clone() }
                 };
-                self.warn(binding.decl_id, binding.span, kind);
+                self.warn_from(binding.decl_id, binding.span, *origin, kind);
             } else if binding.mutable && !binding.written {
-                self.warn(
+                self.warn_from(
                     binding.decl_id,
                     binding.span,
+                    *origin,
                     AnalysisWarningKind::UnnecessaryMut { name: name.clone() },
                 );
             }
@@ -246,19 +244,26 @@ impl<'r> Analyzer<'r> {
                 // to a conversion node of their own (anonymous-enum widening,
                 // spec coercion), and those are still discarded casts.
                 let is_source_cast = matches!(expr.expr, HirExpr::Cast(_));
+                let origin = expr.origin;
                 self.analyze_expr(expr, None).map(|e| {
                     let usable_result =
                         e.r#type != ResolvedType::Void && e.r#type != ResolvedType::Never;
                     if is_source_cast && usable_result {
-                        self.warn(
+                        self.warn_from(
                             e.id,
                             e.span,
+                            origin,
                             AnalysisWarningKind::UnusedCastResult {
                                 r#type: e.r#type.clone(),
                             },
                         );
                     } else if matches!(e.kind, CheckedExpr::FunctionCall(_)) && usable_result {
-                        self.warn(e.id, e.span, AnalysisWarningKind::UnusedReturnValue);
+                        self.warn_from(
+                            e.id,
+                            e.span,
+                            origin,
+                            AnalysisWarningKind::UnusedReturnValue,
+                        );
                     }
                     vec![CheckedStmt::Expression(e)]
                 })
@@ -302,7 +307,7 @@ impl<'r> Analyzer<'r> {
                 // match for the warning, not a compile error, so any `Err`
                 // is silently ignored.
                 if let Ok(ConstValue::Bool(true)) =
-                    crate::comp_eval::eval(self.resolver, &checked_cond, self.target)
+                    crate::comp_eval::eval(self.resolver, &checked_cond, self.target, self.source)
                 {
                     self.warn(w.id, checked_cond.span, AnalysisWarningKind::PreferLoop);
                 }
@@ -823,6 +828,7 @@ impl<'r> Analyzer<'r> {
         let callee = HirExprNode {
             id: self.resolver.fresh_synthetic_id(),
             span,
+            origin: Origin::default(),
             expr: HirExpr::Place(HirPlace {
                 root,
                 projections: vec![HirProjection::FieldAccess(
@@ -834,6 +840,7 @@ impl<'r> Analyzer<'r> {
         let call = HirExprNode {
             id: self.resolver.fresh_synthetic_id(),
             span,
+            origin: Origin::default(),
             expr: HirExpr::FunctionCall(HirFunctionCall {
                 callee: Box::new(callee),
                 args: vec![],

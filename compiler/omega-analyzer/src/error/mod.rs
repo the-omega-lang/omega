@@ -1,17 +1,17 @@
 mod kind;
-mod render;
+pub(crate) mod render;
 mod warning;
 
 pub use kind::AnalysisErrorKind;
 pub use render::resolve_error_diagnostic;
-pub use warning::{AnalysisWarning, AnalysisWarningKind};
+pub use warning::{AnalysisWarning, AnalysisWarningKind, WarningPolicy};
 
 use crate::resolved_type::{
     CallingConvention, FunctionNamespace, NumericKind, ResolvedFunctionType, ResolvedType,
 };
 use crate::resolver::ResolveError;
 use crate::target::Target;
-use omega_diagnostics::Diagnostic;
+use omega_diagnostics::{Diagnostic, LabelStyle, SourceId, SourceSpan};
 use omega_hir::HirId;
 use omega_parser::prelude::{BinaryOp, Ident, Span};
 use std::fmt;
@@ -207,6 +207,12 @@ pub struct AnalysisError {
     pub node_id: HirId,
     pub span: Span,
     pub kind: AnalysisErrorKind,
+    /// The file `span` -- and any other unqualified span this finding carries
+    /// -- indexes.
+    pub source: Option<SourceId>,
+    /// Set when macro expansion put the actionable syntax somewhere other
+    /// than `span` in `source`.
+    pub authored: Option<AuthoredSite>,
 }
 
 impl AnalysisError {
@@ -215,11 +221,24 @@ impl AnalysisError {
             node_id,
             span,
             kind,
+            source: None,
+            authored: None,
         }
     }
 
+    pub fn in_source(mut self, source: Option<SourceId>) -> Self {
+        self.source = source;
+        self
+    }
+
+    pub fn authored_at(mut self, authored: Option<AuthoredSite>) -> Self {
+        self.authored = authored;
+        self
+    }
+
     pub fn to_diagnostic(&self) -> Diagnostic {
-        self.kind.to_diagnostic(self.span)
+        let diagnostic = self.kind.to_diagnostic(self.span).in_source(self.source);
+        relocate(diagnostic, self.authored.as_ref())
     }
 }
 
@@ -261,4 +280,41 @@ fn ident_list(names: &[Ident]) -> String {
 
 fn field_list(fields: &[Ident]) -> String {
     format!("{} {}", plural(fields.len(), "field"), ident_list(fields))
+}
+
+/// Where a finding is honestly actionable when a macro, not the module being
+/// analyzed, authored the syntax it is about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthoredSite {
+    pub macro_name: Ident,
+    /// The macro declaration the syntax was written in.
+    pub at: SourceSpan,
+    /// The invocation chain that brought it here, innermost first. Entries
+    /// whose module has no retained source are dropped rather than guessed.
+    pub expansion: Vec<(Ident, SourceSpan)>,
+}
+
+/// Moves a finding's primary label to the syntax's authored site and keeps the
+/// invocation chain as context. Labels the kind placed elsewhere stay where
+/// they are: they describe other declarations, not the reported construct.
+pub(crate) fn relocate(mut diagnostic: Diagnostic, authored: Option<&AuthoredSite>) -> Diagnostic {
+    let Some(authored) = authored else {
+        return diagnostic;
+    };
+    if let Some(label) = diagnostic
+        .labels
+        .iter_mut()
+        .find(|label| label.style == LabelStyle::Primary)
+    {
+        label.source = Some(authored.at.source);
+        label.span = authored.at.span;
+    }
+    for (name, at) in &authored.expansion {
+        diagnostic = diagnostic
+            .with_secondary_label_in(*at, format!("expanded from `{}` here", name.as_ref()));
+    }
+    diagnostic.with_note(format!(
+        "this comes from the `{}` macro, so the fix belongs in its definition",
+        authored.macro_name.as_ref()
+    ))
 }

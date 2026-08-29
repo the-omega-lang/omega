@@ -353,6 +353,9 @@ pub struct MacroRepetition {
 #[derive(Debug, Clone)]
 pub struct MacroDefinitionStmt {
     pub visibility: Visibility,
+    /// The whole `macro name(...) => { ... }` declaration, which is the
+    /// actionable source for anything a macro's own template authored.
+    pub span: Span,
     pub name: Ident,
     pub signature: MacroSignature,
     pub body: Vec<MacroBodyPiece>,

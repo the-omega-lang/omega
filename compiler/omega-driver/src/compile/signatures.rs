@@ -1,33 +1,79 @@
 use super::*;
 
 impl Driver {
-    pub(super) fn collect_extern_signatures(
-        &mut self,
-    ) -> Result<Vec<ModulePath>, Vec<CompileError>> {
-        let paths = self.roots.extern_modules();
-        for path in &paths {
-            if let Err(error) = self.parse_module(path) {
-                return Err(vec![self.load_failure(path, error, None)]);
+    /// Extern modules that parsed and indexed. Each is independent: a broken
+    /// one is poisoned and skipped while the rest still contribute signatures.
+    pub(super) fn collect_extern_signatures(&mut self) -> Vec<ModulePath> {
+        let declared = self.roots.extern_modules();
+        let mut paths = Vec::with_capacity(declared.len());
+        for path in declared {
+            match self.parse_module(&path) {
+                Ok(_) => paths.push(path),
+                Err(error) => {
+                    let failure = self.load_failure(&path, error, None);
+                    self.diagnostics.fail(Some(&path), failure);
+                    self.diagnostics.poison(&path);
+                }
             }
         }
-        for path in &paths {
-            self.ensure_module_indexed(path).map_err(fatal)?;
-            for (name, index) in self.modules.index(path).plain_items() {
+
+        let mut indexed = Vec::with_capacity(paths.len());
+        for path in paths {
+            if let Err(error) = self.ensure_module_indexed(&path) {
+                self.record_module_failure(&path, error);
+                continue;
+            }
+            for (name, index) in self.modules.index(&path).plain_items() {
                 let relevant = matches!(
-                    self.modules.parsed(path).hir.items[index],
+                    self.modules.parsed(&path).hir.items[index],
                     HirItem::Struct(_) | HirItem::Spec(_) | HirItem::Gap(_)
                 );
-                if !relevant || self.is_generic_template(path, &name).map_err(fatal)? {
+                if !relevant {
                     continue;
                 }
-                let _ = self.ensure_item(path, path, &name, &[], ResolveItemOptions::INDIRECT);
+                match self.is_generic_template(&path, &name) {
+                    Ok(true) => continue,
+                    Ok(false) => {}
+                    Err(error) => {
+                        self.record_item_failure(&path, error);
+                        continue;
+                    }
+                }
+                let _ = self.ensure_item(&path, &path, &name, &[], ResolveItemOptions::INDIRECT);
             }
+            indexed.push(path);
         }
-        Ok(paths)
+        indexed
+    }
+
+    /// Records a failure that makes a whole module unusable and stops
+    /// dependent work on it. Independent modules keep going.
+    pub(super) fn record_module_failure(&mut self, path: &[Ident], error: ResolveError) {
+        self.record_item_failure(path, error);
+        self.diagnostics.poison(path);
+    }
+
+    /// Records a failure of one item. `ItemFailed` is the marker for a query
+    /// whose real reason was already reported where it happened, so recording
+    /// it again would make the secondary message the only visible one.
+    pub(super) fn record_item_failure(&mut self, path: &[Ident], error: ResolveError) {
+        if let ResolveError::ItemFailed { module, .. } = &error
+            && self.diagnostics.reported_for(module)
+        {
+            return;
+        }
+        let failure = self.load_failure(path, error, None);
+        self.diagnostics.fail(Some(path), failure);
     }
 
     pub(super) fn collect_glue_signatures(&mut self, paths: &[ModulePath]) {
         for path in paths {
+            // A poisoned module cannot resolve the gap its glue names, and the
+            // reason is already reported; resolving anyway would only repeat
+            // that unavailability at every glue block.
+            if self.diagnostics.is_poisoned(path) {
+                continue;
+            }
             let glues: Vec<HirGlueDef> = self
                 .modules
                 .parsed(path)
@@ -128,7 +174,7 @@ impl Driver {
                 }
                 self.items.glues.push(GlueSignature {
                     module: path.clone(),
-                    id: glue.id,
+                    span: glue.span,
                     gap,
                     functions,
                 });
@@ -150,22 +196,14 @@ impl Driver {
         let mut warnings = TaggedWarnings::new();
         let mut errors = Vec::new();
         for (key, gap) in &self.items.gaps {
-            let glues: Vec<Ident> = self
+            // A glue block binds no name, so the only honest way to name the
+            // conflicting implementations is to label the blocks themselves.
+            let glues: Vec<omega_diagnostics::SourceSpan> = self
                 .items
                 .glues
                 .iter()
                 .filter(|glue| glue.gap.id == gap.id)
-                .map(|glue| {
-                    Ident(format!(
-                        "{}#{}",
-                        glue.module
-                            .iter()
-                            .map(Ident::as_ref)
-                            .collect::<Vec<_>>()
-                            .join("::"),
-                        glue.id.local
-                    ))
-                })
+                .filter_map(|glue| self.site(&glue.module, glue.span))
                 .collect();
             match glues.as_slice() {
                 [] => warnings.push((
@@ -196,26 +234,28 @@ impl Driver {
         (warnings, errors)
     }
 
-    pub(super) fn collect_signatures(
-        &mut self,
-        local: &[ModulePath],
-        entry: &[Ident],
-    ) -> Result<(), Vec<CompileError>> {
+    pub(super) fn collect_signatures(&mut self, local: &[ModulePath], entry: &[Ident]) {
         // Import processing comes first and completely: a module whose
         // bindings are broken cannot be read reliably, so every local module's
         // import targets are answered before any of them resolves a name.
         // Reporting the failure here is also what keeps it to one diagnostic,
-        // at the import, instead of one per use that reaches through it.
-        let mut broken_imports = false;
+        // at the import, instead of one per use that reaches through it. A
+        // module with broken bindings is poisoned rather than aborting the
+        // phase, so unrelated modules still report their own errors.
         for path in local {
-            self.ensure_module_indexed(path).map_err(fatal)?;
-            broken_imports |= self.validate_imports(path);
-        }
-        if broken_imports {
-            return Err(self.diagnostics.drain_errors(local));
+            if let Err(error) = self.ensure_module_indexed(path) {
+                self.record_module_failure(path, error);
+                continue;
+            }
+            if self.validate_imports(path) {
+                self.diagnostics.poison(path);
+            }
         }
 
         for path in local {
+            if self.diagnostics.is_poisoned(path) {
+                continue;
+            }
             // A function's *effective* generics, not its written ones: a
             // static-spec parameter (`f(x: spec S)`) normalizes into a
             // generic bound, and that bound is the only place the import of
@@ -233,8 +273,10 @@ impl Driver {
                 })
                 .collect();
             for f in &functions {
-                let normalized = self.normalized_function(path, f).map_err(fatal)?;
-                self.mark_bound_type_imports(path, &normalized.generics);
+                match self.normalized_function(path, f) {
+                    Ok(normalized) => self.mark_bound_type_imports(path, &normalized.generics),
+                    Err(error) => self.record_item_failure(path, error),
+                }
             }
 
             let declared_generics: Vec<Vec<HirGenericParam>> = self
@@ -259,30 +301,32 @@ impl Driver {
             self.validate_aliases(path);
 
             for (name, _) in self.modules.index(path).plain_items() {
-                if self.is_generic_template(path, &name).map_err(fatal)? {
-                    continue;
+                match self.is_generic_template(path, &name) {
+                    Ok(true) => continue,
+                    Ok(false) => {}
+                    Err(error) => {
+                        self.record_item_failure(path, error);
+                        continue;
+                    }
                 }
                 let _ = self.ensure_item(path, path, &name, &[], ResolveItemOptions::INDIRECT);
             }
 
             for (name, indices) in self.modules.index(path).overloads.clone() {
-                let signatures: Vec<ResolvedFunctionType> = indices
+                let signatures: Result<Vec<ResolvedFunctionType>, ResolveError> = indices
                     .iter()
                     .map(|&i| self.ensure_overload_signature(path, i))
-                    .collect::<Result<_, _>>()
-                    .map_err(fatal)?;
-                self.check_overload_duplicates(path, &name, &indices, &signatures);
+                    .collect();
+                match signatures {
+                    Ok(signatures) => {
+                        self.check_overload_duplicates(path, &name, &indices, &signatures)
+                    }
+                    Err(error) => self.record_item_failure(path, error),
+                }
             }
         }
 
         self.check_main_signature(entry);
-
-        let errors = self.diagnostics.drain_errors(local);
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(errors)
-        }
     }
 
     // A root-module `main` is enforced to be exactly `main() => void` or

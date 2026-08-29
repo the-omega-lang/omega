@@ -10,6 +10,7 @@ use omega_analyzer::resolved_type::{
     ResolvedStructType, ResolvedType, ResolvedUnionType,
 };
 use omega_analyzer::resolver::{ResolveError, ResolveItemOptions, ResolvedItem};
+use omega_diagnostics::Span;
 use omega_hir::{HirFunctionDef, HirGenericParam, HirId, HirItem, SYNTHETIC_MODULE};
 use omega_parser::prelude::{Ident, Type, Visibility};
 use std::cell::RefCell;
@@ -51,7 +52,18 @@ type OverloadKey = (ModulePath, usize);
 enum ItemQueryState {
     InProgress,
     Resolved(ResolvedEntry),
-    Failed,
+    Failed(QueryFailure),
+}
+
+/// Why a query failed. A failed state always retains one of these, so no path
+/// can produce an "already failed" result whose primary reason was never
+/// surfaced anywhere.
+enum QueryFailure {
+    /// The query's own reason, handed back to the caller that started it.
+    Cause(ResolveError),
+    /// An analyzer run recorded the reason into the diagnostics sink; there is
+    /// no `ResolveError` carrying it.
+    Reported,
 }
 
 struct ResolvedEntry {
@@ -62,7 +74,7 @@ struct ResolvedEntry {
 enum SpecQueryState {
     InProgress,
     Resolved(Rc<RefCell<ResolvedSpecType>>),
-    Failed,
+    Failed(QueryFailure),
 }
 
 pub(crate) struct CheckedBody {
@@ -72,7 +84,7 @@ pub(crate) struct CheckedBody {
 
 pub(crate) struct GlueSignature {
     pub module: ModulePath,
-    pub id: HirId,
+    pub span: Span,
     pub gap: Rc<omega_analyzer::resolved_type::ResolvedGap>,
     pub functions: Vec<(HirFunctionDef, ResolvedFunctionType)>,
 }
@@ -278,21 +290,40 @@ impl ItemQueries {
         self.resolution_stack.push(key.clone());
     }
 
-    fn finish(&mut self, key: &ItemKey, visibility: Visibility, item: Option<&ResolvedItem>) {
+    fn finish(
+        &mut self,
+        key: &ItemKey,
+        visibility: Visibility,
+        result: Result<&ResolvedItem, &ResolveError>,
+    ) {
         let active = self
             .resolution_stack
             .pop()
             .expect("finishing item resolution requires an active query");
         assert_eq!(&active, key, "query stack must unwind in LIFO order");
 
-        let state = match item {
-            Some(item) => ItemQueryState::Resolved(ResolvedEntry {
+        let state = match result {
+            Ok(item) => ItemQueryState::Resolved(ResolvedEntry {
                 visibility,
                 item: item.clone(),
             }),
-            None => ItemQueryState::Failed,
+            Err(cause) => ItemQueryState::Failed(Self::failure(key, cause)),
         };
         self.item_states.insert(key.clone(), state);
+    }
+
+    /// A query whose own reason is the "already failed" marker for itself has
+    /// no reason of its own: the analyzer reported it, and repeating the
+    /// marker as a cause would make it rootless.
+    fn failure(key: &ItemKey, cause: &ResolveError) -> QueryFailure {
+        match cause {
+            ResolveError::ItemFailed { module, item }
+                if *module == key.module && *item == key.name =>
+            {
+                QueryFailure::Reported
+            }
+            other => QueryFailure::Cause(other.clone()),
+        }
     }
 
     fn cycle_path(&self, key: &ItemKey) -> Vec<ModulePath> {
@@ -317,10 +348,14 @@ impl ItemQueries {
             .insert(key.clone(), SpecQueryState::InProgress);
     }
 
-    fn finish_spec(&mut self, key: &SpecKey, cell: Option<Rc<RefCell<ResolvedSpecType>>>) {
-        let state = match cell {
-            Some(cell) => SpecQueryState::Resolved(cell),
-            None => SpecQueryState::Failed,
+    fn finish_spec(
+        &mut self,
+        key: &SpecKey,
+        result: Result<Rc<RefCell<ResolvedSpecType>>, QueryFailure>,
+    ) {
+        let state = match result {
+            Ok(cell) => SpecQueryState::Resolved(cell),
+            Err(failure) => SpecQueryState::Failed(failure),
         };
         self.spec_states.insert(key.clone(), state);
     }
@@ -347,6 +382,26 @@ impl ItemQueries {
         self.checked_bodies.insert(key.clone(), body);
     }
 
+    /// Whether every recorded failure kept a reason. Component tests assert
+    /// it so a new query path cannot silently create a rootless failure.
+    pub fn failures_retain_a_cause(&self) -> bool {
+        let rooted = |failure: &QueryFailure| match failure {
+            QueryFailure::Cause(cause) => !matches!(cause, ResolveError::ItemFailed { .. }),
+            QueryFailure::Reported => true,
+        };
+        self.item_states.values().all(|state| match state {
+            ItemQueryState::Failed(failure) => rooted(failure),
+            _ => true,
+        }) && self.spec_states.values().all(|state| match state {
+            SpecQueryState::Failed(failure) => rooted(failure),
+            _ => true,
+        })
+    }
+
+    pub fn is_resolved(&self, key: &ItemKey) -> bool {
+        matches!(self.item_states.get(key), Some(ItemQueryState::Resolved(_)))
+    }
+
     pub fn expect_resolved(&self, key: &ItemKey) -> &ResolvedItem {
         match self.item_states.get(key) {
             Some(ItemQueryState::Resolved(entry)) => &entry.item,
@@ -359,7 +414,7 @@ impl ItemQueries {
             .iter()
             .filter_map(|(key, state)| match state {
                 ItemQueryState::Resolved(entry) => Some((key, &entry.item)),
-                ItemQueryState::InProgress | ItemQueryState::Failed => None,
+                ItemQueryState::InProgress | ItemQueryState::Failed(_) => None,
             })
     }
 }
@@ -372,6 +427,49 @@ mod tests {
 
     fn ident(name: &str) -> Ident {
         Ident(name.to_string())
+    }
+
+    #[test]
+    fn a_failed_query_never_keeps_its_own_already_failed_marker_as_the_cause() {
+        let key = ItemKey::new(&[ident("a")], &ident("Broken"), &[]);
+        let mut queries = ItemQueries::default();
+
+        queries.begin(&key);
+        queries.finish(
+            &key,
+            Visibility::Exposed,
+            Err(&ResolveError::ItemFailed {
+                module: key.module.clone(),
+                item: key.name.clone(),
+            }),
+        );
+
+        assert!(!queries.is_resolved(&key));
+        assert!(
+            queries.failures_retain_a_cause(),
+            "an analyzer-reported failure must record `Reported`, not a self-referential cause"
+        );
+    }
+
+    #[test]
+    fn a_failed_query_retains_the_reason_it_failed() {
+        let key = ItemKey::new(&[ident("a")], &ident("Broken"), &[]);
+        let mut queries = ItemQueries::default();
+
+        queries.begin(&key);
+        queries.finish(
+            &key,
+            Visibility::Exposed,
+            Err(&ResolveError::UnknownModule(vec![ident("missing")])),
+        );
+
+        assert!(queries.failures_retain_a_cause());
+        assert!(matches!(
+            queries.state(&key),
+            Some(ItemQueryState::Failed(QueryFailure::Cause(
+                ResolveError::UnknownModule(_)
+            )))
+        ));
     }
 
     #[test]

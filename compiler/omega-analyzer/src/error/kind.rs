@@ -484,7 +484,7 @@ pub enum AnalysisErrorKind {
     DuplicateConformance {
         target: String,
         spec: Ident,
-        previous: Span,
+        previous: Option<SourceSpan>,
     },
     ConformanceExtraFunction {
         spec: Ident,
@@ -496,12 +496,12 @@ pub enum AnalysisErrorKind {
     AmbiguousConformance {
         target: String,
         spec: Ident,
-        first: Span,
+        first: Option<SourceSpan>,
     },
     ConformanceCycle {
         target: String,
         spec: Ident,
-        chain: Vec<(String, Ident, Span)>,
+        chain: Vec<(String, Ident, Option<SourceSpan>)>,
     },
     BlanketConformanceForeignSpec {
         spec_package: Ident,
@@ -512,7 +512,7 @@ pub enum AnalysisErrorKind {
     },
     DuplicatePrimitiveTarget {
         target: String,
-        previous: Span,
+        previous: Option<SourceSpan>,
     },
     AmbiguousConformanceFunction {
         target: String,
@@ -527,17 +527,25 @@ pub enum AnalysisErrorKind {
     },
     MultipleGluesForGap {
         gap: Ident,
-        glues: Vec<Ident>,
+        /// The conflicting glue blocks themselves; a glue binds no name, so
+        /// there is nothing else honest to point at.
+        glues: Vec<SourceSpan>,
     },
     CompEvalFailed {
         reason: String,
-        trace: Vec<Span>,
+        /// Where evaluation actually failed, which may be inside another
+        /// module's `comp`-callable body.
+        failure: Option<SourceSpan>,
+        trace: Vec<SourceSpan>,
     },
     MutCompBinding,
     TopLevelValueNotComp,
     ZeroSizedAggregate {
         name: Ident,
         is_union: bool,
+        /// Set when the declaration is only zero-sized for one concrete
+        /// generic instantiation, naming the use that demanded it.
+        instantiated_at: Option<SourceSpan>,
     },
     AsmRegNotOneRegisterOperand {
         r#type: ResolvedType,
@@ -586,10 +594,13 @@ impl fmt::Display for AnalysisErrorKind {
                     if *found == 1 { "was" } else { "were" }
                 )
             }
-            Self::ArgumentTypeMismatch { expected, found } => write!(
-                f,
-                "mismatched types: expected '{expected}' for this argument, found '{found}'"
-            ),
+            Self::ArgumentTypeMismatch { expected, found } => {
+                let (expected, found) = render::distinguish(expected, found);
+                write!(
+                    f,
+                    "mismatched types: expected '{expected}' for this argument, found '{found}'"
+                )
+            }
             Self::UnresolvedCallee => write!(f, "this expression is not a callable function"),
             Self::InvalidNumberType(ident) => write!(
                 f,
@@ -615,10 +626,13 @@ impl fmt::Display for AnalysisErrorKind {
             Self::CompoundAssignTargetNotAPlace => {
                 write!(f, "invalid assignment target")
             }
-            Self::AssignmentTypeMismatch { target, value } => write!(
-                f,
-                "mismatched types: cannot assign '{value}' to a target of type '{target}'"
-            ),
+            Self::AssignmentTypeMismatch { target, value } => {
+                let (target, value) = render::distinguish(target, value);
+                write!(
+                    f,
+                    "mismatched types: cannot assign '{value}' to a target of type '{target}'"
+                )
+            }
             Self::NumberLiteralOutOfRange { literal, r#type } => {
                 write!(f, "number '{literal}' does not fit in '{}'", r#type)
             }
@@ -703,6 +717,7 @@ impl fmt::Display for AnalysisErrorKind {
                 write!(f, "mismatched types: expected '{expected}', found {found}")
             }
             Self::BinaryOperandTypeMismatch { left, right, .. } => {
+                let (left, right) = render::distinguish(left, right);
                 write!(f, "mismatched types: '{left}' and '{right}'")
             }
             Self::FloatRemainder => {
@@ -716,10 +731,13 @@ impl fmt::Display for AnalysisErrorKind {
             Self::IfBranchTypeMismatch { .. } => {
                 write!(f, "'if' and 'else' branches have incompatible types")
             }
-            Self::ReturnTypeMismatch { expected, found } => write!(
-                f,
-                "mismatched types: expected return type '{expected}', found '{found}'"
-            ),
+            Self::ReturnTypeMismatch { expected, found } => {
+                let (expected, found) = render::distinguish(expected, found);
+                write!(
+                    f,
+                    "mismatched types: expected return type '{expected}', found '{found}'"
+                )
+            }
             Self::InvalidMainSignature => write!(f, "invalid 'main' signature"),
             Self::IncrementTargetNotAPlace => {
                 write!(f, "invalid '++'/'--' operand")
@@ -772,10 +790,13 @@ impl fmt::Display for AnalysisErrorKind {
                 f,
                 "'?' on a '{operand}' value cannot propagate through a function returning '{returned}'"
             ),
-            Self::TryErrorNotPropagatable { found, expected } => write!(
-                f,
-                "the error type '{found}' cannot be propagated as '{expected}'"
-            ),
+            Self::TryErrorNotPropagatable { found, expected } => {
+                let (expected, found) = render::distinguish(expected, found);
+                write!(
+                    f,
+                    "the error type '{found}' cannot be propagated as '{expected}'"
+                )
+            }
             Self::NestedDeferNotSupported => {
                 write!(f, "'defer' is not supported inside another 'defer' body")
             }
@@ -792,11 +813,14 @@ impl fmt::Display for AnalysisErrorKind {
                 field,
                 expected,
                 found,
-            } => write!(
-                f,
-                "mismatched types: field '{}' is '{expected}', found '{found}'",
-                field.as_ref()
-            ),
+            } => {
+                let (expected, found) = render::distinguish(expected, found);
+                write!(
+                    f,
+                    "mismatched types: field '{}' is '{expected}', found '{found}'",
+                    field.as_ref()
+                )
+            }
             Self::MissingFieldInitializers { r#struct, missing } => {
                 write!(
                     f,
@@ -1026,6 +1050,7 @@ impl fmt::Display for AnalysisErrorKind {
                 variant.as_ref()
             ),
             Self::PatternTypeMismatch { expected, found } => {
+                let (expected, found) = render::distinguish(expected, found);
                 write!(
                     f,
                     "mismatched types: expected '{expected}', found '{found}'"
@@ -1087,7 +1112,10 @@ impl fmt::Display for AnalysisErrorKind {
                     r#union.as_ref()
                 )
             }
-            Self::InvalidCast { from, to } => write!(f, "cannot cast '{from}' to '{to}'"),
+            Self::InvalidCast { from, to } => {
+                let (from, to) = render::distinguish(from, to);
+                write!(f, "cannot cast '{from}' to '{to}'")
+            }
             Self::CastToMutablePointer { from, to } => {
                 write!(
                     f,
@@ -1342,13 +1370,9 @@ impl fmt::Display for AnalysisErrorKind {
             }
             Self::MultipleGluesForGap { gap, glues } => write!(
                 f,
-                "more than one glue declaration implements gap '{}' ({})",
+                "{} glue declarations implement gap '{}', but a gap takes exactly one",
+                glues.len(),
                 gap.as_ref(),
-                glues
-                    .iter()
-                    .map(Ident::as_ref)
-                    .collect::<Vec<_>>()
-                    .join(", ")
             ),
             Self::CompEvalFailed { reason, .. } => write!(
                 f,
@@ -1358,7 +1382,7 @@ impl fmt::Display for AnalysisErrorKind {
             Self::TopLevelValueNotComp => {
                 write!(f, "a top-level binding's value must be compile-time-known")
             }
-            Self::ZeroSizedAggregate { name, is_union } => {
+            Self::ZeroSizedAggregate { name, is_union, .. } => {
                 let kind = if *is_union { "union" } else { "struct" };
                 write!(f, "{kind} '{}' has no sized fields", name.as_ref())
             }

@@ -27,13 +27,6 @@ pub(super) type TaggedWarnings = Vec<(ModulePath, AnalysisWarning)>;
 
 pub(super) type CheckedModules = Vec<(ModulePath, CheckedModule)>;
 
-fn fatal(error: ResolveError) -> Vec<CompileError> {
-    vec![CompileError::Resolve {
-        error,
-        importer: None,
-    }]
-}
-
 struct CompilationModules {
     emitted: Vec<ModulePath>,
     scanned: Vec<ModulePath>,
@@ -78,21 +71,21 @@ impl Driver {
         target: Target,
     ) -> Result<CompiledProgram, Vec<CompileError>> {
         self.target = target;
-        let local = self.local_module_paths().map_err(|e| vec![e])?;
-        // Reject an empty package before semantic sweeps so the user gets the
-        // direct package error instead of secondary resolution failures.
-        if local.is_empty() {
+        let Some(local) = self.local_module_paths() else {
+            // Reject an empty package before semantic sweeps so the user gets
+            // the direct package error instead of secondary resolution
+            // failures.
             return Err(vec![self.empty_package_error()]);
-        }
-        let scanned = self.collect_extern_signatures()?;
+        };
+        let scanned = self.collect_extern_signatures();
         let compilation = CompilationModules::new(local, scanned);
 
         let relationship_surface = compilation.relationship_surface();
         self.collect_primitive_signatures(&relationship_surface);
         self.collect_conformance_signatures(&relationship_surface);
-        self.collect_signatures(compilation.emitted(), entry)?;
+        self.collect_signatures(compilation.emitted(), entry);
         self.collect_glue_signatures(&relationship_surface);
-        let (mut modules, mut warnings) = self.check_bodies(compilation.emitted())?;
+        let (mut modules, mut warnings) = self.check_bodies(compilation.emitted());
 
         // Concrete generic bodies are emitted by this invocation even when
         // their template lives in an extern package. Keep the template's
@@ -108,24 +101,39 @@ impl Driver {
         }
         self.drain_pending_declaration_bodies(&mut modules, &mut warnings);
 
+        // The last relationship sweep that can still produce errors, so it
+        // runs before the barrier; its warnings are absence claims and wait
+        // until the frontend is known to be clean.
+        let (gap_warnings, gap_errors) = self.sweep_gaps();
+        for error in gap_errors {
+            self.diagnostics.fail(None, error);
+        }
+
+        debug_assert!(
+            self.items.failures_retain_a_cause(),
+            "a failed item query must retain why it failed, so no dependent lookup \
+             can turn an unreported failure into an 'already failed' message"
+        );
+
         let diagnostic_surface = compilation.diagnostic_surface();
-        let errors = self.diagnostics.drain_errors(&diagnostic_surface);
+        let errors = self.diagnostics.drain(&diagnostic_surface);
         if !errors.is_empty() {
             return Err(errors);
         }
         warnings.extend(self.diagnostics.drain_warnings(compilation.emitted()));
 
+        // Whole-program absence warnings only: a skipped module would make
+        // every one of them a false claim, so they wait for a clean frontend.
+        for path in compilation.emitted() {
+            self.report_unused_imports(path, &mut warnings);
+        }
         let mut usage = self.diagnostics.take_comp_field_usage();
         for (_, checked_module) in &modules {
             dead_code::collect_module(checked_module, &mut usage);
         }
         warnings.extend(self.sweep_dead_code(compilation.emitted(), &usage));
-
-        let (gap_warnings, gap_errors) = self.sweep_gaps();
-        if !gap_errors.is_empty() {
-            return Err(gap_errors);
-        }
         warnings.extend(gap_warnings);
+        deduplicate_warnings(&mut warnings);
 
         let extern_functions = self.collect_extern_functions();
         Ok(CompiledProgram {
@@ -141,7 +149,10 @@ impl Driver {
         CompileError::EmptyPackage { root, expected }
     }
 
-    fn local_module_paths(&mut self) -> Result<Vec<ModulePath>, CompileError> {
+    /// Every local module that parsed, with each independent discovery or
+    /// parse failure recorded. `None` means the package declares no module at
+    /// all, which is a package-level blocker rather than a module failure.
+    fn local_module_paths(&mut self) -> Option<Vec<ModulePath>> {
         // Collected into an owned `Vec` first, not iterated in place --
         // `load_failure` below needs `&mut self`, which can't coexist with
         // `local_modules()`'s own borrow of `self.roots`.
@@ -154,23 +165,60 @@ impl Driver {
             .map(|(path, result)| (path.clone(), result.clone()))
             .collect();
 
-        let mut paths: Vec<ModulePath> = Vec::new();
+        let mut declared: Vec<ModulePath> = Vec::new();
+        let mut failed: Vec<(ModulePath, ResolveError)> = Vec::new();
         for (path, location) in entries {
             match location {
-                Ok(location) if location.own_file.is_some() => paths.push(path),
+                Ok(location) if location.own_file.is_some() => declared.push(path),
                 Ok(_) => {} // namespace-only directory -- no module of its own
-                Err(error) => return Err(self.load_failure(&path, error, None)),
+                Err(error) => failed.push((path, error)),
             }
         }
-        paths.sort_by(|a, b| a.iter().map(Ident::as_ref).cmp(b.iter().map(Ident::as_ref)));
+        if declared.is_empty() && failed.is_empty() {
+            return None;
+        }
+        declared.sort_by(|a, b| a.iter().map(Ident::as_ref).cmp(b.iter().map(Ident::as_ref)));
+        failed
+            .sort_by(|(a, _), (b, _)| a.iter().map(Ident::as_ref).cmp(b.iter().map(Ident::as_ref)));
 
-        for path in &paths {
-            if let Err(error) = self.parse_module(path) {
-                return Err(self.load_failure(path, error, None));
+        for (path, error) in failed {
+            let failure = self.load_failure(&path, error, None);
+            self.diagnostics.fail(Some(&path), failure);
+            self.diagnostics.poison(&path);
+        }
+
+        let mut parsed = Vec::with_capacity(declared.len());
+        for path in declared {
+            match self.parse_module(&path) {
+                Ok(_) => parsed.push(path),
+                Err(error) => {
+                    let failure = self.load_failure(&path, error, None);
+                    self.diagnostics.fail(Some(&path), failure);
+                    self.diagnostics.poison(&path);
+                }
             }
         }
-        Ok(paths)
+        Some(parsed)
     }
+}
+
+/// Collapses findings that a reader could not tell apart. A generic template
+/// analyzed once per instantiation, or a macro body expanded at several call
+/// sites, produces the same claim about the same source construct each time;
+/// a differing concrete payload keeps them distinct because that payload is
+/// the useful fact.
+fn deduplicate_warnings(warnings: &mut TaggedWarnings) {
+    let mut seen = std::collections::HashSet::new();
+    warnings.retain(|(module, warning)| {
+        // Macro-authored findings are all actionable at the one definition
+        // they came from, so the definition is their identity; everything else
+        // is identified by the node it is about.
+        let site = match &warning.authored {
+            Some(authored) => (Some(authored.at), None),
+            None => (None, Some((warning.node_id, warning.span))),
+        };
+        seen.insert((module.clone(), site, warning.kind.to_string()))
+    });
 }
 
 #[cfg(test)]

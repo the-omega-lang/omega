@@ -1,6 +1,6 @@
 use crate::cli::{self, Args, Command};
 use omega_codegen::{CodegenRequest, EmitKind, EmitOutput};
-use omega_diagnostics::{GREEN, Renderer, paint};
+use omega_diagnostics::{GREEN, Renderer, SourceRegistry, paint};
 use omega_driver::{Driver, basename};
 use omega_parser::highlight::OmegaHighlighter;
 use std::io::IsTerminal;
@@ -81,10 +81,13 @@ fn compile(args: Args) -> Result<(), AppError> {
         })?;
 
     for (module, warning) in &program.warnings {
-        let file = driver.source_file(module);
+        let source = driver.source_id(module);
         eprintln!(
             "{}\n",
-            renderer.render(&warning.to_diagnostic(), file.as_deref())
+            renderer.render(
+                &warning.to_diagnostic().with_default_source(source),
+                driver.sources()
+            )
         );
     }
 
@@ -158,9 +161,10 @@ fn compile(args: Args) -> Result<(), AppError> {
 }
 
 fn render_driver_errors(renderer: &Renderer, errors: &[omega_driver::CompileError]) {
+    let sources = SourceRegistry::default();
     for error in errors {
         for diagnostic in error.to_diagnostics() {
-            eprintln!("{}\n", renderer.render(&diagnostic, None));
+            eprintln!("{}\n", renderer.render(&diagnostic, &sources));
         }
     }
 }
@@ -172,10 +176,13 @@ fn render_compile_errors(
 ) {
     let mut count = 0usize;
     for error in errors {
-        let file = error.module().and_then(|module| driver.source_file(module));
+        let source = error.module().and_then(|module| driver.source_id(module));
         for diagnostic in error.to_diagnostics() {
             count += 1;
-            eprintln!("{}\n", renderer.render(&diagnostic, file.as_deref()));
+            eprintln!(
+                "{}\n",
+                renderer.render(&diagnostic.with_default_source(source), driver.sources())
+            );
         }
     }
 
@@ -183,7 +190,7 @@ fn render_compile_errors(
     let summary = omega_diagnostics::Diagnostic::error(format!(
         "could not compile the program due to {count} previous {plural}"
     ));
-    eprintln!("{}", renderer.render(&summary, None));
+    eprintln!("{}", renderer.render(&summary, driver.sources()));
 }
 
 fn verbose_step(colors: bool, verb: &str, detail: &str) {

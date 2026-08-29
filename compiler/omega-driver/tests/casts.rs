@@ -276,3 +276,42 @@ fn casting_to_a_foreign_function_type_does_not_validate_its_aggregate_abi() {
     ))
     .expect_ok();
 }
+
+#[test]
+fn a_concrete_identity_cast_still_warns() {
+    let program = TestPackage::new(&in_main("value : u32 = 1; <void><u32>value;")).expect_ok();
+    let kinds = warnings(&program);
+    assert!(
+        kinds
+            .iter()
+            .any(|kind| matches!(kind, AnalysisWarningKind::NoOpCast { .. })),
+        "a written identity cast is redundant in its own source: {kinds:#?}"
+    );
+}
+
+#[test]
+fn a_cast_that_is_only_an_identity_after_substitution_does_not_warn() {
+    // `<*u8>p` is a real reinterpretation for every argument type except
+    // `*u8`. Two instantiations are used so the one coincidence cannot be
+    // mistaken for the warning simply never firing here.
+    let program = TestPackage::new(&format!(
+        "{PRELUDE}\
+as_bytes<T>(p: *T) => *u8 {{ <*u8>p }}
+
+main() => void {{
+    byte : u8 = 0;
+    word : i32 = 0;
+    <void>as_bytes(&byte);
+    <void>as_bytes(&word);
+}}
+"
+    ))
+    .expect_ok();
+    let kinds = warnings(&program);
+    assert!(
+        !kinds
+            .iter()
+            .any(|kind| matches!(kind, AnalysisWarningKind::NoOpCast { .. })),
+        "substitution making two types equal is not source redundancy: {kinds:#?}"
+    );
+}

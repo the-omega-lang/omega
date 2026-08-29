@@ -1,9 +1,21 @@
 use super::*;
-use crate::diagnostic::Diagnostic;
+use crate::diagnostic::{Diagnostic, SourceSpan};
+use crate::source::{SourceFile, SourceId};
 use crate::span::Span;
 
+fn one_source(source: &str) -> (SourceRegistry, SourceId) {
+    let mut registry = SourceRegistry::default();
+    let id = registry.add(SourceFile::new("test.omg", source));
+    (registry, id)
+}
+
 fn render_plain(d: &Diagnostic, source: &str) -> String {
-    Renderer::new(false).render(d, Some(&SourceFile::new("test.omg", source)))
+    let (registry, id) = one_source(source);
+    Renderer::new(false).render(&d.clone().in_source(id), &registry)
+}
+
+fn render_bare(d: &Diagnostic) -> String {
+    Renderer::new(false).render(d, &SourceRegistry::default())
 }
 
 #[test]
@@ -108,7 +120,7 @@ fn no_labels_renders_headline_and_footers_only() {
     let d = Diagnostic::error("no such module 'foo'")
         .with_help("expected foo.omg or foo/ in a search root");
     assert_eq!(
-        Renderer::new(false).render(&d, None),
+        render_bare(&d),
         "\
 error: no such module 'foo'
 = help: expected foo.omg or foo/ in a search root"
@@ -136,11 +148,10 @@ fn long_multiline_elides_middle() {
 }
 #[test]
 fn footer_order_matches_constructor_order() {
-    let rendered = Renderer::new(false).render(
+    let rendered = render_bare(
         &Diagnostic::error("broken")
             .with_help("fix it")
             .with_note("context"),
-        None,
     );
     assert!(rendered.find("= help: fix it").unwrap() < rendered.find("= note: context").unwrap());
 }
@@ -167,4 +178,54 @@ fn tabbed_primary_column_matches_expanded_source() {
     );
     assert!(rendered.contains("--> test.omg:1:5"), "{rendered}");
     assert!(rendered.contains("1 |     bad"), "{rendered}");
+}
+
+#[test]
+fn labels_in_two_sources_render_both_files() {
+    let mut registry = SourceRegistry::default();
+    let first = registry.add(SourceFile::new("a.omg", "alpha := 1;\n"));
+    let second = registry.add(SourceFile::new("b.omg", "line one\nbeta := 2;\n"));
+
+    let d = Diagnostic::error("two files")
+        .in_source(first)
+        .with_label(Span::new(0, 5), "here")
+        .with_secondary_label_in(SourceSpan::new(second, Span::new(9, 13)), "and there");
+
+    assert_eq!(
+        Renderer::new(false).render(&d, &registry),
+        "\
+error: two files
+ --> a.omg:1:1
+  |
+1 | alpha := 1;
+  | ^^^^^ here
+  |
+ --> b.omg:2:1
+  |
+2 | beta := 2;
+  | ---- and there"
+    );
+}
+
+#[test]
+fn secondary_source_offsets_are_never_read_against_the_primary_file() {
+    let mut registry = SourceRegistry::default();
+    let short = registry.add(SourceFile::new("short.omg", "ab\n"));
+    let long = registry.add(SourceFile::new("long.omg", "0123456789\nnext line\n"));
+
+    let d = Diagnostic::error("mixed")
+        .in_source(short)
+        .with_label(Span::new(0, 2), "in short")
+        .with_secondary_label_in(SourceSpan::new(long, Span::new(11, 15)), "in long");
+    let rendered = Renderer::new(false).render(&d, &registry);
+
+    assert!(rendered.contains("2 | next line"), "{rendered}");
+    assert!(rendered.contains("--> long.omg:2:1"), "{rendered}");
+    assert!(rendered.contains("--> short.omg:1:1"), "{rendered}");
+}
+
+#[test]
+fn labels_without_a_known_source_render_headline_only() {
+    let d = Diagnostic::error("unlocated").with_label(Span::new(0, 1), "nowhere");
+    assert_eq!(render_bare(&d), "error: unlocated");
 }

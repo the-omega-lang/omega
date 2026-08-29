@@ -1,6 +1,6 @@
 use crate::diagnostic::{Diagnostic, Footer, LabelStyle, Severity};
 use crate::highlight::Highlighter;
-use crate::source::SourceFile;
+use crate::source::SourceRegistry;
 
 mod snippet;
 #[cfg(test)]
@@ -40,16 +40,14 @@ impl Renderer {
         self
     }
 
-    pub fn render(&self, diagnostic: &Diagnostic, file: Option<&SourceFile>) -> String {
+    pub fn render(&self, diagnostic: &Diagnostic, sources: &SourceRegistry) -> String {
         let mut out = String::new();
         self.render_header(&mut out, diagnostic);
 
         let mut width = 0;
-        if let Some(file) = file
-            && !diagnostic.labels.is_empty()
-        {
-            width = self.render_snippet(&mut out, diagnostic, file);
-            if !diagnostic.footers.is_empty() {
+        if !diagnostic.labels.is_empty() {
+            width = self.render_snippets(&mut out, diagnostic, sources);
+            if width > 0 && !diagnostic.footers.is_empty() {
                 out.push('\n');
                 self.push_empty_gutter(&mut out, width);
             }

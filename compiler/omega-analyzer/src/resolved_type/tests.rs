@@ -437,12 +437,13 @@ fn anonymous_enum_tag_domain_is_the_u16_range() {
 }
 
 #[test]
-fn structural_key_separates_nominal_types_display_renders_alike() {
-    // `Display` prints a bare name with no generic arguments, so it cannot
-    // order these two apart; the canonical key must.
+fn structural_key_and_display_both_separate_nominal_instantiations() {
+    // Two instantiations of one declaration are different types, so neither
+    // the canonical key nor the rendering a reader sees may conflate them.
     let int_pair = struct_cell(1, "Pair", vec![ResolvedType::I32]);
     let float_pair = struct_cell(2, "Pair", vec![ResolvedType::F64]);
-    assert_eq!(int_pair.to_string(), float_pair.to_string());
+    assert_eq!(int_pair.to_string(), "Pair<i32>");
+    assert_eq!(float_pair.to_string(), "Pair<f64>");
     assert_ne!(
         crate::type_key::structural_key(&int_pair),
         crate::type_key::structural_key(&float_pair)
@@ -710,4 +711,97 @@ fn fixed_width_integer_domains_ignore_the_target_width() {
             Some((0, u64::MAX as i128))
         );
     }
+}
+
+fn variant_enum_cell(
+    id: u32,
+    name: &str,
+    type_args: Vec<ResolvedType>,
+) -> Rc<RefCell<ResolvedEnumType>> {
+    Rc::new(RefCell::new(ResolvedEnumType {
+        id: HirId {
+            module: omega_hir::ModuleId(0),
+            local: id,
+        },
+        name: Ident(name.to_string()),
+        module_path: vec![Ident("pkg".into()), Ident("inner".into())],
+        type_args,
+        tag_type: ResolvedType::U8,
+        header: vec![],
+        dynamic_fields: vec![],
+        variants: vec![crate::resolved_type::ResolvedEnumVariant {
+            name: Ident("Some".into()),
+            fields: vec![],
+            header_values: vec![],
+            tag: crate::checked::NumberValue::Unsigned(0),
+        }],
+        functions: vec![],
+        layout: crate::annotations::Layout::default(),
+        suppress: vec![],
+    }))
+}
+
+#[test]
+fn nested_generic_arguments_render_recursively() {
+    let inner = struct_cell(1, "Holder", vec![ResolvedType::I32]);
+    let outer = struct_cell(2, "Pair", vec![inner, ResolvedType::Str { mutable: false }]);
+    assert_eq!(outer.to_string(), "Pair<Holder<i32>, *str>");
+
+    let pointer = ResolvedType::Pointer {
+        pointee: Box::new(outer),
+        mutable: true,
+    };
+    assert_eq!(pointer.to_string(), "*mut Pair<Holder<i32>, *str>");
+}
+
+#[test]
+fn an_enum_variant_suffix_follows_the_instantiated_type_name() {
+    let cell = variant_enum_cell(3, "Option", vec![ResolvedType::U8]);
+    let variant = ResolvedType::Enum {
+        cell,
+        variant: Some(0),
+    };
+    assert_eq!(variant.to_string(), "Option<u8>::Some");
+}
+
+#[test]
+fn a_spec_renders_its_own_type_arguments() {
+    let cell = spec_cell(4, "Into");
+    cell.borrow_mut().type_args = vec![ResolvedType::U32];
+    assert_eq!(ResolvedType::Spec(cell).to_string(), "Into<u32>");
+}
+
+#[test]
+fn two_same_named_types_from_different_modules_can_be_told_apart() {
+    let local = struct_cell(5, "Buffer", vec![]);
+    let other = ResolvedType::Struct(Rc::new(RefCell::new(ResolvedStructType {
+        id: HirId {
+            module: omega_hir::ModuleId(1),
+            local: 5,
+        },
+        name: Ident("Buffer".into()),
+        module_path: vec![Ident("other".into())],
+        type_args: vec![],
+        fields: vec![],
+        functions: vec![],
+        layout: crate::annotations::Layout::default(),
+        suppress: vec![],
+        is_marker: false,
+    })));
+
+    assert_eq!(local.to_string(), other.to_string());
+    let (left, right) = crate::error::render::distinguish(&local, &other);
+    assert_ne!(left, right);
+    assert_eq!(left, "pkg::Buffer");
+    assert_eq!(right, "other::Buffer");
+}
+
+#[test]
+fn types_that_already_differ_keep_their_short_names() {
+    let (left, right) = crate::error::render::distinguish(
+        &struct_cell(6, "Holder", vec![ResolvedType::I32]),
+        &struct_cell(7, "Holder", vec![ResolvedType::U8]),
+    );
+    assert_eq!(left, "Holder<i32>");
+    assert_eq!(right, "Holder<u8>");
 }

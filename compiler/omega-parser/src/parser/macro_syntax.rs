@@ -71,6 +71,7 @@ pub fn parse_macro_definition(
     p: &mut Parser,
     visibility: Visibility,
 ) -> Option<MacroDefinitionStmt> {
+    let start = p.peek_span();
     p.expect(&TokenKind::Macro, "'macro'");
     let name = p.expect_ident()?;
     p.expect(&TokenKind::LParen, "'('");
@@ -82,6 +83,7 @@ pub fn parse_macro_definition(
     p.expect(&TokenKind::RBrace, "'}'");
     Some(MacroDefinitionStmt {
         visibility,
+        span: start.to(p.last_span()),
         name,
         signature,
         body,

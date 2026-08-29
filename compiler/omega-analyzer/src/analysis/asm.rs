@@ -134,6 +134,7 @@ impl<'r> Analyzer<'r> {
                 let synthetic = HirExprNode {
                     id: descriptor.id,
                     span: descriptor.span,
+                    origin: *origin,
                     expr: HirExpr::Place(HirPlace {
                         root: HirPlaceRoot::Path(ExprPath {
                             path: Path {

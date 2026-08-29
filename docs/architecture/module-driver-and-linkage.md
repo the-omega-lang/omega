@@ -74,7 +74,7 @@ Extern packages are separate compilation units. Their discovered inventories are
 
 `ModuleStore` keeps every module artifact needed beyond one parse call:
 
-- retained `SourceFile` for diagnostics;
+- the `SourceRegistry` of retained source text, and each module's `SourceId`;
 - raw unexpanded `SourceModule` AST;
 - module-local raw macro definitions;
 - shared macro `ExpansionState` provenance;
@@ -359,13 +359,16 @@ High-level order:
 6. collect gap/glue signature information
 7. check local bodies
 8. materialize bodies discovered lazily (generic/conformance/primitive)
-9. drain diagnostics/warnings
-10. run whole-program/local-package analyses such as dead-code/gap checks
-11. collect extern-function references
-12. return CompiledProgram
+9. run the remaining relationship sweeps that can still fail (gap/glue)
+10. drain diagnostics -- the one frontend error barrier
+11. run whole-program absence analyses (unused imports, dead code, unfilled gaps)
+12. collect extern-function references
+13. return CompiledProgram
 ```
 
 The exact helper ordering in `compile/mod.rs` is the executable source of truth, but the architectural split is stable: **resolve declarations before body checking consumes them**.
+
+Steps 1-9 are recoverable. A failure is recorded against the unit that produced it and the sweep continues; a module whose prerequisites are unavailable is poisoned and its dependent work skipped, but unrelated modules still report. No phase returns early merely because findings exist. Step 10 is the only place that turns accumulated findings into a failed compilation, which is what keeps step 11's absence claims from being made about a module that was never analyzed. See [`diagnostics.md`](diagnostics.md) for the finding model this rests on.
 
 Generic templates themselves have no emitted generic body. Their concrete instantiations are discovered from use sites and checked on demand.
 
@@ -484,6 +487,7 @@ The driver relies on a few ordering and memoization rules that are not obvious f
 - Conformance-template solving is goal-directed and guarded by an in-flight goal stack. Only a failure of an outermost goal is safe to memoize permanently; a nested failure may become applicable when the enclosing proof unwinds and is retried from a clean stack.
 - A conformance sweep is not complete if a candidate was skipped because its goal was already in flight. Such a sweep must be eligible to run again later rather than publishing a false-complete memo.
 - Explicit/otherwise-higher-precedence conformances are selected before an overridden blanket/template body is analyzed. Diagnostics must not leak from a conformance body that can never be selected or emitted.
+- A body is checked only for an item whose signature reached the resolved query state. Skipping a body whose signature failed is what keeps recovery from checking against fabricated semantic data; the signature's own failure is already reported.
 - Local and extern modules have different emission ownership. A concrete generic instantiation whose template lives in an extern package is still materialized by the local compilation that requested it; it must not be dropped merely because its template module is absent from the local-module output map.
 
 These are implementation invariants, not language semantics. If the query/conformance architecture changes, update this section with the new invariant rather than recreating long explanatory comments throughout the driver.

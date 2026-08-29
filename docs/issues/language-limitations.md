@@ -234,13 +234,16 @@ Normative chapter: [`../language/marker-types.md`](../language/marker-types.md)
   frame regardless; the dead-code lint already warns about unused
   variables, so this is expected to be rare in practice, not a
   correctness concern.
-- The `ZeroSizedAggregate` diagnostic for a generic struct/union that
-  only becomes zero-sized for one instantiation points at the generic
-  declaration's own span, not the specific instantiation call site that
-  triggered it — consistent with how every other `signature_of_struct`/
-  `signature_of_union` check in this compiler anchors its error, but
-  worth knowing if the message looks like it's pointing at "healthy"
-  code when only one particular type argument is actually the problem.
+- The `ZeroSizedAggregate` diagnostic for a generic struct/union that only
+  becomes zero-sized for one instantiation stays anchored at the generic
+  declaration — consistent with how every other `signature_of_struct`/
+  `signature_of_union` check in this compiler anchors its error — and adds
+  the demanding instantiation as a secondary label. That label is the
+  enclosing *analysis owner*, so it names the declaration or function whose
+  checking demanded the instantiation, spanning all of it, and it does not
+  show which type argument was substituted. It is enough to stop the message
+  looking like it blames healthy generic source; it is not yet the precise
+  use site.
 
 ## Macros
 

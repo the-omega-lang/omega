@@ -2,7 +2,7 @@ use crate::ModulePath;
 use omega_analyzer::checked::{CheckedModule, ExternFunctionRef};
 use omega_analyzer::error::{AnalysisError, AnalysisWarning};
 use omega_analyzer::resolver::ResolveError;
-use omega_diagnostics::{Diagnostic, Span};
+use omega_diagnostics::{Diagnostic, SourceSpan, Span};
 use omega_parser::macros::MacroError;
 use omega_parser::prelude::{Ident, ParseError};
 use std::path::PathBuf;
@@ -22,6 +22,9 @@ pub enum CompileError {
     MacroExpansion {
         module: ModulePath,
         error: MacroError,
+        /// The failing macro's declaration, resolved against the module that
+        /// declared it -- which is not necessarily `module`.
+        definition: Option<SourceSpan>,
     },
     Analysis {
         module: ModulePath,
@@ -78,7 +81,22 @@ impl CompileError {
                 )]
             }
             Self::Parse { errors, .. } => errors.iter().map(ParseError::to_diagnostic).collect(),
-            Self::MacroExpansion { error, .. } => vec![Diagnostic::error(error.to_string())],
+            Self::MacroExpansion {
+                error, definition, ..
+            } => {
+                let mut diagnostic = Diagnostic::error(error.to_string());
+                if let Some(span) = error.site.invocation {
+                    diagnostic = diagnostic.with_label(span, "in this macro expansion");
+                }
+                if let Some(at) = definition {
+                    diagnostic = if error.site.invocation.is_some() {
+                        diagnostic.with_secondary_label_in(*at, "macro defined here")
+                    } else {
+                        diagnostic.with_label_in(*at, "macro defined here")
+                    };
+                }
+                vec![diagnostic]
+            }
             Self::Analysis { errors, .. } => {
                 errors.iter().map(AnalysisError::to_diagnostic).collect()
             }

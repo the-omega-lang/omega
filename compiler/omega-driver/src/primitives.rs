@@ -116,6 +116,8 @@ impl Driver {
             .iter()
             .find(|entry| entry.target == target.lookup_key())
         {
+            let previous_site = (previous.module.clone(), previous.span);
+            let previous_site = self.site(&previous_site.0, previous_site.1);
             self.diagnostics.error(
                 module,
                 AnalysisError::new(
@@ -123,7 +125,7 @@ impl Driver {
                     primitive.span,
                     AnalysisErrorKind::DuplicatePrimitiveTarget {
                         target: target.to_string(),
-                        previous: previous.span,
+                        previous: previous_site,
                     },
                 ),
             );

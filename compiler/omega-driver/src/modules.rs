@@ -6,7 +6,7 @@ use omega_analyzer::analysis::{AnalysisSite, item_id_span, item_name};
 use omega_analyzer::annotations::{self, ItemKind};
 use omega_analyzer::error::{AnalysisError, AnalysisErrorKind};
 use omega_analyzer::resolver::ResolveError;
-use omega_diagnostics::{SourceFile, Span};
+use omega_diagnostics::{SourceFile, SourceId, SourceRegistry, Span};
 use omega_hir::{HirGenericParam, HirId, HirItem, HirModule, ModuleId};
 use omega_parser::macros::MacroError;
 use omega_parser::prelude::{
@@ -70,7 +70,8 @@ pub(crate) struct ModuleStore {
     /// so the macro namespace stays separate from the ordinary one.
     macro_alias_names: HashMap<ModulePath, Rc<HashSet<Ident>>>,
     macro_expansions: omega_parser::macros::ExpansionState,
-    sources: HashMap<ModulePath, Rc<SourceFile>>,
+    sources: SourceRegistry,
+    source_ids: HashMap<ModulePath, SourceId>,
     failures: HashMap<ModulePath, LoadFailure>,
     definition_origins: HashMap<ModulePath, omega_parser::prelude::Origin>,
     next_id: u32,
@@ -95,6 +96,17 @@ impl ModuleStore {
 
     pub fn hir(&self, path: &[Ident]) -> Rc<HirModule> {
         self.parsed(path).hir.clone()
+    }
+
+    pub fn invoked_macro(&self, module: &[Ident], name: &Ident) -> bool {
+        self.macro_expansions.invoked_macro(module, name)
+    }
+
+    pub fn authorship(
+        &self,
+        origin: omega_parser::prelude::Origin,
+    ) -> Option<omega_parser::macros::MacroAuthorship> {
+        self.macro_expansions.authorship(origin)
     }
 
     pub fn macro_origin_module(&self, origin: omega_parser::prelude::Origin) -> Option<ModulePath> {
@@ -149,8 +161,16 @@ impl ModuleStore {
         module.hir.items.get(index)
     }
 
-    pub fn source(&self, path: &[Ident]) -> Option<Rc<SourceFile>> {
-        self.sources.get(path).cloned()
+    pub fn source_id(&self, path: &[Ident]) -> Option<SourceId> {
+        self.source_ids.get(path).copied()
+    }
+
+    pub fn sources(&self) -> &SourceRegistry {
+        &self.sources
+    }
+
+    fn source_text(&self, path: &[Ident]) -> Option<Rc<SourceFile>> {
+        self.source_id(path).and_then(|id| self.sources.shared(id))
     }
 
     pub fn take_failure(&mut self, path: &[Ident]) -> Option<LoadFailure> {
@@ -172,10 +192,11 @@ impl Driver {
             path: path.to_vec(),
             message: e.to_string(),
         })?;
-        self.modules.sources.insert(
-            path.to_vec(),
-            Rc::new(SourceFile::new(file.display().to_string(), source.as_str())),
-        );
+        let id = self
+            .modules
+            .sources
+            .add(SourceFile::new(file.display().to_string(), source.as_str()));
+        self.modules.source_ids.insert(path.to_vec(), id);
         let ast = SourceModule::parse(&source).map_err(|errors| {
             self.modules
                 .failures
@@ -568,7 +589,7 @@ impl Driver {
                         message: "building macro environment failed".into(),
                     }
                 })?;
-                let source = self.modules.source(path);
+                let source = self.modules.source_text(path);
                 let ast = omega_parser::macros::expand_with_origins(
                     (*ast).clone(),
                     &macros,
@@ -612,17 +633,44 @@ impl Driver {
                 module: module.to_vec(),
                 errors,
             },
-            Some(LoadFailure::MacroExpansion(error)) => CompileError::MacroExpansion {
-                module: module.to_vec(),
-                error,
-            },
+            Some(LoadFailure::MacroExpansion(error)) => {
+                let definition = error.site.definition.as_ref().and_then(|(module, span)| {
+                    Some(omega_diagnostics::SourceSpan::new(
+                        self.modules.source_id(module)?,
+                        *span,
+                    ))
+                });
+                CompileError::MacroExpansion {
+                    module: module.to_vec(),
+                    error,
+                    definition,
+                }
+            }
             Some(LoadFailure::Compile(error)) => error,
             None => CompileError::Resolve { error, importer },
         }
     }
 
-    pub fn source_file(&self, module: &[Ident]) -> Option<Rc<SourceFile>> {
-        self.modules.source(module)
+    pub fn source_id(&self, module: &[Ident]) -> Option<SourceId> {
+        self.modules.source_id(module)
+    }
+
+    pub fn sources(&self) -> &SourceRegistry {
+        self.modules.sources()
+    }
+
+    /// A span paired with the module whose source it indexes. `None` when that
+    /// module's text was never retained, which keeps an unrenderable label out
+    /// of the diagnostic rather than pointing it at the wrong file.
+    pub(crate) fn site(
+        &self,
+        module: &[Ident],
+        span: Span,
+    ) -> Option<omega_diagnostics::SourceSpan> {
+        Some(omega_diagnostics::SourceSpan::new(
+            self.modules.source_id(module)?,
+            span,
+        ))
     }
 
     pub(crate) fn ensure_module_indexed(&mut self, path: &[Ident]) -> Result<(), ResolveError> {
@@ -839,11 +887,21 @@ impl Driver {
             let Err(error) = self.validate_import_target(path, &target, reveal) else {
                 continue;
             };
+            // The binding is broken either way, but a module that already
+            // reported why it could not be loaded needs no second-hand copy
+            // of that reason at every import reaching into it.
+            failed = true;
+            if let ResolveError::LoadFailed {
+                path: unavailable, ..
+            } = &error
+                && self.diagnostics.reported_for(unavailable)
+            {
+                continue;
+            }
             self.diagnostics.error(
                 path,
                 AnalysisError::new(id, span, AnalysisErrorKind::ModuleResolution(error)),
             );
-            failed = true;
         }
         failed
     }

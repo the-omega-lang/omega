@@ -40,6 +40,12 @@ impl Driver {
         if let Some(body) = self.items.cached_body(key) {
             return Some(body.clone_of());
         }
+        // A body has nothing sound to check while its own signature is
+        // unavailable. The signature failure is already reported, so this is a
+        // skip, not a second diagnostic.
+        if !key.is_instantiation() && !self.items.is_resolved(key) {
+            return None;
+        }
         if !self.items.begin_body(key) {
             return None;
         }

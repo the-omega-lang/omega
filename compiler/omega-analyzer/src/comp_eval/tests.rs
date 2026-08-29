@@ -64,7 +64,7 @@ fn arithmetic_folds() {
         }),
         ResolvedType::I32,
     );
-    let value = eval(&mut NoFunctions, &expr, Target::DEFAULT).unwrap();
+    let value = eval(&mut NoFunctions, &expr, Target::DEFAULT, None).unwrap();
     assert_eq!(value, ConstValue::Number(NumberValue::Signed(30)));
 }
 
@@ -78,7 +78,7 @@ fn division_by_zero_is_rejected_not_a_panic() {
         }),
         ResolvedType::I32,
     );
-    let err = eval(&mut NoFunctions, &expr, Target::DEFAULT).unwrap_err();
+    let err = eval(&mut NoFunctions, &expr, Target::DEFAULT, None).unwrap_err();
     assert!(matches!(err.kind, CompErrorKind::Unsupported(_)));
 }
 
@@ -100,7 +100,7 @@ fn if_else_picks_the_taken_branch() {
         }),
         ResolvedType::I32,
     );
-    let value = eval(&mut NoFunctions, &expr, Target::DEFAULT).unwrap();
+    let value = eval(&mut NoFunctions, &expr, Target::DEFAULT, None).unwrap();
     assert_eq!(value, ConstValue::Number(NumberValue::Signed(2)));
 }
 
@@ -120,7 +120,7 @@ fn struct_literal_builds_fields_in_declared_order() {
         ],
     };
     let expr = node(CheckedExpr::StructLiteral(lit), struct_ty);
-    let value = eval(&mut NoFunctions, &expr, Target::DEFAULT).unwrap();
+    let value = eval(&mut NoFunctions, &expr, Target::DEFAULT, None).unwrap();
     assert_eq!(
         value,
         ConstValue::Struct(vec![
@@ -211,7 +211,7 @@ fn while_loop_accumulates_via_locals() {
     };
     let expr = node(CheckedExpr::Codeblock(outer), ResolvedType::I32);
 
-    let value = eval(&mut NoFunctions, &expr, Target::DEFAULT).unwrap();
+    let value = eval(&mut NoFunctions, &expr, Target::DEFAULT, None).unwrap();
     assert_eq!(
         value,
         ConstValue::Number(NumberValue::Signed(0 + 1 + 2 + 3 + 4))
@@ -237,7 +237,7 @@ fn infinite_loop_exhausts_fuel_instead_of_hanging() {
     };
     let expr = node(CheckedExpr::Codeblock(outer), ResolvedType::I32);
 
-    let err = eval(&mut NoFunctions, &expr, Target::DEFAULT).unwrap_err();
+    let err = eval(&mut NoFunctions, &expr, Target::DEFAULT, None).unwrap_err();
     assert!(matches!(err.kind, CompErrorKind::FuelExhausted));
 }
 
@@ -297,7 +297,7 @@ fn calling_an_extern_is_rejected_with_a_precise_reason() {
         ResolvedType::Void,
     );
 
-    let err = eval(&mut AllExtern, &call, Target::DEFAULT).unwrap_err();
+    let err = eval(&mut AllExtern, &call, Target::DEFAULT, None).unwrap_err();
     assert!(matches!(err.kind, CompErrorKind::ExternCall));
 }
 
@@ -404,7 +404,7 @@ fn calling_another_function_interprets_its_own_body() {
     );
 
     let mut resolver = OneFunction(add_def);
-    let value = eval(&mut resolver, &call, Target::DEFAULT).unwrap();
+    let value = eval(&mut resolver, &call, Target::DEFAULT, None).unwrap();
     assert_eq!(value, ConstValue::Number(NumberValue::Signed(30)));
 }
 
@@ -580,7 +580,7 @@ fn a_successful_try_yields_the_payload() {
         },
         ResolvedType::I32,
     );
-    let value = eval(&mut resolver, &call, Target::DEFAULT).unwrap();
+    let value = eval(&mut resolver, &call, Target::DEFAULT, None).unwrap();
     assert_eq!(value, ConstValue::Number(NumberValue::Signed(7)));
 }
 
@@ -602,7 +602,7 @@ fn a_failing_option_try_returns_the_enclosing_none() {
         },
         option,
     );
-    let value = eval(&mut resolver, &call, Target::DEFAULT).unwrap();
+    let value = eval(&mut resolver, &call, Target::DEFAULT, None).unwrap();
     assert_eq!(value, fallible_const(1, vec![]));
 }
 
@@ -631,7 +631,7 @@ fn a_failing_result_try_returns_the_enclosing_err() {
         },
         result,
     );
-    let value = eval(&mut resolver, &call, Target::DEFAULT).unwrap();
+    let value = eval(&mut resolver, &call, Target::DEFAULT, None).unwrap();
     assert_eq!(
         value,
         fallible_const(1, vec![ConstValue::Number(NumberValue::Signed(5))])
@@ -669,7 +669,7 @@ fn a_propagated_error_runs_its_recorded_coercion() {
         },
         result,
     );
-    let value = eval(&mut resolver, &call, Target::DEFAULT).unwrap();
+    let value = eval(&mut resolver, &call, Target::DEFAULT, None).unwrap();
     assert_eq!(
         value,
         fallible_const(
@@ -717,7 +717,7 @@ fn a_defer_registered_before_a_failing_try_still_runs() {
         },
         option,
     );
-    let err = eval(&mut resolver, &call, Target::DEFAULT).unwrap_err();
+    let err = eval(&mut resolver, &call, Target::DEFAULT, None).unwrap_err();
     assert!(matches!(err.kind, CompErrorKind::Unsupported(_)));
 }
 
@@ -732,6 +732,6 @@ fn a_try_that_escapes_the_outermost_evaluation_is_a_diagnostic() {
         false,
         CheckedCoercion::default(),
     );
-    let err = eval(&mut NoFunctions, &expr, Target::DEFAULT).unwrap_err();
+    let err = eval(&mut NoFunctions, &expr, Target::DEFAULT, None).unwrap_err();
     assert!(matches!(err.kind, CompErrorKind::EscapingControlFlow));
 }

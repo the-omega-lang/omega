@@ -8,7 +8,7 @@ use crate::lexer::{Token, TokenKind};
 use crate::parser::Parser;
 use crate::prelude::*;
 use omega_diagnostics::SourceFile;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 const MAX_EXPANSIONS: u32 = 256;
@@ -18,11 +18,44 @@ pub struct ExpansionState {
     next_id: u32,
     origins: HashMap<ExpansionId, ExpansionOrigin>,
     environments: HashMap<Vec<Ident>, HashMap<Ident, MacroDefinitionStmt>>,
+    /// Macro names a module's own source actually invoked. Expansion consumes
+    /// macro bindings before HIR exists, so this is the only record that a
+    /// macro import was used.
+    invocations: HashSet<(Vec<Ident>, Ident)>,
 }
 
 #[derive(Debug, Clone)]
 struct ExpansionOrigin {
     defining_module: Vec<Ident>,
+    /// Absent for the synthetic origins that only name a resolution module
+    /// (alias expansion), which author no syntax of their own.
+    macro_site: Option<MacroSite>,
+}
+
+#[derive(Debug, Clone)]
+struct MacroSite {
+    name: Ident,
+    definition: Span,
+    invocation_module: Vec<Ident>,
+    invocation: Span,
+    parent: Origin,
+}
+
+/// Where macro-authored syntax was written, plus the invocation chain that
+/// brought it into the module being compiled (innermost invocation first).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MacroAuthorship {
+    pub macro_name: Ident,
+    pub defining_module: Vec<Ident>,
+    pub definition: Span,
+    pub expansion: Vec<MacroInvocationSite>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MacroInvocationSite {
+    pub macro_name: Ident,
+    pub module: Vec<Ident>,
+    pub span: Span,
 }
 
 impl ExpansionState {
@@ -39,27 +72,86 @@ impl ExpansionState {
     /// declaration site after it is substituted into a use site in another
     /// module.
     pub fn register_definition_module(&mut self, module: &[Ident]) -> Origin {
+        self.insert(ExpansionOrigin {
+            defining_module: module.to_vec(),
+            macro_site: None,
+        })
+    }
+
+    /// Where the syntax carrying `origin` was authored. `None` means the
+    /// syntax is the module's own: either written there directly, or
+    /// substituted into an expansion by its caller.
+    pub fn authorship(&self, origin: Origin) -> Option<MacroAuthorship> {
+        let entry = origin.0.and_then(|id| self.origins.get(&id))?;
+        let site = entry.macro_site.as_ref()?;
+
+        let mut expansion = vec![MacroInvocationSite {
+            macro_name: site.name.clone(),
+            module: site.invocation_module.clone(),
+            span: site.invocation,
+        }];
+        let mut parent = site.parent;
+        // Nested expansions form a chain, and `insert` only ever links to an
+        // already-recorded parent, so this walk terminates.
+        while let Some(outer) = parent
+            .0
+            .and_then(|id| self.origins.get(&id))
+            .and_then(|entry| entry.macro_site.as_ref())
+        {
+            expansion.push(MacroInvocationSite {
+                macro_name: outer.name.clone(),
+                module: outer.invocation_module.clone(),
+                span: outer.invocation,
+            });
+            parent = outer.parent;
+        }
+
+        Some(MacroAuthorship {
+            macro_name: site.name.clone(),
+            defining_module: entry.defining_module.clone(),
+            definition: site.definition,
+            expansion,
+        })
+    }
+
+    fn insert(&mut self, origin: ExpansionOrigin) -> Origin {
         let id = ExpansionId(self.next_id);
         self.next_id += 1;
-        self.origins.insert(
-            id,
-            ExpansionOrigin {
-                defining_module: module.to_vec(),
-            },
-        );
+        self.origins.insert(id, origin);
         Origin(Some(id))
     }
 
-    fn fresh_origin(&mut self, def: &MacroDefinitionStmt) -> Origin {
-        let id = ExpansionId(self.next_id);
-        self.next_id += 1;
-        self.origins.insert(
-            id,
-            ExpansionOrigin {
-                defining_module: def.defining_module.clone(),
-            },
-        );
-        Origin(Some(id))
+    fn fresh_origin(
+        &mut self,
+        def: &MacroDefinitionStmt,
+        invocation_module: &[Ident],
+        invocation: Span,
+        parent: Origin,
+    ) -> Origin {
+        self.insert(ExpansionOrigin {
+            defining_module: def.defining_module.clone(),
+            macro_site: Some(MacroSite {
+                name: def.name.clone(),
+                definition: def.span,
+                invocation_module: invocation_module.to_vec(),
+                invocation,
+                parent,
+            }),
+        })
+    }
+
+    /// Records that `module`'s own source invoked `name`. Invocations written
+    /// inside a macro body are not recorded: they resolve in the defining
+    /// module's environment, not through this module's imports.
+    pub(crate) fn record_invocation(&mut self, module: &[Ident], name: &Ident, origin: Origin) {
+        if self.authorship(origin).is_some() {
+            return;
+        }
+        self.invocations.insert((module.to_vec(), name.clone()));
+    }
+
+    pub fn invoked_macro(&self, module: &[Ident], name: &Ident) -> bool {
+        self.invocations.contains(&(module.to_vec(), name.clone()))
     }
 
     pub fn register_environment(
@@ -85,8 +177,53 @@ impl ExpansionState {
     }
 }
 
+/// Where a macro failure is actionable: the declaration it is about, the
+/// invocation being expanded, or both.
+#[derive(Debug, Default, Clone)]
+pub struct MacroErrorSite {
+    pub definition: Option<(Vec<Ident>, Span)>,
+    pub invocation: Option<Span>,
+}
+
 #[derive(Debug)]
-pub enum MacroError {
+pub struct MacroError {
+    pub kind: MacroErrorKind,
+    pub site: MacroErrorSite,
+}
+
+impl MacroError {
+    pub fn new(kind: MacroErrorKind) -> Self {
+        Self {
+            kind,
+            site: MacroErrorSite::default(),
+        }
+    }
+
+    pub fn at_definition(mut self, module: &[Ident], span: Span) -> Self {
+        self.site.definition = Some((module.to_vec(), span));
+        self
+    }
+
+    pub fn at_invocation(mut self, span: Span) -> Self {
+        self.site.invocation = Some(span);
+        self
+    }
+}
+
+impl From<MacroErrorKind> for MacroError {
+    fn from(kind: MacroErrorKind) -> Self {
+        Self::new(kind)
+    }
+}
+
+impl fmt::Display for MacroError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.kind)
+    }
+}
+
+#[derive(Debug)]
+pub enum MacroErrorKind {
     DuplicateMacroDefinition {
         name: Ident,
     },
@@ -177,7 +314,7 @@ impl fmt::Display for MacroPosition {
     }
 }
 
-impl fmt::Display for MacroError {
+impl fmt::Display for MacroErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::DuplicateMacroDefinition { name } => {
@@ -302,7 +439,8 @@ pub fn expand_with_origins(
     for def in defs.values() {
         validate_definition(def)?;
     }
-    let nodes = expander::Expander::new(&defs, source, state).expand_item_list(items)?;
+    let nodes =
+        expander::Expander::new(&defs, module_path, source, state).expand_item_list(items)?;
     Ok(SourceModule { nodes })
 }
 
@@ -327,7 +465,10 @@ pub fn bind_definition(
         && def.signature.variadic.is_none()
         && def.body.is_empty();
     if !well_formed {
-        return Err(MacroError::MalformedBuiltinDeclaration { builtin });
+        return Err(
+            MacroError::new(MacroErrorKind::MalformedBuiltinDeclaration { builtin })
+                .at_definition(module_path, def.span),
+        );
     }
     Ok(())
 }
@@ -342,7 +483,10 @@ fn collect_definitions(
         match node.item {
             Item::MacroDefinition(mut def) => {
                 if defs.contains_key(&def.name) {
-                    return Err(MacroError::DuplicateMacroDefinition { name: def.name });
+                    return Err(MacroError::new(MacroErrorKind::DuplicateMacroDefinition {
+                        name: def.name,
+                    })
+                    .at_definition(module_path, def.span));
                 }
                 bind_definition(&mut def, module_path)?;
                 defs.insert(def.name.clone(), def);
@@ -357,6 +501,10 @@ fn collect_definitions(
 }
 
 fn validate_definition(def: &MacroDefinitionStmt) -> Result<(), MacroError> {
+    fn at(def: &MacroDefinitionStmt, kind: MacroErrorKind) -> MacroError {
+        MacroError::new(kind).at_definition(&def.defining_module, def.span)
+    }
+
     fn walk(
         def: &MacroDefinitionStmt,
         body: &[MacroBodyPiece],
@@ -374,17 +522,23 @@ fn validate_definition(def: &MacroDefinitionStmt) -> Result<(), MacroError> {
                     let known = def.signature.fixed.iter().any(|p| p.name == ident)
                         || variadic.is_some_and(|v| *v == ident);
                     if !known {
-                        return Err(MacroError::UnknownMetavariable {
-                            macro_name: def.name.clone(),
-                            metavar: ident,
-                        });
+                        return Err(at(
+                            def,
+                            MacroErrorKind::UnknownMetavariable {
+                                macro_name: def.name.clone(),
+                                metavar: ident,
+                            },
+                        ));
                     }
                     if variadic.is_some_and(|v| *v == ident) {
                         if !in_repetition {
-                            return Err(MacroError::VariadicOutsideRepetition {
-                                macro_name: def.name.clone(),
-                                metavar: ident,
-                            });
+                            return Err(at(
+                                def,
+                                MacroErrorKind::VariadicOutsideRepetition {
+                                    macro_name: def.name.clone(),
+                                    metavar: ident,
+                                },
+                            ));
                         }
                         mentions_variadic = true;
                     }
@@ -392,14 +546,20 @@ fn validate_definition(def: &MacroDefinitionStmt) -> Result<(), MacroError> {
                 MacroBodyPiece::Token(_) => {}
                 MacroBodyPiece::Repetition(rep) => {
                     if variadic.is_none() {
-                        return Err(MacroError::RepetitionWithoutVariadic {
-                            macro_name: def.name.clone(),
-                        });
+                        return Err(at(
+                            def,
+                            MacroErrorKind::RepetitionWithoutVariadic {
+                                macro_name: def.name.clone(),
+                            },
+                        ));
                     }
                     if !walk(def, &rep.body, true)? {
-                        return Err(MacroError::RepetitionMissingVariadic {
-                            macro_name: def.name.clone(),
-                        });
+                        return Err(at(
+                            def,
+                            MacroErrorKind::RepetitionMissingVariadic {
+                                macro_name: def.name.clone(),
+                            },
+                        ));
                     }
                 }
             }
@@ -431,12 +591,13 @@ fn validate_fragment(
     } else {
         join_errors(&errors)
     };
-    Err(MacroError::FragmentMismatch {
+    Err(MacroError::new(MacroErrorKind::FragmentMismatch {
         macro_name: def.name.clone(),
         param: param.name.clone(),
         expected: param.kind,
         errors: message,
     })
+    .at_definition(&def.defining_module, def.span))
 }
 
 #[derive(Clone, Copy)]

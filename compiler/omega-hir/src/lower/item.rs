@@ -321,6 +321,7 @@ impl Lowerer {
             value: HirExprNode {
                 id: self.ids.next(),
                 span,
+                origin: omega_parser::prelude::Origin::default(),
                 expr: HirExpr::Place(HirPlace {
                     root: HirPlaceRoot::Path(Path::from(self_ident).into()),
                     projections: vec![],

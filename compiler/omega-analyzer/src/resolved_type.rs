@@ -788,6 +788,50 @@ fn self_mode_spelling(self_mode: SelfMode) -> &'static str {
 
 impl std::fmt::Display for ResolvedType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.write(f, false)
+    }
+}
+
+/// A rendering that spells nominal types with their declaring module path.
+/// Diagnostics fall back to it when two unequal types would otherwise print
+/// the same short name.
+pub struct QualifiedType<'a>(pub &'a ResolvedType);
+
+impl std::fmt::Display for QualifiedType<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.write(f, true)
+    }
+}
+
+fn write_module_path(f: &mut std::fmt::Formatter<'_>, module_path: &[Ident]) -> std::fmt::Result {
+    for segment in module_path {
+        write!(f, "{}::", segment.as_ref())?;
+    }
+    Ok(())
+}
+
+impl ResolvedType {
+    fn nested(&self, qualified: bool) -> String {
+        if qualified {
+            QualifiedType(self).to_string()
+        } else {
+            self.to_string()
+        }
+    }
+
+    fn write_type_args(
+        f: &mut std::fmt::Formatter<'_>,
+        args: &[ResolvedType],
+        qualified: bool,
+    ) -> std::fmt::Result {
+        if args.is_empty() {
+            return Ok(());
+        }
+        let rendered: Vec<String> = args.iter().map(|arg| arg.nested(qualified)).collect();
+        write!(f, "<{}>", rendered.join(", "))
+    }
+
+    fn write(&self, f: &mut std::fmt::Formatter<'_>, qualified: bool) -> std::fmt::Result {
         match self {
             Self::Void => write!(f, "void"),
             Self::Never => write!(f, "never"),
@@ -808,11 +852,11 @@ impl std::fmt::Display for ResolvedType {
             Self::Pointer {
                 pointee,
                 mutable: false,
-            } => write!(f, "*{pointee}"),
+            } => write!(f, "*{}", pointee.nested(qualified)),
             Self::Pointer {
                 pointee,
                 mutable: true,
-            } => write!(f, "*mut {pointee}"),
+            } => write!(f, "*mut {}", pointee.nested(qualified)),
             Self::Function(fn_type) => {
                 if fn_type.calling_convention != CallingConvention::Omega {
                     write!(f, "foreign({}) ", fn_type.calling_convention)?;
@@ -828,8 +872,8 @@ impl std::fmt::Display for ResolvedType {
                         write!(f, ", ")?;
                     }
                     match &param.name {
-                        Some(name) => write!(f, "{name}: {}", param.r#type)?,
-                        None => write!(f, "{}", param.r#type)?,
+                        Some(name) => write!(f, "{name}: {}", param.r#type.nested(qualified))?,
+                        None => write!(f, "{}", param.r#type.nested(qualified))?,
                     }
                     wrote_param = true;
                 }
@@ -839,32 +883,57 @@ impl std::fmt::Display for ResolvedType {
                     }
                     write!(f, "...")?;
                 }
-                write!(f, ") => {}", fn_type.return_type)
+                write!(f, ") => {}", fn_type.return_type.nested(qualified))
             }
-            Self::Array(inner, false) => write!(f, "*[?]{inner}"),
-            Self::Array(inner, true) => write!(f, "*mut [?]{inner}"),
-            Self::SizedArray(inner, size) => write!(f, "[{size}]{inner}"),
+            Self::Array(inner, false) => write!(f, "*[?]{}", inner.nested(qualified)),
+            Self::Array(inner, true) => write!(f, "*mut [?]{}", inner.nested(qualified)),
+            Self::SizedArray(inner, size) => write!(f, "[{size}]{}", inner.nested(qualified)),
             Self::Slice {
                 item,
                 mutable: false,
-            } => write!(f, "*[]{item}"),
+            } => write!(f, "*[]{}", item.nested(qualified)),
             Self::Slice {
                 item,
                 mutable: true,
-            } => write!(f, "*mut []{item}"),
+            } => write!(f, "*mut []{}", item.nested(qualified)),
             Self::Str { mutable: false } => write!(f, "*str"),
             Self::Str { mutable: true } => write!(f, "*mut str"),
-            Self::Struct(cell) => write!(f, "{}", cell.borrow().name.as_ref()),
-            Self::Union(cell) => write!(f, "{}", cell.borrow().name.as_ref()),
+            Self::Struct(cell) => {
+                let s = cell.borrow();
+                if qualified {
+                    write_module_path(f, &s.module_path)?;
+                }
+                write!(f, "{}", s.name.as_ref())?;
+                Self::write_type_args(f, &s.type_args, qualified)
+            }
+            Self::Union(cell) => {
+                let u = cell.borrow();
+                if qualified {
+                    write_module_path(f, &u.module_path)?;
+                }
+                write!(f, "{}", u.name.as_ref())?;
+                Self::write_type_args(f, &u.type_args, qualified)
+            }
             Self::Enum { cell, variant } => {
                 let e = cell.borrow();
+                if qualified {
+                    write_module_path(f, &e.module_path)?;
+                }
                 write!(f, "{}", e.name.as_ref())?;
+                Self::write_type_args(f, &e.type_args, qualified)?;
                 if let Some(index) = variant {
                     write!(f, "::{}", e.variants[*index].name.as_ref())?;
                 }
                 Ok(())
             }
-            Self::Spec(cell) => write!(f, "{}", cell.borrow().name.as_ref()),
+            Self::Spec(cell) => {
+                let sp = cell.borrow();
+                if qualified {
+                    write_module_path(f, &sp.module_path)?;
+                }
+                write!(f, "{}", sp.name.as_ref())?;
+                Self::write_type_args(f, &sp.type_args, qualified)
+            }
             Self::SpecObject { shape, mutable } => {
                 write!(f, "*{}spec {shape}", if *mutable { "mut " } else { "" })
             }

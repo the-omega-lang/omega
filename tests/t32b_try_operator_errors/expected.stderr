@@ -18,7 +18,7 @@ error: '?' on a 'Option' value cannot propagate through a function returning 'Re
   --> tests/t32b_try_operator_errors/t32b_try_operator_errors.omg:29:49
    |
 29 |     Result<i32, *str>::Ok { value = some_value()?; }
-   |                                                 ^ this function returns `Result`
+   |                                                 ^ this function returns `Result<i32, *str>`
    |
    = note: `?` propagates `Option` only into `Option`, and never converts between `Option` and `Result`
 
@@ -26,7 +26,7 @@ error: '?' on a 'Result' value cannot propagate through a function returning 'Op
   --> tests/t32b_try_operator_errors/t32b_try_operator_errors.omg:33:43
    |
 33 |     Option<i32>::Some { value = ok_value()?; }
-   |                                           ^ this function returns `Option`
+   |                                           ^ this function returns `Option<i32>`
    |
    = note: `?` propagates `Result` only into `Result`, and never converts between `Result` and `Option`
 
@@ -46,24 +46,24 @@ error: '?' is not supported inside a 'defer' body
    |
    = note: a failing `?` exits the enclosing function, which deferred code cannot do
 
-error: '?' cannot be applied to a value of type 'Option'
+error: '?' cannot be applied to a value of type 'Option<i32>'
   --> tests/t32b_try_operator_errors/t32b_try_operator_errors.omg:51:62
    |
 51 |     lookalike::Option<i32>::Some { value = lookalike::some(1)?; }
-   |                                                              ^ `?` was applied to a value of type `Option`
+   |                                                              ^ `?` was applied to a value of type `Option<i32>`
    |
    = note: `?` only propagates `core::option::Option` and `core::result::Result`
 
-error: mismatched types: expected return type 'Result', found 'Result'
+error: mismatched types: expected return type 'Result<i32, enum i32 | *str>', found 'Result<i32, *str>'
   --> tests/t32b_try_operator_errors/t32b_try_operator_errors.omg:56:22
    |
 56 | widen_container() => Result<i32, Mixed> {
-   |                      ^^^^^^^^^^^^^^^^^^ expected `Result` because of the declared return type, found `Result`
+   |                      ^^^^^^^^^^^^^^^^^^ expected `Result<i32, enum i32 | *str>` because of the declared return type, found `Result<i32, *str>`
 
-error: mismatched types: expected return type 'Option', found 'Result'
+error: mismatched types: expected return type 'Option<i32>', found 'Result<i32, *str>'
   --> tests/t32b_try_operator_errors/t32b_try_operator_errors.omg:61:19
    |
 61 | cross_family() => Option<i32> {
-   |                   ^^^^^^^^^^^ expected `Option` because of the declared return type, found `Result`
+   |                   ^^^^^^^^^^^ expected `Option<i32>` because of the declared return type, found `Result<i32, *str>`
 
 error: could not compile the program due to 9 previous errors

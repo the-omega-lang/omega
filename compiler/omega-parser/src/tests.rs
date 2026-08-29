@@ -437,3 +437,68 @@ fn every_parse_error_renders_a_headline_and_a_label() {
         assert_eq!(kind.to_string(), rendered.message, "{kind:?}");
     }
 }
+
+#[test]
+fn independent_syntax_errors_in_one_module_are_all_reported() {
+    let source = "\
+first() => i32 { 1 + ; }
+
+second() => i32 { 2 }
+
+third() => i32 { 3 * ; }
+";
+    let errors = errors(source);
+    assert!(
+        errors.len() >= 2,
+        "each malformed function must report its own error: {errors:?}"
+    );
+    let items = items(source);
+    assert_eq!(
+        items.len(),
+        3,
+        "recovery must keep the well-formed neighbour: {items:?}"
+    );
+}
+
+#[test]
+fn a_malformed_member_does_not_swallow_its_enclosing_brace() {
+    let source = "\
+struct Holder {
+    good: i32;
+    bad: ;
+}
+
+after() => i32 { 0 }
+";
+    assert!(!errors(source).is_empty(), "the bad field must be reported");
+    let items = items(source);
+    assert_eq!(
+        items.len(),
+        2,
+        "the item after the struct must still parse: {items:?}"
+    );
+    assert!(matches!(items[1], Item::FunctionDefinition(_)), "{items:?}");
+}
+
+#[test]
+fn identifier_heavy_malformed_input_still_terminates() {
+    // Nothing here commits to an item, so every resynchronization point is an
+    // identifier. Reaching the assertions at all is the property under test:
+    // recovery consumed input instead of stalling on the same token.
+    let source = "alpha beta gamma\n>>> delta epsilon\n";
+    assert!(!errors(source).is_empty());
+    assert!(
+        items(source).len() < 5,
+        "recovery must not manufacture an item per identifier: {:?}",
+        items(source)
+    );
+}
+
+#[test]
+fn a_stray_closing_brace_at_module_level_is_discarded_once() {
+    let source = "}\n\nafter() => i32 { 0 }\n";
+    assert!(!errors(source).is_empty());
+    let items = items(source);
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert!(matches!(items[0], Item::FunctionDefinition(_)), "{items:?}");
+}

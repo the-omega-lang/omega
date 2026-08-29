@@ -1,3 +1,4 @@
+use crate::source::SourceId;
 use crate::span::Span;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -15,6 +16,21 @@ impl Severity {
     }
 }
 
+/// A byte range together with the file it indexes. Any location that may
+/// outlive the module currently being analyzed must be one of these, so a
+/// later renderer cannot read it against the wrong source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SourceSpan {
+    pub source: SourceId,
+    pub span: Span,
+}
+
+impl SourceSpan {
+    pub const fn new(source: SourceId, span: Span) -> Self {
+        Self { source, span }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LabelStyle {
     Primary,
@@ -24,6 +40,10 @@ pub enum LabelStyle {
 #[derive(Debug, Clone)]
 pub struct Label {
     pub style: LabelStyle,
+    /// `None` defers to the diagnostic's own source, which is how a finding
+    /// produced inside one module stays source-agnostic until the driver
+    /// stamps the module it came from.
+    pub source: Option<SourceId>,
     pub span: Span,
     pub message: String,
 }
@@ -38,6 +58,7 @@ pub enum Footer {
 pub struct Diagnostic {
     pub severity: Severity,
     pub message: String,
+    pub source: Option<SourceId>,
     pub labels: Vec<Label>,
     pub footers: Vec<Footer>,
 }
@@ -47,6 +68,7 @@ impl Diagnostic {
         Self {
             severity,
             message: message.into(),
+            source: None,
             labels: Vec::new(),
             footers: Vec::new(),
         }
@@ -60,18 +82,46 @@ impl Diagnostic {
         Self::new(Severity::Warning, message)
     }
 
-    pub fn with_label(mut self, span: Span, message: impl Into<String>) -> Self {
-        self.labels.push(Label {
-            style: LabelStyle::Primary,
-            span,
-            message: message.into(),
-        });
+    /// Names the file that unqualified labels index. Labels that already name
+    /// their own source keep it.
+    pub fn in_source(mut self, source: impl Into<Option<SourceId>>) -> Self {
+        self.source = source.into();
         self
     }
 
-    pub fn with_secondary_label(mut self, span: Span, message: impl Into<String>) -> Self {
+    /// Supplies the owning file at the rendering boundary without overriding a
+    /// diagnostic that already knows which source it was built against.
+    pub fn with_default_source(mut self, source: Option<SourceId>) -> Self {
+        self.source = self.source.or(source);
+        self
+    }
+
+    pub fn with_label(self, span: Span, message: impl Into<String>) -> Self {
+        self.push_label(LabelStyle::Primary, None, span, message)
+    }
+
+    pub fn with_secondary_label(self, span: Span, message: impl Into<String>) -> Self {
+        self.push_label(LabelStyle::Secondary, None, span, message)
+    }
+
+    pub fn with_label_in(self, at: SourceSpan, message: impl Into<String>) -> Self {
+        self.push_label(LabelStyle::Primary, Some(at.source), at.span, message)
+    }
+
+    pub fn with_secondary_label_in(self, at: SourceSpan, message: impl Into<String>) -> Self {
+        self.push_label(LabelStyle::Secondary, Some(at.source), at.span, message)
+    }
+
+    fn push_label(
+        mut self,
+        style: LabelStyle,
+        source: Option<SourceId>,
+        span: Span,
+        message: impl Into<String>,
+    ) -> Self {
         self.labels.push(Label {
-            style: LabelStyle::Secondary,
+            style,
+            source,
             span,
             message: message.into(),
         });

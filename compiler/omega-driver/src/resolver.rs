@@ -484,6 +484,17 @@ impl ModuleResolver for Driver {
         self.modules.macro_origin_module(origin)
     }
 
+    fn module_source(&self, module: &[Ident]) -> Option<omega_diagnostics::SourceId> {
+        self.modules.source_id(module)
+    }
+
+    fn macro_authorship(
+        &self,
+        origin: omega_parser::prelude::Origin,
+    ) -> Option<omega_parser::macros::MacroAuthorship> {
+        self.modules.authorship(origin)
+    }
+
     fn resolve_explicit_anchor(
         &self,
         origin_module: &[Ident],
@@ -986,6 +997,11 @@ impl ModuleResolver for Driver {
                 methods: entry.methods.clone(),
             })
             .collect())
+    }
+
+    fn function_source(&self, decl_id: HirId) -> Option<omega_diagnostics::SourceId> {
+        let key = self.items.decl_id_owner.get(&decl_id)?;
+        self.modules.source_id(&key.module)
     }
 
     fn resolve_function_body(

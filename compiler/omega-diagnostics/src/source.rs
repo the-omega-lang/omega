@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 pub(crate) const TAB_WIDTH: usize = 4;
 
 pub(crate) fn display_column(text: &str, byte_offset: usize) -> usize {
@@ -9,6 +11,38 @@ pub(crate) fn display_column(text: &str, byte_offset: usize) -> usize {
         .chars()
         .map(|ch| if ch == '\t' { TAB_WIDTH } else { 1 })
         .sum()
+}
+
+/// Compilation-local identity of one retained source file. It is opaque on
+/// purpose: a diagnostic consumer may compare and render ids, but only the
+/// registry that handed them out can turn one back into text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct SourceId(u32);
+
+/// The retained source text of one compilation, addressed by `SourceId`.
+///
+/// Rendering resolves every label through this registry, which is what makes
+/// a diagnostic whose labels live in different files representable without
+/// ever interpreting one file's byte offsets against another's.
+#[derive(Default)]
+pub struct SourceRegistry {
+    files: Vec<Rc<SourceFile>>,
+}
+
+impl SourceRegistry {
+    pub fn add(&mut self, file: SourceFile) -> SourceId {
+        let id = SourceId(self.files.len() as u32);
+        self.files.push(Rc::new(file));
+        id
+    }
+
+    pub fn get(&self, id: SourceId) -> Option<&SourceFile> {
+        self.files.get(id.0 as usize).map(Rc::as_ref)
+    }
+
+    pub fn shared(&self, id: SourceId) -> Option<Rc<SourceFile>> {
+        self.files.get(id.0 as usize).cloned()
+    }
 }
 
 pub struct SourceFile {
@@ -116,5 +150,15 @@ mod tests {
     fn line_col_tolerates_offsets_inside_multibyte_characters() {
         let f = SourceFile::new("t", "éx");
         assert_eq!(f.line_col(1), (1, 1));
+    }
+
+    #[test]
+    fn registry_ids_address_distinct_files() {
+        let mut registry = SourceRegistry::default();
+        let a = registry.add(SourceFile::new("a.omg", "a"));
+        let b = registry.add(SourceFile::new("b.omg", "bb"));
+        assert_ne!(a, b);
+        assert_eq!(registry.get(a).unwrap().name(), "a.omg");
+        assert_eq!(registry.get(b).unwrap().source(), "bb");
     }
 }

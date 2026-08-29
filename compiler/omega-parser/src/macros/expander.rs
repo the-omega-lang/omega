@@ -2,6 +2,7 @@ use super::*;
 
 pub(super) struct Expander<'a> {
     defs: &'a HashMap<Ident, MacroDefinitionStmt>,
+    module: &'a [Ident],
     source: Option<&'a SourceFile>,
     budget: u32,
     state: &'a mut ExpansionState,
@@ -10,11 +11,13 @@ pub(super) struct Expander<'a> {
 impl<'a> Expander<'a> {
     pub(super) fn new(
         defs: &'a HashMap<Ident, MacroDefinitionStmt>,
+        module: &'a [Ident],
         source: Option<&'a SourceFile>,
         state: &'a mut ExpansionState,
     ) -> Self {
         Self {
             defs,
+            module,
             source,
             budget: MAX_EXPANSIONS,
             state,
@@ -22,13 +25,19 @@ impl<'a> Expander<'a> {
     }
 
     fn macro_definition(
-        &self,
+        &mut self,
         invocation: &MacroInvocationExpr,
+        call_span: Span,
     ) -> Result<MacroDefinitionStmt, MacroError> {
         self.state
+            .record_invocation(self.module, &invocation.name, invocation.origin);
+        self.state
             .definition_for(invocation.origin, self.defs, &invocation.name)
-            .ok_or_else(|| MacroError::UnknownMacro {
-                name: invocation.name.clone(),
+            .ok_or_else(|| {
+                MacroError::new(MacroErrorKind::UnknownMacro {
+                    name: invocation.name.clone(),
+                })
+                .at_invocation(call_span)
             })
     }
 
@@ -135,9 +144,10 @@ impl<'a> Expander<'a> {
                     span: node.span,
                 }),
                 Item::MacroDefinition(def) => {
-                    return Err(MacroError::MacroDefinitionInExpansion {
+                    return Err(MacroError::new(MacroErrorKind::MacroDefinitionInExpansion {
                         macro_name: def.name,
-                    });
+                    })
+                    .at_definition(self.module, def.span));
                 }
             }
         }
@@ -149,18 +159,20 @@ impl<'a> Expander<'a> {
         inv: &MacroInvocationExpr,
         call_span: Span,
     ) -> Result<Vec<ItemNode>, MacroError> {
-        let def = self.macro_definition(inv)?;
-        let tokens = self.substitute_invocation(&def, &inv.args, call_span)?;
+        let def = self.macro_definition(inv, call_span)?;
+        let tokens = self.substitute_invocation(&def, inv, call_span)?;
         let padded = with_eof(&tokens);
         let mut p = Parser::new(&padded);
         let nodes = crate::parser::item::parse_source_module(&mut p);
         let errors = p.into_errors();
         if !errors.is_empty() {
-            return Err(MacroError::ExpansionParseError {
+            return Err(MacroError::new(MacroErrorKind::ExpansionParseError {
                 macro_name: inv.name.clone(),
                 position: MacroPosition::Item,
                 errors: join_errors(&errors),
-            });
+            })
+            .at_invocation(call_span)
+            .at_definition(&def.defining_module, def.span));
         }
         self.expand_item_list(nodes)
     }
@@ -170,8 +182,8 @@ impl<'a> Expander<'a> {
         inv: &MacroInvocationExpr,
         call_span: Span,
     ) -> Result<ExpressionNode, MacroError> {
-        let def = self.macro_definition(inv)?;
-        let tokens = self.substitute_invocation(&def, &inv.args, call_span)?;
+        let def = self.macro_definition(inv, call_span)?;
+        let tokens = self.substitute_invocation(&def, inv, call_span)?;
         let padded = with_eof(&tokens);
         let mut p = Parser::new(&padded);
         let parsed = crate::parser::expression::parse_expression(&mut p);
@@ -185,11 +197,13 @@ impl<'a> Expander<'a> {
                 } else {
                     join_errors(&errors)
                 };
-                return Err(MacroError::ExpansionParseError {
+                return Err(MacroError::new(MacroErrorKind::ExpansionParseError {
                     macro_name: inv.name.clone(),
                     position: MacroPosition::Expression,
                     errors: message,
-                });
+                })
+                .at_invocation(call_span)
+                .at_definition(&def.defining_module, def.span));
             }
         };
         self.expand_expr(node)
@@ -200,8 +214,8 @@ impl<'a> Expander<'a> {
         inv: &MacroInvocationExpr,
         call_span: Span,
     ) -> Result<Vec<StatementNode>, MacroError> {
-        let def = self.macro_definition(inv)?;
-        let tokens = self.substitute_invocation(&def, &inv.args, call_span)?;
+        let def = self.macro_definition(inv, call_span)?;
+        let tokens = self.substitute_invocation(&def, inv, call_span)?;
         let padded = with_eof(&tokens);
         let mut p = Parser::new(&padded);
         let parsed = p.allow_struct_literals(crate::parser::expression::parse_block_contents);
@@ -215,11 +229,13 @@ impl<'a> Expander<'a> {
                 } else {
                     join_errors(&errors)
                 };
-                return Err(MacroError::ExpansionParseError {
+                return Err(MacroError::new(MacroErrorKind::ExpansionParseError {
                     macro_name: inv.name.clone(),
                     position: MacroPosition::Statement,
                     errors: message,
-                });
+                })
+                .at_invocation(call_span)
+                .at_definition(&def.defining_module, def.span));
             }
         };
         if let Some(tail) = cb.tail.take() {
@@ -234,9 +250,10 @@ impl<'a> Expander<'a> {
     fn substitute_invocation(
         &mut self,
         def: &MacroDefinitionStmt,
-        args: &[Vec<Token>],
+        inv: &MacroInvocationExpr,
         call_span: Span,
     ) -> Result<Vec<Token>, MacroError> {
+        let args = &inv.args;
         let fixed_len = def.signature.fixed.len();
         let expected = if def.signature.variadic.is_some() {
             Arity::AtLeast(fixed_len)
@@ -246,16 +263,20 @@ impl<'a> Expander<'a> {
         if (def.signature.variadic.is_some() && args.len() < fixed_len)
             || (def.signature.variadic.is_none() && args.len() != fixed_len)
         {
-            return Err(MacroError::ArgCountMismatch {
+            return Err(MacroError::new(MacroErrorKind::ArgCountMismatch {
                 macro_name: def.name.clone(),
                 expected,
                 found: args.len(),
-            });
+            })
+            .at_invocation(call_span)
+            .at_definition(&def.defining_module, def.span));
         }
         if self.budget == 0 {
-            return Err(MacroError::ExpansionLimitExceeded {
+            return Err(MacroError::new(MacroErrorKind::ExpansionLimitExceeded {
                 macro_name: def.name.clone(),
-            });
+            })
+            .at_invocation(call_span)
+            .at_definition(&def.defining_module, def.span));
         }
         self.budget -= 1;
 
@@ -273,7 +294,9 @@ impl<'a> Expander<'a> {
                 .insert(param.name.clone(), Binding::Many(&args[fixed_len..]));
         }
         let mut out = Vec::new();
-        let origin = self.state.fresh_origin(def);
+        let origin = self
+            .state
+            .fresh_origin(def, self.module, call_span, inv.origin);
         match def.builtin {
             Some(builtin) => out.push(self.builtin_token(builtin, call_span, origin)?),
             None => render(
@@ -305,9 +328,10 @@ impl<'a> Expander<'a> {
         call_span: Span,
         origin: Origin,
     ) -> Result<Token, MacroError> {
-        let source = self
-            .source
-            .ok_or(MacroError::BuiltinWithoutSourceContext { builtin })?;
+        let source = self.source.ok_or_else(|| {
+            MacroError::new(MacroErrorKind::BuiltinWithoutSourceContext { builtin })
+                .at_invocation(call_span)
+        })?;
         let kind = match builtin {
             MacroBuiltin::File => TokenKind::Str(source.name().to_string()),
             MacroBuiltin::Line | MacroBuiltin::Column => {
@@ -317,8 +341,10 @@ impl<'a> Expander<'a> {
                 } else {
                     column
                 };
-                let value = u32::try_from(value)
-                    .map_err(|_| MacroError::SourceLocationOutOfRange { builtin, value })?;
+                let value = u32::try_from(value).map_err(|_| {
+                    MacroError::new(MacroErrorKind::SourceLocationOutOfRange { builtin, value })
+                        .at_invocation(call_span)
+                })?;
                 TokenKind::Number(NumberExpr {
                     base: NumberBase::Decimal,
                     integer_part: value.to_string(),
@@ -549,11 +575,13 @@ impl<'a> Expander<'a> {
 
     fn expand_expr(&mut self, node: ExpressionNode) -> Result<ExpressionNode, MacroError> {
         let span = node.span;
+        let origin = node.origin;
         if let Expression::MacroInvocation(inv) = node.expression {
             let expanded = self.expand_expr_invocation(&inv, span)?;
             return Ok(ExpressionNode {
                 expression: expanded.expression,
                 span,
+                origin: expanded.origin,
             });
         }
 
@@ -673,7 +701,11 @@ impl<'a> Expander<'a> {
                 operator_span: t.operator_span,
             })),
         };
-        Ok(ExpressionNode { expression, span })
+        Ok(ExpressionNode {
+            expression,
+            span,
+            origin,
+        })
     }
 
     fn expand_range(&mut self, range: RangeExpr) -> Result<RangeExpr, MacroError> {

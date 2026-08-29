@@ -718,6 +718,7 @@ impl<'r> Analyzer<'r> {
                 AnalysisErrorKind::ZeroSizedAggregate {
                     name: s.name.clone(),
                     is_union: false,
+                    instantiated_at: self.instantiation_site(),
                 },
             );
         }
@@ -748,6 +749,7 @@ impl<'r> Analyzer<'r> {
                 AnalysisErrorKind::ZeroSizedAggregate {
                     name: u.name.clone(),
                     is_union: true,
+                    instantiated_at: self.instantiation_site(),
                 },
             );
         }

@@ -187,6 +187,7 @@ impl<'r> Analyzer<'r> {
                 span,
                 AnalysisErrorKind::CompEvalFailed {
                     reason: reason.into(),
+                    failure: None,
                     trace: vec![],
                 },
             );
@@ -297,14 +298,22 @@ impl<'r> Analyzer<'r> {
         expr: &CheckedExprNode,
     ) -> Option<crate::resolved_type::ConstValue> {
         crate::dead_code::collect_expr(expr, &mut self.field_usage);
-        match crate::comp_eval::eval(self.resolver, expr, self.target) {
+        match crate::comp_eval::eval(self.resolver, expr, self.target, self.source) {
             Ok(value) => Some(value),
             Err(err) => {
+                // The primary label stays on the expression this module asked
+                // to evaluate; the failing step is named separately because it
+                // may live in another module's body.
+                let failure = err
+                    .source
+                    .map(|source| SourceSpan::new(source, err.span))
+                    .filter(|at| Some(at.source) != self.source || at.span != expr.span);
                 self.error(
                     id,
-                    err.span,
+                    expr.span,
                     AnalysisErrorKind::CompEvalFailed {
                         reason: err.kind.to_string(),
+                        failure,
                         trace: err.trace,
                     },
                 );

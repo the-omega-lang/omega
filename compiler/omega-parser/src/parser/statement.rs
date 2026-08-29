@@ -14,6 +14,48 @@ use crate::parser::expression::{
 use crate::parser::macro_syntax::parse_macro_invocation;
 use crate::parser::{Parser, contextual, recovery};
 
+/// Whether a fresh statement can begin at the current token. Recovery uses it
+/// so a resynchronization point is a plausible statement start rather than any
+/// identifier, which inside a broken expression is almost always an operand.
+pub(crate) fn starts_statement(p: &Parser) -> bool {
+    if matches!(
+        p.peek(),
+        TokenKind::At
+            | TokenKind::If
+            | TokenKind::Match
+            | TokenKind::While
+            | TokenKind::Loop
+            | TokenKind::For
+            | TokenKind::Return
+            | TokenKind::Break
+            | TokenKind::Continue
+            | TokenKind::Defer
+            | TokenKind::Struct
+            | TokenKind::Enum
+            | TokenKind::Union
+            | TokenKind::Spec
+            | TokenKind::Alias
+            | TokenKind::LBrace
+    ) {
+        return true;
+    }
+    if crate::parser::binding_modifiers_follow(p) || p.at_contextual(contextual::ASM) {
+        return true;
+    }
+    // A bare name begins a statement only when what follows commits it to one:
+    // a call, an assignment, a member/index chain, or a macro invocation.
+    matches!(p.peek(), TokenKind::Ident(_))
+        && matches!(
+            p.peek_at(1),
+            TokenKind::LParen
+                | TokenKind::Dollar
+                | TokenKind::Eq
+                | TokenKind::Dot
+                | TokenKind::LBracket
+                | TokenKind::ColonColon
+        )
+}
+
 pub fn parse_statement(p: &mut Parser) -> Option<StatementNode> {
     let start = p.peek_span();
     let (statement, block_shaped) = parse_statement_content(p)?;

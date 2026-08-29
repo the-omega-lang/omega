@@ -1,19 +1,45 @@
 use crate::lexer::TokenKind;
 use crate::parser::Parser;
 
+/// The construct a recovery step is trying to resynchronize to.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Boundary {
+    Item,
+    Statement,
+}
+
 pub fn synchronize_to_item_boundary(p: &mut Parser) {
-    synchronize(p, starts_item, false);
+    recover(p, Boundary::Item);
 }
 
 pub fn synchronize_to_statement_boundary(p: &mut Parser) {
-    synchronize(p, starts_statement, true);
+    recover(p, Boundary::Statement);
 }
 
-fn synchronize(p: &mut Parser, starts_boundary: fn(&TokenKind) -> bool, stop_at_rbrace: bool) {
+/// Skips to the next credible construct, always consuming at least one token
+/// unless the parser already sits on a boundary its caller owns. Without that
+/// guarantee a construct that fails without consuming anything would make the
+/// enclosing loop spin on the same token.
+fn recover(p: &mut Parser, boundary: Boundary) {
+    let before = p.position();
+    synchronize(p, boundary);
+    if p.position() == before && !at_enclosing_boundary(p) {
+        p.advance();
+    }
+}
+
+fn at_enclosing_boundary(p: &Parser) -> bool {
+    matches!(p.peek(), TokenKind::RBrace | TokenKind::Eof)
+}
+
+fn synchronize(p: &mut Parser, boundary: Boundary) {
     loop {
         match p.peek() {
             TokenKind::Eof => return,
-            TokenKind::RBrace if stop_at_rbrace => return,
+            // A closing brace belongs to the enclosing block, not to the
+            // malformed construct: consuming it would make one bad member
+            // swallow everything after its parent.
+            TokenKind::RBrace => return,
             TokenKind::Semi => {
                 p.advance();
                 return;
@@ -21,11 +47,18 @@ fn synchronize(p: &mut Parser, starts_boundary: fn(&TokenKind) -> bool, stop_at_
             TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => {
                 skip_balanced_group(p);
             }
-            kind if starts_boundary(kind) => return,
+            _ if starts_boundary(p, boundary) => return,
             _ => {
                 p.advance();
             }
         }
+    }
+}
+
+fn starts_boundary(p: &Parser, boundary: Boundary) -> bool {
+    match boundary {
+        Boundary::Item => crate::parser::item::starts_item(p),
+        Boundary::Statement => crate::parser::statement::starts_statement(p),
     }
 }
 
@@ -50,35 +83,4 @@ pub(crate) fn skip_balanced_group(p: &mut Parser) {
             }
         }
     }
-}
-
-fn starts_item(kind: &TokenKind) -> bool {
-    matches!(
-        kind,
-        TokenKind::Foreign
-            | TokenKind::Import
-            | TokenKind::Struct
-            | TokenKind::Union
-            | TokenKind::Spec
-            | TokenKind::Macro
-            | TokenKind::Ident(_)
-    )
-}
-
-fn starts_statement(kind: &TokenKind) -> bool {
-    matches!(
-        kind,
-        TokenKind::If
-            | TokenKind::While
-            | TokenKind::Loop
-            | TokenKind::For
-            | TokenKind::Struct
-            | TokenKind::Union
-            | TokenKind::Spec
-            | TokenKind::Return
-            | TokenKind::Break
-            | TokenKind::Continue
-            | TokenKind::Defer
-            | TokenKind::Ident(_)
-    )
 }

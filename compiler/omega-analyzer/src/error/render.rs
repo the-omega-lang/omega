@@ -1,5 +1,20 @@
 use super::*;
 
+/// Renderings of two types that a reader can tell apart. Short names are used
+/// whenever they already differ; when they do not -- the same declaration name
+/// from two modules, most often -- both sides are qualified so the message
+/// cannot read `expected X, found X`.
+pub(crate) fn distinguish(left: &ResolvedType, right: &ResolvedType) -> (String, String) {
+    let (short_left, short_right) = (left.to_string(), right.to_string());
+    if left == right || short_left != short_right {
+        return (short_left, short_right);
+    }
+    (
+        crate::resolved_type::QualifiedType(left).to_string(),
+        crate::resolved_type::QualifiedType(right).to_string(),
+    )
+}
+
 impl AnalysisErrorKind {
     pub fn to_diagnostic(&self, span: Span) -> Diagnostic {
         let d = Diagnostic::error(self.to_string());
@@ -692,20 +707,36 @@ impl AnalysisErrorKind {
                 .with_note(format!("target package: '{}'; spec package: '{}'", target_package.as_ref(), spec_package.as_ref()))
                 .with_help("declare the conformance in one of those two packages"),
             Self::ConformTargetNotAType => d.with_label(span, "this must resolve to a concrete type"),
-            Self::DuplicateConformance { previous, .. } => d
-                .with_label(span, "this conformance duplicates an existing one")
-                .with_secondary_label(*previous, "the first conformance is here"),
+            Self::DuplicateConformance { previous, .. } => {
+                let d = d.with_label(span, "this conformance duplicates an existing one");
+                match previous {
+                    Some(at) => d.with_secondary_label_in(*at, "the first conformance is here"),
+                    None => d,
+                }
+            }
             Self::ConformanceExtraFunction { function, spec } => d
                 .with_label(span, format!("'{}' is not declared by '{}'", function.as_ref(), spec.as_ref())),
             Self::UnconstrainedConformanceParameter { parameter } => d
                 .with_label(span, format!("'{}' is not fixed by the conformance target", parameter.as_ref()))
                 .with_help("mention this parameter in the target, or remove it from the conformance declaration"),
-            Self::AmbiguousConformance { target, first, .. } => d
-                .with_label(span, format!("this conformance overlaps another one for `{target}`"))
-                .with_secondary_label(*first, "the other matching conformance is here")
-                .with_note(format!("neither conformance is more specific for `{target}`")),
+            Self::AmbiguousConformance { target, first, .. } => {
+                let d = d.with_label(span, format!("this conformance overlaps another one for `{target}`"));
+                let d = match first {
+                    Some(at) => d.with_secondary_label_in(*at, "the other matching conformance is here"),
+                    None => d,
+                };
+                d.with_note(format!("neither conformance is more specific for `{target}`"))
+            }
             Self::ConformanceCycle { chain, .. } => {
                 let mut d = d.with_label(span, "this bound re-enters a conformance already being checked");
+                for (target, spec, at) in chain {
+                    if let Some(at) = at {
+                        d = d.with_secondary_label_in(
+                            *at,
+                            format!("'{target}: {}' is being proved here", spec.as_ref()),
+                        );
+                    }
+                }
                 for pair in chain.windows(2) {
                     let (from_target, from_spec, _) = &pair[0];
                     let (to_target, to_spec, _) = &pair[1];
@@ -725,9 +756,13 @@ impl AnalysisErrorKind {
                 .with_help("declare the blanket alongside that spec, or implement a package-local spec instead"),
             Self::PrimitiveOutsideCore => d.with_label(span, "primitive blocks belong to the core package"),
             Self::PrimitiveTargetNotAllowed { .. } => d.with_label(span, "only built-in scalar, `bool`, `char`, `void`, `never`, `str`, and slice types are allowed"),
-            Self::DuplicatePrimitiveTarget { previous, .. } => d
-                .with_label(span, "this primitive target already has a declaration block")
-                .with_secondary_label(*previous, "the first block is here"),
+            Self::DuplicatePrimitiveTarget { previous, .. } => {
+                let d = d.with_label(span, "this primitive target already has a declaration block");
+                match previous {
+                    Some(at) => d.with_secondary_label_in(*at, "the first block is here"),
+                    None => d,
+                }
+            }
             Self::AmbiguousConformanceFunction {
                 target,
                 function,
@@ -760,17 +795,20 @@ impl AnalysisErrorKind {
                     "call '<{type} : {spec}>::{method}(value, ...)', or add a generic bound that \
                      includes '{spec}'",
                 )),
-            Self::MultipleGluesForGap { glues, .. } => d
-                .with_label(span, "this gap has more than one glue implementation")
-                .with_note(format!(
-                    "found: {}",
-                    glues.iter().map(|g| format!("'{}'", g.as_ref())).collect::<Vec<_>>().join(", ")
-                ))
-                .with_help("exactly one glue declaration is allowed per gap, project-wide -- remove one"),
-            Self::CompEvalFailed { trace, .. } => {
+            Self::MultipleGluesForGap { glues, .. } => {
+                let mut d = d.with_label(span, "this gap has more than one glue implementation");
+                for glue in glues {
+                    d = d.with_secondary_label_in(*glue, "glue declared here");
+                }
+                d.with_help("exactly one glue declaration is allowed per gap, project-wide -- remove one")
+            }
+            Self::CompEvalFailed { failure, trace, .. } => {
                 let mut d = d.with_label(span, "cannot be evaluated at compile time");
+                if let Some(at) = failure {
+                    d = d.with_secondary_label_in(*at, "evaluation stops here");
+                }
                 for call_site in trace {
-                    d = d.with_secondary_label(*call_site, "required by this compile-time call");
+                    d = d.with_secondary_label_in(*call_site, "required by this compile-time call");
                 }
                 d
             }
@@ -785,9 +823,16 @@ impl AnalysisErrorKind {
                      ident := comp value;' for a no-storage substituted binding instead -- a runtime-computed \
                      top-level global isn't supported",
                 ),
-            Self::ZeroSizedAggregate { name, is_union } => {
+            Self::ZeroSizedAggregate { name, is_union, instantiated_at } => {
                 let kind = if *is_union { "union" } else { "struct" };
-                d.with_label(span, format!("`{}` has no sized fields", name.as_ref())).with_help(format!(
+                let d = d.with_label(span, format!("`{}` has no sized fields", name.as_ref()));
+                let d = match instantiated_at {
+                    Some(at) => d
+                        .with_secondary_label_in(*at, "this instantiation is what makes it empty")
+                        .with_note("the declaration itself is fine for other type arguments"),
+                    None => d,
+                };
+                d.with_help(format!(
                     "a {kind} must hold at least one field with nonzero size -- use 'marker' to declare a type with no data"
                 ))
             }

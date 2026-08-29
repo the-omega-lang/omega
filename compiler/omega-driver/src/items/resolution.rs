@@ -89,7 +89,9 @@ impl Driver {
                     options.bypasses_visibility(),
                 );
             }
-            Some(ItemQueryState::Failed) => return Err(key.failed()),
+            // Secondary by construction: the query that failed kept its own
+            // reason, which was already delivered where it happened.
+            Some(ItemQueryState::Failed(_)) => return Err(key.failed()),
             Some(ItemQueryState::InProgress) => {
                 return self.in_progress_result(&key, options.allows_indirection());
             }
@@ -107,7 +109,7 @@ impl Driver {
 
         self.items.begin(&key);
         let result = self.compute_item(&key, index, &generics);
-        self.items.finish(&key, visibility, result.as_ref().ok());
+        self.items.finish(&key, visibility, result.as_ref());
 
         // An instantiation's body is checked right here, once its signature
         // is resolved -- preserves the invariant that a recursive call never
@@ -516,7 +518,7 @@ impl Driver {
         let key: SpecKey = (module_path.to_vec(), name.clone());
         match self.items.spec_states.get(&key) {
             Some(SpecQueryState::Resolved(cell)) => return Ok(Some(cell.clone())),
-            Some(SpecQueryState::Failed) => {
+            Some(SpecQueryState::Failed(_)) => {
                 return Err(ResolveError::ItemFailed {
                     module: key.0,
                     item: key.1,
@@ -549,7 +551,7 @@ impl Driver {
         self.diagnostics.record_warnings(module_path, run.warnings);
 
         if run.failed {
-            self.items.finish_spec(&key, None);
+            self.items.finish_spec(&key, Err(QueryFailure::Reported));
             return Err(ResolveError::ItemFailed {
                 module: key.0,
                 item: key.1,
@@ -570,7 +572,7 @@ impl Driver {
             functions,
             suppress: annotations.suppress,
         }));
-        self.items.finish_spec(&key, Some(cell.clone()));
+        self.items.finish_spec(&key, Ok(cell.clone()));
         Ok(Some(cell))
     }
 }

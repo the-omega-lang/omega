@@ -454,6 +454,7 @@ impl Driver {
             return RegistrationDecision::Insert;
         };
         let existing = self.conformances.entries[index].clone();
+        let existing_site = self.site(&existing.module, existing.span);
         match Self::compare_conformance_precedence(entry, &existing) {
             Some(Ordering::Greater) => RegistrationDecision::Replace(index),
             Some(Ordering::Less) => RegistrationDecision::Ignore,
@@ -466,7 +467,7 @@ impl Driver {
                         AnalysisErrorKind::DuplicateConformance {
                             target: entry.target.to_string(),
                             spec: entry.spec.borrow().name.clone(),
-                            previous: existing.span,
+                            previous: existing_site,
                         },
                     ),
                 );
@@ -481,7 +482,7 @@ impl Driver {
                         AnalysisErrorKind::AmbiguousConformance {
                             target: entry.target.to_string(),
                             spec: entry.spec.borrow().name.clone(),
-                            first: existing.span,
+                            first: existing_site,
                         },
                     ),
                 );

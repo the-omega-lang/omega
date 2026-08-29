@@ -104,6 +104,10 @@ The driver constructs the module-visible macro environment. `omega_parser::macro
 `ExpansionState` records definition-site provenance for macro-authored tokens:
 
 - defining module;
+- the macro's declaration span, plus the invoking module and call span of each
+  expansion, and the parent expansion that produced a nested invocation;
+- which macro names a module's own source actually invoked, which is the only
+  record that a macro import was used;
 - per-module macro environments used for nested expansion.
 
 Semantic analysis consumes exactly this provenance for both questions it decides about an origin-bearing reference: which module it resolves in, and which module's rights its visibility check uses. Member names (`.field`, method names, struct-literal field names) carry the same origin so those checks do not fall back to the invocation site.
@@ -113,6 +117,13 @@ The driver also passes the `omega_diagnostics::SourceFile` of the module being e
 Nested macro lookup resolves only the requested definition from the origin module's registered environment. The expander deliberately does not clone an entire macro environment per invocation; definitions are cloned only when expansion needs to release the environment borrow before mutating expansion state.
 
 Tokens substituted from macro arguments retain caller-side origin; tokens emitted by the macro body receive the expansion's definition-site origin. That distinction is what prevents the whole expanded subtree from being incorrectly treated as either caller-authored or definition-authored.
+
+Each parsed construct also carries a syntax-owner `Origin`: the provenance of
+the token that introduces it (the operator of a binary expression, the `(` of a
+call, the literal itself). `ExpressionNode` and `HirExprNode` carry it, and HIR
+lowering stamps the written construct's own origin onto the node it produces.
+Diagnostics use it to decide authorship; resolution continues to use the
+per-name origins described above.
 
 ### Expansion limits
 
@@ -252,7 +263,19 @@ Specific child spans are intentional. Fields, parameters, names, signatures, and
 
 ### Macro spans and provenance
 
-`Span` itself has no source-file identity. A macro definition may come from another module, so definition-module byte offsets cannot safely survive as ordinary spans inside the caller's expanded AST: rendering them against the caller's source would point at unrelated text. Macro-authored generated tokens therefore use invocation/call-site spans for diagnostics while separate origin metadata preserves definition-site module provenance for resolution. Substituted argument tokens retain caller provenance.
+`Span` itself has no source-file identity, and an expanded expression can mix
+template tokens with substituted caller tokens, so composing byte ranges across
+files would be ill-defined. Macro-generated tokens therefore keep call-site
+spans: that is what parsing, range composition, and the compiler-implemented
+`file$`/`line$`/`column$` builtins read. Substituted argument tokens retain
+caller provenance.
+
+Authorship is a separate question from byte ranges, and `Origin` answers it. A
+diagnostic about macro-authored syntax resolves through
+`ExpansionState::authorship` to the macro's *declaration* in its own module,
+with the invocation chain available as expansion context; a diagnostic about
+syntax the caller substituted stays at the caller. Nothing globally relocates
+every finding produced during a macro invocation.
 
 Macro *definitions* also carry a compiler-backed discriminator, bound from the canonical `(defining module, declared name)` pair by the one shared binding path both the expander and the driver's definition cache use. Classification therefore cannot disagree between a cached definition and a re-collected one, and it survives the clone a macro `alias` performs. The declaration-shape contract is checked where a declaration is bound to its module, so an alias is not mistaken for a second canonical declaration.
 

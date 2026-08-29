@@ -3,7 +3,7 @@
 //! they describe.
 
 use omega_diagnostics::SourceFile;
-use omega_parser::macros::{self, MacroError};
+use omega_parser::macros::{self, MacroError, MacroErrorKind};
 use omega_parser::prelude::{Expression, Ident, Item, MacroDefinitionStmt, SourceModule};
 use std::collections::HashMap;
 
@@ -123,7 +123,10 @@ fn a_canonical_declaration_must_match_the_compiler_contract() {
             .err()
             .unwrap_or_else(|| panic!("expected `{source}` to be rejected"));
         assert!(
-            matches!(error, MacroError::MalformedBuiltinDeclaration { .. }),
+            matches!(
+                error.kind,
+                MacroErrorKind::MalformedBuiltinDeclaration { .. }
+            ),
             "expected a builtin-contract error for `{source}`, found {error}"
         );
     }
@@ -138,7 +141,7 @@ fn a_builtin_takes_no_arguments_at_its_invocation() {
         .expect("an argument to a zero-parameter builtin is an error");
 
     assert!(
-        matches!(error, MacroError::ArgCountMismatch { .. }),
+        matches!(error.kind, MacroErrorKind::ArgCountMismatch { .. }),
         "expected an arity error, found {error}"
     );
 }
@@ -151,7 +154,10 @@ fn a_builtin_without_source_context_fails_rather_than_inventing_a_location() {
         .expect("a builtin needs the invoking module's source");
 
     assert!(
-        matches!(error, MacroError::BuiltinWithoutSourceContext { .. }),
+        matches!(
+            error.kind,
+            MacroErrorKind::BuiltinWithoutSourceContext { .. }
+        ),
         "expected a missing-source error, found {error}"
     );
 }

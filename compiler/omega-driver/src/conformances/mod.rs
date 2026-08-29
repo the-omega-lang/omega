@@ -93,6 +93,7 @@ struct ConformanceGoal {
     target: ResolvedType,
     spec: HirId,
     spec_name: Ident,
+    module: ModulePath,
     span: Span,
 }
 

@@ -46,6 +46,11 @@ pub enum Expression {
 pub struct ExpressionNode {
     pub expression: Expression,
     pub span: Span,
+    /// The syntax owner of this construct: the provenance of the token that
+    /// introduces it. Default for ordinary source, a macro expansion's origin
+    /// for template-authored syntax, and the caller's origin for syntax
+    /// substituted into an expansion.
+    pub origin: Origin,
 }
 
 #[derive(Debug, Clone)]

@@ -5,12 +5,12 @@ Implementation caveats migrated out of architecture chapters. These are non-norm
 
 ## Parsing, macro expansion, and the HIR
 
-- **Recovery granularity is coarse.** `synchronize_to_item_boundary` and
-  `synchronize_to_statement_boundary` both treat any identifier as a
-  plausible boundary, so recovery often stops almost immediately after the
-  error. This is sufficient (one mistake yields one error) but it is not
-  precise, and a badly-malformed member can still swallow its enclosing
-  block's closing brace.
+- **Recovery is grammar-aware but still line-agnostic.** `parser/recovery.rs`
+  resynchronizes using the same lookahead `parse_item`/`parse_statement_content`
+  dispatch on, never consumes an enclosing block's closing brace, and always
+  makes forward progress. It still has no notion of indentation or line
+  structure, so an error deep inside a malformed nested expression can skip
+  further than a human would.
 - **Macro expansion traverses the AST by hand.** `macros/expander.rs` reconstructs
   expression/statement/item nodes field-by-field in order to recurse. Exhaustive
   matching keeps the traversal honest, but the boilerplate grows with the AST; a

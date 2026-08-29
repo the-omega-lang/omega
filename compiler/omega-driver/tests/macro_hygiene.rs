@@ -30,10 +30,14 @@ impl TestPackage {
     }
 
     fn compile(&self) {
+        self.compile_program();
+    }
+
+    fn compile_program(&self) -> omega_driver::CompiledProgram {
         Driver::new(self.0.clone(), None, vec![], Target::DEFAULT)
             .expect("construct driver")
             .compile(&[Ident("main".into())], Target::DEFAULT)
-            .expect("package should compile");
+            .expect("package should compile")
     }
 
     fn compile_errors(&self, expectation: &str) -> Vec<CompileError> {
@@ -395,4 +399,65 @@ fn a_macro_repetition_may_redeclare_its_own_local_each_time() {
         "#,
     );
     package.compile();
+}
+
+#[test]
+fn an_invoked_macro_import_is_not_reported_unused() {
+    let package = TestPackage::new(
+        r#"
+        import self::helper::twice;
+
+        main() => void { twice$(); }
+        "#,
+    );
+    package.child(
+        "helper",
+        r#"
+        exposed macro twice() => { }
+        "#,
+    );
+
+    let program = package.compile_program();
+    let unused: Vec<_> = program
+        .warnings
+        .iter()
+        .filter(|(_, warning)| {
+            matches!(
+                warning.kind,
+                omega_analyzer::error::AnalysisWarningKind::UnusedImport { .. }
+            )
+        })
+        .collect();
+    assert!(
+        unused.is_empty(),
+        "expansion consumes a macro import, but it is still a use: {unused:?}"
+    );
+}
+
+#[test]
+fn an_uninvoked_macro_import_still_warns() {
+    let package = TestPackage::new(
+        r#"
+        import self::helper::twice;
+
+        main() => void { }
+        "#,
+    );
+    package.child(
+        "helper",
+        r#"
+        exposed macro twice() => { }
+        "#,
+    );
+
+    let program = package.compile_program();
+    assert!(
+        program.warnings.iter().any(|(_, warning)| matches!(
+            &warning.kind,
+            omega_analyzer::error::AnalysisWarningKind::UnusedImport { alias }
+                if alias.as_ref() == "twice"
+        )),
+        "a macro import that is never invoked is still dead: {:?}",
+        program.warnings
+    );
 }

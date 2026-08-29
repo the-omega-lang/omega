@@ -73,32 +73,15 @@ Every candidate is also forced to be non-generic, so `f<T>(x: T)` and
 `f(x: i32)` cannot coexist — not a decision anyone made, just what falls out
 of the parallel path not having a `type_args` dimension.
 
-**Confirmed empirically, and worse than a clean rejection**: declaring both
-(e.g. `free(ptr: *u8) => void { ... }` and `free<T>(ptr: *T) => void { ...
-}` in the same module, no call site needed at all) doesn't compile, but
-also doesn't report *why* — the only diagnostic is
-
-```
-error: cannot use 'main::free' because of its own error
-= note: `free`'s own error is reported where it is defined
-```
-
-with no other error printed anywhere. `ResolveError::ItemFailed` is meant
-to suppress a confusing *secondary* error once the real one has already
-been reported elsewhere — here it fires with no primary diagnostic ever
-having been shown. The likely mechanism: `ensure_overload_signature`
-(`omega-driver/src/bodies.rs`) resolves every overload candidate's
-signature for `check_overload_duplicates`'s comparison via
-`collect_function_signature(f, None)` with an **empty substitution list**
-(`&[]`) — fine for a non-generic candidate, but for a generic one this
-means resolving its own still-unbound type parameter (`T` in `*T`) with
-nothing bound to it at all, which is exactly the shape "collect this
+**Confirmed empirically**: declaring both (e.g. `free(ptr: *u8) => void { ...
+}` and `free<T>(ptr: *T) => void { ... }` in the same module, no call site
+needed at all) does not compile. The reported reason is now the real one --
+resolving the generic candidate's own unbound type parameter fails, because
+`ensure_overload_signature` (`omega-driver/src/bodies.rs`) collects every
+candidate's signature with an **empty substitution list** (`&[]`), which is
+fine for a non-generic candidate but is exactly the shape "collect this
 generic's signature outside of any instantiation" was never designed to
-handle. Whatever fails during that resolution attempt isn't surfacing as
-its own visible diagnostic before `ItemFailed` wraps it. Not yet root-caused
-to the exact line; flagged here for whoever picks up the fix above, since
-it means the *symptom* of this gap is a broken error message, not just a
-missing feature.
+handle. The broken *message* is fixed; the missing feature is not.
 
 The fix is to make the key able to name a candidate (a disambiguator
 alongside `name`, its declaration position, `0` for the overwhelmingly common
@@ -237,27 +220,6 @@ refactor.
 That breadth couples almost every analyzer concern to the entire driver facade, makes focused analyzer tests/mocks expensive, and means adding a new semantic service often grows the same central trait even when the consumer only needs one capability. Splitting it mechanically now would mostly create trait plumbing, so this refactor keeps the facade intact.
 
 Before incremental/parallel compilation or a more independently testable analyzer becomes a priority, design a narrower query boundary: either capability traits (name/module lookup, generic signatures, conformance queries, compile-time body/value queries, synthetic identity) composed by the analyzer, or an explicit semantic query database with focused handles. The goal is not “more traits”; it is that each analysis subsystem depends only on the facts it can actually request. This is a cross-crate architectural/API change and should be reviewed as such.
-
-### `Span` cannot identify its source file, which leaks into macros and cross-file diagnostics
-
-`omega-diagnostics::Span` is only `{ start, end }`. The driver separately knows which
-`SourceFile` a finding belongs to, so the representation works well as long as every
-span in a diagnostic came from one file. The boundary becomes awkward in two places:
-
-- macro-authored tokens may originate in a different module, but definition-site byte
-  offsets cannot be carried into the caller's expanded AST because rendering would
-  interpret those offsets against the caller's source; generated tokens therefore use
-  call-site spans and keep definition-site *resolution* provenance in `Origin` instead;
-- a `Diagnostic` cannot safely contain labels from two files, because each label is an
-  unqualified byte range and `Renderer` receives exactly one `SourceFile`.
-
-This is internally consistent today, but it makes file identity an ambient convention
-instead of part of the type system. A future source-aware location model — for example
-`SourceId` plus `Span`, or a compact `SourceSpan`/`Site` wrapper — would make cross-file
-locations representable and would let macro diagnostics distinguish call-site and
-definition-site locations without overloading one byte-offset space. This is breaking
-across the frontend, HIR, driver, analyzer, and diagnostic APIs, so it should be a
-deliberate architecture change rather than part of a local refactor.
 
 ### Nested statement fields lose their own source site
 
