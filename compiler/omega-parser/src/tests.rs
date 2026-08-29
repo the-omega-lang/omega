@@ -10,6 +10,21 @@ fn type_head(ty: &Type) -> &str {
     }
 }
 
+fn expects(source: &str, expected: &str) -> bool {
+    errors(source).iter().any(
+        |e| matches!(e, ParseErrorKind::Expected { expected: found, .. } if *found == expected),
+    )
+}
+
+fn items(source: &str) -> Vec<Item> {
+    let (tokens, _) = lexer::tokenize(source);
+    let mut parser = parser::Parser::new(&tokens);
+    parser::item::parse_source_module(&mut parser)
+        .into_iter()
+        .map(|node| node.item)
+        .collect()
+}
+
 fn conformance(source: &str) -> crate::ast::item::ConformStmt {
     let module = SourceModule::parse(source).expect("a conformance declaration should parse");
     match &module.nodes.last().expect("at least one item").item {
@@ -229,43 +244,72 @@ fn meet_and_primitive_stay_contextual_identifiers() {
     let module = SourceModule::parse(
         "meet := 1;\n\
          primitive : i32 = 2;\n\
-         conform := 3;\n\
          meet() => i32 { primitive := 3; return primitive; }\n\
-         primitive() => i32 { return meet; }\n\
-         conform() => i32 { return conform; }",
+         primitive() => i32 { return meet; }",
     )
-    .expect("meet, conform and primitive must remain usable as ordinary identifiers");
+    .expect("meet and primitive must remain usable as ordinary identifiers");
     assert!(matches!(module.nodes[0].item, Item::Walrus(_)));
     assert!(matches!(
         module.nodes[1].item,
         Item::DeclarationWithInit(..)
     ));
-    assert!(matches!(module.nodes[2].item, Item::Walrus(_)));
+    assert!(matches!(module.nodes[2].item, Item::FunctionDefinition(_)));
     assert!(matches!(module.nodes[3].item, Item::FunctionDefinition(_)));
-    assert!(matches!(module.nodes[4].item, Item::FunctionDefinition(_)));
-    assert!(matches!(module.nodes[5].item, Item::FunctionDefinition(_)));
 }
 
 #[test]
 fn rejects_removed_conformance_syntax() {
     assert!(SourceModule::parse("spec Ops for i32 { value(*self) => i32; }").is_err());
     assert!(SourceModule::parse("spec Ops { value(*self) => i32; } struct S : Ops {}").is_err());
-    assert!(matches!(
-        errors("spec Show { show(*self) => i32; } struct S {} meet Show : S { show(*self) => i32 { 1 } }")
-            .as_slice(),
-        [ParseErrorKind::Expected { expected: "'for'", .. }, ..]
-    ));
-    assert!(matches!(
-        errors("spec Show { show(*self) => i32; } struct S {} meet Show to S { show(*self) => i32 { 1 } }")
-            .as_slice(),
-        [ParseErrorKind::Expected { expected: "'for'", .. }, ..]
-    ));
-    assert!(
-        SourceModule::parse(
-            "spec Show { show(*self) => i32; } struct S {} conform S to Show { show(*self) => i32 { 1 } }"
-        )
-        .is_err()
-    );
+}
+
+const SPEC_AND_STRUCT: &str = "spec Show { show(*self) => i32; } struct S {} ";
+
+#[test]
+fn a_started_spec_position_commits_to_the_conformance_grammar() {
+    for declaration in ["meet Show S { }", "meet<T> Show T { }"] {
+        let source = format!("{SPEC_AND_STRUCT}{declaration}");
+        assert!(
+            items(&source)
+                .iter()
+                .any(|item| matches!(item, Item::Conform(_))),
+            "`{declaration}` should recover as a conformance missing its connector"
+        );
+        assert!(
+            expects(&source, "'for'"),
+            "`{declaration}` should report the missing `for` connector"
+        );
+    }
+
+    for (declaration, expected) in [
+        ("meet Show : S { }", "'for'"),
+        ("meet Show for { }", "a type"),
+        ("meet<T> Show for T", "'{'"),
+    ] {
+        let source = format!("{SPEC_AND_STRUCT}{declaration}");
+        assert!(
+            expects(&source, expected),
+            "`{declaration}` should report a missing {expected}, got {:?}",
+            errors(&source)
+        );
+    }
+}
+
+#[test]
+fn a_shape_that_cannot_start_a_spec_leaves_meet_an_identifier() {
+    for source in [
+        "meet []u8 for S { }",
+        "meet *S for Show { }",
+        "meet spec A for S { }",
+        "meet for S { }",
+    ] {
+        assert!(
+            !items(source)
+                .iter()
+                .any(|item| matches!(item, Item::Conform(_))),
+            "`{source}` cannot be a conformance and must not be parsed as one"
+        );
+    }
 }
 #[test]
 fn chained_comparison_reports_its_own_error() {

@@ -144,16 +144,13 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
             reject_gap_glue_visibility(p, parsed_visibility);
             Item::Glue(parse_glue_def(p)?)
         }
+        // The spec position after `meet` is always a path, so only a declaration
+        // generic list or a path head can start a conformance. Widening this set
+        // would steal `meet` from ordinary identifier use without ever matching a
+        // well-formed declaration.
         TokenKind::Ident(name)
             if name == contextual::MEET
-                && matches!(
-                    p.peek_at(1),
-                    TokenKind::Ident(_)
-                        | TokenKind::Lt
-                        | TokenKind::LBracket
-                        | TokenKind::Star
-                        | TokenKind::Spec
-                ) =>
+                && matches!(p.peek_at(1), TokenKind::Ident(_) | TokenKind::Lt) =>
         {
             reject_annotations(p, &annotations);
             reject_visibility(p, parsed_visibility);
