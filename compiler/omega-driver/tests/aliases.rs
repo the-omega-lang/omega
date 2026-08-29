@@ -2452,6 +2452,33 @@ fn an_alias_carries_its_authorization_into_a_generic_call() {
 }
 
 #[test]
+fn an_alias_carries_its_authorization_into_an_explicit_generic_call() {
+    // Explicit type arguments must not bypass the alias chain that
+    // authorized this reference: the call still resolves through the
+    // target's own absolute path.
+    TestPackage::with_modules(
+        r#"
+        import self::helper;
+
+        alias same = helper::exported;
+
+        entry_fn() => i32 {
+            same<i32>(41) + 1
+        }
+        "#,
+        &[(
+            "helper",
+            r#"
+            identity<T>(value: T) => T { value }
+
+            exposed alias exported = identity;
+            "#,
+        )],
+    )
+    .expect_ok();
+}
+
+#[test]
 fn an_alias_carries_its_authorization_into_aggregate_construction() {
     TestPackage::with_modules(
         r#"

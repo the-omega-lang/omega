@@ -1,0 +1,23 @@
+error: 't10b_explicit_generic_errors::identity' expects 1 type argument(s), found 2
+  --> tests/t10b_explicit_generic_errors/t10b_explicit_generic_errors.omg:13:17
+   |
+13 |     too_many := identity<i32, u8>(1);
+   |                 ^^^^^^^^^^^^^^^^^^^^ expected 1 type argument
+
+error: mismatched types: expected 'i32' for this argument, found 'Holder'
+  --> tests/t10b_explicit_generic_errors/t10b_explicit_generic_errors.omg:15:35
+   |
+15 |     wrong_argument := second<i32>(holder, 5);
+   |                                   ^^^^^^ expected `i32`, found `Holder`
+   |
+   = note: Omega has no implicit conversions; each argument must match its parameter's type exactly
+
+error: mismatched types: cannot assign 'i32' to a target of type 'Holder'
+  --> tests/t10b_explicit_generic_errors/t10b_explicit_generic_errors.omg:16:28
+   |
+16 |     wrong_result: Holder = identity<i32>(1);
+   |                            ^^^^^^^^^^^^^^^^ expected `Holder`, found `i32`
+   |
+   = note: Omega has no implicit conversions; the value must have exactly the target's type
+
+error: could not compile the program due to 3 previous errors

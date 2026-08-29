@@ -62,6 +62,115 @@ fn generic_args_do_not_steal_comparisons() {
 }
 
 #[test]
+fn generic_args_commit_before_a_call_suffix() {
+    let stmts = body_statements("f() => void { g<i32>(); }");
+    let Statement::Expression(expr) = &stmts[0] else {
+        panic!("expected an expression statement")
+    };
+    let Expression::FunctionCall(call) = &expr.expression else {
+        panic!("expected a call")
+    };
+    let Expression::Path(path) = &call.callee.expression else {
+        panic!("expected a path callee")
+    };
+    assert_eq!(path.path.head.as_ref(), "g");
+    assert_eq!(path.generic_args.len(), 1);
+    assert_eq!(path.args_at, 0);
+    assert!(call.args.is_empty());
+}
+
+#[test]
+fn generic_args_commit_on_a_module_qualified_call() {
+    let stmts = body_statements("f() => void { mem::ptr_cast<u32>(p); }");
+    let Statement::Expression(expr) = &stmts[0] else {
+        panic!("expected an expression statement")
+    };
+    let Expression::FunctionCall(call) = &expr.expression else {
+        panic!("expected a call")
+    };
+    let Expression::Path(path) = &call.callee.expression else {
+        panic!("expected a path callee")
+    };
+    assert_eq!(path.path.head.as_ref(), "mem");
+    assert_eq!(path.path.tail[0].as_ref(), "ptr_cast");
+    assert_eq!(path.generic_args.len(), 1);
+    assert_eq!(path.args_at, 1);
+    assert_eq!(call.args.len(), 1);
+}
+
+#[test]
+fn nested_generic_args_close_a_call_application() {
+    let stmts = body_statements("f() => void { g<Pair<i32, u32>>(); }");
+    let Statement::Expression(expr) = &stmts[0] else {
+        panic!("expected an expression statement")
+    };
+    let Expression::FunctionCall(call) = &expr.expression else {
+        panic!("expected a call")
+    };
+    let Expression::Path(path) = &call.callee.expression else {
+        panic!("expected a path callee")
+    };
+    assert_eq!(path.generic_args.len(), 1);
+}
+
+#[test]
+fn generic_args_commit_at_an_expression_boundary() {
+    let stmts = body_statements("f() => void { p := &foo<i32>; a := [foo<i32>, bar<i32>]; }");
+    let Statement::Walrus(w) = &stmts[0] else {
+        panic!("expected a walrus statement")
+    };
+    let Expression::AddressOf(address) = &w.value.expression else {
+        panic!("expected an address-of expression")
+    };
+    let Expression::Path(path) = &address.base.expression else {
+        panic!("expected a path operand")
+    };
+    assert_eq!(path.path.head.as_ref(), "foo");
+    assert_eq!(path.generic_args.len(), 1);
+
+    let Statement::Walrus(w) = &stmts[1] else {
+        panic!("expected a walrus statement")
+    };
+    let Expression::ArrayLiteral(array) = &w.value.expression else {
+        panic!("expected an array literal")
+    };
+    assert_eq!(array.elements.len(), 2);
+    for element in &array.elements {
+        let Expression::Path(path) = &element.expression else {
+            panic!("expected a path element")
+        };
+        assert_eq!(path.generic_args.len(), 1);
+    }
+}
+
+#[test]
+fn a_generic_call_commits_before_any_semantic_lookup() {
+    let stmts = body_statements("f() => void { a<b>(c); }");
+    let Statement::Expression(expr) = &stmts[0] else {
+        panic!("expected an expression statement")
+    };
+    let Expression::FunctionCall(call) = &expr.expression else {
+        panic!("expected a call, not a comparison")
+    };
+    let Expression::Path(path) = &call.callee.expression else {
+        panic!("expected a path callee")
+    };
+    assert_eq!(path.path.head.as_ref(), "a");
+    assert_eq!(path.generic_args.len(), 1);
+}
+
+#[test]
+fn a_fresh_operand_after_the_close_angle_stays_a_chained_comparison() {
+    let errors =
+        SourceModule::parse("f() => void { x := a < b > c; }").expect_err("must not parse");
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, ParseErrorKind::ChainedComparison))
+    );
+}
+
+#[test]
 fn enum_with_header_bodies_and_functions_parses() {
     let source = r#"
         enum MyCoolEnum(tag: i16, description: *u8) {

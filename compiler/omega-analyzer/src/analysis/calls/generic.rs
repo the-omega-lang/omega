@@ -153,16 +153,22 @@ impl<'r> Analyzer<'r> {
         Some((ambient, sig))
     }
 
+    /// The substitution call inference starts from. Explicitly written type
+    /// arguments are already bound here and outrank the expected result: the
+    /// caller asked for them, so a conflicting expectation must be reported
+    /// by the ordinary result check rather than reinterpreted.
     fn seed_from_expected(
+        explicit: HashMap<Ident, ResolvedType>,
         expected: Option<&ResolvedType>,
         generics: &[Ident],
         return_type: &Type,
     ) -> HashMap<Ident, ResolvedType> {
-        let mut seed = HashMap::new();
+        let mut seed = explicit;
         if let Some(expected) = expected {
-            unify_generic_type(generics, return_type, expected, &mut seed);
-            for resolved in seed.values_mut() {
-                *resolved = resolved.widened();
+            let mut inferred = HashMap::new();
+            unify_generic_type(generics, return_type, expected, &mut inferred);
+            for (generic, resolved) in inferred {
+                seed.entry(generic).or_insert_with(|| resolved.widened());
             }
         }
         seed
@@ -217,7 +223,12 @@ impl<'r> Analyzer<'r> {
             &sig.owner_defaults,
             &sig.params,
             &call.args,
-            Self::seed_from_expected(expected, &sig.owner_generics, &sig.return_type),
+            Self::seed_from_expected(
+                HashMap::new(),
+                expected,
+                &sig.owner_generics,
+                &sig.return_type,
+            ),
         )?;
 
         let type_args =
@@ -330,9 +341,15 @@ impl<'r> Analyzer<'r> {
         call: &HirFunctionCall,
         expected: Option<&ResolvedType>,
     ) -> Intercepted {
-        let Some(path) = Self::callee_path(call) else {
+        let Some(expr_path) = Self::callee_expr_path(call) else {
             return Intercepted::Declined;
         };
+        let path = &expr_path.path;
+        // Generic arguments written on an earlier segment name a generic
+        // owner, not this function; that stays with generic-place resolution.
+        if !expr_path.generic_args.is_empty() && expr_path.args_at != path.tail.len() {
+            return Intercepted::Declined;
+        }
 
         if path.is_unqualified()
             && self
@@ -375,11 +392,17 @@ impl<'r> Analyzer<'r> {
             Err(_) => return Intercepted::Declined,
         };
 
-        Intercepted::Claimed(
-            self.finish_generic_call(node_id, span, call, &accessor, &access, &sig, expected),
-        )
+        let explicit = match self.resolve_generic_arg_list(node_id, span, expr_path) {
+            Some(explicit) => explicit,
+            None => return Intercepted::Claimed(None),
+        };
+
+        Intercepted::Claimed(self.finish_generic_call(
+            node_id, span, call, &accessor, &access, &sig, &explicit, expected,
+        ))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn finish_generic_call(
         &mut self,
         node_id: HirId,
@@ -388,14 +411,41 @@ impl<'r> Analyzer<'r> {
         accessor: &[Ident],
         access: &ItemAccess,
         sig: &GenericSignature,
+        explicit: &[ResolvedType],
         expected: Option<&ResolvedType>,
     ) -> Option<CheckedExprNode> {
+        if explicit.len() > sig.generics.len() {
+            let (item, module) = access
+                .absolute
+                .split_last()
+                .expect("an absolute path always has a last segment");
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::ModuleResolution(ResolveError::GenericArgCountMismatch {
+                    module: module.to_vec(),
+                    item: item.clone(),
+                    expected: sig.generics.len(),
+                    found: explicit.len(),
+                }),
+            );
+            return None;
+        }
+        // Written arguments bind the declaration's generics left to right;
+        // inference only ever fills what is left.
+        let bound: HashMap<Ident, ResolvedType> = sig
+            .generics
+            .iter()
+            .cloned()
+            .zip(explicit.iter().cloned())
+            .collect();
+
         let (checked_args, subst) = self.infer_generic_args(
             &sig.generics,
             &sig.defaults,
             &sig.params,
             &call.args,
-            Self::seed_from_expected(expected, &sig.generics, &sig.return_type),
+            Self::seed_from_expected(bound, expected, &sig.generics, &sig.return_type),
         )?;
 
         let type_args = match resolve_inferred_type_args(&sig.generics, &sig.defaults, &subst) {

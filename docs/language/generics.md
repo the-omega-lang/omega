@@ -35,13 +35,26 @@ Unbounded generic code may call operations that successfully resolve for every c
 
 ## Function type inference
 
-Ordinary generic function calls infer type arguments; there is no Rust-style turbofish call syntax.
+Ordinary generic function calls infer type arguments.
 
 ```omega
 sum(1, 2);       # T inferred as i32
 ```
 
-Inference uses call arguments and the surrounding expected result type. Constraints are accumulated from left to right, with an already-established expected/result constraint taking precedence over later adaptable literals.
+Inference uses call arguments and the surrounding expected result type.
+
+A call may also write type arguments explicitly, using the same diamond syntax as any other generic application. There is no separate turbofish spelling; `::<...>` is not Omega syntax.
+
+```omega
+ptr_cast<u32>(p);        # first generic fixed, the rest inferred
+sum<i32>(1, 2);
+```
+
+Written arguments are a **positional prefix** of the declaration's generic parameter list, bound left to right. For `f<A, B, C>`, `f<X>(...)` fixes `A = X` only, and `f<X, Y>(...)` fixes `A = X` and `B = Y`. Generic arguments are never named, skipped, or reordered.
+
+Fewer arguments than the declaration has parameters is legal for a call: the remainder is inferred or defaulted under the rules below, and only a remaining parameter that nothing supplies is an error. More arguments than the declaration has parameters is rejected as an arity error.
+
+Explicit arguments have the highest authority. They are never re-chosen to satisfy an argument, an expected result type, or a generic bound; a conflict is reported against the written type by the ordinary argument, result, and bound checks. Constraints are accumulated from left to right, with an already-established expected/result constraint taking precedence over later adaptable literals.
 
 An explicitly typed expression or suffixed numeric literal does not silently change type to satisfy an incompatible expectation.
 
@@ -91,10 +104,13 @@ Pair<u64>    # A = u64, B defaults to A => u64
 
 For a function call, constraints are resolved broadly in this priority order:
 
-1. surrounding expected result type;
-2. concrete information already supplied explicitly or by earlier arguments;
-3. a declared generic default when the generic is still unknown at the point it is needed;
-4. inference from compatible argument values/aggregate fields.
+1. explicitly written type arguments;
+2. surrounding expected result type;
+3. concrete information already supplied explicitly or by earlier arguments;
+4. a declared generic default when the generic is still unknown at the point it is needed;
+5. inference from compatible argument values/aggregate fields.
+
+Every rule below the first applies only to a generic that the call left unwritten.
 
 Example:
 
@@ -104,6 +120,8 @@ add<T = u64>(a: T, b: T) => T { a + b }
 x := add(10, 20);       # T = u64 by default
 y := add(10u32, 20);    # T = u32; second literal adapts
 z := add(10, 20u32);    # invalid if T was already fixed incompatibly
+
+w := add<u32>(10, 20);  # T = u32; the default no longer applies
 ```
 
 Expected result types can infer generics that occur in a return type:

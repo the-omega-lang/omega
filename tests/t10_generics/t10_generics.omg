@@ -49,6 +49,11 @@ expect_u32(v: u32) => u32 { v }
 # --- expected result type inferring a generic that appears only there ----
 lowest<T: Bounded>() => T { T::min() }
 
+# --- explicitly written type arguments as a positional prefix -------------
+ptr_cast<T, S>(p: *S) => *T { <*T>p }
+
+second<A, B>(a: A, b: B) => B { b }
+
 main() => void {
 	# --- generic aggregate, unbounded generic call ---------------------------
 	head := Node<i32> { value = 1; next = <*Node<i32>>0usize; };
@@ -80,4 +85,18 @@ main() => void {
 	# --- expected result type supplies a generic with no other source --------
 	floor: i32 = lowest();
 	println$("expected-type-infers-generic: ", floor);
+
+	# --- explicit type arguments bind left to right; the rest is inferred ----
+	stored: i32 = 7;
+	# `T` is written, `S` comes from the argument, in both directions.
+	round_trip := ptr_cast<i32>(ptr_cast<u8>(&stored));
+	# The written `u8` binds `A`, so `B` is still inferred from `2i64`.
+	explicit_prefix: i64 = second<u8>(1, 2i64);
+	# An explicit argument outranks the declared default.
+	narrow := add<u32>(10, 20);
+	println$("explicit-generic-prefix: ", *round_trip, " ", explicit_prefix, " ", expect_u32(narrow));
+
+	# --- a fully explicit generic function value at an expression boundary ---
+	pick := sum<i32>;
+	println$("explicit-generic-value: ", pick(4, 5));
 }

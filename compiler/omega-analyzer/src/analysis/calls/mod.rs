@@ -62,7 +62,7 @@ impl<'r> Analyzer<'r> {
             .map(|(name, module)| (name.clone(), module.to_vec()))
     }
 
-    fn callee_path(call: &HirFunctionCall) -> Option<&Path> {
+    fn callee_expr_path(call: &HirFunctionCall) -> Option<&ExprPath> {
         let HirExpr::Place(place) = &Self::strip_reveal(&call.callee).1.expr else {
             return None;
         };
@@ -72,7 +72,11 @@ impl<'r> Analyzer<'r> {
         let HirPlaceRoot::Path(expr_path) = &place.root else {
             return None;
         };
-        expr_path.plain()
+        Some(expr_path)
+    }
+
+    fn callee_path(call: &HirFunctionCall) -> Option<&Path> {
+        Self::callee_expr_path(call)?.plain()
     }
 
     fn checked_call(

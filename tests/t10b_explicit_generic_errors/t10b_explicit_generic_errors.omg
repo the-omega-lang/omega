@@ -1,0 +1,17 @@
+# Explicitly written type arguments are a positional prefix with the highest
+# authority: too many is an arity error, and a conflict is reported against
+# the written type rather than resolved by re-choosing it.
+struct Holder {
+	exposed value: i32;
+}
+
+identity<T>(x: T) => T { x }
+
+second<A, B>(a: A, b: B) => B { b }
+
+main() => void {
+	too_many := identity<i32, u8>(1);
+	holder := Holder { value = 1; };
+	wrong_argument := second<i32>(holder, 5);
+	wrong_result: Holder = identity<i32>(1);
+}

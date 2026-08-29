@@ -5,3 +5,5 @@ none is empty
 generic-defaults: 1 2
 call-inference-priority: 30 30
 expected-type-infers-generic: -2147483648
+explicit-generic-prefix: 7 2 30
+explicit-generic-value: 9

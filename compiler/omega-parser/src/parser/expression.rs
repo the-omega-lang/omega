@@ -733,13 +733,31 @@ fn try_parse_generic_args(p: &mut Parser) -> Option<Vec<crate::ast::r#type::Type
         p.reset(mark);
         return None;
     }
-    let commits = p.check(&TokenKind::ColonColon)
-        || (p.check(&TokenKind::LBrace) && p.struct_literals_allowed());
-    if !commits {
+    if !generic_args_commit(p) {
         p.reset(mark);
         return None;
     }
     Some(args)
+}
+
+/// Decides whether a successfully parsed `<...>` was a generic application
+/// rather than a pair of comparisons. The choice is purely syntactic: what
+/// follows `>` must continue the path, apply a call, or end the expression.
+/// Anything that starts a fresh operand (`a < b > c`) rolls the attempt back
+/// so the comparison rules, including chained-comparison recovery, still see
+/// the original tokens.
+fn generic_args_commit(p: &Parser) -> bool {
+    match p.peek() {
+        TokenKind::ColonColon | TokenKind::LParen => true,
+        TokenKind::Semi
+        | TokenKind::Comma
+        | TokenKind::RParen
+        | TokenKind::RBracket
+        | TokenKind::RBrace
+        | TokenKind::Eof => true,
+        TokenKind::LBrace => p.struct_literals_allowed(),
+        _ => false,
+    }
 }
 
 fn recover_restricted_struct_literal(

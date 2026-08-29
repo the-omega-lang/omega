@@ -2474,3 +2474,179 @@ entry_fn() => i32 { 0 }
     });
     assert_eq!(texts, ["m"]);
 }
+
+#[test]
+fn an_explicit_generic_prefix_leaves_the_remainder_to_inference() {
+    let package = TestPackage::new(
+        r#"
+        second<A, B>(a: A, b: B) => B { b }
+        identity<T>(x: T) => T { x }
+
+        entry_fn() => i32 {
+            # The written argument binds A, so B is still inferred as i64.
+            wide : i64 = second<u8>(1, 2i64);
+            full := identity<i32>(7);
+            inferred := identity(8);
+            <i32>wide + full + inferred - 2
+        }
+        "#,
+    );
+    package
+        .compile()
+        .expect("an explicit generic prefix binds left to right and infers the rest");
+}
+
+#[test]
+fn an_explicit_generic_argument_outranks_a_declared_default() {
+    let package = TestPackage::new(
+        r#"
+        add<T = u64>(a: T, b: T) => T { a + b }
+
+        entry_fn() => i32 {
+            narrow : u32 = add<u32>(10, 20);
+            wide : u64 = add(10, 20);
+            <i32>narrow + <i32>wide
+        }
+        "#,
+    );
+    package
+        .compile()
+        .expect("an explicit argument replaces the generic's default");
+}
+
+#[test]
+fn an_argument_incompatible_with_an_explicit_generic_is_rejected() {
+    let package = TestPackage::new(
+        r#"
+        struct Holder { exposed value: i32; }
+        second<A, B>(a: A, b: B) => B { b }
+
+        entry_fn() => i32 {
+            holder := Holder { value = 1; };
+            # The written argument binds A, so the first argument must be an
+            # i32; binding B instead would have accepted this call.
+            second<i32>(holder, 5)
+        }
+        "#,
+    );
+    let errors = compile_errors(
+        &package,
+        "an argument that does not match the written type argument must be rejected",
+    );
+    assert!(has_analysis_error(&errors, |kind| matches!(
+        kind,
+        AnalysisErrorKind::ArgumentTypeMismatch { .. }
+    )));
+}
+
+#[test]
+fn an_expected_result_never_overrides_an_explicit_generic_argument() {
+    let package = TestPackage::new(
+        r#"
+        struct Holder { exposed value: i32; }
+        identity<T>(x: T) => T { x }
+
+        entry_fn() => i32 {
+            wrong : Holder = identity<i32>(1);
+            wrong.value
+        }
+        "#,
+    );
+    let errors = compile_errors(
+        &package,
+        "an expected result must not re-choose an explicitly written type argument",
+    );
+    assert!(has_analysis_error(&errors, |kind| matches!(
+        kind,
+        AnalysisErrorKind::AssignmentTypeMismatch { .. }
+    )));
+}
+
+#[test]
+fn an_explicit_generic_argument_still_faces_its_bound() {
+    let package = TestPackage::new(
+        r#"
+        exposed spec Speak { speak(*self) => i32; }
+        struct Dog { exposed value: i32; }
+        meet Speak for Dog { speak(*self) => i32 { self.value } }
+        struct Cat { exposed value: i32; }
+
+        call_bound<T: Speak>(value: *T) => i32 { value.speak() }
+
+        entry_fn() => i32 {
+            cat := Cat { value = 1; };
+            call_bound<Cat>(&cat)
+        }
+        "#,
+    );
+    let errors = compile_errors(
+        &package,
+        "an explicit type argument that fails the bound must be rejected",
+    );
+    assert!(has_analysis_error(&errors, |kind| matches!(
+        kind,
+        AnalysisErrorKind::ModuleResolution(ResolveError::SpecNotImplemented { spec, .. })
+            if spec.as_ref() == "Speak"
+    )));
+}
+
+#[test]
+fn more_explicit_generic_arguments_than_the_declaration_has_is_an_arity_error() {
+    let package = TestPackage::new(
+        r#"
+        identity<T>(x: T) => T { x }
+
+        entry_fn() => i32 {
+            identity<i32, u8>(1)
+        }
+        "#,
+    );
+    let errors = compile_errors(&package, "too many written type arguments must be rejected");
+    assert!(has_analysis_error(&errors, |kind| matches!(
+        kind,
+        AnalysisErrorKind::ModuleResolution(ResolveError::GenericArgCountMismatch {
+            item,
+            expected: 1,
+            found: 2,
+            ..
+        }) if item.as_ref() == "identity"
+    )));
+}
+
+#[test]
+fn an_uninferable_remainder_after_an_explicit_prefix_still_reports_the_generic() {
+    let package = TestPackage::new(
+        r#"
+        first<A, B>(a: A) => A { a }
+
+        entry_fn() => i32 {
+            first<i32>(1)
+        }
+        "#,
+    );
+    let errors = compile_errors(
+        &package,
+        "a generic left unwritten and uninferable must still be reported",
+    );
+    assert!(has_analysis_error(&errors, |kind| matches!(
+        kind,
+        AnalysisErrorKind::UnresolvedGenericParam(generic) if generic.as_ref() == "B"
+    )));
+}
+
+#[test]
+fn a_module_qualified_call_takes_explicit_generic_arguments() {
+    let package = TestPackage::new(
+        r#"
+        import self::helper;
+
+        entry_fn() => i32 {
+            helper::identity<i32>(41) + 1
+        }
+        "#,
+    );
+    package.write_child("helper", "exposed identity<T>(value: T) => T { value }");
+    package
+        .compile()
+        .expect("a module-qualified generic call accepts explicit type arguments");
+}
