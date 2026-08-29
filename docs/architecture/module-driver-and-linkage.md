@@ -132,7 +132,28 @@ The local item index is published before imports are fully indexed, because reso
 
 ## Import resolution
 
-Imports are stored structurally first and resolved lazily where possible.
+Imports are stored structurally first and resolved lazily where possible, with
+one deliberate eager step.
+
+`validate_imports` runs over *every* local module at the top of signature
+collection, as a complete step of its own, before any of them resolves a name.
+It takes each import binding the module claimed and asks whether the target
+exists and is nameable here, so a binding that names nothing is an error at
+the import rather than a latent failure only a use site would discover. If any
+binding failed, the accumulated diagnostics are drained and returned right
+there: a module whose bindings are broken cannot be read reliably, and
+stopping is also what keeps the failure to one diagnostic, at the import,
+instead of one per use that reaches through it.
+
+That validation runs at `ImportDepth::Gate`, which is the whole reason it can
+be eager: gating stops at existence and visibility, while `ImportDepth::Resolve`
+additionally materializes the item a use site needs. Forcing the item here
+would make every import an eager analysis of its target, which is a use-site
+question, and would make an ordinary mutual import between two modules
+resolve their items in indexing order. A binding whose target is a macro is
+skipped: macros are a separate namespace, bound from the raw AST before HIR
+exists, and `macro_binding` is what tells validation the binding never had to
+name an item.
 
 `ImportState` memoizes what an alias means and whether it was used. The analyzer can ask the driver for:
 
@@ -334,7 +355,7 @@ High-level order:
 2. collect relevant extern signature surface
 3. collect primitive declarations/templates
 4. collect conformance declarations/templates
-5. collect local item signatures
+5. validate import targets, then collect local item signatures
 6. collect gap/glue signature information
 7. check local bodies
 8. materialize bodies discovered lazily (generic/conformance/primitive)
@@ -457,6 +478,7 @@ See [`symbol-mangling.md`](symbol-mangling.md).
 The driver relies on a few ordering and memoization rules that are not obvious from the public query shape:
 
 - A module publishes its own local item index before import indexing begins. Import annotation resolution can re-enter lookup for that same module; publishing first turns that re-entry into a cache hit instead of unbounded recursion.
+- Eager import validation is driven from the signature phase, never from `ensure_module_indexed`. Indexing must stay reachable re-entrantly from arbitrary resolution; validating targets from inside it would resolve a module's imports while its own import table is still being built.
 - Concrete generic item keys are built only after omitted generic arguments have been filled with defaults. Equivalent call sites must therefore converge on the same structural `ItemKey` and share one instantiation.
 - A lazily discovered generic body is checked only after its signature has reached the completed query state. This keeps recursive calls from observing an unfinished body/signature state that the static whole-package sweep could not have enumerated.
 - Conformance-template solving is goal-directed and guarded by an in-flight goal stack. Only a failure of an outermost goal is safe to memoize permanently; a nested failure may become applicable when the enclosing proof unwinds and is retried from a clean stack.

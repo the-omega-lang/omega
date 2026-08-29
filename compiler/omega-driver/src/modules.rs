@@ -519,7 +519,20 @@ impl Driver {
         import: &ImportLeaf,
     ) -> Option<MacroDefinitionStmt> {
         let absolute = self.import_absolute_path(path, &import.path).ok()?;
-        if self.roots.module_exists(&absolute) || absolute.len() < 2 {
+        self.macro_binding(path, &absolute, import.reveal)
+    }
+
+    /// The macro an absolute import target names in `importer`'s macro
+    /// namespace, if it names one at all. Macros live in their own namespace
+    /// and are bound from the raw AST before HIR exists, so this is also what
+    /// tells import validation that a binding never had to name an item.
+    pub(crate) fn macro_binding(
+        &mut self,
+        importer: &[Ident],
+        absolute: &[Ident],
+        reveal: bool,
+    ) -> Option<MacroDefinitionStmt> {
+        if self.roots.module_exists(absolute) || absolute.len() < 2 {
             return None;
         }
         let module = absolute[..absolute.len() - 1].to_vec();
@@ -531,7 +544,7 @@ impl Driver {
         // The same rule the alias-target lookup applies, so `reveal` cannot
         // mean one thing when the macro is invoked and another when it is
         // immediately aliased.
-        (import.reveal || Self::visibility_allows(definition.visibility, &module, path))
+        (reveal || Self::visibility_allows(definition.visibility, &module, importer))
             .then_some(definition)
     }
 
@@ -794,6 +807,45 @@ impl Driver {
             );
         }
         imports
+    }
+
+    /// Validates the target of every import binding this module claimed,
+    /// whether or not the bound name is ever used. An import that names
+    /// nothing is a broken binding, not a latent one, so the failure belongs
+    /// at the import rather than at whichever use happens to reach it first.
+    ///
+    /// Only the target's existence and visibility are established here; see
+    /// `validate_import_target`. Returns whether any binding failed.
+    pub(crate) fn validate_imports(&mut self, path: &[Ident]) -> bool {
+        if self.ensure_module_indexed(path).is_err() {
+            return false;
+        }
+        let bindings: Vec<(HirId, Span, ModulePath, bool)> = self
+            .modules
+            .index(path)
+            .imports
+            .values()
+            .map(|entry| (entry.id, entry.span, entry.target.clone(), entry.reveal))
+            .collect();
+
+        let mut failed = false;
+        for (id, span, target, reveal) in bindings {
+            // A macro import binds in the macro namespace, which the raw-AST
+            // macro environment resolves on its own. Only a binding that is
+            // not a macro has to name an item or a module.
+            if self.macro_binding(path, &target, reveal).is_some() {
+                continue;
+            }
+            let Err(error) = self.validate_import_target(path, &target, reveal) else {
+                continue;
+            };
+            self.diagnostics.error(
+                path,
+                AnalysisError::new(id, span, AnalysisErrorKind::ModuleResolution(error)),
+            );
+            failed = true;
+        }
+        failed
     }
 
     pub(crate) fn local_item_index(

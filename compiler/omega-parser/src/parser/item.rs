@@ -288,12 +288,15 @@ fn parse_import_kind(p: &mut Parser) -> Option<ImportKind> {
         p.advance();
         return p.descend(parse_import_group).map(ImportKind::Group);
     }
+    let as_span = p.peek_span();
     if !p.eat_contextual(contextual::AS) {
         return Some(ImportKind::Leaf { alias: None });
     }
     let alias = p.expect_ident()?;
     if p.check(&TokenKind::ColonColon) {
-        p.error(ParseErrorKind::ImportAliasOnPrefix);
+        // The `as` is the offending token, not the `::` that exposes it as a
+        // prefix rename: the reader has to delete the rename, not the path.
+        p.error_at(as_span, ParseErrorKind::ImportAliasOnPrefix);
         return None;
     }
     Some(ImportKind::Leaf { alias: Some(alias) })

@@ -2962,6 +2962,249 @@ fn a_renamed_macro_import_binds_the_local_invocation_name() {
 }
 
 #[test]
+fn an_unused_import_of_a_missing_item_is_rejected() {
+    // The binding is never referenced, so nothing would ever ask this import
+    // to resolve. It still has to name something that exists.
+    let errors = TestPackage::with_modules(
+        r#"
+        import self::helper::Missing;
+
+        entry_fn() => i32 { 0 }
+        "#,
+        &[(
+            "helper",
+            r#"
+            exposed struct Present {
+                exposed field: i32;
+            }
+            "#,
+        )],
+    )
+    .expect_errors();
+    assert!(
+        resolve_errors(&errors).iter().any(|error| matches!(
+            error,
+            ResolveError::UnknownItem { item, .. } if item.as_ref() == "Missing"
+        )),
+        "expected the missing target to be reported: {}",
+        rendered(&errors)
+    );
+}
+
+#[test]
+fn an_unused_renamed_import_of_a_missing_item_is_rejected() {
+    // `as` moves the local name but not the question: the written target is
+    // still what has to exist.
+    let errors = TestPackage::with_modules(
+        r#"
+        import self::helper::Missing as Renamed;
+
+        entry_fn() => i32 { 0 }
+        "#,
+        &[(
+            "helper",
+            r#"
+            exposed struct Present {
+                exposed field: i32;
+            }
+            "#,
+        )],
+    )
+    .expect_errors();
+    assert!(
+        resolve_errors(&errors).iter().any(|error| matches!(
+            error,
+            ResolveError::UnknownItem { item, .. } if item.as_ref() == "Missing"
+        )),
+        "expected the missing target to be reported: {}",
+        rendered(&errors)
+    );
+}
+
+#[test]
+fn an_unused_group_leaf_naming_a_missing_item_is_rejected_without_taking_its_siblings_down() {
+    let errors = TestPackage::with_modules(
+        r#"
+        import self::helper::{ First, Missing as Reserved, Second };
+
+        entry_fn() => i32 { 0 }
+        "#,
+        &[(
+            "helper",
+            r#"
+            exposed struct First {
+                exposed field: i32;
+            }
+
+            exposed struct Second {
+                exposed field: i32;
+            }
+            "#,
+        )],
+    )
+    .expect_errors();
+    let unknown: Vec<Ident> = resolve_errors(&errors)
+        .into_iter()
+        .filter_map(|error| match error {
+            ResolveError::UnknownItem { item, .. } => Some(item),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        unknown.iter().map(Ident::as_ref).collect::<Vec<_>>(),
+        ["Missing"],
+        "only the failing leaf should be reported: {}",
+        rendered(&errors)
+    );
+}
+
+#[test]
+fn a_group_leaf_whose_target_is_missing_still_claims_its_local_name() {
+    // Claim-before-resolution: the leaf lost its target, not its name, so the
+    // later declaration is still a collision.
+    let errors = TestPackage::with_modules(
+        r#"
+        import self::helper::{ Missing as Reserved };
+
+        alias Reserved = i32;
+
+        entry_fn() => i32 { 0 }
+        "#,
+        &[(
+            "helper",
+            r#"
+            exposed struct Present {
+                exposed field: i32;
+            }
+            "#,
+        )],
+    )
+    .expect_errors();
+    let kinds = analysis_errors(&errors);
+    assert!(
+        kinds.iter().any(|kind| matches!(
+            kind,
+            AnalysisErrorKind::Redeclaration { name, .. } if name.as_ref() == "Reserved"
+        )),
+        "the failed leaf must still reserve its bound name: {}",
+        rendered(&errors)
+    );
+    assert!(
+        resolve_errors(&errors).iter().any(|error| matches!(
+            error,
+            ResolveError::UnknownItem { item, .. } if item.as_ref() == "Missing"
+        )),
+        "the failed leaf must still report its own target failure: {}",
+        rendered(&errors)
+    );
+}
+
+#[test]
+fn imports_whose_targets_exist_are_unaffected_by_eager_validation() {
+    TestPackage::with_modules(
+        r#"
+        import self::helper;
+        import self::helper::{ First, Second as Renamed, self as module_binding };
+
+        entry_fn() => i32 {
+            first: First = First { field = 1; };
+            renamed: Renamed = Renamed { field = 2; };
+            third: module_binding::Third = helper::Third { field = 3; };
+            first.field + renamed.field + third.field
+        }
+        "#,
+        &[(
+            "helper",
+            r#"
+            exposed struct First {
+                exposed field: i32;
+            }
+
+            exposed struct Second {
+                exposed field: i32;
+            }
+
+            exposed struct Third {
+                exposed field: i32;
+            }
+            "#,
+        )],
+    )
+    .expect_ok();
+}
+
+#[test]
+fn a_failed_import_target_is_reported_once_even_when_the_bound_name_is_used() {
+    // Import processing answers the target before anything reads the name, so
+    // the use site never gets to restate the same failure.
+    let errors = TestPackage::with_modules(
+        r#"
+        import self::helper::{ Missing as Reserved };
+
+        struct Holder {
+            exposed field: Reserved;
+        }
+
+        entry_fn() => i32 { 0 }
+        "#,
+        &[(
+            "helper",
+            r#"
+            exposed struct Present {
+                exposed field: i32;
+            }
+            "#,
+        )],
+    )
+    .expect_errors();
+    let reported = resolve_errors(&errors)
+        .iter()
+        .filter(|error| {
+            matches!(
+                error,
+                ResolveError::UnknownItem { item, .. } if item.as_ref() == "Missing"
+            )
+        })
+        .count();
+    assert_eq!(
+        reported,
+        1,
+        "the missing target must be reported exactly once: {}",
+        rendered(&errors)
+    );
+}
+
+#[test]
+fn an_unused_import_of_an_invisible_item_is_rejected() {
+    // Existence is not the only thing an import establishes about its target:
+    // a name it may not reach is just as broken, and just as unused.
+    let errors = TestPackage::with_modules(
+        r#"
+        import self::helper::Secret;
+
+        entry_fn() => i32 { 0 }
+        "#,
+        &[(
+            "helper",
+            r#"
+            struct Secret {
+                exposed field: i32;
+            }
+            "#,
+        )],
+    )
+    .expect_errors();
+    assert!(
+        resolve_errors(&errors).iter().any(|error| matches!(
+            error,
+            ResolveError::NotVisible { item, .. } if item.as_ref() == "Secret"
+        )),
+        "expected the invisible target to be reported: {}",
+        rendered(&errors)
+    );
+}
+
+#[test]
 fn a_malformed_annotation_on_a_group_is_reported_once() {
     let errors = TestPackage::with_modules(
         r#"

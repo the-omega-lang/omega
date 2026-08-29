@@ -19,6 +19,20 @@ use std::rc::Rc;
 
 type AliasKey = (ModulePath, Ident);
 
+/// How far an import has to take its own target. Both depths answer the same
+/// question about the path -- does it name something this module may bind? --
+/// and differ only in what they leave behind: `Gate` establishes that and
+/// stops, while `Resolve` also materializes the item a use site needs.
+///
+/// Eager validation runs at `Gate` on purpose. Forcing the item would turn
+/// every import into an eager analysis of its target, which is a use-site
+/// question and not one an import has to answer to be well formed.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ImportDepth {
+    Gate,
+    Resolve,
+}
+
 enum AliasState {
     InProgress,
     Resolved(ImportTarget),
@@ -107,8 +121,36 @@ impl Driver {
         segments: &[Ident],
         reveal: bool,
     ) -> Result<ImportTarget, ResolveError> {
+        Ok(self
+            .import_target(accessor, segments, reveal, ImportDepth::Resolve)?
+            .expect("resolving an import target always produces one"))
+    }
+
+    /// Whether an import's target exists and is nameable here, without
+    /// resolving it. This is what the eager per-module import validation
+    /// asks, so a binding that names nothing is an error at the import
+    /// rather than a surprise at its first use.
+    pub(crate) fn validate_import_target(
+        &mut self,
+        accessor: &[Ident],
+        segments: &[Ident],
+        reveal: bool,
+    ) -> Result<(), ResolveError> {
+        self.import_target(accessor, segments, reveal, ImportDepth::Gate)
+            .map(|_| ())
+    }
+
+    /// `None` only at `ImportDepth::Gate`, where a plain declaration is
+    /// gated but deliberately left unresolved.
+    fn import_target(
+        &mut self,
+        accessor: &[Ident],
+        segments: &[Ident],
+        reveal: bool,
+        depth: ImportDepth,
+    ) -> Result<Option<ImportTarget>, ResolveError> {
         match self.roots.locate(segments) {
-            Ok(_) => return Ok(ImportTarget::Module(segments.to_vec())),
+            Ok(_) => return Ok(Some(ImportTarget::Module(segments.to_vec()))),
             // Real either way -- must surface here, not be masked by an
             // alias/module-binding or item-import fallback below.
             Err(e @ ResolveError::AmbiguousModule(_)) => return Err(e),
@@ -118,7 +160,7 @@ impl Driver {
         // exactly the same places an ordinary path can: `import api::Thing`
         // must not require first importing `api` into a second statement.
         if let Some(module) = self.resolve_module_path(accessor, segments)? {
-            return Ok(ImportTarget::Module(module));
+            return Ok(Some(ImportTarget::Module(module)));
         }
 
         let Some((item_name, written_module_path)) = segments.split_last() else {
@@ -144,12 +186,12 @@ impl Driver {
                 .visible_alias(accessor, &module_path, &item_name, reveal)?
                 .expect("just indexed by alias_index");
             if let ResolvedAlias::Module(module) = target {
-                return Ok(ImportTarget::Module(module));
+                return Ok(Some(ImportTarget::Module(module)));
             }
-            return Ok(ImportTarget::ItemPath(ItemAccess {
+            return Ok(Some(ImportTarget::ItemPath(ItemAccess {
                 absolute,
                 bypass_visibility: reveal,
-            }));
+            })));
         }
 
         // An overload group is likewise lazy: which candidate a name means
@@ -166,12 +208,16 @@ impl Driver {
             .contains_key(&item_name)
             || self.is_generic_template(&module_path, &item_name)?
         {
-            return Ok(ImportTarget::ItemPath(ItemAccess {
+            return Ok(Some(ImportTarget::ItemPath(ItemAccess {
                 absolute,
                 bypass_visibility: reveal,
-            }));
+            })));
         }
 
+        if depth == ImportDepth::Gate {
+            self.gate_declared_item(accessor, &module_path, &item_name, reveal)?;
+            return Ok(None);
+        }
         let item = self.ensure_item(
             accessor,
             &module_path,
@@ -179,7 +225,30 @@ impl Driver {
             &[],
             ResolveItemOptions::INDIRECT.bypassing_visibility(reveal),
         )?;
-        Ok(ImportTarget::Item(absolute, item))
+        Ok(Some(ImportTarget::Item(absolute, item)))
+    }
+
+    /// The existence and visibility gate `ensure_item` would otherwise apply
+    /// on the way to a resolved item. `is_generic_template` above has already
+    /// rejected a name this module does not declare, so what is left here is
+    /// the visibility question an import must pass either way.
+    fn gate_declared_item(
+        &mut self,
+        accessor: &[Ident],
+        module_path: &[Ident],
+        name: &Ident,
+        reveal: bool,
+    ) -> Result<(), ResolveError> {
+        let index = self.local_item_index(module_path, name)?;
+        let visibility = item_visibility(&self.modules.parsed(module_path).hir.items[index]);
+        if reveal || Self::visibility_allows(visibility, module_path, accessor) {
+            Ok(())
+        } else {
+            Err(ResolveError::NotVisible {
+                module: module_path.to_vec(),
+                item: name.clone(),
+            })
+        }
     }
 
     /// Import-alias lookup only. Declared aliases deliberately do not enter

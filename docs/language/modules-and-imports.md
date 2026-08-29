@@ -87,6 +87,23 @@ The **unprefixed, top-level-by-default** reading above is specific to imports. A
 
 Importing an item binds its final name in the importing module. Importing a module makes that module path/name available according to normal resolution rules.
 
+### An import's target is resolved whether or not it is used
+
+Every binding an import creates is checked when the import is processed, not
+when the bound name is first referenced. A binding whose target names nothing,
+or names something the importing module may not reach, is a compile error even
+if the module never uses it. Deleting the last use of an import does not turn a
+broken import into a legal one.
+
+What an import establishes about its target is that the target exists and is
+nameable here. It does not force the target's own analysis: whether the
+imported declaration is itself well formed remains a question its own module
+answers, and one a use site asks. Two modules may therefore import from each
+other freely; only a genuinely circular *definition* is an error.
+
+A failing import is reported once, at the import that failed, and not again at
+each use of the name it bound.
+
 ## Import trees
 
 An `import` is an ordered tree: a source path prefix, optionally followed by a

@@ -201,9 +201,21 @@ impl Driver {
         local: &[ModulePath],
         entry: &[Ident],
     ) -> Result<(), Vec<CompileError>> {
+        // Import processing comes first and completely: a module whose
+        // bindings are broken cannot be read reliably, so every local module's
+        // import targets are answered before any of them resolves a name.
+        // Reporting the failure here is also what keeps it to one diagnostic,
+        // at the import, instead of one per use that reaches through it.
+        let mut broken_imports = false;
         for path in local {
             self.ensure_module_indexed(path).map_err(fatal)?;
+            broken_imports |= self.validate_imports(path);
+        }
+        if broken_imports {
+            return Err(self.diagnostics.drain_errors(local));
+        }
 
+        for path in local {
             // A function's *effective* generics, not its written ones: a
             // static-spec parameter (`f(x: spec S)`) normalizes into a
             // generic bound, and that bound is the only place the import of

@@ -1,0 +1,7 @@
+exposed struct Present {
+	exposed value: i32;
+}
+
+struct Secret {
+	exposed value: i32;
+}

@@ -1,0 +1,20 @@
+# An import must name something that exists, whether or not the name it
+# binds is ever used. Every binding below is unused on purpose: resolution
+# of the target belongs to import processing, not to the first use.
+import self::helper::Missing;
+
+# `as` moves the local name; the written target is still what must exist.
+import self::helper::Gone as Renamed;
+
+# Each leaf of a group is its own import, so only the failing leaf is
+# reported and `Present` beside it stays a working binding.
+import self::helper::{ Present, Absent as Reserved };
+
+# A leaf that failed still claims the name it bound, so a later declaration
+# of that name is a redeclaration rather than a silent takeover.
+alias Reserved = i32;
+
+# Existing but unreachable is broken in the same way an absent name is.
+import self::helper::Secret;
+
+main() => void {}

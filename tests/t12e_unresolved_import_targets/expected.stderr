@@ -1,0 +1,36 @@
+error: 'Reserved' is declared multiple times in this scope
+  --> tests/t12e_unresolved_import_targets/t12e_unresolved_import_targets.omg:15:1
+   |
+11 | import self::helper::{ Present, Absent as Reserved };
+   |                                 ------------------ `Reserved` first declared here
+...
+15 | alias Reserved = i32;
+   | ^^^^^^^^^^^^^^^^^^^^^ `Reserved` declared again here
+   |
+   = note: this declaration context requires each name to be declared once
+
+error: cannot find 'Missing' in module 't12e_unresolved_import_targets::helper'
+ --> tests/t12e_unresolved_import_targets/t12e_unresolved_import_targets.omg:4:1
+  |
+4 | import self::helper::Missing;
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not found in `t12e_unresolved_import_targets::helper`
+
+error: cannot find 'Gone' in module 't12e_unresolved_import_targets::helper'
+ --> tests/t12e_unresolved_import_targets/t12e_unresolved_import_targets.omg:7:1
+  |
+7 | import self::helper::Gone as Renamed;
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not found in `t12e_unresolved_import_targets::helper`
+
+error: cannot find 'Absent' in module 't12e_unresolved_import_targets::helper'
+  --> tests/t12e_unresolved_import_targets/t12e_unresolved_import_targets.omg:11:33
+   |
+11 | import self::helper::{ Present, Absent as Reserved };
+   |                                 ^^^^^^^^^^^^^^^^^^ not found in `t12e_unresolved_import_targets::helper`
+
+error: 't12e_unresolved_import_targets::helper::Secret' is not visible here
+  --> tests/t12e_unresolved_import_targets/t12e_unresolved_import_targets.omg:18:1
+   |
+18 | import self::helper::Secret;
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not visible from this module
+
+error: could not compile the program due to 5 previous errors

@@ -183,9 +183,20 @@ fn anchored_expression_path_parses() {
 // `ImportStmt::leaves` is the flat binding view every consumer uses.
 
 fn parse_errors(source: &str) -> Vec<String> {
+    parse_errors_with_spans(source)
+        .into_iter()
+        .map(|(message, _)| message)
+        .collect()
+}
+
+/// Each rejection as `(message, the source text it points at)`.
+fn parse_errors_with_spans(source: &str) -> Vec<(String, String)> {
     match SourceModule::parse(source) {
         Ok(_) => panic!("expected this import to be rejected"),
-        Err(errors) => errors.iter().map(ToString::to_string).collect(),
+        Err(errors) => errors
+            .iter()
+            .map(|e| (e.to_string(), source[e.span.start..e.span.end].to_string()))
+            .collect(),
     }
 }
 
@@ -441,6 +452,20 @@ fn renaming_a_group_prefix_is_rejected() {
             .iter()
             .any(|e| e.contains("only a complete import binding"))
     );
+}
+
+#[test]
+fn renaming_a_group_prefix_points_at_the_as() {
+    for source in [
+        "import foo as bar::{ Thing };",
+        "import thing::{ sub as other::{ A } };",
+    ] {
+        let (_, spelling) = parse_errors_with_spans(source)
+            .into_iter()
+            .find(|(message, _)| message.contains("only a complete import binding"))
+            .expect("expected a prefix-rename rejection");
+        assert_eq!(spelling, "as", "in {source:?}");
+    }
 }
 
 #[test]
