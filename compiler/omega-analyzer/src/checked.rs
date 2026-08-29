@@ -225,7 +225,7 @@ pub struct CheckedInlineAsm {
 pub struct CheckedAsmDescriptor {
     pub span: Span,
     /// The source `$name` this descriptor is reachable by, when one can be
-    /// inferred (`reg(x)`/`reg(&x)`/`reg(&mut x)` -> `x`; `const(NAME)` ->
+    /// inferred (`reg(x)`/`reg(&x)`/`reg(&mut x)` -> `x`; `comp(NAME)` ->
     /// `NAME`). `clobber` descriptors are never bindable and always `None`.
     pub binding_name: Option<Ident>,
     pub kind: CheckedAsmDescriptorKind,
@@ -237,7 +237,7 @@ pub enum CheckedAsmDescriptorKind {
         expr: CheckedExprNode,
         physical: Option<String>,
     },
-    Const {
+    Comp {
         text: String,
     },
     Clobber {

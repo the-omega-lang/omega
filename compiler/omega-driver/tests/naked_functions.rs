@@ -120,12 +120,12 @@ fn naked_with_explicit_empty_parens_accepted() {
 }
 
 #[test]
-fn naked_const_and_clobber_descriptors_accepted() {
+fn naked_comp_and_clobber_descriptors_accepted() {
     TestPackage::new(
         "comp MAGIC := 123i32;\n\
          @naked\n\
          get_magic() => i32 {\n\
-             asm(const(MAGIC), clobber(\"rax\")) => {\n\
+             asm(comp(MAGIC), clobber(\"rax\")) => {\n\
                  mov eax, $MAGIC\n\
                  ret\n\
              }\n\
@@ -157,7 +157,7 @@ fn naked_params_are_kept_in_signature_but_produce_no_unused_warning() {
         "comp MAGIC := 123i32;\n\
          @naked\n\
          get_magic(x: i32) => i32 {\n\
-             asm(const(MAGIC)) => {\n\
+             asm(comp(MAGIC)) => {\n\
                  mov eax, $MAGIC\n\
                  ret\n\
              }\n\

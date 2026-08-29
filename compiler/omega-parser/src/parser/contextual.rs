@@ -21,10 +21,9 @@ pub const IDENT: &str = "ident";
 pub const PATH: &str = "path";
 pub const ASM: &str = "asm";
 pub const REG: &str = "reg";
-pub const CONST: &str = "const";
 pub const CLOBBER: &str = "clobber";
 
 pub const ALL: &[&str] = &[
     MUT, COMP, SELF, REVEAL, SIZEOF, IN, AS, EXPOSED, SHARED, HIDDEN, MARKER, GAP, GLUE, MEET,
-    PRIMITIVE, ROOT, SUPER, EXPR, TYPE, IDENT, PATH, ASM, REG, CONST, CLOBBER,
+    PRIMITIVE, ROOT, SUPER, EXPR, TYPE, IDENT, PATH, ASM, REG, CLOBBER,
 ];

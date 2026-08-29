@@ -28,7 +28,7 @@ fn errors(source: &str) -> Vec<ParseErrorKind> {
 #[test]
 fn asm_with_all_descriptor_forms_parses() {
     let stmts = body_statements(
-        "f() => void { asm(reg(x), reg(y, \"rcx\"), const(SIZE), clobber(\"rax\")) => { nop } }",
+        "f() => void { asm(reg(x), reg(y, \"rcx\"), comp(SIZE), clobber(\"rax\")) => { nop } }",
     );
     let Statement::InlineAsm(asm) = &stmts[0] else {
         panic!("expected an inline-asm statement, got {:?}", stmts[0]);
@@ -46,8 +46,8 @@ fn asm_with_all_descriptor_forms_parses() {
         panic!("expected a physical-register reg descriptor");
     };
     assert_eq!(reg, "rcx");
-    let AsmDescriptorKind::Const { ref name, .. } = asm.descriptors[2].kind else {
-        panic!("expected a const descriptor");
+    let AsmDescriptorKind::Comp { ref name, .. } = asm.descriptors[2].kind else {
+        panic!("expected a comp descriptor");
     };
     assert_eq!(name.as_ref(), "SIZE");
     let AsmDescriptorKind::Clobber { ref register } = asm.descriptors[3].kind else {

@@ -52,7 +52,7 @@ fn gap_function_hir_span_is_its_signature() {
 
 #[test]
 fn inline_asm_lowers_descriptors_and_raw_body_in_source_order() {
-    let source = "f() => void { asm(reg(x), const(SIZE), clobber(\"rax\")) => { mov $x, $SIZE } }";
+    let source = "f() => void { asm(reg(x), comp(SIZE), clobber(\"rax\")) => { mov $x, $SIZE } }";
     let hir = lower(source);
     let HirItem::FunctionDefinition(f) = &hir.items[0] else {
         panic!("expected a function");
@@ -67,7 +67,7 @@ fn inline_asm_lowers_descriptors_and_raw_body_in_source_order() {
     ));
     assert!(matches!(
         asm.descriptors[1].kind,
-        HirAsmDescriptorKind::Const { .. }
+        HirAsmDescriptorKind::Comp { .. }
     ));
     assert!(matches!(
         asm.descriptors[2].kind,

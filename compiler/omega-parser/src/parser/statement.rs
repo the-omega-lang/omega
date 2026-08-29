@@ -427,13 +427,13 @@ fn parse_asm_descriptor(p: &mut Parser) -> Option<AsmDescriptorNode> {
                 span: start.to(p.last_span()),
             })
         }
-        TokenKind::Ident(_) if p.at_contextual(contextual::CONST) => {
+        TokenKind::Ident(_) if p.at_contextual(contextual::COMP) => {
             p.advance();
             p.expect(&TokenKind::LParen, "'('");
             let (name, origin) = p.expect_ident_with_origin()?;
             p.expect(&TokenKind::RParen, "')'");
             Some(AsmDescriptorNode {
-                kind: AsmDescriptorKind::Const { name, origin },
+                kind: AsmDescriptorKind::Comp { name, origin },
                 span: start.to(p.last_span()),
             })
         }
@@ -449,7 +449,7 @@ fn parse_asm_descriptor(p: &mut Parser) -> Option<AsmDescriptorNode> {
         }
         _ => {
             p.error(ParseErrorKind::Expected {
-                expected: "'reg', 'const', or 'clobber'",
+                expected: "'reg', 'comp', or 'clobber'",
                 found: p.peek().describe(),
             });
             None

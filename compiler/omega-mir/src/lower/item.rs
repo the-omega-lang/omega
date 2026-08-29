@@ -252,10 +252,10 @@ fn lower_naked_body(body: CheckedBlock) -> MirInlineAsm {
             CheckedAsmDescriptorKind::Reg { .. } => {
                 unreachable!("analyzer rejects 'reg' descriptors inside a naked function's asm")
             }
-            CheckedAsmDescriptorKind::Const { text } => {
+            CheckedAsmDescriptorKind::Comp { text } => {
                 operands.push(MirAsmOperand {
                     binding_name: descriptor.binding_name,
-                    kind: MirAsmOperandKind::Const { text },
+                    kind: MirAsmOperandKind::Comp { text },
                 });
             }
             CheckedAsmDescriptorKind::Clobber { register } => clobbers.push(register),

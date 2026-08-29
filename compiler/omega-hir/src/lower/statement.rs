@@ -106,7 +106,7 @@ impl Lowerer {
                 expr: self.lower_expr(expr),
                 physical: physical.clone(),
             },
-            AsmDescriptorKind::Const { name, origin } => HirAsmDescriptorKind::Const {
+            AsmDescriptorKind::Comp { name, origin } => HirAsmDescriptorKind::Comp {
                 name: name.clone(),
                 origin: *origin,
             },

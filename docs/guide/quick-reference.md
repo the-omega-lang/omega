@@ -299,7 +299,7 @@ asm(reg(&mut x, "rcx"), reg(y)) => {
 }
 ```
 
-`reg(expr)` is a by-value snapshot with no implicit writeback; mutate Omega storage explicitly with `reg(&mut x)`. `const(NAME)` substitutes a `comp` value as literal assembler text. The body is raw backend assembly (X86/X86-64 uses Intel syntax), not Omega syntax -- full rules, including `$$`/`clobber`/dialect/optimization-opacity, are in [`../language/inline-assembly.md`](../language/inline-assembly.md).
+`reg(expr)` is a by-value snapshot with no implicit writeback; mutate Omega storage explicitly with `reg(&mut x)`. `comp(NAME)` substitutes a `comp` value as literal assembler text. The body is raw backend assembly (X86/X86-64 uses Intel syntax), not Omega syntax -- full rules, including `$$`/`clobber`/dialect/optimization-opacity, are in [`../language/inline-assembly.md`](../language/inline-assembly.md).
 
 A `@naked` function's body is exactly one `asm` statement that owns the whole function, with no Omega-generated prologue/epilogue:
 

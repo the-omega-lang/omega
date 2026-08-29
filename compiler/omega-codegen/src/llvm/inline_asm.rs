@@ -9,18 +9,18 @@ use omega_mir::{MirAsmOperandKind, MirInlineAsm};
 use std::collections::HashMap;
 
 /// What a source `$name`/`$N` binding resolves to once operands have been
-/// lowered: a `reg` becomes an LLVM template slot number, a `const` becomes
+/// lowered: a `reg` becomes an LLVM template slot number, a `comp` becomes
 /// its pre-rendered literal text (computed once by the analyzer).
 enum Resolution {
     Reg(usize),
-    ConstText(String),
+    CompText(String),
 }
 
 impl Resolution {
     fn text(&self) -> std::borrow::Cow<'_, str> {
         match self {
             Resolution::Reg(index) => std::borrow::Cow::Owned(format!("${index}")),
-            Resolution::ConstText(text) => std::borrow::Cow::Borrowed(text),
+            Resolution::CompText(text) => std::borrow::Cow::Borrowed(text),
         }
     }
 }
@@ -65,7 +65,7 @@ impl<'ctx> Codegen<'ctx> {
                     });
                     Resolution::Reg(index)
                 }
-                MirAsmOperandKind::Const { text } => Resolution::ConstText(text.clone()),
+                MirAsmOperandKind::Comp { text } => Resolution::CompText(text.clone()),
             };
             if let Some(name) = &operand.binding_name {
                 named.insert(name.as_ref().to_string(), clone_resolution(&resolution));
@@ -138,7 +138,7 @@ impl<'ctx> Codegen<'ctx> {
 fn clone_resolution(resolution: &Resolution) -> Resolution {
     match resolution {
         Resolution::Reg(index) => Resolution::Reg(*index),
-        Resolution::ConstText(text) => Resolution::ConstText(text.clone()),
+        Resolution::CompText(text) => Resolution::CompText(text.clone()),
     }
 }
 

@@ -189,7 +189,7 @@ HIR remains close to syntax. It still carries unresolved:
 
 This is intentional. HIR is an **identity + structural normalization boundary**, not a typed IR.
 
-`HirStmt::InlineAsm` follows the same rule: it carries the raw asm body text and per-descriptor source structure (spans, optional physical-register strings, `reg` expressions still HIR-typed for later analysis) but does no target-syntax interpretation. Semantic analysis owns type-checking `reg` expressions, resolving `const` to a `comp` value, and validating `$name`/`$N` source bindings against the descriptor list.
+`HirStmt::InlineAsm` follows the same rule: it carries the raw asm body text and per-descriptor source structure (spans, optional physical-register strings, `reg` expressions still HIR-typed for later analysis) but does no target-syntax interpretation. Semantic analysis owns type-checking `reg` expressions, resolving `comp` descriptors to a `comp` value, and validating `$name`/`$N` source bindings against the descriptor list.
 
 ## Places
 

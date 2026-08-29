@@ -110,7 +110,7 @@ pub enum AsmDescriptorKind {
         expr: ExpressionNode,
         physical: Option<String>,
     },
-    Const {
+    Comp {
         name: Ident,
         origin: Origin,
     },

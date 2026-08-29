@@ -839,14 +839,14 @@ impl AnalysisErrorKind {
             Self::AsmRegNotOneRegisterOperand { .. } => d
                 .with_label(span, "cannot occupy a single register")
                 .with_help("pass an aggregate through 'reg(&x)'/'reg(&mut x)' instead of by value"),
-            Self::AsmConstNotComp => d
+            Self::AsmCompNotCompBinding => d
                 .with_label(span, "not a 'comp' binding")
-                .with_help("'const(...)' only substitutes a compile-time-known 'comp' value"),
-            Self::AsmConstUnsupportedShape => {
+                .with_help("'comp(...)' only substitutes a compile-time-known 'comp' value"),
+            Self::AsmCompUnsupportedShape => {
                 d.with_label(span, "cannot render this value as assembler text")
             }
             Self::AsmUnknownBinding { .. } => {
-                d.with_label(span, "no 'reg'/'const' descriptor matches this binding")
+                d.with_label(span, "no 'reg'/'comp' descriptor matches this binding")
             }
             Self::AsmAmbiguousBinding { .. } => {
                 d.with_label(span, "more than one descriptor infers this name")
@@ -859,7 +859,7 @@ impl AnalysisErrorKind {
                 .with_help("a '@naked' function's body must contain nothing but a single 'asm(...) => { ... }' statement"),
             Self::AsmRegInNakedFunction => d
                 .with_label(span, "'reg' materializes a runtime value, which is not allowed here")
-                .with_help("use 'const(...)' for compile-time text or 'clobber(...)' for register metadata instead"),
+                .with_help("use 'comp(...)' for compile-time text or 'clobber(...)' for register metadata instead"),
         }
     }
 }

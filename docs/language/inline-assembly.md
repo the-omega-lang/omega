@@ -6,7 +6,7 @@
 asm(
     reg(<expr>),
     reg(<expr>, "<physical register>"),
-    const(<comp binding>),
+    comp(<comp binding>),
     clobber("<physical register>"),
     ...
 ) => {
@@ -21,11 +21,11 @@ asm-statement = "asm", "(", [ asm-descriptor, { ",", asm-descriptor }, [ "," ] ]
                 "=>", "{", asm-body, "}" ;
 
 asm-descriptor = "reg", "(", expression, [ ",", string-literal ], ")"
-                | "const", "(", identifier, ")"
+                | "comp", "(", identifier, ")"
                 | "clobber", "(", string-literal, ")" ;
 ```
 
-`asm`, `reg`, `const`, and `clobber` are contextual: they are ordinary identifiers everywhere else and only acquire meaning as the head of an asm statement or descriptor. See [`lexical-structure.md`](lexical-structure.md#contextual-keywords).
+`asm`, `reg`, `comp`, and `clobber` are contextual: they are ordinary identifiers everywhere else and only acquire meaning as the head of an asm statement or descriptor. See [`lexical-structure.md`](lexical-structure.md#contextual-keywords).
 
 `asm-body` is **not Omega syntax**. Once the outer `asm(...) => {` shape is recognized, everything up to the matching outer `}` is captured as raw text for the target assembler, using structural brace-depth tracking only (nested `{`/`}` — for example ARM register lists or LLVM-style `${...}` forms — stay balanced and do not end the block early). Omega comment syntax (`#`, `##`) does not exist inside the body; `#`, `;`, `//`, register names, mnemonics, and all other punctuation belong exclusively to the target assembler's own syntax and are forwarded unchanged.
 
@@ -35,14 +35,14 @@ Like other block-shaped statements, `asm(...) => { ... }` needs no trailing semi
 
 - **`reg(expr)`** evaluates `expr` by value and exposes the result through exactly one backend register operand, bound in the body as `$<name>` or by position.
 - **`reg(expr, "phys")`** additionally requests a specific physical register (for example `"rcx"`, `"x0"`). Omega does not validate that the string names a real register for the target; the backend/assembler does.
-- **`const(name)`** exposes a named `comp` binding as assembler-visible immediate text. It performs no runtime evaluation and reserves no register.
+- **`comp(name)`** exposes a named `comp` binding as assembler-visible immediate text. It performs no runtime evaluation and reserves no register.
 - **`clobber("phys")`** declares a physical register or piece of machine state that the body destroys without receiving a value through it. It carries no input value, no output value, and generates no instruction.
 
-Runtime `reg` expressions are evaluated exactly once, left to right, in descriptor order. `const` and `clobber` descriptors never evaluate anything at runtime.
+Runtime `reg` expressions are evaluated exactly once, left to right, in descriptor order. `comp` and `clobber` descriptors never evaluate anything at runtime.
 
 ## Operand bindings
 
-Inside the body, `$name` refers to the `reg`/`const` descriptor whose expression is the obvious named source (`reg(x)`, `reg(&x)`, `const(SIZE)`); `$N` refers to the zero-based position of a `reg`/`const` descriptor (never a `clobber`) among the bindable descriptors, for expressions with no usable inferred name. Omega rewrites `$name`/`$N` occurrences to whatever the backend needs — an LLVM template slot for a `reg`, or literal constant text for a `const` — without parsing the surrounding instruction.
+Inside the body, `$name` refers to the `reg`/`comp` descriptor whose expression is the obvious named source (`reg(x)`, `reg(&x)`, `comp(SIZE)`); `$N` refers to the zero-based position of a `reg`/`comp` descriptor (never a `clobber`) among the bindable descriptors, for expressions with no usable inferred name. Omega rewrites `$name`/`$N` occurrences to whatever the backend needs — an LLVM template slot for a `reg`, or literal constant text for a `comp` — without parsing the surrounding instruction.
 
 `$$` is the source escape for one literal `$` in the final target assembly and is recognized before `$name`/`$N` scanning, so an escaped dollar is never misread as an operand binding.
 
@@ -53,7 +53,7 @@ The binding namespace is defined purely by source descriptor order; it is indepe
 - `reg(expr)` is a **by-value snapshot with no implicit writeback**. The body may freely overwrite the register that carries the value; the resulting register contents are discarded once the `asm` statement completes. To mutate Omega storage, pass its address explicitly: `reg(&mut x)`.
 - `reg(&x)` and `reg(&mut x)` are equivalent asm operands; there is no backend mutability distinction between them, and neither is treated as proof that the pointee is initialized. `asm` never observes or checks the body, so it cannot verify that the body actually writes through a mutable pointer it was given.
 - `reg(expr)` preserves the expression's real scalar/pointer-like machine type: no implicit cast to `usize`, no aggregate decomposition, no ABI flattening, and no memory fallback. Values that cannot occupy a single register on the selected target (aggregates, fat/multi-word language values, `void`/`never`) are rejected before code generation; final target-specific register representability (for example whether a given target has a floating-point register class at all) is a backend decision reported as an ordinary compiler error.
-- `const(name)` only accepts a named `comp` binding and only when its value converts deterministically to assembler text. It is textual substitution, not a hidden runtime argument; an immediate-value prefix required by the target syntax (such as `#$NAME`) is written by the user around the binding.
+- `comp(name)` only accepts a named `comp` binding and only when its value converts deterministically to assembler text. It is textual substitution, not a hidden runtime argument; an immediate-value prefix required by the target syntax (such as `#$NAME`) is written by the user around the binding.
 
 ## Clobbers
 
@@ -79,7 +79,7 @@ An `asm` statement must fall through to the next Omega statement normally: it mu
 
 ### Naked functions
 
-The sole `asm` statement inside a successfully validated `@naked` function (see [`functions.md`](functions.md#naked-functions)) is the one exception to the function contract above: it *is* the entire function implementation, so it owns control flow completely and may return from, tail-jump out of, or otherwise not fall through the surrounding Omega function. A naked function's `asm` is additionally restricted to `const(...)` and `clobber(...)` descriptors -- `reg(...)` is rejected there because materializing a runtime register operand would give the backend permission/need to emit setup/teardown instructions around the body, contradicting nakedness. Every other asm rule (opaque instruction text, target dialect, `$` binding, constant substitution, no optimization/rewrite of the body) still applies unchanged.
+The sole `asm` statement inside a successfully validated `@naked` function (see [`functions.md`](functions.md#naked-functions)) is the one exception to the function contract above: it *is* the entire function implementation, so it owns control flow completely and may return from, tail-jump out of, or otherwise not fall through the surrounding Omega function. A naked function's `asm` is additionally restricted to `comp(...)` and `clobber(...)` descriptors -- `reg(...)` is rejected there because materializing a runtime register operand would give the backend permission/need to emit setup/teardown instructions around the body, contradicting nakedness. Every other asm rule (opaque instruction text, target dialect, `$` binding, constant substitution, no optimization/rewrite of the body) still applies unchanged.
 
 `asm goto`-style control transfer out of an ordinary (non-naked) asm block remains a separate, unimplemented feature.
 

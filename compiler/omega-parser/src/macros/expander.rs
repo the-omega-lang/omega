@@ -557,7 +557,7 @@ impl<'a> Expander<'a> {
 
     /// The raw asm body is opaque to macro expansion; only the ordinary
     /// Omega expression inside a `reg(...)` descriptor may reference macro
-    /// parameters, since `const`/`clobber` carry no expression.
+    /// parameters, since `comp`/`clobber` carry no expression.
     fn expand_asm_descriptor(
         &mut self,
         descriptor: AsmDescriptorNode,
@@ -568,7 +568,7 @@ impl<'a> Expander<'a> {
                 expr: self.expand_expr(expr)?,
                 physical,
             },
-            other @ (AsmDescriptorKind::Const { .. } | AsmDescriptorKind::Clobber { .. }) => other,
+            other @ (AsmDescriptorKind::Comp { .. } | AsmDescriptorKind::Clobber { .. }) => other,
         };
         Ok(AsmDescriptorNode { kind, span })
     }

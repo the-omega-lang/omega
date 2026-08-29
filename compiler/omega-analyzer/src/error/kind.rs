@@ -550,8 +550,8 @@ pub enum AnalysisErrorKind {
     AsmRegNotOneRegisterOperand {
         r#type: ResolvedType,
     },
-    AsmConstNotComp,
-    AsmConstUnsupportedShape,
+    AsmCompNotCompBinding,
+    AsmCompUnsupportedShape,
     AsmUnknownBinding {
         text: String,
     },
@@ -1391,15 +1391,15 @@ impl fmt::Display for AnalysisErrorKind {
                 "'reg' operand of type '{}' cannot occupy a single register",
                 r#type
             ),
-            Self::AsmConstNotComp => {
-                write!(f, "'const' in 'asm' must name a 'comp' binding")
+            Self::AsmCompNotCompBinding => {
+                write!(f, "'comp(...)' in 'asm' must name a 'comp' binding")
             }
-            Self::AsmConstUnsupportedShape => write!(
+            Self::AsmCompUnsupportedShape => write!(
                 f,
-                "'const' in 'asm' only supports values that convert deterministically to assembler text"
+                "'comp(...)' in 'asm' only supports values that convert deterministically to assembler text"
             ),
             Self::AsmUnknownBinding { text } => {
-                write!(f, "'{text}' does not refer to any 'reg'/'const' descriptor")
+                write!(f, "'{text}' does not refer to any 'reg'/'comp' descriptor")
             }
             Self::AsmAmbiguousBinding { text } => write!(
                 f,

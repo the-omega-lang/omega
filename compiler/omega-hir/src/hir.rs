@@ -380,7 +380,7 @@ pub enum HirAsmDescriptorKind {
         expr: HirExprNode,
         physical: Option<String>,
     },
-    Const {
+    Comp {
         name: Ident,
         origin: Origin,
     },

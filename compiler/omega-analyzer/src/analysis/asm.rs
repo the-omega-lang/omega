@@ -127,8 +127,8 @@ impl<'r> Analyzer<'r> {
                     },
                 })
             }
-            HirAsmDescriptorKind::Const { name, origin } => {
-                // Reuse ordinary identifier-place resolution so `const(NAME)`
+            HirAsmDescriptorKind::Comp { name, origin } => {
+                // Reuse ordinary identifier-place resolution so `comp(NAME)`
                 // goes through the same `Storage::Comp` -> `CheckedExpr::Const`
                 // path a plain `comp` identifier expression would.
                 let synthetic = HirExprNode {
@@ -155,22 +155,22 @@ impl<'r> Analyzer<'r> {
                     self.error(
                         descriptor.id,
                         descriptor.span,
-                        AnalysisErrorKind::AsmConstNotComp,
+                        AnalysisErrorKind::AsmCompNotCompBinding,
                     );
                     return None;
                 };
-                let Some(text) = Self::render_asm_const(&value) else {
+                let Some(text) = Self::render_asm_comp(&value) else {
                     self.error(
                         descriptor.id,
                         descriptor.span,
-                        AnalysisErrorKind::AsmConstUnsupportedShape,
+                        AnalysisErrorKind::AsmCompUnsupportedShape,
                     );
                     return None;
                 };
                 Some(CheckedAsmDescriptor {
                     span: descriptor.span,
                     binding_name: Some(name.clone()),
-                    kind: CheckedAsmDescriptorKind::Const { text },
+                    kind: CheckedAsmDescriptorKind::Comp { text },
                 })
             }
             HirAsmDescriptorKind::Clobber { register } => Some(CheckedAsmDescriptor {
@@ -221,7 +221,7 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    fn render_asm_const(value: &ConstValue) -> Option<String> {
+    fn render_asm_comp(value: &ConstValue) -> Option<String> {
         match value {
             ConstValue::Number(NumberValue::Signed(n)) => Some(n.to_string()),
             ConstValue::Number(NumberValue::Unsigned(n)) => Some(n.to_string()),
@@ -229,7 +229,7 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// Bindable descriptors are `reg`/`const` in source order; `clobber`
+    /// Bindable descriptors are `reg`/`comp` in source order; `clobber`
     /// never participates in `$name`/`$N` binding.
     fn validate_asm_bindings(
         &mut self,

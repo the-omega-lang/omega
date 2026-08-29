@@ -420,7 +420,7 @@ asm-statement = "asm", "(", [ asm-descriptor, { ",", asm-descriptor }, [ "," ] ]
                 "=>", "{", asm-body, "}" ;
 
 asm-descriptor = "reg", "(", expression, [ ",", string-literal ], ")"
-                | "const", "(", identifier, ")"
+                | "comp", "(", identifier, ")"
                 | "clobber", "(", string-literal, ")" ;
 ```
 

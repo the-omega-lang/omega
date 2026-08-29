@@ -82,7 +82,7 @@ fn all_descriptor_forms_type_check() {
             comp SIZE := 4i32; \
             mut x : i32 = 0; \
             y := 1i32; \
-            asm(reg(&mut x, \"rcx\"), reg(y), const(SIZE), clobber(\"rax\")) => { nop } \
+            asm(reg(&mut x, \"rcx\"), reg(y), comp(SIZE), clobber(\"rax\")) => { nop } \
         }",
     )
     .expect_ok();
@@ -115,14 +115,14 @@ fn reg_by_address_of_an_aggregate_is_still_allowed() {
 }
 
 #[test]
-fn const_of_a_non_comp_binding_is_rejected() {
+fn comp_descriptor_of_a_non_comp_binding_is_rejected() {
     let source = "entry_fn() => void { \
         x := 1i32; \
-        asm(const(x)) => { nop } \
+        asm(comp(x)) => { nop } \
     }";
     assert!(has_analysis_error(
         &TestPackage::new(source).expect_errors(),
-        |kind| matches!(kind, AnalysisErrorKind::AsmConstNotComp)
+        |kind| matches!(kind, AnalysisErrorKind::AsmCompNotCompBinding)
     ));
 }
 

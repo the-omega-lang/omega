@@ -72,7 +72,7 @@ pub enum MirExpr {
 
 #[derive(Debug, Clone)]
 pub struct MirInlineAsm {
-    /// `reg`/`const` descriptors in source order. `clobber` never binds, so
+    /// `reg`/`comp` descriptors in source order. `clobber` never binds, so
     /// it is not represented as an operand at all -- see `clobbers` below.
     pub operands: Vec<MirAsmOperand>,
     pub clobbers: Vec<String>,
@@ -94,7 +94,7 @@ pub enum MirAsmOperandKind {
         value: MirExprNode,
         physical: Option<String>,
     },
-    Const {
+    Comp {
         text: String,
     },
 }
