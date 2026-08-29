@@ -25,20 +25,28 @@ impl TestPackage {
         ));
         let root = parent.join("main");
         fs::create_dir_all(&root).expect("create test package");
-        fs::write(root.join("main.omg"), format!("entry_fn() => i32 {{ {body} }}"))
-            .expect("write root module");
+        fs::write(
+            root.join("main.omg"),
+            format!("entry_fn() => i32 {{ {body} }}"),
+        )
+        .expect("write root module");
         Self(root)
     }
 
     fn warnings(&self) -> Vec<AnalysisWarning> {
-        Driver::new(self.0.clone(), None, Vec::<ExternRoot>::new(), Target::DEFAULT)
-            .expect("construct driver")
-            .compile(&[Ident("main".to_string())], Target::DEFAULT)
-            .expect("package should compile")
-            .warnings
-            .into_iter()
-            .map(|(_, warning)| warning)
-            .collect()
+        Driver::new(
+            self.0.clone(),
+            None,
+            Vec::<ExternRoot>::new(),
+            Target::DEFAULT,
+        )
+        .expect("construct driver")
+        .compile(&[Ident("main".to_string())], Target::DEFAULT)
+        .expect("package should compile")
+        .warnings
+        .into_iter()
+        .map(|(_, warning)| warning)
+        .collect()
     }
 }
 
