@@ -35,6 +35,15 @@ main() => void {
 	shadow := "hello";
 	println$("shadow: ", shadow);
 
+	abc := Result<i32>::Some {
+		value = 123;
+	};
+
+	a := 1;
+	b := 2;
+	c := 3;
+	test := a < b > c;
+
 	ptr := &shadow;
 	ptr2 := ptr_cast<u32>(ptr); # this should work; it currently does not.
 
