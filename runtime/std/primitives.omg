@@ -22,28 +22,28 @@ mix64(x: u64) => u64 {
 }
 
 macro signed_integer($T: type) => {
-    conform $T to Default { default() => Self { 0 } }
-    conform $T to Hash {
+    meet Default for $T { default() => Self { 0 } }
+    meet Hash for $T {
         hash(*self) => u64 { mix64(<u64>*self) }
     }
-    conform $T to Display {
+    meet Display for $T {
         fmt(*self, out: *mut spec Write) => void { write_int(out, <i64>*self, 10u32); }
     }
 }
 
 macro unsigned_integer($T: type) => {
-    conform $T to Default { default() => Self { 0 } }
-    conform $T to Hash {
+    meet Default for $T { default() => Self { 0 } }
+    meet Hash for $T {
         hash(*self) => u64 { mix64(<u64>*self) }
     }
-    conform $T to Display {
+    meet Display for $T {
         fmt(*self, out: *mut spec Write) => void { write_uint(out, <u64>*self, 10u32); }
     }
 }
 
 macro float_ops($T: type) => {
-    conform $T to Default { default() => Self { 0.0 } }
-    conform $T to Hash {
+    meet Default for $T { default() => Self { 0.0 } }
+    meet Hash for $T {
         hash(*self) => u64 {
             bits := if *self == <Self>0.0 { 0u64 }
             else if sizeof<Self> == 4 { <u64>*<*u32>self }
@@ -51,7 +51,7 @@ macro float_ops($T: type) => {
             mix64(bits)
         }
     }
-    conform $T to Display {
+    meet Display for $T {
         fmt(*self, out: *mut spec Write) => void { write_float(out, <f64>*self); }
     }
 }
@@ -71,7 +71,7 @@ unsigned_integer$(usize);
 float_ops$(f32);
 float_ops$(f64);
 
-conform str to Hash {
+meet Hash for str {
     hash(*self) => u64 {
         mut h : u64 = 0xcbf29ce484222325_u64;
         bytes := <*[]u8>self;
@@ -85,19 +85,19 @@ conform str to Hash {
     }
 }
 
-conform str to Display {
+meet Display for str {
     fmt(*self, out: *mut spec Write) => void {
         out.write(<*[]u8>self);
     }
 }
 
-conform char to Display {
+meet Display for char {
     fmt(*self, out: *mut spec Write) => void {
         write_char(out, *self);
     }
 }
 
-conform bool to Display {
+meet Display for bool {
     fmt(*self, out: *mut spec Write) => void {
         write_bool(out, *self);
     }

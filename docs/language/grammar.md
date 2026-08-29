@@ -268,8 +268,11 @@ A spec member's visibility modifier, when given, must not exceed the declaring s
 ## Conformance
 
 ```ebnf
-conformance = "conform", [ generic-parameters ], type, "to", type,
+conformance = "meet", [ generic-parameters ], spec-target, "for", conforming-target,
               "{", { conformance-method }, "}" ;
+
+spec-target       = type ;
+conforming-target = type ;
 
 conformance-method = identifier,
                      "(", [ function-parameters ], ")",
@@ -277,7 +280,7 @@ conformance-method = identifier,
                      code-block ;
 ```
 
-Explicit visibility modifiers on a `conform` block or its methods are not part of the conformance grammar; visibility is inherited according to conformance rules. See [`specs-and-conformance.md`](specs-and-conformance.md).
+The spec being met is written first and the conforming target follows `for`. Explicit visibility modifiers on a conformance block or its methods are not part of the conformance grammar; visibility is inherited according to conformance rules. See [`specs-and-conformance.md`](specs-and-conformance.md).
 
 ## Primitive extension blocks
 

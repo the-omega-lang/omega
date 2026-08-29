@@ -73,7 +73,7 @@ primitive char {
     }
 }
 
-conform char to Ord {
+meet Ord for char {
     compare(*self, other: Self) => Ordering {
         if *self < other { Ordering::Less }
         else if *self > other { Ordering::Greater }
@@ -81,7 +81,7 @@ conform char to Ord {
     }
 }
 
-conform char to Successor {
+meet Successor for char {
     successor(*self) => Option<Self> {
         cp := <u32>*self;
         if cp == 0x10FFFF_u32 { return Option<char>::None; }
@@ -90,7 +90,7 @@ conform char to Successor {
     }
 }
 
-conform char to Bounded {
+meet Bounded for char {
     min() => Self { <char>0u8 }
     # `0x10FFFF` (char::MAX) is a known-valid scalar, so it skips `from_u32`
     # -- routing it through would need an unreachable `else` with no honest

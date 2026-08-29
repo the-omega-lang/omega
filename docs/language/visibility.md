@@ -105,7 +105,7 @@ shared spec Greeter {
 
 Writing a modifier greater than the spec's own visibility (e.g. `exposed` on a member of a `shared spec`) is a compile error: a spec member can never be more visible than the spec that declares it.
 
-A function body written in a `conform` block has no visibility modifier of its own and inherits the matched requirement's effective visibility.
+A function body written in a `meet` block has no visibility modifier of its own and inherits the matched requirement's effective visibility.
 
 ```omega
 shared spec Mammal {
@@ -113,7 +113,7 @@ shared spec Mammal {
 }
 
 struct Dog {}
-conform Dog to Mammal {
+meet Mammal for Dog {
     breathe(*self) => i32 { 1 }
 }
 ```

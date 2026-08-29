@@ -94,7 +94,7 @@ fn a_default_spec_body_can_call_a_hidden_sibling_member() {
             exposed id: i32;
         }
 
-        conform Dog to Greeter {
+        meet Greeter for Dog {
             name(*self) => i32 { self.id }
         }
 

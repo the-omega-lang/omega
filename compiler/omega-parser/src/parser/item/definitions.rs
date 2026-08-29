@@ -388,10 +388,9 @@ pub(super) fn parse_glue_def(p: &mut Parser) -> Option<GlueStmt> {
 pub(super) fn parse_conform_def(p: &mut Parser) -> Option<ConformStmt> {
     p.advance();
     let generics = parse_optional_generics(p)?;
-    let target = crate::parser::r#type::parse_type(p)?;
-    // `to` is contextual: only this conformance position gives it keyword meaning.
-    p.expect_contextual(crate::parser::contextual::TO);
     let spec = crate::parser::r#type::parse_type(p)?;
+    p.expect(&TokenKind::For, "'for'");
+    let target = crate::parser::r#type::parse_type(p)?;
     p.expect(&TokenKind::LBrace, "'{'");
     let functions = parse_member_functions(p, MemberVisibility::InheritedFromSpec);
     p.expect(&TokenKind::RBrace, "'}'");

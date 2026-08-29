@@ -32,7 +32,7 @@ The word `spec` in Omega source means the interface-like language construct. “
 9. [`enums-and-pattern-matching.md`](enums-and-pattern-matching.md) — enum representation-visible semantics, construction, narrowing, matching.
 10. [`marker-types.md`](marker-types.md) — zero-sized `marker` declarations and values.
 11. [`generics.md`](generics.md) — generic declarations, bounds, inference, defaults, monomorphization semantics.
-12. [`specs-and-conformance.md`](specs-and-conformance.md) — `spec`, `conform`, blanket conformance, static/dynamic dispatch.
+12. [`specs-and-conformance.md`](specs-and-conformance.md) — `spec`, `meet`, blanket conformance, static/dynamic dispatch.
 13. [`aliases.md`](aliases.md) — `alias` declarations, generic alias templates, re-export, macro/module aliases.
 14. [`gaps-and-glue.md`](gaps-and-glue.md) — platform/runtime capability declarations and implementations.
 15. [`foreign-function-interface.md`](foreign-function-interface.md) — `foreign` bindings/functions/blocks, calling conventions, variadics, symbol control, C-facing entry/linkage contracts.

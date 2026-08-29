@@ -208,7 +208,7 @@ fn an_inherent_static_does_not_hide_a_conforming_member() {
             describe(*self) => i32;
         }
 
-        conform Thing to Described {
+        meet Described for Thing {
             describe(*self) => i32 { self.v + 1 }
         }
 

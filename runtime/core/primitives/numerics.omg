@@ -17,7 +17,7 @@ import root::range::Bounded;
 import root::range::Successor;
 
 macro signed_integer($T: type, $MAX: expr) => {
-    conform $T to Ord {
+    meet Ord for $T {
         compare(*self, other: Self) => Ordering {
             if *self < other { Ordering::Less }
             else if *self > other { Ordering::Greater }
@@ -26,13 +26,13 @@ macro signed_integer($T: type, $MAX: expr) => {
         min(*self, other: Self) => Self { if *self < other { *self } else { other } }
         max(*self, other: Self) => Self { if *self > other { *self } else { other } }
     }
-    conform $T to Successor {
+    meet Successor for $T {
         successor(*self) => Option<Self> {
             if *self == $MAX { Option<Self>::None }
             else { Option<Self>::Some { value = *self + <Self>1; } }
         }
     }
-    conform $T to Bounded {
+    meet Bounded for $T {
         min() => Self { ~$MAX }
         max() => Self { $MAX }
     }
@@ -68,7 +68,7 @@ macro signed_integer($T: type, $MAX: expr) => {
 }
 
 macro unsigned_integer($T: type, $MAX: expr) => {
-    conform $T to Ord {
+    meet Ord for $T {
         compare(*self, other: Self) => Ordering {
             if *self < other { Ordering::Less }
             else if *self > other { Ordering::Greater }
@@ -77,13 +77,13 @@ macro unsigned_integer($T: type, $MAX: expr) => {
         min(*self, other: Self) => Self { if *self < other { *self } else { other } }
         max(*self, other: Self) => Self { if *self > other { *self } else { other } }
     }
-    conform $T to Successor {
+    meet Successor for $T {
         successor(*self) => Option<Self> {
             if *self == $MAX { Option<Self>::None }
             else { Option<Self>::Some { value = *self + <Self>1; } }
         }
     }
-    conform $T to Bounded {
+    meet Bounded for $T {
         min() => Self { <Self>0 }
         max() => Self { $MAX }
     }
@@ -116,7 +116,7 @@ macro unsigned_integer($T: type, $MAX: expr) => {
 macro float_ops($T: type) => {
     # `Eq` but deliberately no `Ord`: `NaN` has no correct position in a
     # total order (see `core::cmp`).
-    conform $T to Eq {
+    meet Eq for $T {
         equals(*self, other: Self) => bool { *self == other }
     }
     primitive $T {

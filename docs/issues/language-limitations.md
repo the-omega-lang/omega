@@ -129,7 +129,7 @@ Normative chapter: [`../language/specs-and-conformance.md`](../language/specs-an
   (`VariadicSpecFunctionUnsatisfiable`): Omega has no ordinary Omega-convention
   variadic function *definitions* — only `foreign` declarations, under a
   convention that supports variadics (`c`; `sysv64` on its supported
-  targets), may be variadic — so no `conform` block or spec default could
+  targets), may be variadic — so no conformance block or spec default could
   ever supply a matching body, and nothing else in the language is scheduled
   to support `...`. Not banned forever, just unscheduled; the `is_variadic`
   plumbing behind the guard is complete, and the guard lifts the day variadic
@@ -144,7 +144,7 @@ Normative chapter: [`../language/specs-and-conformance.md`](../language/specs-an
   only the blanket/generic templates that can produce *that* spec, never
   every template matching the type; each proof pulls in precisely the
   templates it needs, so a chain of blanket derivations
-  (`conform S to A`, `conform<T: A> T to B`, `conform<T: B> T to C`)
+  (`meet A for S`, `meet<T: A> B for T`, `meet<T: B> C for T`)
   resolves in any declaration order, and a cycle is reported only when the
   goal stack closes on itself — with the chain that closes it. A bound
   *context* (conjunction members, entailed derived conformances) is

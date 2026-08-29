@@ -35,7 +35,7 @@ The following are lexed as ordinary identifiers and acquire special meaning only
 
 ```text
 mut comp self reveal sizeof in exposed shared hidden
-marker gap glue conform to primitive root super
+marker gap glue meet primitive root super
 expr type ident path
 asm reg const clobber
 ```

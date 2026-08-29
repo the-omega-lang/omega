@@ -9,7 +9,7 @@
 
 import root::cmp::Eq;
 
-conform str to Eq {
+meet Eq for str {
     equals(*self, other: Self) => bool {
         if self.size != other.size { return false; }
         a := <*[]u8>self;

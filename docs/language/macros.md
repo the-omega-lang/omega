@@ -12,7 +12,7 @@ macro signed_integer($T: type) => {
         exposed equals(*self, other: Self) => bool { *self == other }
         ...
     }
-    conform $T to Eq {}
+    meet Eq for $T {}
 }
 
 signed_integer$(i8);

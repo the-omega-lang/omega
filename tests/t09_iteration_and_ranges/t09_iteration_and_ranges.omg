@@ -10,7 +10,7 @@ struct CountUp {
 	exposed limit: i32;
 }
 
-conform CountUp to Iterator<i32> {
+meet Iterator<i32> for CountUp {
 	next(*mut self) => Option<i32> {
 		if self.current >= self.limit {
 			Option<i32>::None

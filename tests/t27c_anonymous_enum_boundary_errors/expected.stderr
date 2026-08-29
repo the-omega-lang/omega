@@ -1,7 +1,7 @@
 error: 'enum i32 | bool' has no declaration to conform
   --> tests/t27c_anonymous_enum_boundary_errors/t27c_anonymous_enum_boundary_errors.omg:13:1
    |
-13 |   conform Errors to Named {
+13 |   meet Named for Errors {
    |  _^
 14 | |     name(*self) => *str {
 15 | |         "anonymous"

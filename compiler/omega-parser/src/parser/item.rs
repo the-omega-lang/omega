@@ -145,7 +145,7 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
             Item::Glue(parse_glue_def(p)?)
         }
         TokenKind::Ident(name)
-            if name == contextual::CONFORM
+            if name == contextual::MEET
                 && matches!(
                     p.peek_at(1),
                     TokenKind::Ident(_)

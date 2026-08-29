@@ -64,7 +64,7 @@ exposed struct HashSet<T: Hash> {
 
 }
 
-conform<T: Hash> HashSet<T> to ToIterator<T> {
+meet<T: Hash> ToIterator<T> for HashSet<T> {
     to_iterator(*self) => HashSetIterator<T> {
         HashSetIterator<T> { inner = self.inner.to_iterator(); }
     }
@@ -75,7 +75,7 @@ exposed struct HashSetIterator<T> {
 
 }
 
-conform<T> HashSetIterator<T> to Iterator<T> {
+meet<T> Iterator<T> for HashSetIterator<T> {
     next(*mut self) => Option<T> {
         kv := self.inner.next();
         match kv {

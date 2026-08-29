@@ -82,7 +82,7 @@ fn bound_and_spec_qualified_dispatch_compile() {
         r#"
         exposed spec Speak { speak(*self) => i32; }
         struct Dog { exposed value: i32; }
-        conform Dog to Speak { speak(*self) => i32 { self.value } }
+        meet Speak for Dog { speak(*self) => i32 { self.value } }
 
         call_bound<T: Speak>(value: *T) => i32 { value.speak() }
         entry_fn() => i32 {
@@ -103,7 +103,7 @@ fn a_conjunction_bound_requires_every_member() {
         exposed spec A { a(*self) => i32; }
         exposed spec B { b(*self) => i32; }
         struct Half { exposed value: i32; }
-        conform Half to A { a(*self) => i32 { self.value } }
+        meet A for Half { a(*self) => i32 { self.value } }
 
         use_both<T: A + B>(value: *T) => i32 { value.a() + value.b() }
         entry_fn() => i32 {
@@ -129,9 +129,9 @@ fn a_three_way_conjunction_bound_requires_all_members() {
         exposed spec B { b(*self) => i32; }
         exposed spec C { c(*self) => i32; }
         struct Full { exposed value: i32; }
-        conform Full to A { a(*self) => i32 { self.value } }
-        conform Full to B { b(*self) => i32 { self.value } }
-        conform Full to C { c(*self) => i32 { self.value } }
+        meet A for Full { a(*self) => i32 { self.value } }
+        meet B for Full { b(*self) => i32 { self.value } }
+        meet C for Full { c(*self) => i32 { self.value } }
 
         use_all<T: A + B + C>(value: *T) => i32 { value.a() + value.b() + value.c() }
         entry_fn() => i32 {
@@ -151,8 +151,8 @@ fn a_bound_spelled_either_member_order_admits_the_same_types() {
         exposed spec A { a(*self) => i32; }
         exposed spec B { b(*self) => i32; }
         struct Full { exposed value: i32; }
-        conform Full to A { a(*self) => i32 { self.value } }
-        conform Full to B { b(*self) => i32 { self.value } }
+        meet A for Full { a(*self) => i32 { self.value } }
+        meet B for Full { b(*self) => i32 { self.value } }
 
         use_ab<T: A + B>(value: *T) => i32 { value.a() + value.b() }
         use_ba<T: B + A>(value: *T) => i32 { value.a() + value.b() }
@@ -171,7 +171,7 @@ fn a_bound_spelled_either_member_order_admits_the_same_types() {
         exposed spec A { a(*self) => i32; }
         exposed spec B { b(*self) => i32; }
         struct Half { exposed value: i32; }
-        conform Half to A { a(*self) => i32 { self.value } }
+        meet A for Half { a(*self) => i32 { self.value } }
 
         use_ba<T: B + A>(value: *T) => i32 { value.a() }
         entry_fn() => i32 {
@@ -200,7 +200,7 @@ fn a_conjunction_with_a_repeated_member_collapses_to_the_member() {
         r#"
         exposed spec A { a(*self) => i32; }
         struct S { exposed v: i32; }
-        conform S to A { a(*self) => i32 { self.v } }
+        meet A for S { a(*self) => i32 { self.v } }
 
         use_repeated<T: A + A>(x: *T) => i32 { x.a() }
         via_object(x: *spec A + A) => i32 { x.a() }
@@ -222,12 +222,12 @@ fn a_blanket_bounded_on_a_conjunction_applies_conditionally() {
         exposed spec A { a(*self) => i32; }
         exposed spec B { b(*self) => i32; }
         exposed spec Sum { sum(*self) => i32; }
-        conform<T: A + B> T to Sum {
+        meet<T: A + B> Sum for T {
             sum(*self) => i32 { self.a() + self.b() }
         }
         struct Full { exposed value: i32; }
-        conform Full to A { a(*self) => i32 { self.value } }
-        conform Full to B { b(*self) => i32 { self.value } }
+        meet A for Full { a(*self) => i32 { self.value } }
+        meet B for Full { b(*self) => i32 { self.value } }
 
         use_sum<T: Sum>(value: *T) => i32 { value.sum() }
         entry_fn() => i32 {
@@ -248,8 +248,8 @@ fn same_named_spec_functions_keep_their_own_spec_identity() {
         exposed spec A { tag(*self) => i32; }
         exposed spec B { tag(*self) => i32; }
         struct Thing { exposed a: i32; exposed b: i32; }
-        conform Thing to A { tag(*self) => i32 { self.a } }
-        conform Thing to B { tag(*self) => i32 { self.b } }
+        meet A for Thing { tag(*self) => i32 { self.a } }
+        meet B for Thing { tag(*self) => i32 { self.b } }
 
         via_a<T: A>(x: *T) => i32 { x.tag() }
         via_b<T: B>(x: *T) => i32 { x.tag() }
@@ -271,8 +271,8 @@ fn a_colliding_method_on_a_conjunction_object_is_ambiguous() {
         exposed spec A { tag(*self) => i32; }
         exposed spec B { tag(*self) => i32; }
         struct Thing { exposed a: i32; exposed b: i32; }
-        conform Thing to A { tag(*self) => i32 { self.a } }
-        conform Thing to B { tag(*self) => i32 { self.b } }
+        meet A for Thing { tag(*self) => i32 { self.a } }
+        meet B for Thing { tag(*self) => i32 { self.b } }
 
         via_ab(x: *spec A + B) => i32 { x.tag() }
         entry_fn() => i32 {
@@ -299,8 +299,8 @@ fn a_narrowing_cast_disambiguates_a_conjunction_object() {
         exposed spec A { tag(*self) => i32; }
         exposed spec B { tag(*self) => i32; }
         struct Thing { exposed a: i32; exposed b: i32; }
-        conform Thing to A { tag(*self) => i32 { self.a } }
-        conform Thing to B { tag(*self) => i32 { self.b } }
+        meet A for Thing { tag(*self) => i32 { self.a } }
+        meet B for Thing { tag(*self) => i32 { self.b } }
 
         via_a(x: *spec A + B) => i32 { (<*spec A>x).tag() }
         via_b(x: *spec A + B) => i32 { (<*spec B>x).tag() }
@@ -322,8 +322,8 @@ fn a_spec_object_type_is_identical_regardless_of_member_order() {
         exposed spec A { a(*self) => i32; }
         exposed spec B { b(*self) => i32; }
         struct Full { exposed value: i32; }
-        conform Full to A { a(*self) => i32 { self.value } }
-        conform Full to B { b(*self) => i32 { self.value } }
+        meet A for Full { a(*self) => i32 { self.value } }
+        meet B for Full { b(*self) => i32 { self.value } }
 
         via_a_b(x: *spec A + B) => i32 { x.a() + x.b() }
         via_b_a(x: *spec B + A) => i32 { x.a() + x.b() }
@@ -347,9 +347,9 @@ fn widening_and_unrelated_spec_object_casts_are_rejected() {
         exposed spec B { tag(*self) => i32; }
         exposed spec C { tag(*self) => i32; }
         struct Thing { exposed a: i32; }
-        conform Thing to A { tag(*self) => i32 { self.a } }
-        conform Thing to B { tag(*self) => i32 { self.a } }
-        conform Thing to C { tag(*self) => i32 { self.a } }
+        meet A for Thing { tag(*self) => i32 { self.a } }
+        meet B for Thing { tag(*self) => i32 { self.a } }
+        meet C for Thing { tag(*self) => i32 { self.a } }
 
         widen(x: *spec A) => *spec A + B { <*spec A + B>x }
         entry_fn() => i32 {
@@ -372,11 +372,11 @@ fn a_fully_qualified_spec_call_resolves_an_ambiguous_static() {
         exposed spec P { make() => Self; label(*self) => i32; }
         exposed spec Q { make() => Self; label(*self) => i32; }
         struct S { exposed v: i32; }
-        conform S to P {
+        meet P for S {
             make() => Self { S { v = 1; } }
             label(*self) => i32 { self.v }
         }
-        conform S to Q {
+        meet Q for S {
             make() => Self { S { v = 2; } }
             label(*self) => i32 { self.v }
         }
@@ -401,8 +401,8 @@ fn an_ambiguous_conforming_static_names_the_candidates_and_their_spelling() {
         exposed spec P { make() => Self; }
         exposed spec Q { make() => Self; }
         struct S { exposed v: i32; }
-        conform S to P { make() => Self { S { v = 1; } } }
-        conform S to Q { make() => Self { S { v = 2; } } }
+        meet P for S { make() => Self { S { v = 1; } } }
+        meet Q for S { make() => Self { S { v = 2; } } }
         entry_fn() => i32 { (S::make()).v }
         "#,
     );
@@ -421,7 +421,7 @@ fn fully_qualified_spec_call_negatives_name_their_cause() {
         exposed spec P { make() => Self; }
         struct S { exposed v: i32; }
         struct NotASpec { exposed v: i32; }
-        conform S to P { make() => Self { S { v = 1; } } }
+        meet P for S { make() => Self { S { v = 1; } } }
         entry_fn() => i32 { (<S : NotASpec>::make()).v }
         "#,
     );
@@ -459,7 +459,7 @@ fn fully_qualified_spec_call_negatives_name_their_cause() {
         r#"
         exposed spec P { make() => Self; }
         struct S { exposed v: i32; }
-        conform S to P { make() => Self { S { v = 1; } } }
+        meet P for S { make() => Self { S { v = 1; } } }
         entry_fn() => i32 { (<S : P>::nonexistent()).v }
         "#,
     );
@@ -480,7 +480,7 @@ fn a_receiverless_spec_call_without_an_expected_type_says_self_is_undetermined()
         r#"
         exposed spec Bounded { min() => Self; max() => Self; }
         struct S { exposed v: i32; }
-        conform S to Bounded {
+        meet Bounded for S {
             min() => Self { S { v = 0; } }
             max() => Self { S { v = 1; } }
         }
@@ -508,7 +508,7 @@ fn a_receiverless_spec_call_with_a_non_self_return_is_uninferable() {
         r#"
         exposed spec F { n() => usize; }
         struct S { exposed v: i32; }
-        conform S to F { n() => usize { 7usize } }
+        meet F for S { n() => usize { 7usize } }
         entry_fn() => i32 { x : usize = F::n(); <i32>x }
         "#,
     );
@@ -529,7 +529,7 @@ fn a_receiverless_spec_call_takes_self_from_the_expected_type() {
         r#"
         exposed spec Bounded { min() => Self; max() => Self; }
         struct S { exposed v: i32; }
-        conform S to Bounded {
+        meet Bounded for S {
             min() => Self { S { v = 0; } }
             max() => Self { S { v = 1; } }
         }
@@ -552,7 +552,7 @@ fn conforming_instance_method_is_not_in_concrete_scope() {
         r#"
         exposed spec Speak { speak(*self) => i32; }
         struct Dog { exposed value: i32; }
-        conform Dog to Speak { speak(*self) => i32 { self.value } }
+        meet Speak for Dog { speak(*self) => i32 { self.value } }
         entry_fn() => i32 { dog := Dog { value = 7; }; dog.speak() }
         "#,
     );
@@ -569,8 +569,8 @@ fn duplicate_and_extra_conformances_are_rejected() {
         r#"
         exposed spec Speak { speak(*self) => i32; }
         struct Dog { exposed value: i32; }
-        conform Dog to Speak { speak(*self) => i32 { self.value } }
-        conform Dog to Speak { speak(*self) => i32 { self.value } }
+        meet Speak for Dog { speak(*self) => i32 { self.value } }
+        meet Speak for Dog { speak(*self) => i32 { self.value } }
         entry_fn() => i32 { 0 }
         "#,
     );
@@ -584,7 +584,7 @@ fn duplicate_and_extra_conformances_are_rejected() {
         r#"
         exposed spec Speak { speak(*self) => i32; }
         struct Dog { exposed value: i32; }
-        conform Dog to Speak {
+        meet Speak for Dog {
             speak(*self) => i32 { self.value }
             extra(*self) => i32 { 0 }
         }
@@ -607,7 +607,7 @@ fn a_conform_cannot_borrow_an_inherent_requirement() {
             exposed value: i32;
             exposed speak(*self) => i32 { self.value }
         }
-        conform Dog to Speak {}
+        meet Speak for Dog {}
         entry_fn() => i32 { 0 }
         "#,
     );
@@ -623,7 +623,7 @@ fn slice_conformances_and_invalid_structural_targets_are_diagnosed_semantically(
     let slice = TestPackage::new(
         r#"
         exposed spec Empty { empty(*self) => bool; }
-        conform []u8 to Empty { empty(*self) => bool { self.length == 0 } }
+        meet Empty for []u8 { empty(*self) => bool { self.length == 0 } }
         entry_fn() => i32 { 0 }
         "#,
     );
@@ -635,7 +635,7 @@ fn slice_conformances_and_invalid_structural_targets_are_diagnosed_semantically(
         r#"
         exposed spec Empty { empty(*self) => bool; }
         struct Dog { exposed value: i32; }
-        conform *Dog to Empty { empty(*self) => bool { false } }
+        meet Empty for *Dog { empty(*self) => bool { false } }
         entry_fn() => i32 { 0 }
         "#,
     );
@@ -656,8 +656,8 @@ fn dependency_conformances_satisfy_the_dependency_bound() {
         exposed spec Animal { sound(*self) => i32; }
         exposed spec Mammal { fur(*self) => i32; }
         struct Dog { exposed value: i32; }
-        conform Dog to Animal { sound(*self) => i32 { self.value } }
-        conform Dog to Mammal { fur(*self) => i32 { 1 } }
+        meet Animal for Dog { sound(*self) => i32 { self.value } }
+        meet Mammal for Dog { fur(*self) => i32 { 1 } }
         call<T: Animal>(value: *T) => i32 { value.sound() }
         entry_fn() => i32 { dog := Dog { value = 4; }; call(&dog) }
         "#,
@@ -761,7 +761,7 @@ fn extern_owned_concrete_conform_is_imported_not_reemitted() {
         r#"
         exposed spec Show { show(*self) => i32; }
         exposed struct Value { exposed n: i32; }
-        conform Value to Show { show(*self) => i32 { self.n } }
+        meet Show for Value { show(*self) => i32 { self.n } }
         "#,
     );
     let consumer = TestPackage::new(
@@ -809,7 +809,7 @@ fn blanket_conforms_require_a_package_local_spec() {
     let consumer = TestPackage::new(
         r#"
         import lib::Foreign;
-        conform<T> T to Foreign { show(*self) => i32 { 1 } }
+        meet<T> Foreign for T { show(*self) => i32 { 1 } }
         entry_fn() => i32 { 0 }
         "#,
     );
@@ -841,7 +841,7 @@ fn externally_owned_stdout_cannot_conform_to_externally_owned_write() {
         r#"
         exposed spec Write { write(*mut self, bytes: *[?]u8) => Option<usize>; }
         exposed marker Stdout {}
-        conform Stdout to Write {
+        meet Write for Stdout {
             write(*mut self, bytes: *[?]u8) => Option<usize> {
                 Option<usize>::Some { value = <usize>bytes.length; }
             }
@@ -853,7 +853,7 @@ fn externally_owned_stdout_cannot_conform_to_externally_owned_write() {
         import lib::Stdout;
         import lib::Write;
 
-        conform Stdout to Write {
+        meet Write for Stdout {
             write(*mut self, bytes: *[?]u8) => Option<usize> {
                 Option<usize>::Some { value = <usize>bytes.length; }
             }
@@ -1110,7 +1110,7 @@ fn spec_qualified_calls_adapt_a_non_place_receiver() {
         r#"
         exposed spec Speak { speak(*self) => i32; }
         struct Dog { exposed value: i32; }
-        conform Dog to Speak { speak(*self) => i32 { self.value } }
+        meet Speak for Dog { speak(*self) => i32 { self.value } }
         make() => Dog { Dog { value = 3; } }
         entry_fn() => i32 {
             dog := Dog { value = 7; };
@@ -1133,7 +1133,7 @@ fn unconstrained_conformance_parameters_are_rejected() {
         exposed spec Bound { zero(*self) => i32; }
         exposed spec Sum { sum(*self) => i32; }
         struct Box<T> { exposed value: T; }
-        conform<T, U: Bound> Box<T> to Sum { sum(*self) => i32 { 0 } }
+        meet<T, U: Bound> Sum for Box<T> { sum(*self) => i32 { 0 } }
         entry_fn() => i32 { 0 }
         "#,
     );
@@ -1150,7 +1150,7 @@ fn unconstrained_conformance_parameters_are_rejected() {
         r#"
         exposed spec Sum { sum(*self) => i32; }
         struct Box<T> { exposed value: T; }
-        conform<T> Box<T> to Sum { sum(*self) => i32 { 1 } }
+        meet<T> Sum for Box<T> { sum(*self) => i32 { 1 } }
         use_sum<X: Sum>(value: *X) => i32 { value.sum() }
         entry_fn() => i32 { boxed := Box<i32> { value = 1; }; use_sum(&boxed) }
         "#,
@@ -1167,9 +1167,9 @@ fn blanket_conformances_materialize_and_explicit_blocks_win() {
         exposed spec Numeric { numeric(*self) => i32; }
         exposed spec Sum { sum(*self) => i32; }
         struct Number { exposed value: i32; }
-        conform Number to Numeric { numeric(*self) => i32 { self.value } }
-        conform<T: Numeric> T to Sum { sum(*self) => i32 { 1 } }
-        conform Number to Sum { sum(*self) => i32 { 99 } }
+        meet Numeric for Number { numeric(*self) => i32 { self.value } }
+        meet<T: Numeric> Sum for T { sum(*self) => i32 { 1 } }
+        meet Sum for Number { sum(*self) => i32 { 99 } }
         call<T: Sum>(value: *T) => i32 { value.sum() }
         entry_fn() => i32 { number := Number { value = 7; }; call(&number) + Sum::sum(&number) }
         "#,
@@ -1186,9 +1186,9 @@ fn a_superseded_blanket_body_is_not_type_checked() {
         exposed spec Numeric { numeric(*self) => i32; }
         exposed spec Sum { sum(*self) => i32; }
         struct Number { exposed value: i32; }
-        conform Number to Numeric { numeric(*self) => i32 { self.value } }
-        conform Number to Sum { sum(*self) => i32 { 7 } }
-        conform<T: Numeric> T to Sum {
+        meet Numeric for Number { numeric(*self) => i32 { self.value } }
+        meet Sum for Number { sum(*self) => i32 { 7 } }
+        meet<T: Numeric> Sum for T {
             sum(*self) => i32 { self.this_member_does_not_exist }
         }
         call<T: Sum>(value: *T) => i32 { value.sum() }
@@ -1208,10 +1208,10 @@ fn a_more_specific_blanket_bound_wins() {
         exposed spec B { b(*self) => i32; }
         exposed spec Show { show(*self) => i32; }
         struct Number { exposed value: i32; }
-        conform Number to A { a(*self) => i32 { self.value } }
-        conform Number to B { b(*self) => i32 { self.value } }
-        conform<T: A> T to Show { show(*self) => i32 { 1 } }
-        conform<T: A + B> T to Show { show(*self) => i32 { 2 } }
+        meet A for Number { a(*self) => i32 { self.value } }
+        meet B for Number { b(*self) => i32 { self.value } }
+        meet<T: A> Show for T { show(*self) => i32 { 1 } }
+        meet<T: A + B> Show for T { show(*self) => i32 { 2 } }
         call<T: Show>(value: *T) => i32 { value.show() }
         entry_fn() => i32 { value := Number { value = 7; }; call(&value) }
         "#,
@@ -1235,9 +1235,9 @@ fn a_bounded_blanket_wins_over_an_unbounded_one() {
         exposed spec Numeric { zero(*self) => i32; }
         exposed spec Show { show(*self) => i32; }
         struct Number { exposed value: i32; }
-        conform Number to Numeric { zero(*self) => i32 { 0 } }
-        conform<T> T to Show { show(*self) => i32 { 1 } }
-        conform<T: Numeric> T to Show { show(*self) => i32 { 2 } }
+        meet Numeric for Number { zero(*self) => i32 { 0 } }
+        meet<T> Show for T { show(*self) => i32 { 1 } }
+        meet<T: Numeric> Show for T { show(*self) => i32 { 2 } }
         call<T: Show>(value: *T) => i32 { value.show() }
         entry_fn() => i32 { value := Number { value = 7; }; call(&value) }
         "#,
@@ -1263,11 +1263,11 @@ fn incomparable_blanket_bound_sets_are_ambiguous() {
         exposed spec C { c(*self) => i32; }
         exposed spec Show { show(*self) => i32; }
         struct Number { exposed value: i32; }
-        conform Number to A { a(*self) => i32 { self.value } }
-        conform Number to B { b(*self) => i32 { self.value } }
-        conform Number to C { c(*self) => i32 { self.value } }
-        conform<T: A + B> T to Show { show(*self) => i32 { 1 } }
-        conform<T: A + C> T to Show { show(*self) => i32 { 2 } }
+        meet A for Number { a(*self) => i32 { self.value } }
+        meet B for Number { b(*self) => i32 { self.value } }
+        meet C for Number { c(*self) => i32 { self.value } }
+        meet<T: A + B> Show for T { show(*self) => i32 { 1 } }
+        meet<T: A + C> Show for T { show(*self) => i32 { 2 } }
         call<T: Show>(value: *T) => i32 { value.show() }
         entry_fn() => i32 { value := Number { value = 7; }; call(&value) }
         "#,
@@ -1291,10 +1291,10 @@ fn an_explicit_conform_displaces_a_blanket_registered_before_it() {
         exposed spec Producer { make(*self) => spec Base; }
         struct Foo { exposed value: i32; }
         struct Gen { exposed value: i32; }
-        conform Foo to Marker { mark(*self) => i32 { 7 } }
-        conform<T: Marker> T to Base { b(*self) => i32 { 111 } }
-        conform Gen to Producer { make(*self) => Foo { Foo { value = 1; } } }
-        conform Foo to Base { b(*self) => i32 { 222 } }
+        meet Marker for Foo { mark(*self) => i32 { 7 } }
+        meet<T: Marker> Base for T { b(*self) => i32 { 111 } }
+        meet Producer for Gen { make(*self) => Foo { Foo { value = 1; } } }
+        meet Base for Foo { b(*self) => i32 { 222 } }
         entry_fn() => i32 { value := Foo { value = 1; }; Base::b(&value) }
         "#,
     );
@@ -1327,10 +1327,10 @@ fn unrelated_matching_blankets_are_ambiguous() {
         exposed spec B { b(*self) => i32; }
         exposed spec Show { show(*self) => i32; }
         struct Number { exposed value: i32; }
-        conform Number to A { a(*self) => i32 { 1 } }
-        conform Number to B { b(*self) => i32 { 2 } }
-        conform<T: A> T to Show { show(*self) => i32 { 1 } }
-        conform<T: B> T to Show { show(*self) => i32 { 2 } }
+        meet A for Number { a(*self) => i32 { 1 } }
+        meet B for Number { b(*self) => i32 { 2 } }
+        meet<T: A> Show for T { show(*self) => i32 { 1 } }
+        meet<T: B> Show for T { show(*self) => i32 { 2 } }
         call<T: Show>(value: *T) => i32 { value.show() }
         entry_fn() => i32 { value := Number { value = 7; }; call(&value) }
         "#,
@@ -1352,8 +1352,8 @@ fn cyclic_blanket_bounds_report_an_error_without_recursing() {
         exposed spec A { a(*self) => i32; }
         exposed spec B { b(*self) => i32; }
         struct Number { exposed value: i32; }
-        conform<T: A> T to B { b(*self) => i32 { 1 } }
-        conform<T: B> T to A { a(*self) => i32 { 2 } }
+        meet<T: A> B for T { b(*self) => i32 { 1 } }
+        meet<T: B> A for T { a(*self) => i32 { 2 } }
         call<T: A>(value: *T) => i32 { value.a() }
         entry_fn() => i32 { value := Number { value = 7; }; call(&value) }
         "#,
@@ -1375,14 +1375,14 @@ fn generic_conform_bounds_seed_the_body_context() {
 
         struct One { exposed value: i32; }
         struct Two { exposed value: i32; }
-        conform One to W { w(*self, value: i32) => i32 { self.value + value } }
-        conform Two to W { w(*self, value: i32) => i32 { self.value + value } }
+        meet W for One { w(*self, value: i32) => i32 { self.value + value } }
+        meet W for Two { w(*self, value: i32) => i32 { self.value + value } }
 
         struct Buf<T> { exposed inner: *T; }
-        conform<T: W> Buf<T> to Sum {
+        meet<T: W> Sum for Buf<T> {
             sum(*self) => i32 { self.inner.w(1) }
         }
-        conform<T: W> Buf<T> to QualifiedSum {
+        meet<T: W> QualifiedSum for Buf<T> {
             qualified_sum(*self) => i32 { W::w(self.inner, 1) }
         }
 
@@ -1409,7 +1409,7 @@ fn generic_conform_bounds_reject_unsatisfied_conformance_at_the_declaration() {
         exposed spec Show { show(*self) => i32; }
         struct NotW { exposed value: i32; }
         struct Buf<T> { exposed inner: *T; }
-        conform<T: W> Buf<T> to Show { show(*self) => i32 { 1 } }
+        meet<T: W> Show for Buf<T> { show(*self) => i32 { 1 } }
 
         entry_fn() => i32 {
             value := NotW { value = 0; };
@@ -1423,7 +1423,7 @@ fn generic_conform_bounds_reject_unsatisfied_conformance_at_the_declaration() {
         "an unsatisfied conform generic bound must not produce a conformance or vtable",
     );
     let expected_start = source
-        .find("conform<T: W> Buf<T> to Show")
+        .find("meet<T: W> Show for Buf<T>")
         .expect("the declaration is present");
     let error = errors
         .iter()
@@ -1451,7 +1451,7 @@ fn an_unrelated_spec_query_does_not_report_a_foreign_template_bound() {
         exposed spec Show { show(*self) => i32; }
         struct NotW { exposed value: i32; }
         struct Buf<T> { exposed inner: *T; }
-        conform<T: W> Buf<T> to Show { show(*self) => i32 { 1 } }
+        meet<T: W> Show for Buf<T> { show(*self) => i32 { 1 } }
         as_w(value: *Buf<NotW>) => *spec W { value }
         entry_fn() => i32 {
             value := NotW { value = 0; };
@@ -1480,11 +1480,11 @@ fn generic_conform_bounds_expand_conjunctions() {
         exposed spec B { b(*self) => i32 { 2 } }
         exposed spec Sum { sum(*self) => i32; }
         struct Value { exposed value: i32; }
-        conform Value to A { a(*self) => i32 { self.value } }
-        conform Value to B { }
+        meet A for Value { a(*self) => i32 { self.value } }
+        meet B for Value { }
 
         struct Buf<T> { exposed inner: *T; }
-        conform<T: A + B> Buf<T> to Sum {
+        meet<T: A + B> Sum for Buf<T> {
             sum(*self) => i32 { self.inner.a() + self.inner.b() }
         }
         use_sum<T: Sum>(value: *T) => i32 { value.sum() }
@@ -1507,10 +1507,10 @@ fn an_unbounded_generic_conform_gains_no_bound_context() {
         exposed spec Secret { secret(*self) => i32; }
         exposed spec Show { show(*self) => i32; }
         struct Value { exposed value: i32; }
-        conform Value to Secret { secret(*self) => i32 { self.value } }
+        meet Secret for Value { secret(*self) => i32 { self.value } }
 
         struct Box<T> { exposed inner: *T; }
-        conform<T> Box<T> to Show {
+        meet<T> Show for Box<T> {
             show(*self) => i32 { self.inner.secret() }
         }
         use_show<T: Show>(value: *T) => i32 { value.show() }
@@ -1540,7 +1540,7 @@ fn an_inherent_method_body_cannot_reach_a_conformance_method() {
             exposed value: i32;
             exposed leak(*self) => i32 { self.secret() }
         }
-        conform Dog to Secret { secret(*self) => i32 { 99 } }
+        meet Secret for Dog { secret(*self) => i32 { 99 } }
         entry_fn() => i32 { dog := Dog { value = 1; }; dog.leak() }
         "#,
     );
@@ -1560,10 +1560,10 @@ fn distinct_generic_spec_conformances_emit_distinct_bodies() {
         r#"
         exposed spec Consume<T> { consume(*self, value: T) => i32; }
         struct Multi { exposed base: i32; }
-        conform Multi to Consume<i32> {
+        meet Consume<i32> for Multi {
             consume(*self, value: i32) => i32 { self.base + value }
         }
-        conform Multi to Consume<u8> {
+        meet Consume<u8> for Multi {
             consume(*self, value: u8) => i32 { self.base + <i32>value }
         }
         entry_fn() => i32 {
@@ -1594,8 +1594,8 @@ fn a_bound_on_a_conjunction_reaches_its_members_conformances() {
         exposed spec A { a(*self) => i32; }
         exposed spec B { b(*self) => i32 { 2 } }
         struct Foo { exposed v: i32; }
-        conform Foo to A { a(*self) => i32 { 1 } }
-        conform Foo to B { }
+        meet A for Foo { a(*self) => i32 { 1 } }
+        meet B for Foo { }
 
         use_conjunction<T: A + B>(x: *T) => i32 { x.a() + x.b() }
         entry_fn() => i32 { f := Foo { v = 0; }; use_conjunction(&f) }
@@ -1613,8 +1613,8 @@ fn an_unbounded_spec_is_still_out_of_scope_under_another_bound() {
         exposed spec Speak { speak(*self) => i32; }
         exposed spec Secret { secret(*self) => i32; }
         struct Dog { exposed id: i32; }
-        conform Dog to Speak { speak(*self) => i32 { self.id } }
-        conform Dog to Secret { secret(*self) => i32 { 999 } }
+        meet Speak for Dog { speak(*self) => i32 { self.id } }
+        meet Secret for Dog { secret(*self) => i32 { 999 } }
 
         leak<T: Speak>(x: *T) => i32 { x.secret() }
         entry_fn() => i32 { d := Dog { id = 7; }; leak(&d) }
@@ -1629,26 +1629,21 @@ fn an_unbounded_spec_is_still_out_of_scope_under_another_bound() {
 
 #[test]
 fn slice_conformances_are_callable_not_merely_declarable() {
-    for target in ["[]u8", "<T> []T"] {
+    for (generics, target) in [("", "[]u8"), ("<T>", "[]T")] {
         let package = TestPackage::new(&format!(
             r#"
             exposed spec Show {{ show(*self) => i32; }}
-            conform{target} to Show {{ show(*self) => i32 {{ self.length }} }}
+            meet{generics} Show for {target} {{ show(*self) => i32 {{ self.length }} }}
             entry_fn() => i32 {{
                 mut a: [2]u8;
                 s := &a[0..];
                 Show::show(s)
             }}
             "#,
-            target = if target.starts_with('<') {
-                target.to_string()
-            } else {
-                format!(" {target}")
-            },
         ));
         package
             .compile()
-            .unwrap_or_else(|_| panic!("a `{target}` conform must be callable"));
+            .unwrap_or_else(|_| panic!("a `{target}` conformance must be callable"));
     }
 }
 
@@ -1676,7 +1671,7 @@ fn an_unmatchable_generic_conform_target_is_rejected_at_its_declaration() {
     let package = TestPackage::new(
         r#"
         exposed spec Show { show(*self) => i32; }
-        conform<T> *T to Show { show(*self) => i32 { 1 } }
+        meet<T> Show for *T { show(*self) => i32 { 1 } }
         entry_fn() => i32 { 0 }
         "#,
     );
@@ -1708,7 +1703,7 @@ fn a_spec_return_type_on_a_method_is_rejected_not_inferred() {
         r#"
         exposed spec Countable { count(*self) => i32; }
         struct Wrap { exposed n: i32; }
-        conform Wrap to Countable { count(*self) => i32 { self.n } }
+        meet Countable for Wrap { count(*self) => i32 { self.n } }
         struct Zoo {
             exposed n: i32;
             exposed helper(*self) => i32 { 5 }
@@ -1733,7 +1728,7 @@ fn a_spec_return_type_on_a_free_function_is_rejected_not_inferred() {
         r#"
         exposed spec Animal { speak(*self) => i32; }
         struct Dog { exposed v: i32; }
-        conform Dog to Animal { speak(*self) => i32 { self.v } }
+        meet Animal for Dog { speak(*self) => i32 { self.v } }
         make() => spec Animal { Dog { v = 1; } }
         entry_fn() => i32 { Animal::speak(&make()) }
         "#,
@@ -1756,9 +1751,9 @@ fn a_mismatched_for_loop_element_annotation_reports_what_is_available() {
     let package = TestPackage::new(
         r#"
         exposed struct BagIter { exposed i: i32; }
-        conform BagIter to Iterator<u8> { next(*mut self) => Option<u8> { Option<u8>::None } }
+        meet Iterator<u8> for BagIter { next(*mut self) => Option<u8> { Option<u8>::None } }
         exposed struct Bag { exposed n: i32; }
-        conform Bag to ToIterator<u8> { to_iterator(*self) => BagIter { BagIter { i = 0; } } }
+        meet ToIterator<u8> for Bag { to_iterator(*self) => BagIter { BagIter { i = 0; } } }
         entry_fn() => i32 { b := Bag { n = 0; }; for x : u64 in b { } 0 }
         "#,
     );
@@ -1890,7 +1885,7 @@ fn a_struct_is_not_a_primitive_target() {
 #[test]
 fn void_is_declarable_but_not_conformable() {
     let Err(errors) = compile_as_core(
-        "exposed spec Show { show(*self) => i32; }\nconform void to Show { show(*self) => i32 { 0 } }",
+        "exposed spec Show { show(*self) => i32; }\nmeet Show for void { show(*self) => i32 { 0 } }",
     ) else {
         panic!("`void` must not be conformable");
     };
@@ -1907,8 +1902,8 @@ fn a_genuine_conformance_cycle_is_rejected() {
         exposed spec A { a(*self) => i32; }
         exposed spec B { b(*self) => i32; }
         struct S { exposed v: i32; }
-        conform<T: B> T to A { a(*self) => i32 { 1 } }
-        conform<T: A> T to B { b(*self) => i32 { 2 } }
+        meet<T: B> A for T { a(*self) => i32 { 1 } }
+        meet<T: A> B for T { b(*self) => i32 { 2 } }
         use_a<T: A>(t: T) => i32 { t.a() }
         entry_fn() => i32 { use_a(S { v = 0; }) }
         "#,
@@ -1929,21 +1924,21 @@ fn a_blanket_chain_compiles_in_either_declaration_order() {
             exposed spec B {{ b(*self) => i32; }}
             exposed spec C {{ c(*self) => i32; }}
             struct S {{ exposed v: i32; }}
-            conform S to A {{ a(*self) => i32 {{ 1 }} }}
+            meet A for S {{ a(*self) => i32 {{ 1 }} }}
             {}
             {}
             use_c<T: C>(t: T) => i32 {{ t.c() }}
             entry_fn() => i32 {{ use_c(S {{ v = 0; }}) }}
             "#,
             if swap {
-                "conform<T: B> T to C { c(*self) => i32 { self.b() + 1 } }"
+                "meet<T: B> C for T { c(*self) => i32 { self.b() + 1 } }"
             } else {
-                "conform<T: A> T to B { b(*self) => i32 { self.a() + 1 } }"
+                "meet<T: A> B for T { b(*self) => i32 { self.a() + 1 } }"
             },
             if swap {
-                "conform<T: A> T to B { b(*self) => i32 { self.a() + 1 } }"
+                "meet<T: A> B for T { b(*self) => i32 { self.a() + 1 } }"
             } else {
-                "conform<T: B> T to C { c(*self) => i32 { self.b() + 1 } }"
+                "meet<T: B> C for T { c(*self) => i32 { self.b() + 1 } }"
             },
         ));
         package
@@ -1960,9 +1955,9 @@ fn a_blanket_chain_with_a_concrete_middle_link_still_works() {
         exposed spec B { b(*self) => i32; }
         exposed spec C { c(*self) => i32; }
         struct S { exposed v: i32; }
-        conform S to A { a(*self) => i32 { 1 } }
-        conform S to B { b(*self) => i32 { self.v + 1 } }
-        conform<T: B> T to C { c(*self) => i32 { self.b() + 1 } }
+        meet A for S { a(*self) => i32 { 1 } }
+        meet B for S { b(*self) => i32 { self.v + 1 } }
+        meet<T: B> C for T { c(*self) => i32 { self.b() + 1 } }
         use_c<T: C>(t: T) => i32 { t.c() }
         entry_fn() => i32 { use_c(S { v = 0; }) }
         "#,
@@ -1981,10 +1976,10 @@ fn a_fourth_blanket_bounded_on_the_middle_spec_compiles() {
         exposed spec C { c(*self) => i32; }
         exposed spec X { x(*self) => i32; }
         struct S { exposed v: i32; }
-        conform S to A { a(*self) => i32 { 1 } }
-        conform<T: A> T to B { b(*self) => i32 { self.a() + 1 } }
-        conform<T: B> T to C { c(*self) => i32 { self.b() + 1 } }
-        conform<T: B> T to X { x(*self) => i32 { self.b() + 10 } }
+        meet A for S { a(*self) => i32 { 1 } }
+        meet<T: A> B for T { b(*self) => i32 { self.a() + 1 } }
+        meet<T: B> C for T { c(*self) => i32 { self.b() + 1 } }
+        meet<T: B> X for T { x(*self) => i32 { self.b() + 10 } }
         use_c<T: C>(t: T) => i32 { t.c() }
         use_x<T: X>(t: T) => i32 { t.x() }
         entry_fn() => i32 { use_c(S { v = 0; }) + use_x(S { v = 0; }) }
@@ -2001,7 +1996,7 @@ fn a_template_whose_spec_does_not_resolve_still_reports_not_a_spec() {
         r#"
         struct Plain { exposed v: i32; }
         struct Wrapper<T> { exposed v: T; }
-        conform<T> Wrapper<T> to Plain { }
+        meet<T> Plain for Wrapper<T> { }
         entry_fn() => i32 { w := Wrapper { v = 1; }; w.nothing_here() }
         "#,
     );
@@ -2024,10 +2019,10 @@ fn a_blanket_conform_declared_for_both_member_orderings_is_a_duplicate() {
         exposed spec B { b(*self) => i32; }
         exposed spec X { x(*self) => i32; }
         struct S { exposed v: i32; }
-        conform S to A { a(*self) => i32 { 0 } }
-        conform S to B { b(*self) => i32 { 0 } }
-        conform<T: A + B> T to X { x(*self) => i32 { 1 } }
-        conform<T: B + A> T to X { x(*self) => i32 { 2 } }
+        meet A for S { a(*self) => i32 { 0 } }
+        meet B for S { b(*self) => i32 { 0 } }
+        meet<T: A + B> X for T { x(*self) => i32 { 1 } }
+        meet<T: B + A> X for T { x(*self) => i32 { 2 } }
         use_x<T: X>(t: T) => i32 { t.x() }
         entry_fn() => i32 { use_x(S { v = 0; }) }
         "#,
@@ -2050,9 +2045,9 @@ fn a_blanket_declared_in_one_member_order_is_reachable_through_the_other() {
         exposed spec B { b(*self) => i32; }
         exposed spec X { x(*self) => i32; }
         struct S { exposed v: i32; }
-        conform S to A { a(*self) => i32 { 1 } }
-        conform S to B { b(*self) => i32 { 2 } }
-        conform<T: A + B> T to X { x(*self) => i32 { 10 } }
+        meet A for S { a(*self) => i32 { 1 } }
+        meet B for S { b(*self) => i32 { 2 } }
+        meet<T: A + B> X for T { x(*self) => i32 { 10 } }
         use_reordered<T: B + A>(t: T) => i32 { t.x() }
         entry_fn() => i32 { use_reordered(S { v = 0; }) }
         "#,
@@ -2070,10 +2065,10 @@ fn a_generic_conjunction_bound_ignores_declaration_order() {
         exposed spec Eq { equals(*self, other: *Self) => bool; }
         exposed spec X { x(*self) => i32; }
         struct S { exposed v: i32; }
-        conform S to Iter<i32> { next(*self) => i32 { self.v } }
-        conform S to Eq { equals(*self, other: *S) => bool { false } }
-        conform<T: Iter<i32> + Eq> T to X { x(*self) => i32 { 1 } }
-        conform<T: Eq + Iter<i32>> T to X { x(*self) => i32 { 2 } }
+        meet Iter<i32> for S { next(*self) => i32 { self.v } }
+        meet Eq for S { equals(*self, other: *S) => bool { false } }
+        meet<T: Iter<i32> + Eq> X for T { x(*self) => i32 { 1 } }
+        meet<T: Eq + Iter<i32>> X for T { x(*self) => i32 { 2 } }
         use_x<T: X>(t: T) => i32 { t.x() }
         entry_fn() => i32 { use_x(S { v = 0; }) }
         "#,
@@ -2095,8 +2090,8 @@ fn a_return_type_only_generic_is_inferred_from_the_expected_type() {
         exposed spec Bounded { min() => Self; }
         struct Small { exposed v: i32; }
         struct Big { exposed v: i64; }
-        conform Small to Bounded { min() => Self { Small { v = 1; } } }
-        conform Big to Bounded { min() => Self { Big { v = 2; } } }
+        meet Bounded for Small { min() => Self { Small { v = 1; } } }
+        meet Bounded for Big { min() => Self { Big { v = 2; } } }
 
         lowest<T: Bounded>() => T { T::min() }
         take_small(x: Small) => i32 { x.v }
@@ -2174,7 +2169,7 @@ fn a_mut_self_call_on_a_temporary_reports_mutate_temporary() {
         r#"
         exposed spec Bumpable { bump(*mut self) => void; }
         struct Bump { exposed n: i32; }
-        conform Bump to Bumpable { bump(*mut self) => void { self.n = self.n + 1; } }
+        meet Bumpable for Bump { bump(*mut self) => void { self.n = self.n + 1; } }
         make() => Bump { Bump { n = 0; } }
         entry_fn() => i32 { Bumpable::bump(make()); 0 }
         "#,
@@ -2239,7 +2234,7 @@ fn a_by_value_generic_still_binds_a_slice() {
     let package = TestPackage::new(
         r#"
         exposed spec Show { show(*self) => i32; }
-        conform<T> []T to Show { show(*self) => i32 { 1 } }
+        meet<T> Show for []T { show(*self) => i32 { 1 } }
         use_it<T: Show>(s: T) => i32 { 1 }
         entry_fn() => i32 {
             arr := [1, 2, 3];

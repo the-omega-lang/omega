@@ -92,7 +92,7 @@ type can conform to it in the usual way:
 import std::fmt::Display;
 import std::io::Write;
 
-conform Pair to Display {
+meet Display for Pair {
     fmt(*self, out: *mut spec Write) => void {
         out.write(b"pair");
     }

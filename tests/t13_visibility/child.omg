@@ -52,7 +52,7 @@ exposed struct Dog {
 	exposed id: i32;
 }
 
-conform Dog to Mammal {
+meet Mammal for Dog {
 	breathe(*self) => i32 { 1 }
 }
 
@@ -73,7 +73,7 @@ shared spec Greeter {
 	}
 }
 
-conform Dog to Greeter {
+meet Greeter for Dog {
 	name(*self) => i32 { self.id }
 }
 

@@ -186,7 +186,7 @@ exposed struct HashMap<K: Hash, V> {
 
 }
 
-conform<K: Hash, V> HashMap<K, V> to ToIterator<KeyValue<K, V>> {
+meet<K: Hash, V> ToIterator<KeyValue<K, V>> for HashMap<K, V> {
     to_iterator(*self) => HashMapIterator<K, V> {
         HashMapIterator<K, V> {
             buckets = self.buckets;
@@ -205,7 +205,7 @@ exposed struct HashMapIterator<K, V> {
 
 }
 
-conform<K, V> HashMapIterator<K, V> to Iterator<KeyValue<K, V>> {
+meet<K, V> Iterator<KeyValue<K, V>> for HashMapIterator<K, V> {
     next(*mut self) => Option<KeyValue<K, V>> {
         while self.current == <*mut Entry<K, V>>0 {
             if self.bucket_index >= self.bucket_count {

@@ -14,7 +14,7 @@ This is **not** the normative language definition. For exact rules, follow the l
 | mutable binding | `mut x := value;` | `let mut x = value;` |
 | public visibility | `exposed` | `pub` |
 | interface | `spec` | `trait` / `interface` |
-| implementation | `conform T to S { ... }` | `impl S for T` |
+| implementation | `meet S for T { ... }` | `impl S for T` |
 | cast | `<u64>x` | `x as u64` |
 | macro invocation | `println$("hi");` | `println!("hi")` |
 | type/name alias | `alias Short = Long;` | `type Short = Long;` |
@@ -339,10 +339,10 @@ exposed spec Iterator<T> {
 }
 ```
 
-Implementation is written with `conform`:
+Implementation is written with `meet`:
 
 ```omega
-conform char to Ord {
+meet Ord for char {
     compare(*self, other: Self) => Ordering {
         ...
     }
@@ -352,7 +352,7 @@ conform char to Ord {
 Blanket conformance is generic:
 
 ```omega
-conform<T: Ord> T to Eq {
+meet<T: Ord> Eq for T {
     ...
 }
 ```

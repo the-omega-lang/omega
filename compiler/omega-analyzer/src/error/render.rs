@@ -584,7 +584,7 @@ impl AnalysisErrorKind {
                 .with_label(span, format!("no `ToIterator<{expected}>` for this source"))
                 .with_help(format!(
                     "it conforms to `ToIterator` at: {} -- annotate the binding with one of those, or add \
-                     `conform <source> to ToIterator<{expected}>`",
+                     `meet ToIterator<{expected}> for <source>`",
                     available.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
                 )),
             Self::NoSuchSpecFunction { spec, function } => d.with_label(
@@ -690,20 +690,20 @@ impl AnalysisErrorKind {
             Self::ConformanceOrphanViolation { target_package, spec_package } => d
                 .with_label(span, "neither the target type nor the spec is local to this package")
                 .with_note(format!("target package: '{}'; spec package: '{}'", target_package.as_ref(), spec_package.as_ref()))
-                .with_help("declare the conform in one of those two packages"),
+                .with_help("declare the conformance in one of those two packages"),
             Self::ConformTargetNotAType => d.with_label(span, "this must resolve to a concrete type"),
             Self::DuplicateConformance { previous, .. } => d
-                .with_label(span, "this conform duplicates an existing one")
-                .with_secondary_label(*previous, "the first conform is here"),
+                .with_label(span, "this conformance duplicates an existing one")
+                .with_secondary_label(*previous, "the first conformance is here"),
             Self::ConformanceExtraFunction { function, spec } => d
                 .with_label(span, format!("'{}' is not declared by '{}'", function.as_ref(), spec.as_ref())),
             Self::UnconstrainedConformanceParameter { parameter } => d
-                .with_label(span, format!("'{}' is not fixed by the conform target", parameter.as_ref()))
-                .with_help("mention this parameter in the target, or remove it from the conform declaration"),
+                .with_label(span, format!("'{}' is not fixed by the conformance target", parameter.as_ref()))
+                .with_help("mention this parameter in the target, or remove it from the conformance declaration"),
             Self::AmbiguousConformance { target, first, .. } => d
-                .with_label(span, format!("this conform overlaps another one for `{target}`"))
-                .with_secondary_label(*first, "the other matching conform is here")
-                .with_note(format!("neither conform is more specific for `{target}`")),
+                .with_label(span, format!("this conformance overlaps another one for `{target}`"))
+                .with_secondary_label(*first, "the other matching conformance is here")
+                .with_note(format!("neither conformance is more specific for `{target}`")),
             Self::ConformanceCycle { chain, .. } => {
                 let mut d = d.with_label(span, "this bound re-enters a conformance already being checked");
                 for pair in chain.windows(2) {
@@ -720,7 +720,7 @@ impl AnalysisErrorKind {
                 d
             }
             Self::BlanketConformanceForeignSpec { spec_package } => d
-                .with_label(span, "a blanket conform may only implement a spec declared in this package")
+                .with_label(span, "a blanket conformance may only implement a spec declared in this package")
                 .with_note(format!("this spec belongs to package '{}'", spec_package.as_ref()))
                 .with_help("declare the blanket alongside that spec, or implement a package-local spec instead"),
             Self::PrimitiveOutsideCore => d.with_label(span, "primitive blocks belong to the core package"),

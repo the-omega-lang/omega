@@ -100,11 +100,11 @@ struct Foo {
 	exposed tally: i32;
 }
 
-conform Foo to A {
+meet A for Foo {
 	a(*self) => i32 { self.tally + 1 }
 }
 
-conform Foo to B {
+meet B for Foo {
 	b(*self) => i32 { self.tally + 2 }
 }
 

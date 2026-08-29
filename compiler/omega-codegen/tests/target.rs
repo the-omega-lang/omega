@@ -166,7 +166,7 @@ spec Counter {\n\
 struct Fixed {\n\
     shared n: i32;\n\
 }\n\
-conform Fixed to Counter {\n\
+meet Counter for Fixed {\n\
     value(*self) => i32 { self.n }\n\
 }\n\
 read(counter: *spec Counter) => i32 { counter.value() }\n\

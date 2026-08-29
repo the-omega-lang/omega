@@ -1275,14 +1275,14 @@ impl fmt::Display for AnalysisErrorKind {
                 target_package.as_ref(),
                 spec_package.as_ref()
             ),
-            Self::ConformTargetNotAType => write!(f, "conform target is not a concrete type"),
+            Self::ConformTargetNotAType => write!(f, "conformance target is not a concrete type"),
             Self::DuplicateConformance { target, spec, .. } => {
-                write!(f, "duplicate conform for '{target}: {}'", spec.as_ref())
+                write!(f, "duplicate conformance for '{target}: {}'", spec.as_ref())
             }
             Self::ConformanceExtraFunction { spec, function } => {
                 write!(
                     f,
-                    "conform declares '{}' which is not in spec '{}'",
+                    "the conformance declares '{}' which is not in spec '{}'",
                     function.as_ref(),
                     spec.as_ref()
                 )
@@ -1295,7 +1295,7 @@ impl fmt::Display for AnalysisErrorKind {
                 )
             }
             Self::AmbiguousConformance { target, spec, .. } => {
-                write!(f, "ambiguous conform for '{target}: {}'", spec.as_ref())
+                write!(f, "ambiguous conformance for '{target}: {}'", spec.as_ref())
             }
             Self::ConformanceCycle { target, spec, .. } => {
                 write!(
@@ -1307,7 +1307,7 @@ impl fmt::Display for AnalysisErrorKind {
             Self::BlanketConformanceForeignSpec { spec_package } => {
                 write!(
                     f,
-                    "a blanket conform cannot implement a foreign spec from '{}'",
+                    "a blanket conformance cannot implement a foreign spec from '{}'",
                     spec_package.as_ref()
                 )
             }

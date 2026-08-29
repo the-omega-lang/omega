@@ -27,7 +27,7 @@ exposed spec Scale {
 	scale(*self, factor: i32) => i32;
 }
 
-conform Thing to Scale {
+meet Scale for Thing {
 	scale(*self, multiplier: i32) => i32 { self.v * multiplier }
 }
 

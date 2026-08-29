@@ -111,7 +111,7 @@ exposed struct LinkedList<T> {
 
 }
 
-conform<T> LinkedList<T> to ToIterator<T> {
+meet<T> ToIterator<T> for LinkedList<T> {
     to_iterator(*self) => LinkedListIterator<T> {
         LinkedListIterator<T> { current = self.head; }
     }
@@ -122,7 +122,7 @@ exposed struct LinkedListIterator<T> {
 
 }
 
-conform<T> LinkedListIterator<T> to Iterator<T> {
+meet<T> Iterator<T> for LinkedListIterator<T> {
     next(*mut self) => Option<T> {
         if self.current == <*mut Node<T>>0 {
             return Option<T>::None;

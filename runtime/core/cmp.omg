@@ -66,7 +66,7 @@ exposed spec Eq {
 
 # `Ord` declares only its own ordering requirement -- no `: Eq`, since specs
 # don't provision other specs here. The `Ord`-implies-`Eq` convenience comes
-# from the blanket `conform` below instead. `less_than`/`greater_than`/
+# from the blanket conformance below instead. `less_than`/`greater_than`/
 # `min`/`max` all derive from `compare` alone; implementors may override any
 # for speed (see `core::primitives::numerics`).
 exposed spec Ord {
@@ -98,7 +98,7 @@ exposed spec Ord {
 }
 
 # Anything with a total order can be checked for equality via
-# `compare(a, b).is_eq()`. A concrete `conform T to Eq` beats this blanket.
-conform<T: Ord> T to Eq {
+# `compare(a, b).is_eq()`. A concrete `meet Eq for T` beats this blanket.
+meet<T: Ord> Eq for T {
     equals(*self, other: Self) => bool { self.compare(other).is_eq() }
 }

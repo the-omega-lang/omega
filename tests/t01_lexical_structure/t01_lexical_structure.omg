@@ -28,9 +28,10 @@ main() => void {
 	comp := 16;
 	expr := 17;
 	in := 18;
+	meet := 19;
 
 	sum := describe(1, 2, 3) + type + root + glue + gap + marker
-		+ conform + primitive + shared + exposed + comp + expr + in;
+		+ conform + meet + primitive + shared + exposed + comp + expr + in;
 	println$("sum: ", sum);
 
 	# `extern` was removed as a keyword in favor of `foreign`; it now lexes

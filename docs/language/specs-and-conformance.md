@@ -21,7 +21,7 @@ A function without a body is required. A function with a body is a default imple
 
 `Self` denotes the concrete implementing type. Spec receiver parameters must use `*self` or `*mut self`; by-value `self`/`mut self` is invalid in a spec declaration.
 
-A spec declares only its own requirements. There is no spec-composition declaration: `spec AB = A + B;` is not valid Omega syntax, and a spec declaration never carries a dependency list (`spec X : A, B { ... }` is also invalid). A conjunction of specs is written directly at the type where it is needed -- see [Spec conjunctions in type syntax](#spec-conjunctions-in-type-syntax) below -- and is satisfied by conforming to each member separately; there is nothing to `conform T to` for a conjunction itself.
+A spec declares only its own requirements. There is no spec-composition declaration: `spec AB = A + B;` is not valid Omega syntax, and a spec declaration never carries a dependency list (`spec X : A, B { ... }` is also invalid). A conjunction of specs is written directly at the type where it is needed -- see [Spec conjunctions in type syntax](#spec-conjunctions-in-type-syntax) below -- and is satisfied by conforming to each member separately; there is nothing to `meet` for a conjunction itself.
 
 A conjunction may be given a name with an `alias` (`alias AB = spec A + B;`). That names the conjunction without declaring a spec: no conformance target `AB` exists, and the alias expands to the written conjunction before any of the rules below apply, so a named and a literal conjunction are indistinguishable. See [`aliases.md`](aliases.md).
 
@@ -47,18 +47,18 @@ struct Dog {
     exposed id: i32;
 }
 
-conform Dog to Animal {
+meet Animal for Dog {
     kind(*self) => AnimalKind { AnimalKind::Dog }
     make_sound(*self) => *str { "woof" }
 }
 ```
 
-`conform Target to Spec { ... }` declares nominal conformance.
+`meet Spec for Target { ... }` declares nominal conformance.
 
 - Every required function must be supplied exactly once unless the spec provides a default.
-- Extra functions that are not requirements are invalid in the conform block.
+- Extra functions that are not requirements are invalid in the conformance block.
 - Inherent methods do not implicitly satisfy spec requirements.
-- Conform methods do not declare their own visibility; they implement the requirement.
+- Conformance methods do not declare their own visibility; they implement the requirement.
 - Even a spec containing only defaults requires an explicit (possibly empty) conformance.
 
 A conformance is legal when the current package owns either the target type or the spec. This is Omega's orphan/coherence rule for concrete conformances.
@@ -74,7 +74,7 @@ Slice conformance has a known current reachability limitation; see [`../issues/k
 ## Blanket conformances
 
 ```omega
-conform<T: Numeric> T to Sum {
+meet<T: Numeric> Sum for T {
     sum(*self) => i32 { 0 }
 }
 ```
@@ -82,7 +82,7 @@ conform<T: Numeric> T to Sum {
 A blanket conformance applies to every conformable concrete type satisfying its generic bounds. An unbounded blanket is also allowed:
 
 ```omega
-conform<T> T to SomeSpec { ... }
+meet<T> SomeSpec for T { ... }
 ```
 
 Selection rules:
@@ -95,7 +95,7 @@ Selection rules:
 
 A blanket may implement only a spec owned by the blanket's package. This prevents a package from claiming every foreign type for a foreign spec.
 
-A blanket can entail another spec inside generic code. For example, if `conform<T: Ord> T to Eq` exists, a generic body bounded by `T: Ord` may rely on the derived `Eq` conformance.
+A blanket can entail another spec inside generic code. For example, if `meet<T: Ord> Eq for T` exists, a generic body bounded by `T: Ord` may rely on the derived `Eq` conformance.
 
 ## Calling conforming functions
 
@@ -134,8 +134,8 @@ spec Consumer<T> {
     consume(*self, value: T) => i32;
 }
 
-conform Multi to Consumer<i32> { ... }
-conform Multi to Consumer<*u8> { ... }
+meet Consumer<i32> for Multi { ... }
+meet Consumer<*u8> for Multi { ... }
 ```
 
 Requirements are matched by name and full parameter signature for the particular spec instantiation. Ordinary Omega overloading rules still apply: functions cannot be overloaded solely by return type, so two required methods that differ only in return type cannot both be implemented as distinct overloads.

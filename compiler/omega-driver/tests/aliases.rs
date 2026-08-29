@@ -1353,8 +1353,8 @@ fn an_aliased_static_spec_parameter_matches_the_literal_spelling() {
 
         struct Foo { exposed tally: i32; }
 
-        conform Foo to A { a(*self) => i32 { self.tally } }
-        conform Foo to B { b(*self) => i32 { self.tally } }
+        meet A for Foo { a(*self) => i32 { self.tally } }
+        meet B for Foo { b(*self) => i32 { self.tally } }
 
         alias AB = spec A + B;
 

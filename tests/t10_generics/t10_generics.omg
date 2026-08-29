@@ -19,7 +19,7 @@ struct Widget {
 	exposed name: *str;
 }
 
-conform Widget to Describable {
+meet Describable for Widget {
 	describe(*self) => *str { self.name }
 }
 

@@ -49,7 +49,7 @@ exposed spec Bounded {
     max() => Self;
 }
 
-conform<T: Successor + Ord> Range<T> to ToIterator<T> {
+meet<T: Successor + Ord> ToIterator<T> for Range<T> {
     to_iterator(*self) => RangeIterator<T> {
         RangeIterator {
             current = self.start;
@@ -60,7 +60,7 @@ conform<T: Successor + Ord> Range<T> to ToIterator<T> {
     }
 }
 
-conform<T: Successor + Ord> RangeIterator<T> to Iterator<T> {
+meet<T: Successor + Ord> Iterator<T> for RangeIterator<T> {
     next(*mut self) => Option<T> {
         if self.done {
             return Option<T>::None;

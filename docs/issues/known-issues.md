@@ -107,7 +107,7 @@ Concrete current compiler/library bugs and unsupported cases. Resolved issues ar
   (Ryu/Grisu-class) is deliberate future work, not a narrow fix here.
   [console-io.md](../guide/console-io.md)
 
-## Conformance and specs (`conform` / `primitive`)
+## Conformance and specs (`meet` / `primitive`)
 
 Remaining known conformance/spec issues:
 

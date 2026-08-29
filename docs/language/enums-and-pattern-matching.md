@@ -346,7 +346,7 @@ binding is not itself an assignment target while the proof holds; see
 [`bindings-and-mutability.md`](bindings-and-mutability.md).
 
 Because an anonymous enum has no declaration, it has no methods, static
-functions, or named fields of its own, and it cannot be a `conform` target:
+functions, or named fields of its own, and it cannot be a conformance target:
 there is nothing for a method to belong to. Everything a member offers is
 reached through the refined member view inside a matching arm; behavior that
 belongs to the sum itself belongs to a declared `enum`.

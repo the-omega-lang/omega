@@ -20,7 +20,7 @@ struct Dog {
 	exposed id: i32;
 }
 
-conform Dog to Animal {
+meet Animal for Dog {
 	kind(*self) => AnimalKind { AnimalKind::Dog }
 	make_sound(*self) => *str { "woof" }
 }
@@ -29,7 +29,7 @@ struct Cat {
 	exposed id: i32;
 }
 
-conform Cat to Animal {
+meet Animal for Cat {
 	kind(*self) => AnimalKind { AnimalKind::Cat }
 	make_sound(*self) => *str { "meow" }
 }
@@ -40,12 +40,12 @@ exposed spec Tagged {
 }
 
 # Applies to every concrete type that conforms to `Animal`.
-conform<T: Animal> T to Tagged {
+meet<T: Animal> Tagged for T {
 	tag_name(*self) => *str { "animal" }
 }
 
 # A matching concrete conformance is more specific than the blanket above.
-conform Dog to Tagged {
+meet Tagged for Dog {
 	tag_name(*self) => *str { "dog-specific" }
 }
 
@@ -64,7 +64,7 @@ struct Widget {
 	exposed id: i32;
 }
 
-conform Widget to Make {
+meet Make for Widget {
 	make() => Self { Self { id = 9; } }
 }
 
@@ -77,11 +77,11 @@ struct Multi {
 	exposed tally: i32;
 }
 
-conform Multi to Consumer<i32> {
+meet Consumer<i32> for Multi {
 	consume(*self, value: i32) => i32 { self.tally + value }
 }
 
-conform Multi to Consumer<*u8> {
+meet Consumer<*u8> for Multi {
 	consume(*self, value: *u8) => i32 { self.tally + <i32>*value }
 }
 

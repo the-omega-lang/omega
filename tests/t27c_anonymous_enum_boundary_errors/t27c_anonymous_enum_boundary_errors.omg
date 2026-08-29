@@ -10,7 +10,7 @@ alias Errors = enum i32 | bool;
 
 # An anonymous enum has no declaration, so it has no methods, static
 # functions, or conformances of its own in v1.
-conform Errors to Named {
+meet Named for Errors {
 	name(*self) => *str {
 		"anonymous"
 	}

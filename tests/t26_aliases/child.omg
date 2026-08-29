@@ -27,7 +27,7 @@ exposed spec Named {
 	name(*self) => *str;
 }
 
-conform Hidden to Named {
+meet Named for Hidden {
 	name(*self) => *str { "hidden" }
 }
 

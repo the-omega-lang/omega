@@ -1,6 +1,22 @@
 use super::*;
 use crate::ast::item::Item;
+use crate::ast::r#type::Type;
 use crate::diagnostics::ParseErrorKind;
+
+fn type_head(ty: &Type) -> &str {
+    match ty {
+        Type::Named(path) | Type::Generic(path, _) => path.head.as_ref(),
+        other => panic!("unexpected type {other:?}"),
+    }
+}
+
+fn conformance(source: &str) -> crate::ast::item::ConformStmt {
+    let module = SourceModule::parse(source).expect("a conformance declaration should parse");
+    match &module.nodes.last().expect("at least one item").item {
+        Item::Conform(c) => c.clone(),
+        other => panic!("unexpected trailing item {other:?}"),
+    }
+}
 
 fn errors(source: &str) -> Vec<ParseErrorKind> {
     SourceModule::parse(source)
@@ -139,7 +155,7 @@ fn parses_conform_and_primitive_items() {
     let module = SourceModule::parse(
         "spec Show { show(*self) => i32; }\n\
          struct Box<T> { value: T; }\n\
-         conform<T> Box<T> to Show { show(*self) => i32 { 1 } }\n\
+         meet<T> Show for Box<T> { show(*self) => i32 { 1 } }\n\
          primitive<T> []T { exposed is_empty(*self) => bool { self.length == 0 } }",
     )
     .expect("conform and primitive declarations should parse");
@@ -148,9 +164,58 @@ fn parses_conform_and_primitive_items() {
 }
 
 #[test]
+fn meet_maps_the_written_spec_and_target_to_their_semantic_fields() {
+    let concrete = conformance(
+        "spec Animal { speak(*self) => i32; }\n\
+         struct Dog {}\n\
+         meet Animal for Dog { speak(*self) => i32 { 1 } }",
+    );
+    assert_eq!(type_head(&concrete.spec), "Animal");
+    assert_eq!(type_head(&concrete.target), "Dog");
+    assert!(concrete.generics.is_empty());
+
+    let blanket = conformance(
+        "spec Animal { speak(*self) => i32; }\n\
+         spec Tagged { tag(*self) => i32; }\n\
+         meet<T: Animal> Tagged for T { tag(*self) => i32 { self.speak() } }",
+    );
+    assert_eq!(type_head(&blanket.spec), "Tagged");
+    assert_eq!(type_head(&blanket.target), "T");
+    assert_eq!(blanket.generics.len(), 1);
+}
+
+// The connector follows the spec so that names ending in a preposition-like
+// word stay readable; this is the reason the declaration order was reversed.
+#[test]
+fn meet_accepts_connector_like_spec_names() {
+    for (source, spec) in [
+        (
+            "spec ToIterator<T> { iter(*self) => T; }\n\
+             meet ToIterator<char> for str { iter(*self) => char { 'a' } }",
+            "ToIterator",
+        ),
+        (
+            "spec WithCapacity { with_capacity(n: usize) => Self; }\n\
+             struct Buf {}\n\
+             meet WithCapacity for Buf { with_capacity(n: usize) => Self { Buf {} } }",
+            "WithCapacity",
+        ),
+        (
+            "spec AsBytes { as_bytes(*self) => []u8; }\n\
+             struct Buf {}\n\
+             meet AsBytes for Buf { as_bytes(*self) => []u8 { [] } }",
+            "AsBytes",
+        ),
+    ] {
+        let parsed = conformance(source);
+        assert_eq!(type_head(&parsed.spec), spec);
+    }
+}
+
+#[test]
 fn conform_and_primitive_enforce_their_visibility_shapes() {
     assert!(matches!(
-        errors("spec Show { show(*self) => i32; } struct S {} conform S to Show { exposed show(*self) => i32 { 1 } }").as_slice(),
+        errors("spec Show { show(*self) => i32; } struct S {} meet Show for S { exposed show(*self) => i32 { 1 } }").as_slice(),
         [ParseErrorKind::ConformMethodVisibility]
     ));
     assert!(matches!(
@@ -160,16 +225,16 @@ fn conform_and_primitive_enforce_their_visibility_shapes() {
 }
 
 #[test]
-fn conform_to_and_primitive_stay_contextual_identifiers() {
+fn meet_and_primitive_stay_contextual_identifiers() {
     let module = SourceModule::parse(
-        "conform := 1;\n\
+        "meet := 1;\n\
          primitive : i32 = 2;\n\
-         to := 3;\n\
-         conform() => i32 { primitive := 3; return primitive; }\n\
-         primitive() => i32 { return conform; }\n\
-         to() => i32 { return to; }",
+         conform := 3;\n\
+         meet() => i32 { primitive := 3; return primitive; }\n\
+         primitive() => i32 { return meet; }\n\
+         conform() => i32 { return conform; }",
     )
-    .expect("conform, to and primitive must remain usable as ordinary identifiers");
+    .expect("meet, conform and primitive must remain usable as ordinary identifiers");
     assert!(matches!(module.nodes[0].item, Item::Walrus(_)));
     assert!(matches!(
         module.nodes[1].item,
@@ -186,10 +251,21 @@ fn rejects_removed_conformance_syntax() {
     assert!(SourceModule::parse("spec Ops for i32 { value(*self) => i32; }").is_err());
     assert!(SourceModule::parse("spec Ops { value(*self) => i32; } struct S : Ops {}").is_err());
     assert!(matches!(
-        errors("spec Show { show(*self) => i32; } struct S {} conform S : Show { show(*self) => i32 { 1 } }")
+        errors("spec Show { show(*self) => i32; } struct S {} meet Show : S { show(*self) => i32 { 1 } }")
             .as_slice(),
-        [ParseErrorKind::Expected { expected: "to", .. }, ..]
+        [ParseErrorKind::Expected { expected: "'for'", .. }, ..]
     ));
+    assert!(matches!(
+        errors("spec Show { show(*self) => i32; } struct S {} meet Show to S { show(*self) => i32 { 1 } }")
+            .as_slice(),
+        [ParseErrorKind::Expected { expected: "'for'", .. }, ..]
+    ));
+    assert!(
+        SourceModule::parse(
+            "spec Show { show(*self) => i32; } struct S {} conform S to Show { show(*self) => i32 { 1 } }"
+        )
+        .is_err()
+    );
 }
 #[test]
 fn chained_comparison_reports_its_own_error() {
@@ -240,7 +316,7 @@ fn every_item_body_recovers_per_member() {
         "struct S { bad(*self) => ? { } good(*self) => i32 { 1 } }",
         "spec Sp { m(*self) => i32; }\n\
          struct S {}\n\
-         conform S to Sp { bad(*self) => ? { } good(*self) => i32 { 1 } }",
+         meet Sp for S { bad(*self) => ? { } good(*self) => i32 { 1 } }",
         "primitive i32 { bad(*self) => ? { } good(*self) => i32 { 1 } }",
         "gap G { bad() => ?; good() => i32; }",
         "glue G { bad() => ? { } good() => i32 { 1 } }",

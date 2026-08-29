@@ -14,7 +14,7 @@ exposed spec Pingable {
 
 marker Beacon {}
 
-conform Beacon to Pingable {
+meet Pingable for Beacon {
 	ping(*self) => *str { "pong" }
 }
 
