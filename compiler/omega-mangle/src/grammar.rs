@@ -5,6 +5,8 @@ pub const PREFIX: &str = "_omg_";
 pub const TAG_ROOT: u8 = b'C';
 pub const TAG_NESTED: u8 = b'N';
 pub const TAG_GENERIC: u8 = b'I';
+/// A generic application carrying at least one compile-time value argument.
+pub const TAG_GENERIC_MIXED: u8 = b'i';
 pub const TAG_BACKREF: u8 = b'B';
 pub const TAG_LIST_END: u8 = b'E';
 
@@ -32,6 +34,13 @@ pub const TAG_STR_MUT: u8 = b'U';
 pub const TAG_TYPE_PATH: u8 = b'X';
 pub const TAG_ANONYMOUS_ENUM: u8 = b'Y';
 pub const TAG_ANONYMOUS_ENUM_REFINED: u8 = b'Z';
+
+/// Inside a mixed generic list, every element is introduced by one of these
+/// so a value argument can never be read as a type.
+pub const TAG_ARG_TYPE: u8 = b'p';
+pub const TAG_ARG_VALUE: u8 = b'q';
+/// Precedes the base62 magnitude of a negative integer value.
+pub const TAG_VALUE_NEGATIVE: u8 = b'k';
 
 pub const VENDOR_SUFFIX_SEP: u8 = b'.';
 

@@ -45,7 +45,7 @@ impl<'r> Analyzer<'r> {
         let ResolvedItem::Type(ResolvedType::Struct(cell)) = self
             .resolve_item_checked(
                 &ItemAccess::gated(Self::core_range_path("Range")),
-                &[element],
+                &[ResolvedGenericArg::Type(element)],
                 true,
                 Origin::default(),
             )
@@ -102,7 +102,12 @@ impl<'r> Analyzer<'r> {
             && definition.module_path[0].as_ref() == "core"
             && definition.module_path[1].as_ref() == "range";
         is_core_range
-            .then(|| definition.type_args.first().cloned())
+            .then(|| {
+                definition
+                    .generic_args
+                    .first()
+                    .and_then(|arg| arg.as_type().cloned())
+            })
             .flatten()
     }
 

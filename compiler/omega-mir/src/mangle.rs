@@ -2,7 +2,7 @@ mod semantic;
 
 use omega_analyzer::annotations::ManglingMode;
 use omega_analyzer::checked::{ExternFunctionKind, ExternFunctionRef};
-use omega_analyzer::resolved_type::{ResolvedFunctionType, ResolvedType};
+use omega_analyzer::resolved_type::{ResolvedFunctionType, ResolvedGenericArg, ResolvedType};
 use omega_mangle::{ManglePath, Namespace, Symbol};
 use omega_parser::prelude::Ident;
 use semantic::{generic_path, module_path, nominal_path, owner_path, signature};
@@ -12,11 +12,11 @@ pub use omega_mangle::encode;
 pub fn free_function_symbol(
     module: &[Ident],
     name: &Ident,
-    type_args: &[ResolvedType],
+    generic_args: &[ResolvedGenericArg],
     fn_type: &ResolvedFunctionType,
 ) -> Symbol {
     let path = value_path(module_path(module), name);
-    function_symbol(generic_path(path, type_args), fn_type)
+    function_symbol(generic_path(path, generic_args), fn_type)
 }
 
 pub fn global_symbol(module: &[Ident], name: &Ident) -> Symbol {
@@ -26,11 +26,11 @@ pub fn global_symbol(module: &[Ident], name: &Ident) -> Symbol {
 pub fn method_symbol(
     module: &[Ident],
     owner_name: &Ident,
-    owner_type_args: &[ResolvedType],
+    owner_generic_args: &[ResolvedGenericArg],
     method_name: &Ident,
     fn_type: &ResolvedFunctionType,
 ) -> Symbol {
-    let owner = nominal_path(module, owner_name, owner_type_args);
+    let owner = nominal_path(module, owner_name, owner_generic_args);
     function_symbol(
         associated_function_path(owner, method_name, fn_type),
         fn_type,
@@ -84,7 +84,7 @@ pub fn primitive_method_symbol(
 pub fn conformance_method_symbol(
     target: &ResolvedType,
     spec_name: &Ident,
-    spec_args: &[ResolvedType],
+    spec_args: &[ResolvedGenericArg],
     method_name: &Ident,
     fn_type: &ResolvedFunctionType,
 ) -> Symbol {
@@ -105,7 +105,7 @@ pub fn conformance_method_symbol(
 /// singleton encoding, since the loop below runs once in that case.
 pub fn vtable_symbol(
     concrete: &ResolvedType,
-    shape_members: &[(Ident, Vec<ResolvedType>)],
+    shape_members: &[(Ident, Vec<ResolvedGenericArg>)],
 ) -> Symbol {
     let omega_mangle::MangleType::Named(concrete_path, _) = semantic::mangle_type(concrete) else {
         unreachable!(
@@ -116,8 +116,8 @@ pub fn vtable_symbol(
     // See conformance_method_symbol: spec module identity is intentionally not changed here in a
     // refactor because linker-name changes are an ABI/separate-compilation migration.
     let mut path = concrete_path;
-    for (spec_name, spec_type_args) in shape_members {
-        path = generic_path(type_path(path, spec_name), spec_type_args);
+    for (spec_name, spec_args) in shape_members {
+        path = generic_path(type_path(path, spec_name), spec_args);
     }
     data_item_symbol(value_path_name(path, "vtable"))
 }
@@ -279,12 +279,42 @@ mod tests {
         let symbol = free_function_symbol(
             &[ident("pkg"), ident("math")],
             &ident("sum"),
-            &[ResolvedType::U32],
+            &[ResolvedGenericArg::Type(ResolvedType::U32)],
             &fn_type(
                 vec![ResolvedType::U32, ResolvedType::U32],
                 ResolvedType::U32,
             ),
         );
+        assert_adapter_round_trip(symbol);
+    }
+
+    #[test]
+    fn differing_comp_generic_values_produce_differing_symbols() {
+        use omega_analyzer::resolved_type::{CompIntType, CompScalar};
+        let symbol_for = |value: i128| {
+            encode(&free_function_symbol(
+                &[ident("pkg")],
+                &ident("take"),
+                &[ResolvedGenericArg::Comp(CompScalar::Int {
+                    r#type: CompIntType::USize,
+                    value,
+                })],
+                &fn_type(vec![], ResolvedType::Void),
+            ))
+        };
+        assert_ne!(symbol_for(10), symbol_for(11));
+    }
+
+    #[test]
+    fn an_all_type_generic_argument_list_keeps_its_legacy_symbol_form() {
+        // The mixed model must not silently migrate existing generic ABI.
+        let symbol = free_function_symbol(
+            &[ident("pkg")],
+            &ident("take"),
+            &[ResolvedGenericArg::Type(ResolvedType::U32)],
+            &fn_type(vec![], ResolvedType::Void),
+        );
+        assert!(matches!(symbol.path, omega_mangle::ManglePath::Generic(..)));
         assert_adapter_round_trip(symbol);
     }
 
@@ -310,7 +340,7 @@ mod tests {
             },
             name: ident(name),
             module_path: vec![ident("mymod")],
-            type_args: vec![],
+            generic_args: vec![],
             fields: vec![],
             functions: vec![],
             layout: omega_analyzer::annotations::Layout::default(),

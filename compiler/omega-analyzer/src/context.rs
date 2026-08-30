@@ -1,8 +1,9 @@
-use crate::checked::Storage;
+use crate::checked::{NumberValue, Storage};
+use crate::error::ArrayLengthProblem;
 use crate::error::TypeResolutionError;
 use crate::resolved_type::{
-    CallingConvention, ResolvedAnonymousEnum, ResolvedFunctionParam, ResolvedFunctionType,
-    ResolvedType,
+    CallingConvention, CompScalar, CompScalarType, ConstValue, ResolvedAnonymousEnum,
+    ResolvedFunctionParam, ResolvedFunctionType, ResolvedGenericArg, ResolvedType,
 };
 use crate::resolver::{
     ImportTarget, ItemAccess, ItemNamespace, ModuleResolver, ResolveError, ResolveItemOptions,
@@ -11,7 +12,7 @@ use crate::resolver::{
 use crate::similarity::best_match;
 use crate::target::Target;
 use indexmap::IndexMap;
-use omega_hir::HirId;
+use omega_hir::{HirGenericParam, HirId};
 use omega_parser::prelude::*;
 
 /// Whether an active `reveal` speaks for syntax carrying a given origin.
@@ -53,6 +54,10 @@ pub struct LexicalScope {
     /// resolves to.
     visible: IndexMap<(Ident, Origin), usize>,
     defined_types: IndexMap<Ident, ResolvedType>,
+    /// `comp` generic parameters installed by a generic instantiation. Like
+    /// `defined_types` these are keyed by name alone: a generic parameter
+    /// belongs to its declaration, not to one hygienic environment inside it.
+    defined_comps: IndexMap<Ident, VarBinding>,
 }
 
 impl LexicalScope {
@@ -61,6 +66,7 @@ impl LexicalScope {
             declarations: Vec::new(),
             visible: IndexMap::new(),
             defined_types: IndexMap::new(),
+            defined_comps: IndexMap::new(),
         }
     }
 
@@ -197,7 +203,7 @@ impl Context {
         self.scopes
             .iter()
             .rev()
-            .find_map(|scope| scope.get(&key))
+            .find_map(|scope| scope.get(&key).or_else(|| scope.defined_comps.get(ident)))
             .or_else(|| {
                 if ident.as_ref() != "self" || origin == Origin::default() {
                     return None;
@@ -460,10 +466,9 @@ impl Context {
             )?)),
             Type::InferredArray(_) => Err(TypeResolutionError::BareUnsizedArray),
             Type::UnknownSizeArray(_) => Err(TypeResolutionError::BareUnknownSizeArray),
-            Type::SizedArray(item, size) => {
-                let size = size
-                    .parse::<u32>()
-                    .map_err(|_| TypeResolutionError::InvalidArraySize(size.clone()))?;
+            Type::SizedArray(item, length) => {
+                let size =
+                    self.resolve_array_length(&length, resolver, module_path, options, reveals)?;
                 let item = self.resolve_type(*item, resolver, module_path, options, reveals)?;
                 Ok(ResolvedType::SizedArray(Box::new(item), size))
             }
@@ -647,7 +652,7 @@ impl Context {
     fn resolve_generic_type(
         &self,
         path: Path,
-        args: Vec<Type>,
+        args: Vec<GenericArg>,
         resolver: &mut dyn ModuleResolver,
         module_path: &[Ident],
         options: ResolveItemOptions,
@@ -656,49 +661,278 @@ impl Context {
         let resolution_module = resolver
             .macro_origin_module(path.origin)
             .unwrap_or_else(|| module_path.to_vec());
-        let resolved = {
-            let resolved_args = args
-                .into_iter()
-                .map(|arg| {
-                    self.resolve_type(
-                        arg,
-                        resolver,
-                        module_path,
-                        options.through_indirection(),
-                        reveals,
-                    )
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let options =
-                options.bypassing_visibility(options.bypasses_visibility() || reveals(path.origin));
-            let access = self.resolve_absolute_item_path(resolver, &path, module_path)?;
-            let options = access.options(options);
-            let absolute = access.absolute;
-            let result =
-                resolver.resolve_item(&resolution_module, &absolute, &resolved_args, options);
-            let result = match (&result, path.is_unqualified()) {
-                (Err(ResolveError::UnknownItem { .. }), true) => {
-                    match resolver.ambient_core_candidates(&resolution_module, &path.head) {
-                        Ok(Some(ambient_absolute)) => resolver.resolve_item(
-                            &resolution_module,
-                            &ambient_absolute,
-                            &resolved_args,
-                            options,
-                        ),
-                        Ok(None) => result,
-                        Err(e) => Err(e),
+        let inner_options =
+            options.bypassing_visibility(options.bypasses_visibility() || reveals(path.origin));
+        let access = self.resolve_absolute_item_path(resolver, &path, module_path)?;
+        let options = access.options(inner_options);
+        let absolute = access.absolute;
+
+        // Argument kinds follow the declaration, so the parameter list is
+        // needed before a written argument can be resolved at all. An
+        // unqualified name that is not declared here may still be an ambient
+        // `core` item, which owns its own parameter list.
+        let (absolute, params) = match resolver.item_generic_params(&absolute) {
+            Ok(Some(params)) => (absolute, params),
+            Ok(None) | Err(ResolveError::UnknownItem { .. }) if path.is_unqualified() => {
+                match resolver.ambient_core_candidates(&resolution_module, &path.head) {
+                    Ok(Some(ambient)) => {
+                        let params = resolver
+                            .item_generic_params(&ambient)
+                            .map_err(TypeResolutionError::ModuleResolution)?
+                            .unwrap_or_default();
+                        (ambient, params)
                     }
-                }
-                _ => result,
-            };
-            match result.map_err(TypeResolutionError::ModuleResolution)? {
-                ResolvedItem::Type(t) => t,
-                ResolvedItem::Value { .. } | ResolvedItem::Gap(_) => {
-                    return Err(TypeResolutionError::NotAType(absolute));
+                    Ok(None) => (absolute, Vec::new()),
+                    Err(e) => return Err(TypeResolutionError::ModuleResolution(e)),
                 }
             }
+            Ok(None) => (absolute, Vec::new()),
+            Err(e) => return Err(TypeResolutionError::ModuleResolution(e)),
         };
-        Ok(resolved)
+
+        // A surplus argument has no parameter to be read against, so it is
+        // rejected before resolution rather than at the item query.
+        if !params.is_empty()
+            && args.len() > params.len()
+            && let Some((item, module)) = absolute.split_last()
+        {
+            return Err(TypeResolutionError::ModuleResolution(
+                ResolveError::GenericArgCountMismatch {
+                    module: module.to_vec(),
+                    item: item.clone(),
+                    expected: params.len(),
+                    found: args.len(),
+                },
+            ));
+        }
+        let resolved_args = self.resolve_generic_args(
+            &args,
+            &params,
+            resolver,
+            module_path,
+            inner_options.through_indirection(),
+            reveals,
+        )?;
+
+        match resolver
+            .resolve_item(&resolution_module, &absolute, &resolved_args, options)
+            .map_err(TypeResolutionError::ModuleResolution)?
+        {
+            ResolvedItem::Type(t) => Ok(t),
+            ResolvedItem::Value { .. } | ResolvedItem::Gap(_) => {
+                Err(TypeResolutionError::NotAType(absolute))
+            }
+        }
+    }
+
+    /// Resolves a written generic argument list against the declared
+    /// parameters. Positions beyond the declaration are resolved as types so
+    /// the arity error the item query raises stays the reported one.
+    pub(crate) fn resolve_generic_args(
+        &self,
+        args: &[GenericArg],
+        params: &[HirGenericParam],
+        resolver: &mut dyn ModuleResolver,
+        module_path: &[Ident],
+        options: ResolveItemOptions,
+        reveals: RevealAuthority<'_>,
+    ) -> Result<Vec<ResolvedGenericArg>, TypeResolutionError> {
+        args.iter()
+            .enumerate()
+            .map(|(index, arg)| {
+                self.resolve_generic_arg(
+                    arg,
+                    params.get(index),
+                    resolver,
+                    module_path,
+                    options,
+                    reveals,
+                )
+            })
+            .collect()
+    }
+
+    pub(crate) fn resolve_generic_arg(
+        &self,
+        arg: &GenericArg,
+        param: Option<&HirGenericParam>,
+        resolver: &mut dyn ModuleResolver,
+        module_path: &[Ident],
+        options: ResolveItemOptions,
+        reveals: RevealAuthority<'_>,
+    ) -> Result<ResolvedGenericArg, TypeResolutionError> {
+        let comp_param = param.filter(|param| param.is_comp());
+        match (comp_param, arg) {
+            (Some(param), _) => {
+                let declared = self.comp_param_type(param, resolver, module_path, reveals)?;
+                let value = match arg {
+                    GenericArg::Value(literal) => literal_const_value(literal)?,
+                    GenericArg::Type(Type::Named(path)) => {
+                        self.comp_path_value(path, resolver, module_path, options, reveals)?
+                    }
+                    GenericArg::Type(_) => {
+                        return Err(TypeResolutionError::GenericArgKindMismatch {
+                            param: param.ident.clone(),
+                            expected_value: true,
+                        });
+                    }
+                };
+                CompScalar::normalize(&value, declared, self.target.pointer_bits())
+                    .map(ResolvedGenericArg::Comp)
+                    .ok_or_else(|| TypeResolutionError::CompArgNotRepresentable {
+                        param: param.ident.clone(),
+                        value: const_value_display(&value),
+                        declared: declared.resolved(),
+                    })
+            }
+            (None, GenericArg::Value(_)) => Err(TypeResolutionError::GenericArgKindMismatch {
+                param: param
+                    .map(|p| p.ident.clone())
+                    .unwrap_or_else(|| Ident("<argument>".to_string())),
+                expected_value: false,
+            }),
+            (None, GenericArg::Type(r#type)) => self
+                .resolve_type(r#type.clone(), resolver, module_path, options, reveals)
+                .map(ResolvedGenericArg::Type),
+        }
+    }
+
+    /// The declared value type of a `comp` parameter, gated on the closed set
+    /// of types a compile-time generic argument may currently have.
+    fn comp_param_type(
+        &self,
+        param: &HirGenericParam,
+        resolver: &mut dyn ModuleResolver,
+        module_path: &[Ident],
+        reveals: RevealAuthority<'_>,
+    ) -> Result<CompScalarType, TypeResolutionError> {
+        let written = param
+            .comp_type()
+            .expect("only called for a comp parameter")
+            .clone();
+        let resolved = self.resolve_type(
+            written,
+            resolver,
+            module_path,
+            ResolveItemOptions::INDIRECT,
+            reveals,
+        )?;
+        CompScalarType::from_resolved(&resolved).ok_or(
+            TypeResolutionError::UnsupportedCompParamType {
+                param: param.ident.clone(),
+                r#type: resolved,
+            },
+        )
+    }
+
+    /// A fixed array's length. The array-size domain is checked here rather
+    /// than where the value came from: a `comp` generic may legitimately hold
+    /// the full range of its declared type and only be out of bounds when it
+    /// is used as a length.
+    fn resolve_array_length(
+        &self,
+        length: &ArrayLength,
+        resolver: &mut dyn ModuleResolver,
+        module_path: &[Ident],
+        options: ResolveItemOptions,
+        reveals: RevealAuthority<'_>,
+    ) -> Result<u32, TypeResolutionError> {
+        let value = match length {
+            ArrayLength::Literal(literal) => literal_const_value(literal)?,
+            ArrayLength::Path(path) => self.comp_path_value(
+                path,
+                resolver,
+                module_path,
+                options.through_indirection(),
+                reveals,
+            )?,
+        };
+        let written = crate::error::raw_array_length_display(length);
+        let invalid = |value: Option<String>, reason| TypeResolutionError::InvalidArrayLength {
+            written: written.clone(),
+            value,
+            reason,
+        };
+        let value = match value {
+            ConstValue::Number(NumberValue::Signed(v)) => i128::from(v),
+            ConstValue::Number(NumberValue::Unsigned(v)) => i128::from(v),
+            other => {
+                return Err(invalid(
+                    Some(const_value_display(&other)),
+                    ArrayLengthProblem::NotAnInteger,
+                ));
+            }
+        };
+        if value < 0 {
+            return Err(invalid(
+                Some(value.to_string()),
+                ArrayLengthProblem::Negative,
+            ));
+        }
+        u32::try_from(value)
+            .map_err(|_| invalid(Some(value.to_string()), ArrayLengthProblem::TooLarge))
+    }
+
+    /// The compile-time value a path names. A local or generic `comp`
+    /// binding is found in scope; anything else is a top-level item, which
+    /// must itself be a `comp` binding.
+    fn comp_path_value(
+        &self,
+        path: &Path,
+        resolver: &mut dyn ModuleResolver,
+        module_path: &[Ident],
+        options: ResolveItemOptions,
+        reveals: RevealAuthority<'_>,
+    ) -> Result<ConstValue, TypeResolutionError> {
+        if path.is_unqualified()
+            && let Some(binding) = self.find_variable(&path.head, path.origin)
+        {
+            if binding.storage != Storage::Comp {
+                return Err(TypeResolutionError::NotACompValue(path.head.clone()));
+            }
+            let decl_id = binding.decl_id;
+            return self
+                .comp_value(decl_id)
+                .cloned()
+                .or_else(|| resolver.resolve_comp_value(decl_id))
+                .ok_or_else(|| TypeResolutionError::CompValueUnavailable(path.head.clone()));
+        }
+
+        // A name bound as a type is a type, not a value; saying so is much
+        // clearer than reporting it as a missing item.
+        if path.is_unqualified()
+            && (self.find_defined_type(&path.head).is_some()
+                || is_reserved_type_name(path.head.as_ref()))
+        {
+            return Err(TypeResolutionError::CompValueIsAType(path.head.clone()));
+        }
+        let resolution_module = resolver
+            .macro_origin_module(path.origin)
+            .unwrap_or_else(|| module_path.to_vec());
+        let options =
+            options.bypassing_visibility(options.bypasses_visibility() || reveals(path.origin));
+        let access = self.resolve_absolute_item_path(resolver, path, module_path)?;
+        let options = access.options(options);
+        let name = path
+            .segments()
+            .last()
+            .cloned()
+            .expect("a path always has a last segment");
+        match resolver
+            .resolve_item(&resolution_module, &access.absolute, &[], options)
+            .map_err(TypeResolutionError::ModuleResolution)?
+        {
+            ResolvedItem::Value {
+                storage: Storage::Comp,
+                decl_id,
+                ..
+            } => resolver
+                .resolve_comp_value(decl_id)
+                .ok_or(TypeResolutionError::CompValueUnavailable(name)),
+            ResolvedItem::Value { .. } => Err(TypeResolutionError::NotACompValue(name)),
+            ResolvedItem::Type(_) => Err(TypeResolutionError::CompValueIsAType(name)),
+            ResolvedItem::Gap(_) => Err(TypeResolutionError::NotACompValue(name)),
+        }
     }
 
     fn resolve_pointer_type(
@@ -798,22 +1032,10 @@ impl Context {
     ) -> Result<ResolvedType, TypeResolutionError> {
         let mut applications = Vec::with_capacity(members.len());
         for member in members {
-            let type_args = match &member {
+            let written_args = match &member {
                 Type::Generic(_, args) => args.clone(),
                 _ => vec![],
             };
-            let resolved_args = type_args
-                .into_iter()
-                .map(|a| {
-                    self.resolve_type(
-                        a,
-                        resolver,
-                        module_path,
-                        options.through_indirection(),
-                        reveals,
-                    )
-                })
-                .collect::<Result<Vec<_>, _>>()?;
             let member_name = match &member {
                 Type::Named(path) | Type::Generic(path, _) => path.head.clone(),
                 _ => Ident("<spec>".to_string()),
@@ -829,6 +1051,15 @@ impl Context {
                     if !spec.borrow().is_object_safe {
                         return Err(TypeResolutionError::SpecNotObjectSafe(member_name));
                     }
+                    let params = spec.borrow().generics.clone();
+                    let resolved_args = self.resolve_generic_args(
+                        &written_args,
+                        &params,
+                        resolver,
+                        module_path,
+                        options.through_indirection(),
+                        reveals,
+                    )?;
                     applications.push(crate::resolved_type::ResolvedSpecApplication::new(
                         spec,
                         resolved_args,
@@ -898,6 +1129,28 @@ impl Context {
             .declare(ident, origin, binding, policy)
     }
 
+    /// Installs a `comp` generic parameter as an ordinary compile-time
+    /// binding, so every rule that already accepts a `comp` value -- array
+    /// lengths, ranges, `comp` evaluation, conditionals -- accepts it too.
+    pub fn define_comp(&mut self, name: Ident, decl_id: HirId, span: Span, value: CompScalar) {
+        let binding = VarBinding {
+            decl_id,
+            storage: Storage::Comp,
+            r#type: value.resolved_type(),
+            span,
+            narrowed: false,
+            mutable: false,
+            used: true,
+            written: false,
+        };
+        self.scopes
+            .last_mut()
+            .expect("context always has a root scope")
+            .defined_comps
+            .insert(name, binding);
+        self.set_comp_value(decl_id, value.const_value());
+    }
+
     pub fn define_type(&mut self, name: Ident, r#type: ResolvedType) {
         self.scopes
             .last_mut()
@@ -916,6 +1169,38 @@ impl Context {
             "attempted to leave the analyzer's root scope"
         );
         self.scopes.pop().expect("scope count checked above")
+    }
+}
+
+/// The compile-time value one written scalar literal denotes, before it is
+/// normalized against any declared type.
+fn literal_const_value(literal: &CompLiteral) -> Result<ConstValue, TypeResolutionError> {
+    Ok(match literal {
+        CompLiteral::Int { negative, number } => {
+            let magnitude = u64::from_str_radix(&number.integer_part, number.base.radix())
+                .map_err(|_| TypeResolutionError::CompLiteralOutOfRange(literal.clone()))?;
+            match negative {
+                true => ConstValue::Number(NumberValue::Signed(
+                    i64::try_from(magnitude)
+                        .map(|v| -v)
+                        .map_err(|_| TypeResolutionError::CompLiteralOutOfRange(literal.clone()))?,
+                )),
+                false => ConstValue::Number(NumberValue::Unsigned(magnitude)),
+            }
+        }
+        CompLiteral::Bool(value) => ConstValue::Bool(*value),
+        CompLiteral::Char(value) => ConstValue::Char(*value),
+    })
+}
+
+fn const_value_display(value: &ConstValue) -> String {
+    match value {
+        ConstValue::Number(NumberValue::Signed(v)) => v.to_string(),
+        ConstValue::Number(NumberValue::Unsigned(v)) => v.to_string(),
+        ConstValue::Number(NumberValue::Float(v)) => v.to_string(),
+        ConstValue::Bool(v) => v.to_string(),
+        ConstValue::Char(v) => format!("'{v}'"),
+        _ => "this value".to_string(),
     }
 }
 

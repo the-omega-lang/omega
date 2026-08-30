@@ -1,0 +1,87 @@
+error: array length 'N' (5000000000) does not fit a u32
+ --> tests/t34b_comp_generic_errors/t34b_comp_generic_errors.omg:4:13
+  |
+4 |     exposed data: [N]T;
+  |             ^^^^^^^^^^ not a usable array length
+  |
+  = note: an array's length must be a compile-time integer that fits in a `u32`
+
+error: 'not_comp' is a runtime binding, but a compile-time value is required here (declare it with 'comp')
+  --> tests/t34b_comp_generic_errors/t34b_comp_generic_errors.omg:27:20
+   |
+27 |     runtime_arg := Buffer<not_comp, i32> { data = [1, 2]; };
+   |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this is a runtime binding
+   |
+   = help: declare it as `comp name := ...` so its value exists at compile time
+
+error: generic parameter 'A' is a type parameter, so it takes a type, not a value
+  --> tests/t34b_comp_generic_errors/t34b_comp_generic_errors.omg:30:23
+   |
+30 |     value_for_type := Pair<1, i32> { a = 1; b = 2; };
+   |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected a type, found a compile-time value
+
+error: 'i32' is a type, but a compile-time value is required here
+  --> tests/t34b_comp_generic_errors/t34b_comp_generic_errors.omg:31:23
+   |
+31 |     type_for_value := Buffer<i32, i32> { data = [1]; };
+   |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected a compile-time value, found a type
+
+error: 'comp W: f64' is not supported -- a 'comp' generic parameter must currently be an integer, 'bool', or 'char'
+  --> tests/t34b_comp_generic_errors/t34b_comp_generic_errors.omg:34:20
+   |
+34 |     unsupported := Weighted<1> { value = 0; };
+   |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^ unsupported `comp` parameter type
+   |
+   = note: a `comp` generic parameter must be an integer type, `bool`, or `char`
+
+error: '-1' cannot be represented as 'usize', the declared type of 'comp N'
+  --> tests/t34b_comp_generic_errors/t34b_comp_generic_errors.omg:37:17
+   |
+37 |     negative := Buffer<-1, i32> { data = [1]; };
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not representable as `usize`
+   |
+   = note: a `comp` generic argument must be exactly representable in the parameter's declared type
+
+error: '300' cannot be represented as 'u8', the declared type of 'comp N'
+  --> tests/t34b_comp_generic_errors/t34b_comp_generic_errors.omg:41:20
+   |
+41 |     overflowing := Small<too_big> { data = [1u8]; };
+   |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not representable as `u8`
+   |
+   = note: a `comp` generic argument must be exactly representable in the parameter's declared type
+
+error: cannot use 't34b_comp_generic_errors::Buffer' because of its own error
+  --> tests/t34b_comp_generic_errors/t34b_comp_generic_errors.omg:44:18
+   |
+44 |     oversized := Buffer<5000000000, u8> { data = [1u8]; };
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ cannot be used because of its own error
+   |
+   = note: `Buffer`'s own error is reported where it is defined
+
+error: 't34b_comp_generic_errors::Buffer' expects 2 generic argument(s), found 3
+  --> tests/t34b_comp_generic_errors/t34b_comp_generic_errors.omg:47:17
+   |
+47 |     too_many := Buffer<1, i32, u8> { data = [1]; };
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected 2 generic arguments
+
+error: 't34b_comp_generic_errors::Buffer' expects 2 generic argument(s), found 3
+  --> tests/t34b_comp_generic_errors/t34b_comp_generic_errors.omg:48:24
+   |
+48 |     too_many_values := Buffer<1, i32, 2> { data = [1]; };
+   |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected 2 generic arguments
+
+error: 't34b_comp_generic_errors::Buffer' expects 2 generic argument(s), found 1
+  --> tests/t34b_comp_generic_errors/t34b_comp_generic_errors.omg:49:16
+   |
+49 |     too_few := Buffer<1> { data = [1]; };
+   |                ^^^^^^^^^^^^^^^^^^^^^^^^^ expected 2 generic arguments
+
+error: cannot infer generic parameter 'N' from this call's arguments
+  --> tests/t34b_comp_generic_errors/t34b_comp_generic_errors.omg:52:5
+   |
+52 |     undetermined(1);
+   |     ^^^^^^^^^^^^^^^ cannot deduce `N` from this call's arguments
+   |
+   = note: a generic function's parameters are deduced from its argument types only; a `comp` parameter is deduced only from compile-time structure such as a fixed array's length
+
+error: could not compile the program due to 12 previous errors

@@ -85,7 +85,7 @@ fn an_alias_may_own_generic_parameters_with_bounds_and_defaults() {
     let alias = alias("alias Keyed<V: Show = i32> = Map<*str, V>;");
     assert_eq!(alias.generics.len(), 1);
     assert_eq!(alias.generics[0].ident.as_ref(), "V");
-    assert_eq!(alias.generics[0].bounds.len(), 1);
+    assert_eq!(alias.generics[0].bounds().len(), 1);
     assert!(alias.generics[0].default.is_some());
 }
 

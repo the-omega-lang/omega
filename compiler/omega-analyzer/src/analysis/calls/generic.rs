@@ -153,32 +153,32 @@ impl<'r> Analyzer<'r> {
         Some((ambient, sig))
     }
 
-    /// The substitution call inference starts from. Explicitly written type
+    /// The substitution call inference starts from. Explicitly written
     /// arguments are already bound here and outrank the expected result: the
     /// caller asked for them, so a conflicting expectation must be reported
     /// by the ordinary result check rather than reinterpreted.
     fn seed_from_expected(
-        explicit: HashMap<Ident, ResolvedType>,
+        explicit: GenericSubstitution,
         expected: Option<&ResolvedType>,
-        generics: &[Ident],
+        generics: &GenericParams<'_>,
         return_type: &Type,
-    ) -> HashMap<Ident, ResolvedType> {
+    ) -> GenericSubstitution {
         let mut seed = explicit;
         if let Some(expected) = expected {
-            let mut inferred = HashMap::new();
+            let mut inferred = GenericSubstitution::new();
             unify_generic_type(generics, return_type, expected, &mut inferred);
-            for (generic, resolved) in inferred {
-                seed.entry(generic).or_insert_with(|| resolved.widened());
+            for (generic, resolved) in inferred.iter() {
+                seed.bind_if_absent(generic, || resolved.widened());
             }
         }
         seed
     }
 
     fn fat_pointer_generic_mismatch(
-        generics: &[Ident],
+        generics: &GenericParams<'_>,
         params: &[Type],
         args: &[CheckedExprNode],
-        subst: &HashMap<Ident, ResolvedType>,
+        subst: &GenericSubstitution,
     ) -> Option<(Ident, ResolvedType)> {
         for (raw, arg) in params.iter().zip(args) {
             let Type::Pointer(inner, _) = raw else {
@@ -188,8 +188,8 @@ impl<'r> Analyzer<'r> {
                 continue;
             };
             if !path.is_unqualified()
-                || !generics.contains(&path.head)
-                || subst.contains_key(&path.head)
+                || !generics.names().any(|name| name == &path.head)
+                || subst.contains(&path.head)
             {
                 continue;
             }
@@ -218,61 +218,65 @@ impl<'r> Analyzer<'r> {
         expected: Option<&ResolvedType>,
         origin: Origin,
     ) -> Option<CheckedExprNode> {
-        let (checked_args, subst) = self.infer_generic_args(
+        let comp_types = self.comp_param_types(
+            node_id,
+            span,
             &sig.owner_generics,
-            &sig.owner_defaults,
+            &GenericSubstitution::new(),
+        );
+        let generics = self.generic_params(&sig.owner_generics, &comp_types);
+        let (checked_args, subst) = self.infer_generic_args(
+            &generics,
             &sig.params,
             &call.args,
             Self::seed_from_expected(
-                HashMap::new(),
+                GenericSubstitution::new(),
                 expected,
-                &sig.owner_generics,
+                &generics,
                 &sig.return_type,
             ),
         )?;
 
-        let type_args =
-            match resolve_inferred_type_args(&sig.owner_generics, &sig.owner_defaults, &subst) {
-                Ok(type_args) => type_args,
-                Err(_) => {
-                    let missing: Vec<Ident> = sig
-                        .owner_generics
-                        .iter()
-                        .zip(&sig.owner_defaults)
-                        .filter(|(g, default)| default.is_none() && !subst.contains_key(*g))
-                        .map(|(g, _)| g.clone())
-                        .collect();
-                    if let Some((parameter, found)) = Self::fat_pointer_generic_mismatch(
-                        &sig.owner_generics,
-                        &sig.params,
-                        &checked_args,
-                        &subst,
-                    ) {
-                        self.error(
-                            node_id,
-                            span,
-                            AnalysisErrorKind::GenericParamFromFatPointer { parameter, found },
-                        );
-                    } else {
-                        self.error(
-                            node_id,
-                            span,
-                            AnalysisErrorKind::UnresolvedLiteralGeneric {
-                                r#type: owner
-                                    .absolute
-                                    .last()
-                                    .cloned()
-                                    .expect("an absolute path always has a last segment"),
-                                generics: missing,
-                            },
-                        );
-                    }
-                    return None;
+        let generic_args = match resolve_inferred_generic_args(&generics, &subst) {
+            Ok(generic_args) => generic_args,
+            Err(_) => {
+                let missing: Vec<Ident> = sig
+                    .owner_generics
+                    .iter()
+                    .filter(|param| param.default.is_none() && !subst.contains(&param.ident))
+                    .map(|param| param.ident.clone())
+                    .collect();
+                if let Some((parameter, found)) = Self::fat_pointer_generic_mismatch(
+                    &generics,
+                    &sig.params,
+                    &checked_args,
+                    &subst,
+                ) {
+                    self.error(
+                        node_id,
+                        span,
+                        AnalysisErrorKind::GenericParamFromFatPointer { parameter, found },
+                    );
+                } else {
+                    self.error(
+                        node_id,
+                        span,
+                        AnalysisErrorKind::UnresolvedLiteralGeneric {
+                            r#type: owner
+                                .absolute
+                                .last()
+                                .cloned()
+                                .expect("an absolute path always has a last segment"),
+                            generics: missing,
+                        },
+                    );
                 }
-            };
+                return None;
+            }
+        };
 
         let owner_type =
-            match self.resolve_item_with_ambient_from(accessor, prefix, owner, &type_args) {
+            match self.resolve_item_with_ambient_from(accessor, prefix, owner, &generic_args) {
                 Ok(ResolvedItem::Type(t)) => t,
                 Ok(ResolvedItem::Value { .. }) | Ok(ResolvedItem::Gap(_)) => {
                     self.error(node_id, span, AnalysisErrorKind::UnresolvedCallee);
@@ -392,7 +396,13 @@ impl<'r> Analyzer<'r> {
             Err(_) => return Intercepted::Declined,
         };
 
-        let explicit = match self.resolve_generic_arg_list(node_id, span, expr_path) {
+        let explicit = match self.resolve_generic_arg_list(
+            node_id,
+            span,
+            expr_path,
+            &access.absolute,
+            &sig.generics,
+        ) {
             Some(explicit) => explicit,
             None => return Intercepted::Claimed(None),
         };
@@ -411,48 +421,27 @@ impl<'r> Analyzer<'r> {
         accessor: &[Ident],
         access: &ItemAccess,
         sig: &GenericSignature,
-        explicit: &[ResolvedType],
+        explicit: &[ResolvedGenericArg],
         expected: Option<&ResolvedType>,
     ) -> Option<CheckedExprNode> {
-        if explicit.len() > sig.generics.len() {
-            let (item, module) = access
-                .absolute
-                .split_last()
-                .expect("an absolute path always has a last segment");
-            self.error(
-                node_id,
-                span,
-                AnalysisErrorKind::ModuleResolution(ResolveError::GenericArgCountMismatch {
-                    module: module.to_vec(),
-                    item: item.clone(),
-                    expected: sig.generics.len(),
-                    found: explicit.len(),
-                }),
-            );
-            return None;
-        }
         // Written arguments bind the declaration's generics left to right;
         // inference only ever fills what is left.
-        let bound: HashMap<Ident, ResolvedType> = sig
-            .generics
-            .iter()
-            .cloned()
-            .zip(explicit.iter().cloned())
-            .collect();
+        let bound = GenericSubstitution::zip(sig.generics.iter().map(|p| &p.ident), explicit);
 
+        let comp_types = self.comp_param_types(node_id, span, &sig.generics, &bound);
+        let generics = self.generic_params(&sig.generics, &comp_types);
         let (checked_args, subst) = self.infer_generic_args(
-            &sig.generics,
-            &sig.defaults,
+            &generics,
             &sig.params,
             &call.args,
-            Self::seed_from_expected(bound, expected, &sig.generics, &sig.return_type),
+            Self::seed_from_expected(bound, expected, &generics, &sig.return_type),
         )?;
 
-        let type_args = match resolve_inferred_type_args(&sig.generics, &sig.defaults, &subst) {
-            Ok(type_args) => type_args,
+        let generic_args = match resolve_inferred_generic_args(&generics, &subst) {
+            Ok(generic_args) => generic_args,
             Err(generic) => {
                 if let Some((parameter, found)) = Self::fat_pointer_generic_mismatch(
-                    &sig.generics,
+                    &generics,
                     &sig.params,
                     &checked_args,
                     &subst,
@@ -476,7 +465,7 @@ impl<'r> Analyzer<'r> {
         let (fn_type, storage, decl_id) = match self.resolver.resolve_item(
             accessor,
             &access.absolute,
-            &type_args,
+            &generic_args,
             access.options(ResolveItemOptions::INDIRECT),
         ) {
             Ok(ResolvedItem::Value {

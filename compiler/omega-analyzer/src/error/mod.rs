@@ -7,7 +7,8 @@ pub use render::resolve_error_diagnostic;
 pub use warning::{AnalysisWarning, AnalysisWarningKind, WarningPolicy};
 
 use crate::resolved_type::{
-    CallingConvention, FunctionNamespace, NumericKind, ResolvedFunctionType, ResolvedType,
+    CallingConvention, FunctionNamespace, NumericKind, ResolvedFunctionType, ResolvedGenericArg,
+    ResolvedType,
 };
 use crate::resolver::ResolveError;
 use crate::target::Target;
@@ -23,12 +24,42 @@ fn join(path: &[Ident]) -> String {
         .join("::")
 }
 
+/// The written spelling of one generic argument, for diagnostics that echo
+/// source syntax back to the reader.
+pub fn raw_generic_arg_display(arg: &omega_parser::prelude::GenericArg) -> String {
+    use omega_parser::prelude::GenericArg;
+    match arg {
+        GenericArg::Type(r#type) => raw_type_display(r#type),
+        GenericArg::Value(literal) => raw_comp_literal_display(literal),
+    }
+}
+
+pub fn raw_comp_literal_display(literal: &omega_parser::prelude::CompLiteral) -> String {
+    use omega_parser::prelude::CompLiteral;
+    match literal {
+        CompLiteral::Int { negative, number } => {
+            let sign = if *negative { "-" } else { "" };
+            format!("{sign}{}", number.integer_part)
+        }
+        CompLiteral::Bool(value) => value.to_string(),
+        CompLiteral::Char(value) => format!("'{value}'"),
+    }
+}
+
+pub(crate) fn raw_array_length_display(length: &omega_parser::prelude::ArrayLength) -> String {
+    use omega_parser::prelude::ArrayLength;
+    match length {
+        ArrayLength::Literal(literal) => raw_comp_literal_display(literal),
+        ArrayLength::Path(path) => join(&path.segments()),
+    }
+}
+
 pub fn raw_type_display(ty: &omega_parser::prelude::Type) -> String {
     use omega_parser::prelude::Type;
     match ty {
         Type::Named(path) => join(&path.segments()),
         Type::Generic(path, args) => {
-            let args: Vec<String> = args.iter().map(raw_type_display).collect();
+            let args: Vec<String> = args.iter().map(raw_generic_arg_display).collect();
             format!("{}<{}>", join(&path.segments()), args.join(", "))
         }
         Type::Pointer(inner, mutable) => {
@@ -40,7 +71,11 @@ pub fn raw_type_display(ty: &omega_parser::prelude::Type) -> String {
         }
         Type::UnknownSizeArray(inner) => format!("*[?]{}", raw_type_display(inner)),
         Type::InferredArray(inner) => format!("[]{}", raw_type_display(inner)),
-        Type::SizedArray(inner, size) => format!("[{}]{}", size, raw_type_display(inner)),
+        Type::SizedArray(inner, length) => format!(
+            "[{}]{}",
+            raw_array_length_display(length),
+            raw_type_display(inner)
+        ),
         Type::Function(f) => {
             let params: Vec<String> = f
                 .params
@@ -67,11 +102,11 @@ pub fn raw_type_display(ty: &omega_parser::prelude::Type) -> String {
     }
 }
 
-fn generic_name(name: &Ident, type_args: &[ResolvedType]) -> String {
-    if type_args.is_empty() {
+fn generic_name(name: &Ident, generic_args: &[ResolvedGenericArg]) -> String {
+    if generic_args.is_empty() {
         return name.as_ref().to_string();
     }
-    let args = type_args
+    let args = generic_args
         .iter()
         .map(ToString::to_string)
         .collect::<Vec<_>>()
@@ -89,7 +124,43 @@ pub enum TypeResolutionError {
         name: Ident,
         similar: Option<Ident>,
     },
-    InvalidArraySize(String),
+    /// A written array length that does not resolve to a nonnegative
+    /// compile-time integer inside the fixed-array size domain.
+    InvalidArrayLength {
+        written: String,
+        /// The compile-time value the length resolved to, when it resolved at
+        /// all. A symbolic length is much harder to read without it.
+        value: Option<String>,
+        reason: ArrayLengthProblem,
+    },
+    /// A path used where a compile-time value is required, but the binding
+    /// it names is an ordinary runtime binding.
+    NotACompValue(Ident),
+    /// A type named where a compile-time value is required.
+    CompValueIsAType(Ident),
+    /// A `comp` binding whose value is not available at this point.
+    CompValueUnavailable(Ident),
+    /// A `comp` generic parameter declared with a type that has no canonical
+    /// compile-time identity yet.
+    UnsupportedCompParamType {
+        param: Ident,
+        r#type: ResolvedType,
+    },
+    /// A generic argument written as the wrong kind for its parameter.
+    GenericArgKindMismatch {
+        param: Ident,
+        expected_value: bool,
+    },
+    /// A written scalar literal whose magnitude no compile-time integer can
+    /// hold.
+    CompLiteralOutOfRange(omega_parser::prelude::CompLiteral),
+    /// A compile-time value that cannot be represented exactly in the type
+    /// its `comp` parameter declares.
+    CompArgNotRepresentable {
+        param: Ident,
+        value: String,
+        declared: ResolvedType,
+    },
     ModuleResolution(ResolveError),
     NotAType(Vec<Ident>),
     NoSuchVariantForType {
@@ -129,9 +200,69 @@ impl fmt::Display for TypeResolutionError {
             Self::ModuleNotImported { name, .. } => {
                 write!(f, "module '{}' is not imported", name.as_ref())
             }
-            Self::InvalidArraySize(size) => {
-                write!(f, "array size '{size}' does not fit a u32")
-            }
+            Self::InvalidArrayLength {
+                written,
+                value,
+                reason,
+            } => match value {
+                Some(value) if value != written => {
+                    write!(f, "array length '{written}' ({value}) {reason}")
+                }
+                _ => write!(f, "array length '{written}' {reason}"),
+            },
+            Self::NotACompValue(name) => write!(
+                f,
+                "'{}' is a runtime binding, but a compile-time value is required here \
+                 (declare it with 'comp')",
+                name.as_ref()
+            ),
+            Self::CompValueIsAType(name) => write!(
+                f,
+                "'{}' is a type, but a compile-time value is required here",
+                name.as_ref()
+            ),
+            Self::CompValueUnavailable(name) => write!(
+                f,
+                "the compile-time value of '{}' is not available here",
+                name.as_ref()
+            ),
+            Self::UnsupportedCompParamType { param, r#type } => write!(
+                f,
+                "'comp {}: {type}' is not supported -- a 'comp' generic parameter must currently be \
+                 an integer, 'bool', or 'char'",
+                param.as_ref()
+            ),
+            Self::GenericArgKindMismatch {
+                param,
+                expected_value: true,
+            } => write!(
+                f,
+                "generic parameter '{}' is a 'comp' parameter, so it takes a compile-time value, \
+                 not a type",
+                param.as_ref()
+            ),
+            Self::GenericArgKindMismatch {
+                param,
+                expected_value: false,
+            } => write!(
+                f,
+                "generic parameter '{}' is a type parameter, so it takes a type, not a value",
+                param.as_ref()
+            ),
+            Self::CompLiteralOutOfRange(literal) => write!(
+                f,
+                "'{}' is outside the range of every compile-time integer type",
+                raw_comp_literal_display(literal)
+            ),
+            Self::CompArgNotRepresentable {
+                param,
+                value,
+                declared,
+            } => write!(
+                f,
+                "'{value}' cannot be represented as '{declared}', the declared type of 'comp {}'",
+                param.as_ref()
+            ),
             Self::ModuleResolution(e) => write!(f, "{e}"),
             Self::NotAType(path) => write!(f, "'{}' is a value, not a type", join(path)),
             Self::NoSuchVariantForType { r#enum, name, .. } => {
@@ -196,6 +327,24 @@ impl fmt::Display for TypeResolutionError {
                  only distinguish {} of them",
                 crate::resolved_type::ResolvedAnonymousEnum::MAX_MEMBERS
             ),
+        }
+    }
+}
+
+/// Why a written fixed-array length is not usable as one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArrayLengthProblem {
+    NotAnInteger,
+    Negative,
+    TooLarge,
+}
+
+impl fmt::Display for ArrayLengthProblem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotAnInteger => write!(f, "is not a compile-time integer"),
+            Self::Negative => write!(f, "is negative"),
+            Self::TooLarge => write!(f, "does not fit a u32"),
         }
     }
 }

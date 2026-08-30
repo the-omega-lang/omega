@@ -1,5 +1,7 @@
 use crate::decode::decode;
-use crate::symbol::{MangleConvention, ManglePath, MangleType, Symbol};
+use crate::symbol::{
+    MangleConvention, MangleGenericArg, ManglePath, MangleType, MangleValue, Symbol,
+};
 
 pub fn demangle(mangled: &str) -> Option<String> {
     decode(mangled).map(|symbol| render(&symbol))
@@ -42,7 +44,25 @@ fn render_path(path: &ManglePath) -> String {
         ManglePath::Generic(parent, args) => {
             format!("{}<{}>", render_path(parent), render_types(args))
         }
+        ManglePath::MixedGeneric(parent, args) => {
+            let args: Vec<String> = args
+                .iter()
+                .map(|arg| match arg {
+                    MangleGenericArg::Type(ty) => render_type(ty),
+                    MangleGenericArg::Value(value) => render_value(value),
+                })
+                .collect();
+            format!("{}<{}>", render_path(parent), args.join(", "))
+        }
         ManglePath::Type(ty) => render_type(ty),
+    }
+}
+
+fn render_value(value: &MangleValue) -> String {
+    match value {
+        MangleValue::Int { value, .. } => value.to_string(),
+        MangleValue::Bool(value) => value.to_string(),
+        MangleValue::Char(value) => format!("'{value}'"),
     }
 }
 

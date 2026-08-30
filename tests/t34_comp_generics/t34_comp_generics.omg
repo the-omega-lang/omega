@@ -1,0 +1,74 @@
+import std::io::println;
+
+# --- a comp generic used as a field's array length -----------------------
+struct NumericArrayWrapper<comp N: usize, T> {
+	exposed data: [N]T;
+
+	exposed len(*self) => usize { N }
+}
+
+# --- comp generics with defaults, one naming an earlier parameter --------
+struct Block<comp N: usize = 4, comp M: usize = N> {
+	exposed rows: [N]u8;
+	exposed cols: [M]u8;
+}
+
+# --- alias forwarding must preserve parameter kinds ----------------------
+alias Quad<T> = NumericArrayWrapper<4, T>;
+alias SameArity<comp N: usize, T> = NumericArrayWrapper<N, T>;
+
+# --- a generic function whose N and T are inferred from a concrete [N]T --
+count<comp N: usize, T>(values: [N]T) => usize { N }
+
+# --- non-integer comp parameter kinds ------------------------------------
+@suppress(unused_field)
+struct Flagged<comp ON: bool, comp TAG: char> {
+	exposed value: i32;
+}
+
+flag_of<comp ON: bool>() => bool { ON }
+tag_of<comp TAG: char>() => char { TAG }
+
+# --- a comp value argument passed by name --------------------------------
+comp my_comp_size := 3;
+
+main() => void {
+	# --- literal and named comp arguments -------------------------------
+	small := NumericArrayWrapper<3, i32> { data = [1, 2, 3]; };
+	named := NumericArrayWrapper<my_comp_size, u8> { data = [7u8, 8u8, 9u8]; };
+	println$("comp-generic-sizes: ", small.len(), " ", named.len(), " ", named.data[2]);
+
+	# --- distinct sizes are distinct types with distinct layouts ---------
+	size3 := sizeof<NumericArrayWrapper<3, i32>>;
+	size4 := sizeof<NumericArrayWrapper<4, i32>>;
+	println$("comp-generic-layout: ", size3, " ", size4);
+
+	# --- a literal and an equal comp binding reach the same instantiation -
+	named_size := sizeof<NumericArrayWrapper<my_comp_size, u8>>;
+	literal_size := sizeof<NumericArrayWrapper<3, u8>>;
+	println$("comp-generic-converges: ", named_size == literal_size);
+
+	# --- repeating an equal instantiation converges on one type ----------
+	again := NumericArrayWrapper<3, i32> { data = [4, 5, 6]; };
+	println$("comp-generic-repeat: ", again.data[2], " ", small.data[0]);
+
+	# --- defaults, including a default that names an earlier parameter ---
+	block := Block { rows = [1u8, 1u8, 1u8, 1u8]; cols = [2u8, 2u8, 2u8, 2u8]; };
+	wide: Block<2> = Block { rows = [3u8, 3u8]; cols = [4u8, 4u8]; };
+	block_size := sizeof<Block>;
+	wide_size := sizeof<Block<2>>;
+	println$("comp-generic-defaults: ", block_size, " ", wide_size, " ", block.rows[0], " ", wide.cols[1]);
+
+	# --- alias forwarding -----------------------------------------------
+	quad := Quad<i16> { data = [1i16, 2i16, 3i16, 4i16]; };
+	same := SameArity<2, u32> { data = [9u32, 10u32]; };
+	println$("comp-generic-alias: ", quad.len(), " ", same.len());
+
+	# --- N and T inferred from a concrete fixed array --------------------
+	values: [5]i32 = [1, 2, 3, 4, 5];
+	println$("comp-generic-infer: ", count(values));
+
+	# --- bool and char comp parameters -----------------------------------
+	flagged_size := sizeof<Flagged<false, 'a'>>;
+	println$("comp-generic-scalars: ", flag_of<true>(), " ", tag_of<'z'>(), " ", flagged_size);
+}

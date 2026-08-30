@@ -151,7 +151,10 @@ fn anchored_generic_argument_path_parses() {
     let omega_parser::prelude::Type::Generic(_, args) = &ty else {
         panic!("expected a generic type, got {ty:?}");
     };
-    assert_eq!(named_path(&args[0]).anchor, Some(PathAnchor::SelfModule));
+    assert_eq!(
+        named_path(args[0].as_type().expect("a type argument")).anchor,
+        Some(PathAnchor::SelfModule)
+    );
 }
 
 #[test]

@@ -1,4 +1,6 @@
 use super::*;
+use omega_analyzer::generics::GenericSubstitution;
+use omega_analyzer::resolved_type::ResolvedGenericArg;
 
 impl Driver {
     pub(crate) fn visibility_allows(
@@ -66,18 +68,18 @@ impl Driver {
         accessor_module_path: &[Ident],
         module_path: &[Ident],
         name: &Ident,
-        type_args: &[ResolvedType],
+        generic_args: &[ResolvedGenericArg],
         options: ResolveItemOptions,
     ) -> Result<ResolvedItem, ResolveError> {
-        // `type_args` must be padded with defaults before `ItemKey` is built:
+        // `generic_args` must be padded with defaults before `ItemKey` is built:
         // its equality is structural, so two call sites meaning the same
         // effective types must produce the identical key to share one
         // instantiation.
         let index = self.local_item_index(module_path, name)?;
         let generic_params = self.item_generics(module_path, name)?;
-        let type_args =
-            self.pad_generic_defaults(module_path, name, index, &generic_params, type_args)?;
-        let key = ItemKey::new(module_path, name, &type_args);
+        let generic_args =
+            self.pad_generic_defaults(module_path, name, index, &generic_params, generic_args)?;
+        let key = ItemKey::new(module_path, name, &generic_args);
 
         match self.items.state(&key) {
             Some(ItemQueryState::Resolved(entry)) => {
@@ -98,8 +100,8 @@ impl Driver {
             None => {}
         }
 
-        if generic_params.iter().any(|g| !g.bounds.is_empty()) {
-            self.check_item_generic_bounds(&key, index, &generic_params, &type_args)?;
+        if generic_params.iter().any(|g| !g.bounds().is_empty()) {
+            self.check_item_generic_bounds(&key, index, &generic_params, &generic_args)?;
         }
 
         let visibility = self
@@ -134,41 +136,50 @@ impl Driver {
         name: &Ident,
         index: usize,
         generic_params: &[HirGenericParam],
-        type_args: &[ResolvedType],
-    ) -> Result<Vec<ResolvedType>, ResolveError> {
-        if type_args.len() >= generic_params.len() {
-            if type_args.len() > generic_params.len() {
+        generic_args: &[ResolvedGenericArg],
+    ) -> Result<Vec<ResolvedGenericArg>, ResolveError> {
+        if generic_args.len() >= generic_params.len() {
+            if generic_args.len() > generic_params.len() {
                 return Err(ResolveError::GenericArgCountMismatch {
                     module: module_path.to_vec(),
                     item: name.clone(),
                     expected: generic_params.len(),
-                    found: type_args.len(),
+                    found: generic_args.len(),
                 });
             }
-            return Ok(type_args.to_vec());
+            return Ok(generic_args.to_vec());
         }
 
         let hir = self.modules.hir(module_path);
         let owner = item_site(&hir.items[index]);
-        let mut padded = type_args.to_vec();
-        for param in &generic_params[type_args.len()..] {
+        let mut padded = generic_args.to_vec();
+        for param in &generic_params[generic_args.len()..] {
             let Some(default) = &param.default else {
                 return Err(ResolveError::GenericArgCountMismatch {
                     module: module_path.to_vec(),
                     item: name.clone(),
                     expected: generic_params.len(),
-                    found: type_args.len(),
+                    found: generic_args.len(),
                 });
             };
-            let substitution: Vec<(Ident, ResolvedType)> = generic_params
-                .iter()
-                .map(|g| g.ident.clone())
-                .zip(padded.iter().cloned())
-                .collect();
+            let substitution =
+                GenericSubstitution::zip(generic_params.iter().map(|g| &g.ident), &padded);
             let default = default.clone();
-            let run = self.with_analyzer(module_path, &[], owner, |analyzer| {
-                analyzer.resolve_under_substitution(owner.id, owner.span, &default, &substitution)
-            });
+            let param = param.clone();
+            let run = self.with_analyzer(
+                module_path,
+                &GenericSubstitution::new(),
+                owner,
+                |analyzer| {
+                    analyzer.resolve_default_generic_arg(
+                        owner.id,
+                        owner.span,
+                        &param,
+                        &default,
+                        &substitution,
+                    )
+                },
+            );
             match (run.failed, run.result) {
                 (false, Some(resolved)) => padded.push(resolved),
                 _ => {
@@ -187,17 +198,23 @@ impl Driver {
         module: &[Ident],
         owner: AnalysisSite,
         generic_params: &[HirGenericParam],
-        type_args: &[ResolvedType],
+        generic_args: &[ResolvedGenericArg],
     ) -> Option<Result<Vec<ResolvedBound>, ResolveError>> {
-        let substitution: Vec<(Ident, ResolvedType)> = generic_params
+        let substitution: GenericSubstitution = generic_params
             .iter()
             .map(|g| g.ident.clone())
-            .zip(type_args.iter().cloned())
+            .zip(generic_args.iter().cloned())
             .collect();
 
         let mut declared = Vec::new();
-        for (param, concrete) in generic_params.iter().zip(type_args) {
-            let bounds = match omega_analyzer::aliases::expand_bounds(self, module, &param.bounds) {
+        // Bounds exist only on type parameters, so a comp argument never
+        // enters bound checking.
+        for (param, concrete) in generic_params.iter().zip(generic_args) {
+            let Some(concrete) = concrete.as_type() else {
+                continue;
+            };
+            let bounds = match omega_analyzer::aliases::expand_bounds(self, module, param.bounds())
+            {
                 Ok(bounds) => bounds,
                 Err(error) => return Some(Err(error)),
             };
@@ -231,12 +248,12 @@ impl Driver {
         key: &ItemKey,
         index: usize,
         generic_params: &[HirGenericParam],
-        type_args: &[ResolvedType],
+        generic_args: &[ResolvedGenericArg],
     ) -> Result<(), ResolveError> {
         let hir = self.modules.hir(&key.module);
         let owner = item_site(&hir.items[index]);
         let declared =
-            match self.check_generic_bounds(&key.module, owner, generic_params, type_args) {
+            match self.check_generic_bounds(&key.module, owner, generic_params, generic_args) {
                 Some(Ok(declared)) => declared,
                 Some(Err(error)) => return Err(error),
                 None => return Err(key.failed()),
@@ -254,10 +271,10 @@ impl Driver {
         let hir = self.modules.hir(&key.module);
         let item = &hir.items[index];
         let module = &key.module;
-        let substitution: Vec<(Ident, ResolvedType)> = generics
+        let substitution: GenericSubstitution = generics
             .iter()
             .cloned()
-            .zip(key.type_args.iter().cloned())
+            .zip(key.generic_args.iter().cloned())
             .collect();
 
         let resolved = match item {
@@ -494,13 +511,13 @@ impl Driver {
         &mut self,
         key: &ItemKey,
         owner: AnalysisSite,
-        substitution: &[(Ident, ResolvedType)],
+        substitution: &GenericSubstitution,
         self_type: ResolvedType,
         method_ids: Vec<HirId>,
         signature: impl FnOnce(&mut Analyzer, &[HirId]) -> Option<()>,
     ) -> Option<ResolvedItem> {
-        let mut substitution = substitution.to_vec();
-        substitution.push((Ident("Self".to_string()), self_type.clone()));
+        let mut substitution = substitution.clone();
+        substitution.push_type(Ident("Self".to_string()), self_type.clone());
 
         self.analyze(&key.module, &substitution, owner, |analyzer| {
             signature(analyzer, &method_ids)
@@ -544,7 +561,7 @@ impl Driver {
         self.items.begin_spec(&key);
         let run = self.with_analyzer(
             module_path,
-            &[],
+            &GenericSubstitution::new(),
             AnalysisSite::new(sp.id, sp.span),
             |analyzer| analyzer.resolve_spec_functions(&sp),
         );
@@ -565,9 +582,9 @@ impl Driver {
             id: sp.id,
             name: sp.name.clone(),
             visibility: sp.visibility,
-            generics: sp.generics.iter().map(|g| g.ident.clone()).collect(),
+            generics: sp.generics.clone(),
             module_path: module_path.to_vec(),
-            type_args: vec![],
+            generic_args: vec![],
             is_object_safe,
             functions,
             suppress: annotations.suppress,

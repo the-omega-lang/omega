@@ -41,12 +41,15 @@ use crate::{
         AnalysisError, AnalysisErrorKind, AnalysisWarning, AnalysisWarningKind, AuthoredSite,
         TypeResolutionError,
     },
-    generics::{resolve_inferred_type_args, unify_generic_type},
+    generics::{
+        GenericParams, GenericSubstitution, resolve_inferred_generic_args, unify_generic_type,
+    },
     resolved_type::{
-        CallingConvention, CastClass, ConformanceSource, ConstValue, FunctionNamespace,
-        NumericKind, RawSpecFunctionSig, ResolvedAnonymousEnum, ResolvedBound, ResolvedEnumType,
-        ResolvedEnumVariant, ResolvedField, ResolvedFunctionParam, ResolvedFunctionType,
-        ResolvedMethod, ResolvedSpecType, ResolvedStructType, ResolvedType, ResolvedUnionType,
+        CallingConvention, CastClass, CompScalar, CompScalarType, ConformanceSource, ConstValue,
+        FunctionNamespace, NumericKind, RawSpecFunctionSig, ResolvedAnonymousEnum, ResolvedBound,
+        ResolvedEnumType, ResolvedEnumVariant, ResolvedField, ResolvedFunctionParam,
+        ResolvedFunctionType, ResolvedGenericArg, ResolvedMethod, ResolvedSpecType,
+        ResolvedStructType, ResolvedType, ResolvedUnionType,
     },
     resolver::{
         GenericLiteralSignature, GenericOwnerFunctionSignature, GenericSignature, ImportTarget,
@@ -59,14 +62,14 @@ use omega_diagnostics::{SourceId, SourceSpan};
 use omega_hir::{
     BinaryOp, HirAddressOf, HirAsmDescriptor, HirAsmDescriptorKind, HirBlock, HirCast,
     HirCompoundAssign, HirDeclaration, HirEnumDef, HirExpr, HirExprNode, HirField, HirFor,
-    HirForIn, HirFunctionCall, HirFunctionDef, HirId, HirIf, HirInlineAsm, HirItem, HirMatch,
-    HirMatchArm, HirParam, HirPattern, HirPatternValue, HirPlace, HirPlaceRoot, HirProjection,
-    HirRange, HirRangeEnd, HirReveal, HirSlice, HirSpecDef, HirStmt, HirStructDef,
+    HirForIn, HirFunctionCall, HirFunctionDef, HirGenericParam, HirId, HirIf, HirInlineAsm,
+    HirItem, HirMatch, HirMatchArm, HirParam, HirPattern, HirPatternValue, HirPlace, HirPlaceRoot,
+    HirProjection, HirRange, HirRangeEnd, HirReveal, HirSlice, HirSpecDef, HirStmt, HirStructDef,
     HirStructLiteral, HirStructLiteralField, HirUnionDef, HirWalrusDeclaration, LogicalOp,
 };
 use omega_parser::prelude::{
-    ExprPath, Ident, NumberBase, NumberExpr, Origin, Path, QualifiedSpecPath, SelfMode, Span, Type,
-    Visibility,
+    ArrayLength, ExprPath, GenericArg, Ident, NumberBase, NumberExpr, Origin, Path,
+    QualifiedSpecPath, SelfMode, Span, Type, Visibility,
 };
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -413,7 +416,7 @@ impl<'r> Analyzer<'r> {
     pub fn new(
         resolver: &'r mut dyn ModuleResolver,
         module_path: Vec<Ident>,
-        generics: &[(Ident, ResolvedType)],
+        generics: &GenericSubstitution,
         owner: AnalysisSite,
         target: Target,
     ) -> Self {
@@ -423,7 +426,7 @@ impl<'r> Analyzer<'r> {
     pub fn new_in(
         resolver: &'r mut dyn ModuleResolver,
         module_path: Vec<Ident>,
-        generics: &[(Ident, ResolvedType)],
+        generics: &GenericSubstitution,
         bounds: &[ResolvedBound],
         owner: AnalysisSite,
         target: Target,
@@ -433,7 +436,7 @@ impl<'r> Analyzer<'r> {
         let mut errors = Vec::new();
 
         let mut seen_generics = HashSet::new();
-        for (ident, resolved_type) in generics {
+        for (ident, arg) in generics.iter() {
             // `str` is a language type name with no scalar entry in
             // `Context`, so this cannot be a lookup in the installed types.
             if crate::context::is_reserved_type_name(ident.as_ref()) {
@@ -463,7 +466,20 @@ impl<'r> Analyzer<'r> {
                 );
                 continue;
             }
-            context.define_type(ident.clone(), resolved_type.clone());
+            match arg {
+                ResolvedGenericArg::Type(resolved_type) => {
+                    context.define_type(ident.clone(), resolved_type.clone())
+                }
+                // A `comp` parameter is a storage-less compile-time binding,
+                // so it enters the scope the same way any other `comp`
+                // binding does and reaches MIR only as a constant.
+                ResolvedGenericArg::Comp(value) => context.define_comp(
+                    ident.clone(),
+                    resolver.fresh_synthetic_id(),
+                    owner.span,
+                    *value,
+                ),
+            }
         }
 
         Self {
@@ -642,14 +658,32 @@ impl<'r> Analyzer<'r> {
         (result, scope)
     }
 
+    /// Installs one generic instantiation's bindings for the duration of
+    /// `f`. A type binding becomes a defined type; a `comp` binding becomes a
+    /// real storage-less compile-time binding under a fresh synthetic
+    /// declaration id, so references to it lower to `CheckedExpr::Const` and
+    /// nothing reaches MIR as a parameter.
     fn with_substitution<T>(
         &mut self,
-        substitution: &[(Ident, ResolvedType)],
+        substitution: &GenericSubstitution,
         f: impl FnOnce(&mut Self) -> T,
     ) -> T {
+        let comps: Vec<(Ident, HirId, CompScalar)> = substitution
+            .iter()
+            .filter_map(|(name, arg)| {
+                arg.as_comp()
+                    .map(|value| (name.clone(), self.resolver.fresh_synthetic_id(), value))
+            })
+            .collect();
         self.with_scope(|this| {
-            for (name, ty) in substitution {
-                this.context.define_type(name.clone(), ty.clone());
+            for (name, arg) in substitution.iter() {
+                if let Some(r#type) = arg.as_type() {
+                    this.context.define_type(name.clone(), r#type.clone());
+                }
+            }
+            for (name, decl_id, value) in comps {
+                this.context
+                    .define_comp(name, decl_id, Span::new(0, 0), value);
             }
             f(this)
         })
@@ -1149,7 +1183,7 @@ impl<'r> Analyzer<'r> {
     fn resolve_item_checked(
         &mut self,
         access: &ItemAccess,
-        type_args: &[ResolvedType],
+        generic_args: &[ResolvedGenericArg],
         indirect: bool,
         origin: Origin,
     ) -> Result<ResolvedItem, ResolveError> {
@@ -1159,7 +1193,7 @@ impl<'r> Analyzer<'r> {
             .options(ResolveItemOptions::with_indirection(indirect).bypassing_visibility(bypass));
         let result = self
             .resolver
-            .resolve_item(&accessor, &access.absolute, type_args, options);
+            .resolve_item(&accessor, &access.absolute, generic_args, options);
         if bypass && result.is_ok() && !self.resolver.is_item_visible(&accessor, &access.absolute) {
             self.reveals.mark_used();
         }
@@ -1170,17 +1204,17 @@ impl<'r> Analyzer<'r> {
         &mut self,
         prefix: &[Ident],
         access: &ItemAccess,
-        type_args: &[ResolvedType],
+        generic_args: &[ResolvedGenericArg],
         origin: Origin,
     ) -> Result<ResolvedItem, ResolveError> {
-        let result = self.resolve_item_checked(access, type_args, true, origin);
+        let result = self.resolve_item_checked(access, generic_args, true, origin);
         match (prefix, &result) {
             ([single], Err(ResolveError::UnknownItem { .. })) => {
                 let accessor = self.origin_module(origin);
                 match self.resolver.ambient_core_candidates(&accessor, single)? {
                     Some(ambient) => self.resolve_item_checked(
                         &ItemAccess::gated(ambient),
-                        type_args,
+                        generic_args,
                         true,
                         origin,
                     ),
@@ -1196,19 +1230,19 @@ impl<'r> Analyzer<'r> {
         accessor: &[Ident],
         prefix: &[Ident],
         access: &ItemAccess,
-        type_args: &[ResolvedType],
+        generic_args: &[ResolvedGenericArg],
     ) -> Result<ResolvedItem, ResolveError> {
         let options = access.options(ResolveItemOptions::INDIRECT);
         let result = self
             .resolver
-            .resolve_item(accessor, &access.absolute, type_args, options);
+            .resolve_item(accessor, &access.absolute, generic_args, options);
         match (prefix, &result) {
             ([single], Err(ResolveError::UnknownItem { .. })) => {
                 match self.resolver.ambient_core_candidates(accessor, single)? {
                     Some(ambient) => self.resolver.resolve_item(
                         accessor,
                         &ambient,
-                        type_args,
+                        generic_args,
                         ResolveItemOptions::INDIRECT,
                     ),
                     None => result,
@@ -1341,7 +1375,13 @@ impl<'r> Analyzer<'r> {
     /// this itself: whether an argument satisfies a bound is a conformance
     /// question, and the expanded target no longer mentions the alias's
     /// parameter list.
-    fn check_alias_generic_bounds(&mut self, id: HirId, span: Span, typ: &Type, module: &[Ident]) {
+    pub(crate) fn check_alias_generic_bounds(
+        &mut self,
+        id: HirId,
+        span: Span,
+        typ: &Type,
+        module: &[Ident],
+    ) {
         let applied = match crate::aliases::applied_alias_bounds(&mut *self.resolver, module, typ) {
             Ok(applied) => applied,
             Err(error) => {
@@ -1366,6 +1406,31 @@ impl<'r> Analyzer<'r> {
                         missing,
                     }),
                 );
+            }
+        }
+    }
+
+    pub(crate) fn resolve_generic_arg_in(
+        &mut self,
+        id: HirId,
+        span: Span,
+        arg: &GenericArg,
+        param: Option<&HirGenericParam>,
+        module: &[Ident],
+    ) -> Option<ResolvedGenericArg> {
+        let reveals = &self.reveals;
+        match self.context.resolve_generic_arg(
+            arg,
+            param,
+            &mut *self.resolver,
+            module,
+            ResolveItemOptions::INDIRECT,
+            &|origin| reveals.allows(origin),
+        ) {
+            Ok(resolved) => Some(resolved),
+            Err(err) => {
+                self.error(id, span, AnalysisErrorKind::UnresolvedType(err));
+                None
             }
         }
     }
@@ -1400,26 +1465,60 @@ impl<'r> Analyzer<'r> {
         id: HirId,
         span: Span,
         typ: &Type,
-        subst: &[(Ident, ResolvedType)],
+        subst: &GenericSubstitution,
     ) -> Option<ResolvedType> {
         self.with_substitution(subst, |this| {
             this.resolve_type_or_error(id, span, typ, false)
         })
     }
 
+    /// The declared comp-parameter types an inference pass needs, resolved
+    /// under what is already known. A type that fails to resolve or is not a
+    /// supported comp scalar simply stops that parameter from being
+    /// inferred; the instantiation site reports the real reason.
+    pub(crate) fn comp_param_types(
+        &mut self,
+        id: HirId,
+        span: Span,
+        params: &[HirGenericParam],
+        subst: &GenericSubstitution,
+    ) -> Vec<Option<CompScalarType>> {
+        params
+            .iter()
+            .map(|param| {
+                let written = param.comp_type()?.clone();
+                let resolved = self.without_diagnostics(|this| {
+                    this.resolve_under_substitution(id, span, &written, subst)
+                })?;
+                CompScalarType::from_resolved(&resolved)
+            })
+            .collect()
+    }
+
+    pub(crate) fn generic_params<'p>(
+        &self,
+        params: &'p [HirGenericParam],
+        comp_types: &'p [Option<CompScalarType>],
+    ) -> GenericParams<'p> {
+        GenericParams {
+            params,
+            comp_types,
+            pointer_bits: self.target.pointer_bits(),
+        }
+    }
+
     pub(crate) fn infer_generic_args(
         &mut self,
-        generics: &[Ident],
-        defaults: &[Option<Type>],
+        generics: &GenericParams<'_>,
         params: &[Type],
         args: &[HirExprNode],
-        seed: HashMap<Ident, ResolvedType>,
-    ) -> Option<(Vec<CheckedExprNode>, HashMap<Ident, ResolvedType>)> {
+        seed: GenericSubstitution,
+    ) -> Option<(Vec<CheckedExprNode>, GenericSubstitution)> {
         let mut subst = seed;
         let mut checked_args = Vec::with_capacity(args.len());
         for (raw_type, arg) in params.iter().zip(args) {
-            let expected = self
-                .expected_for_generic_param(arg.id, arg.span, raw_type, generics, defaults, &subst);
+            let expected =
+                self.expected_for_generic_param(arg.id, arg.span, raw_type, generics, &subst);
             let checked = self.analyze_expr(arg, expected.as_ref())?;
             unify_generic_type(generics, raw_type, &checked.r#type, &mut subst);
             checked_args.push(checked);
@@ -1432,58 +1531,110 @@ impl<'r> Analyzer<'r> {
         id: HirId,
         span: Span,
         raw_type: &Type,
-        generics: &[Ident],
-        defaults: &[Option<Type>],
-        subst: &HashMap<Ident, ResolvedType>,
+        generics: &GenericParams<'_>,
+        subst: &GenericSubstitution,
     ) -> Option<ResolvedType> {
-        if !Self::generic_refs_resolvable(raw_type, generics, defaults, subst) {
+        if !Self::generic_refs_resolvable(raw_type, generics, subst) {
             return None;
         }
-        let mut local: Vec<(Ident, ResolvedType)> =
-            subst.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-        for (generic, default) in generics.iter().zip(defaults) {
-            if subst.contains_key(generic) {
+        let mut local = subst.clone();
+        for param in generics.params {
+            if local.contains(&param.ident) {
                 continue;
             }
-            let Some(default) = default else { continue };
-            let resolved = self.resolve_under_substitution(id, span, default, &local)?;
-            local.push((generic.clone(), resolved));
+            let Some(default) = &param.default else {
+                continue;
+            };
+            let resolved = self.resolve_default_generic_arg(id, span, param, default, &local)?;
+            local.push(param.ident.clone(), resolved);
         }
         self.resolve_under_substitution(id, span, raw_type, &local)
     }
 
+    /// One generic parameter's default, resolved as the kind the parameter
+    /// declares under the bindings its predecessors already produced.
+    pub fn resolve_default_generic_arg(
+        &mut self,
+        id: HirId,
+        span: Span,
+        param: &HirGenericParam,
+        default: &GenericArg,
+        subst: &GenericSubstitution,
+    ) -> Option<ResolvedGenericArg> {
+        if !param.is_comp() {
+            let GenericArg::Type(written) = default else {
+                self.error(
+                    id,
+                    span,
+                    AnalysisErrorKind::UnresolvedType(
+                        TypeResolutionError::GenericArgKindMismatch {
+                            param: param.ident.clone(),
+                            expected_value: false,
+                        },
+                    ),
+                );
+                return None;
+            };
+            return self
+                .resolve_under_substitution(id, span, written, subst)
+                .map(ResolvedGenericArg::Type);
+        }
+        self.with_substitution(subst, |this| {
+            let reveals = &this.reveals;
+            match this.context.resolve_generic_arg(
+                default,
+                Some(param),
+                &mut *this.resolver,
+                &this.module_path,
+                ResolveItemOptions::INDIRECT,
+                &|origin| reveals.allows(origin),
+            ) {
+                Ok(resolved) => Some(resolved),
+                Err(err) => {
+                    this.error(id, span, AnalysisErrorKind::UnresolvedType(err));
+                    None
+                }
+            }
+        })
+    }
+
     fn generic_refs_resolvable(
         raw_type: &Type,
-        generics: &[Ident],
-        defaults: &[Option<Type>],
-        subst: &HashMap<Ident, ResolvedType>,
+        generics: &GenericParams<'_>,
+        subst: &GenericSubstitution,
     ) -> bool {
-        let name_ok = |name: &Ident| match generics.iter().position(|g| g == name) {
-            Some(i) => subst.contains_key(name) || defaults[i].is_some(),
+        let name_ok = |name: &Ident| match generics.params.iter().position(|p| &p.ident == name) {
+            Some(i) => subst.contains(name) || generics.params[i].default.is_some(),
             None => true,
+        };
+        let arg_ok = |arg: &GenericArg| match arg {
+            GenericArg::Type(inner) => Self::generic_refs_resolvable(inner, generics, subst),
+            GenericArg::Value(_) => true,
         };
         match raw_type {
             Type::Named(path) => !path.is_unqualified() || name_ok(&path.head),
             Type::Pointer(inner, _)
             | Type::InferredArray(inner)
-            | Type::UnknownSizeArray(inner)
-            | Type::SizedArray(inner, _) => {
-                Self::generic_refs_resolvable(inner, generics, defaults, subst)
+            | Type::UnknownSizeArray(inner) => {
+                Self::generic_refs_resolvable(inner, generics, subst)
+            }
+            Type::SizedArray(inner, length) => {
+                (match length {
+                    ArrayLength::Path(path) => !path.is_unqualified() || name_ok(&path.head),
+                    ArrayLength::Literal(_) => true,
+                }) && Self::generic_refs_resolvable(inner, generics, subst)
             }
             Type::Generic(path, args) => {
-                (!path.is_unqualified() || name_ok(&path.head))
-                    && args
-                        .iter()
-                        .all(|a| Self::generic_refs_resolvable(a, generics, defaults, subst))
+                (!path.is_unqualified() || name_ok(&path.head)) && args.iter().all(arg_ok)
             }
             Type::SpecStatic(members) | Type::AnonymousEnum(members) => members
                 .iter()
-                .all(|m| Self::generic_refs_resolvable(m, generics, defaults, subst)),
+                .all(|m| Self::generic_refs_resolvable(m, generics, subst)),
             Type::Function(f) => {
                 f.params
                     .iter()
-                    .all(|p| Self::generic_refs_resolvable(&p.r#type, generics, defaults, subst))
-                    && Self::generic_refs_resolvable(&f.return_type, generics, defaults, subst)
+                    .all(|p| Self::generic_refs_resolvable(&p.r#type, generics, subst))
+                    && Self::generic_refs_resolvable(&f.return_type, generics, subst)
             }
         }
     }

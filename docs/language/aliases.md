@@ -111,14 +111,17 @@ right-hand side:
 ```omega
 alias Keyed<V> = Pair<*str, V>;      # Keyed<i32> is Pair<*str, i32>
 alias Counted<T: Countable> = Holder<T>;
+alias Quad<T> = Buffer<4, T>;        # a fixed compile-time value argument
+alias Same<comp N: usize, T> = Buffer<N, T>;
 ```
 
-An alias template may fix, reorder, or nest type arguments. Its parameters may
+An alias template may fix, reorder, or nest generic arguments, and its own
+parameters may be type parameters or `comp` parameters. Type parameters may
 carry bounds and defaults, which are validated like any other generic
 parameters, but they create no nominal identity: `Keyed<i32>` *is*
-`Pair<*str, i32>`.
+`Pair<*str, i32>`, and `Same<2, i32>` *is* `Buffer<2, i32>`.
 
-Supplying the wrong number of type arguments for an alias template, or an
+Supplying the wrong number of generic arguments for an alias template, or an
 argument that does not satisfy an alias-owned bound, is an error reported
 against the alias. A defaulted argument is bound and bound-checked the same
 way whether the alias template is written in an ordinary type position or in

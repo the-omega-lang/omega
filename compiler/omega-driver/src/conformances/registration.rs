@@ -1,5 +1,7 @@
 use super::*;
+use omega_analyzer::generics::GenericSubstitution;
 use omega_analyzer::resolver::ImportTarget;
+use omega_parser::prelude::GenericArg;
 
 impl Driver {
     pub(crate) fn mark_bound_type_imports(
@@ -9,10 +11,13 @@ impl Driver {
     ) {
         let mut seen = HashSet::new();
         for param in generics {
-            for bound in &param.bounds {
+            for bound in param.bounds() {
                 self.mark_type_import_dependencies(module, bound, &mut seen);
             }
-            if let Some(default) = &param.default {
+            if let Some(value_type) = param.comp_type() {
+                self.mark_type_import_dependencies(module, value_type, &mut seen);
+            }
+            if let Some(GenericArg::Type(default)) = &param.default {
                 self.mark_type_import_dependencies(module, default, &mut seen);
             }
         }
@@ -40,9 +45,14 @@ impl Driver {
             _ => {}
         }
         match ty {
-            Type::Generic(_, args) | Type::SpecStatic(args) | Type::AnonymousEnum(args) => {
-                for arg in args {
+            Type::Generic(_, args) => {
+                for arg in args.iter().filter_map(GenericArg::as_type) {
                     self.mark_type_import_dependencies(module, arg, seen);
+                }
+            }
+            Type::SpecStatic(members) | Type::AnonymousEnum(members) => {
+                for member in members {
+                    self.mark_type_import_dependencies(module, member, seen);
                 }
             }
             Type::Pointer(inner, _)
@@ -109,10 +119,13 @@ impl Driver {
         };
         self.mark_type_import_dependencies(&alias_module, &written, seen);
         for param in &declared.generics {
-            for bound in &param.bounds {
+            for bound in param.bounds() {
                 self.mark_type_import_dependencies(&alias_module, bound, seen);
             }
-            if let Some(default) = &param.default {
+            if let Some(value_type) = param.comp_type() {
+                self.mark_type_import_dependencies(&alias_module, value_type, seen);
+            }
+            if let Some(GenericArg::Type(default)) = &param.default {
                 self.mark_type_import_dependencies(&alias_module, default, seen);
             }
         }
@@ -160,7 +173,7 @@ impl Driver {
                 if origin == ConformanceOrigin::Blanket {
                     let spec_run = self.with_analyzer(
                         module,
-                        &[],
+                        &GenericSubstitution::new(),
                         AnalysisSite::new(conform.id, conform.span),
                         |analyzer| {
                             analyzer.resolve_spec_reference(conform.id, conform.span, &conform.spec)
@@ -203,7 +216,12 @@ impl Driver {
         // Every template is visible before a concrete conform can cause a
         // bound lookup, removing module-order dependence.
         for (module, conform) in concrete {
-            self.instantiate_conformance(&module, &conform, &[], ConformanceOrigin::Concrete);
+            self.instantiate_conformance(
+                &module,
+                &conform,
+                &GenericSubstitution::new(),
+                ConformanceOrigin::Concrete,
+            );
         }
     }
 
@@ -211,7 +229,7 @@ impl Driver {
         &mut self,
         module: &[Ident],
         conform: &HirConformDef,
-        substitution: &[(Ident, ResolvedType)],
+        substitution: &GenericSubstitution,
         origin: ConformanceOrigin,
     ) -> Option<ConformanceEntry> {
         let target_run = self.with_analyzer(
@@ -231,14 +249,13 @@ impl Driver {
         );
         self.diagnostics.record_warnings(module, spec_run.warnings);
         let spec_reference = spec_run.result?;
-        let type_args: Vec<_> = conform
+        let generic_args: Vec<_> = conform
             .generics
             .iter()
             .map(|param| {
                 substitution
-                    .iter()
-                    .find(|(ident, _)| ident == &param.ident)
-                    .map(|(_, r#type)| r#type.clone())
+                    .get(&param.ident)
+                    .cloned()
                     .expect("a generic conform template pins every parameter")
             })
             .collect();
@@ -261,7 +278,7 @@ impl Driver {
             module,
             AnalysisSite::new(conform.id, conform.span),
             &conform.generics,
-            &type_args,
+            &generic_args,
         ) {
             Some(Ok(bounds)) => bounds,
             Some(Err(error)) => {
@@ -312,8 +329,8 @@ impl Driver {
         {
             return Some(existing.clone());
         }
-        let mut method_substitution = substitution.to_vec();
-        method_substitution.push((Ident("Self".to_string()), target.clone()));
+        let mut method_substitution = substitution.clone();
+        method_substitution.push_type(Ident("Self".to_string()), target.clone());
         // The declared set's alias-expanded identity -- both blanket
         // precedence and derived-conformance admission compare on this, so
         // an alias bound and its inline spelling are interchangeable.

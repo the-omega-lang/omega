@@ -139,7 +139,7 @@ Owns long-lived semantic-compilation state and cross-module orchestration:
 - generic-instantiation discovery/materialization;
 - accumulation of diagnostics across short-lived analyzers.
 
-The core named-item query identity is conceptually `(module, name, type_args)`, allowing local, external, and concrete generic items to use the same demand-driven machinery. Item/spec queries have explicit `InProgress / Resolved / Failed` states, and ordered resolution stacks preserve dependency chains for cycle diagnostics. Primitive registration/materialization lives in `primitives.rs`; conformance registration and goal solving are separated under `conformances/`. Compilation orchestration is split under `compile/` into signature collection, body materialization, and final output sweeps.
+The core named-item query identity is conceptually `(module, name, generic_args)` -- where a generic argument is a resolved type or a canonical compile-time value -- allowing local, external, and concrete generic items to use the same demand-driven machinery. Item/spec queries have explicit `InProgress / Resolved / Failed` states, and ordered resolution stacks preserve dependency chains for cycle diagnostics. Primitive registration/materialization lives in `primitives.rs`; conformance registration and goal solving are separated under `conformances/`. Compilation orchestration is split under `compile/` into signature collection, body materialization, and final output sweeps.
 
 **Boundary:** the driver orchestrates/owns lifetime; semantic rules remain in the analyzer.
 

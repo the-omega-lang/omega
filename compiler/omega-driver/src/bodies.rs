@@ -5,32 +5,33 @@ use omega_analyzer::checked::{
     CheckedDeclaration, CheckedEnumDef, CheckedItem, CheckedStructDef, CheckedUnionDef,
 };
 use omega_analyzer::error::{AnalysisError, AnalysisErrorKind};
-use omega_analyzer::resolved_type::{ResolvedFunctionType, ResolvedType};
+use omega_analyzer::generics::GenericSubstitution;
+use omega_analyzer::resolved_type::{ResolvedFunctionType, ResolvedGenericArg, ResolvedType};
 use omega_analyzer::resolver::{ResolveError, ResolvedItem};
 use omega_hir::{HirGenericParam, HirItem};
 use omega_parser::prelude::Ident;
 
 trait CheckedAggregate: Sized {
-    fn assemble(self, type_args: Vec<ResolvedType>) -> CheckedItem;
+    fn assemble(self, generic_args: Vec<ResolvedGenericArg>) -> CheckedItem;
 }
 
 impl CheckedAggregate for CheckedStructDef {
-    fn assemble(mut self, type_args: Vec<ResolvedType>) -> CheckedItem {
-        self.type_args = type_args;
+    fn assemble(mut self, generic_args: Vec<ResolvedGenericArg>) -> CheckedItem {
+        self.generic_args = generic_args;
         CheckedItem::Struct(self)
     }
 }
 
 impl CheckedAggregate for CheckedEnumDef {
-    fn assemble(mut self, type_args: Vec<ResolvedType>) -> CheckedItem {
-        self.type_args = type_args;
+    fn assemble(mut self, generic_args: Vec<ResolvedGenericArg>) -> CheckedItem {
+        self.generic_args = generic_args;
         CheckedItem::Enum(self)
     }
 }
 
 impl CheckedAggregate for CheckedUnionDef {
-    fn assemble(mut self, type_args: Vec<ResolvedType>) -> CheckedItem {
-        self.type_args = type_args;
+    fn assemble(mut self, generic_args: Vec<ResolvedGenericArg>) -> CheckedItem {
+        self.generic_args = generic_args;
         CheckedItem::Union(self)
     }
 }
@@ -159,7 +160,7 @@ impl Driver {
                     .unwrap_or_default();
                 let run = self.with_analyzer(
                     &key.module,
-                    &[],
+                    &GenericSubstitution::new(),
                     AnalysisSite::new(f.id, f.span),
                     |analyzer| analyzer.check_foreign_function_body(f, &fn_type, &annotations),
                 );
@@ -184,7 +185,7 @@ impl Driver {
                     .normalized_function(&key.module, f)
                     .map(|f| f.generics)
                     .unwrap_or_else(|_| f.generics.clone());
-                let substitution = Self::substitution(&generics, &key.type_args);
+                let substitution = Self::substitution(&generics, &key.generic_args);
                 let declared = self
                     .items
                     .declared_bounds
@@ -215,7 +216,7 @@ impl Driver {
                     |analyzer| analyzer.check_function_body(f, &fn_type, decl_id, &annotations),
                 );
                 run.result.map(|mut checked| {
-                    checked.type_args = key.type_args.clone();
+                    checked.generic_args = key.generic_args.clone();
                     CheckedBody {
                         item: CheckedItem::FunctionDefinition(checked),
                         warnings: run.warnings,
@@ -279,8 +280,8 @@ impl Driver {
         self_type: ResolvedType,
         check: impl FnOnce(&mut Analyzer) -> Option<C>,
     ) -> Option<CheckedBody> {
-        let mut substitution = Self::substitution(generics, &key.type_args);
-        substitution.push((Ident("Self".to_string()), self_type.clone()));
+        let mut substitution = Self::substitution(generics, &key.generic_args);
+        substitution.push_type(Ident("Self".to_string()), self_type.clone());
 
         let declared = self
             .items
@@ -297,7 +298,7 @@ impl Driver {
         let bounds = self.bound_context_over(&declared, &keys);
         let run = self.with_analyzer_in(&key.module, &substitution, &bounds, owner, check);
         run.result.map(|checked| CheckedBody {
-            item: checked.assemble(key.type_args.clone()),
+            item: checked.assemble(key.generic_args.clone()),
             warnings: run.warnings,
         })
     }
@@ -320,12 +321,12 @@ impl Driver {
 
     fn substitution(
         generics: &[HirGenericParam],
-        type_args: &[ResolvedType],
-    ) -> Vec<(Ident, ResolvedType)> {
+        generic_args: &[ResolvedGenericArg],
+    ) -> GenericSubstitution {
         generics
             .iter()
             .map(|g| g.ident.clone())
-            .zip(type_args.iter().cloned())
+            .zip(generic_args.iter().cloned())
             .collect()
     }
 }
@@ -345,9 +346,12 @@ impl Driver {
             unreachable!("only ever called with an index confirmed to be a function");
         };
 
-        let checked = self.analyze(module_path, &[], AnalysisSite::new(f.id, f.span), |a| {
-            a.collect_function_signature(f)
-        });
+        let checked = self.analyze(
+            module_path,
+            &GenericSubstitution::new(),
+            AnalysisSite::new(f.id, f.span),
+            |a| a.collect_function_signature(f),
+        );
         let (fn_type, annotations) = checked.ok_or_else(|| ResolveError::ItemFailed {
             module: module_path.to_vec(),
             item: f.name.clone(),
@@ -381,7 +385,7 @@ impl Driver {
 
         let run = self.with_analyzer(
             module_path,
-            &[],
+            &GenericSubstitution::new(),
             AnalysisSite::new(f.id, f.span),
             |analyzer| analyzer.check_function_body(f, &fn_type, f.id, &annotations),
         );

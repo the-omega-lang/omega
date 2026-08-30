@@ -1,7 +1,7 @@
 use crate::checked::Storage;
 use crate::resolved_type::{
-    ConstValue, ResolvedConformance, ResolvedFunctionType, ResolvedGap, ResolvedMethod,
-    ResolvedSpecType, ResolvedType,
+    ConstValue, ResolvedConformance, ResolvedFunctionType, ResolvedGap, ResolvedGenericArg,
+    ResolvedMethod, ResolvedSpecType, ResolvedType,
 };
 use omega_diagnostics::SourceId;
 use omega_hir::{HirGenericParam, HirId};
@@ -288,7 +288,7 @@ impl fmt::Display for ResolveError {
                 found,
             } => write!(
                 f,
-                "'{}::{}' expects {expected} type argument(s), found {found}",
+                "'{}::{}' expects {expected} generic argument(s), found {found}",
                 join(module),
                 item.as_ref()
             ),
@@ -478,9 +478,18 @@ pub trait ModuleResolver {
         &mut self,
         accessor_module_path: &[Ident],
         absolute_path: &[Ident],
-        type_args: &[ResolvedType],
+        generic_args: &[ResolvedGenericArg],
         options: ResolveItemOptions,
     ) -> Result<ResolvedItem, ResolveError>;
+
+    /// The generic parameters `absolute_path` declares, in order. This is
+    /// metadata only: a use site needs the parameter kinds before it can
+    /// decide whether a written argument denotes a type or a compile-time
+    /// value, and asking for that must not instantiate the item.
+    fn item_generic_params(
+        &mut self,
+        absolute_path: &[Ident],
+    ) -> Result<Option<Vec<HirGenericParam>>, ResolveError>;
 
     fn is_item_visible(&mut self, accessor_module_path: &[Ident], absolute_path: &[Ident]) -> bool;
 
@@ -545,7 +554,7 @@ pub trait ModuleResolver {
         &mut self,
         target: &ResolvedType,
         spec: &Rc<RefCell<ResolvedSpecType>>,
-        spec_args: &[ResolvedType],
+        spec_args: &[ResolvedGenericArg],
     ) -> Result<Option<ResolvedConformance>, ResolveError>;
 
     fn conformances_for_type(
@@ -584,23 +593,20 @@ pub type OverloadCandidates = Vec<OverloadCandidate>;
 
 #[derive(Debug, Clone)]
 pub struct GenericSignature {
-    pub generics: Vec<Ident>,
-    pub defaults: Vec<Option<Type>>,
+    pub generics: Vec<HirGenericParam>,
     pub params: Vec<Type>,
     pub return_type: Type,
 }
 
 #[derive(Debug, Clone)]
 pub struct GenericLiteralSignature {
-    pub generics: Vec<Ident>,
-    pub defaults: Vec<Option<Type>>,
+    pub generics: Vec<HirGenericParam>,
     pub fields: Vec<(Ident, Type)>,
 }
 
 #[derive(Debug, Clone)]
 pub struct GenericOwnerFunctionSignature {
-    pub owner_generics: Vec<Ident>,
-    pub owner_defaults: Vec<Option<Type>>,
+    pub owner_generics: Vec<HirGenericParam>,
     pub function_generics: Vec<Ident>,
     pub params: Vec<Type>,
     pub return_type: Type,

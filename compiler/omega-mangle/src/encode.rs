@@ -3,7 +3,7 @@ use std::fmt::Write as _;
 
 use crate::base62;
 use crate::grammar::*;
-use crate::symbol::{ManglePath, MangleType, Symbol};
+use crate::symbol::{MangleGenericArg, ManglePath, MangleType, MangleValue, Symbol};
 
 struct Encoder {
     out: String,
@@ -87,12 +87,50 @@ impl Encoder {
                 self.encode_types(args);
                 self.push_tag(TAG_LIST_END);
             }
+            ManglePath::MixedGeneric(parent, args) => {
+                self.push_tag(TAG_GENERIC_MIXED);
+                self.encode_path(parent);
+                for arg in args {
+                    match arg {
+                        MangleGenericArg::Type(ty) => {
+                            self.push_tag(TAG_ARG_TYPE);
+                            self.encode_type(ty);
+                        }
+                        MangleGenericArg::Value(value) => {
+                            self.push_tag(TAG_ARG_VALUE);
+                            self.encode_value(value);
+                        }
+                    }
+                }
+                self.push_tag(TAG_LIST_END);
+            }
             ManglePath::Type(ty) => {
                 self.push_tag(TAG_TYPE_PATH);
                 self.encode_type(ty);
             }
         }
         self.path_subs.insert(path.clone(), start);
+    }
+
+    /// A value is its type letter, an optional sign marker, and the base62
+    /// magnitude, so it is self-delimiting without a length prefix.
+    fn encode_value(&mut self, value: &MangleValue) {
+        let (ty, negative, magnitude) = match value {
+            MangleValue::Int { r#type, value } => (
+                r#type.mangle_type(),
+                *value < 0,
+                value.unsigned_abs() as u64,
+            ),
+            MangleValue::Bool(v) => (MangleType::Bool, false, u64::from(*v)),
+            MangleValue::Char(v) => (MangleType::Char, false, u64::from(*v as u32)),
+        };
+        self.push_tag(
+            basic_letter(&ty).expect("a comp value's type is always a basic scalar type"),
+        );
+        if negative {
+            self.push_tag(TAG_VALUE_NEGATIVE);
+        }
+        self.out.push_str(&base62::encode(magnitude));
     }
 
     fn encode_types(&mut self, types: &[MangleType]) {

@@ -5,8 +5,9 @@ use omega_analyzer::analysis::Analyzer;
 use omega_analyzer::analysis::PendingSpecMethod;
 use omega_analyzer::checked::ConformanceOwner;
 use omega_analyzer::error::{AnalysisError, AnalysisErrorKind};
+use omega_analyzer::generics::GenericSubstitution;
 use omega_analyzer::resolved_type::{
-    ResolvedBound, ResolvedMethod, ResolvedSpecType, ResolvedType,
+    ResolvedBound, ResolvedGenericArg, ResolvedMethod, ResolvedSpecType, ResolvedType,
 };
 use omega_diagnostics::Span;
 use omega_hir::{AliasTarget, HirConformDef, HirFunctionDef, HirGenericParam, HirId, HirItem};
@@ -37,14 +38,14 @@ pub(crate) struct ConformanceEntry {
     pub span: Span,
     pub target: ResolvedType,
     pub spec: Rc<RefCell<ResolvedSpecType>>,
-    pub spec_args: Vec<ResolvedType>,
+    pub spec_args: Vec<ResolvedGenericArg>,
     pub methods: Vec<(Ident, ResolvedMethod)>,
     pub method_ids: Vec<HirId>,
     pub functions: Vec<HirFunctionDef>,
     pub pending: Vec<PendingSpecMethod>,
-    pub substitution: Vec<(Ident, ResolvedType)>,
+    pub substitution: GenericSubstitution,
     pub declared_bounds: Vec<ResolvedBound>,
-    pub declared_bound_keys: Vec<(HirId, Vec<ResolvedType>)>,
+    pub declared_bound_keys: Vec<(HirId, Vec<ResolvedGenericArg>)>,
     pub origin: ConformanceOrigin,
 }
 
@@ -105,7 +106,7 @@ pub(crate) struct Conformances {
     materialized: Vec<ResolvedType>,
     goals: Vec<ConformanceGoal>,
     reported_cycles: Vec<(ResolvedType, HirId)>,
-    pub emitted: Vec<(ResolvedType, HirId, Vec<ResolvedType>)>,
+    pub emitted: Vec<(ResolvedType, HirId, Vec<ResolvedGenericArg>)>,
 }
 
 mod registration;
@@ -122,7 +123,7 @@ impl Driver {
         let key = ItemKey::new(
             module,
             &Ident(format!("__conform_{}", declaration.local)),
-            &[target.lookup_key()],
+            &[ResolvedGenericArg::Type(target.lookup_key())],
         );
         self.items
             .method_identities(&key, functions.iter().map(|function| function.id))

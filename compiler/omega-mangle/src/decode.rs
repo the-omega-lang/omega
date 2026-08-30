@@ -3,7 +3,10 @@ use std::str;
 
 use crate::base62;
 use crate::grammar::*;
-use crate::symbol::{FunctionSignature, MangleConvention, ManglePath, MangleType, Symbol};
+use crate::symbol::{
+    FunctionSignature, MangleConvention, MangleGenericArg, MangleIntType, ManglePath, MangleType,
+    MangleValue, Symbol,
+};
 
 pub fn decode(mangled: &str) -> Option<Symbol> {
     let bytes = mangled.as_bytes();
@@ -113,6 +116,11 @@ impl Decoder<'_> {
                 let args = self.parse_type_list()?;
                 ManglePath::Generic(Box::new(parent), args)
             }
+            TAG_GENERIC_MIXED => {
+                self.pos += 1;
+                let parent = self.parse_path()?;
+                ManglePath::MixedGeneric(Box::new(parent), self.parse_generic_arg_list()?)
+            }
             TAG_TYPE_PATH => {
                 self.pos += 1;
                 ManglePath::Type(Box::new(self.parse_type()?))
@@ -204,7 +212,7 @@ impl Decoder<'_> {
                 let variant = u32::try_from(base62::decode(self.bytes, &mut self.pos)?).ok()?;
                 MangleType::Named(path, Some(variant))
             }
-            TAG_ROOT | TAG_NESTED | TAG_GENERIC | TAG_TYPE_PATH => {
+            TAG_ROOT | TAG_NESTED | TAG_GENERIC | TAG_GENERIC_MIXED | TAG_TYPE_PATH => {
                 MangleType::Named(self.parse_path()?, None)
             }
             _ => return None,
@@ -221,6 +229,44 @@ impl Decoder<'_> {
     ) -> Option<MangleType> {
         self.pos += 1;
         Some(wrap(Box::new(self.parse_type()?), mutable))
+    }
+
+    fn parse_generic_arg_list(&mut self) -> Option<Vec<MangleGenericArg>> {
+        let mut args = Vec::new();
+        loop {
+            if self.consume_if(TAG_LIST_END) {
+                return Some(args);
+            }
+            args.push(match self.next()? {
+                TAG_ARG_TYPE => MangleGenericArg::Type(self.parse_type()?),
+                TAG_ARG_VALUE => MangleGenericArg::Value(self.parse_value()?),
+                _ => return None,
+            });
+        }
+    }
+
+    fn parse_value(&mut self) -> Option<MangleValue> {
+        let ty = basic_from_letter(self.next()?)?;
+        let negative = self.consume_if(TAG_VALUE_NEGATIVE);
+        let magnitude = base62::decode(self.bytes, &mut self.pos)?;
+        Some(match ty {
+            MangleType::Bool if !negative => MangleValue::Bool(match magnitude {
+                0 => false,
+                1 => true,
+                _ => return None,
+            }),
+            MangleType::Char if !negative => {
+                MangleValue::Char(char::from_u32(u32::try_from(magnitude).ok()?)?)
+            }
+            other => {
+                let r#type = MangleIntType::from_mangle_type(&other)?;
+                let magnitude = i128::from(magnitude);
+                MangleValue::Int {
+                    r#type,
+                    value: if negative { -magnitude } else { magnitude },
+                }
+            }
+        })
     }
 
     fn parse_type_list(&mut self) -> Option<Vec<MangleType>> {

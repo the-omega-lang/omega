@@ -1,8 +1,8 @@
 use crate::ids::HirId;
 pub use omega_parser::prelude::{AliasTarget, BinaryOp, LogicalOp};
 use omega_parser::prelude::{
-    ByteStringExpr, ExprPath, FunctionType, FunctionTypeParam, Ident, NumberExpr, Origin, Path,
-    RawConvention, SelfMode, Span, StringExpr, Type, Visibility,
+    ByteStringExpr, ExprPath, FunctionType, FunctionTypeParam, GenericArg, GenericParamKind, Ident,
+    NumberExpr, Origin, Path, RawConvention, SelfMode, Span, StringExpr, Type, Visibility,
 };
 
 #[derive(Debug, Clone)]
@@ -81,8 +81,36 @@ pub struct HirAlias {
 #[derive(Debug, Clone)]
 pub struct HirGenericParam {
     pub ident: Ident,
-    pub bounds: Vec<Type>,
-    pub default: Option<Type>,
+    pub kind: GenericParamKind,
+    pub default: Option<GenericArg>,
+}
+
+impl HirGenericParam {
+    pub fn r#type(ident: Ident, bounds: Vec<Type>, default: Option<GenericArg>) -> Self {
+        Self {
+            ident,
+            kind: GenericParamKind::Type { bounds },
+            default,
+        }
+    }
+
+    pub fn bounds(&self) -> &[Type] {
+        match &self.kind {
+            GenericParamKind::Type { bounds } => bounds,
+            GenericParamKind::Comp { .. } => &[],
+        }
+    }
+
+    pub fn comp_type(&self) -> Option<&Type> {
+        match &self.kind {
+            GenericParamKind::Comp { value_type } => Some(value_type),
+            GenericParamKind::Type { .. } => None,
+        }
+    }
+
+    pub fn is_comp(&self) -> bool {
+        matches!(self.kind, GenericParamKind::Comp { .. })
+    }
 }
 
 #[derive(Debug, Clone)]

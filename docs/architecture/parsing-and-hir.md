@@ -61,7 +61,7 @@ The recursive-descent parser is split by syntactic concern. `parser/mod.rs` owns
 - `parser/expression.rs` — expressions and precedence;
 - `parser/item.rs` — top-level routing, imports, and visibility;
 - `parser/item/annotations.rs` — annotation syntax;
-- `parser/item/functions.rs` — declarations, functions, parameters, and generics;
+- `parser/item/functions.rs` — declarations, functions, parameters, and generics, including the contextual `comp NAME: TYPE` parameter form;
 - `parser/item/definitions.rs` — aggregate/spec/gap/glue/conform/primitive bodies;
 - `parser/statement.rs` — statement grammar;
 - `parser/type.rs` — type grammar;
@@ -184,7 +184,7 @@ HIR remains close to syntax. It still carries unresolved:
 - `Type` syntax;
 - source paths;
 - annotations;
-- generics/bounds;
+- generic parameters, with their kind (type parameter with bounds, or `comp` parameter with its written value type) and same-kind defaults;
 - declaration and expression structure.
 
 This is intentional. HIR is an **identity + structural normalization boundary**, not a typed IR.
@@ -246,6 +246,7 @@ The source previously carried these facts as scattered Rust doc comments. They a
 
 - The token stream always ends in an `Eof` sentinel. Parser lookahead clamps to that sentinel and `advance` does not consume it, so recovery and speculative parsing can safely observe EOF repeatedly.
 - `Parser::mark` / `Parser::reset` is the limited backtracking mechanism. Resetting also discards diagnostics emitted after the mark, so an abandoned speculative parse cannot leak errors. The main use is code-block tail-expression versus statement disambiguation; ordinary grammar choices should prefer bounded lookahead.
+- A written generic argument is a `GenericArg`: a scalar `comp` literal, or type syntax. A bare path stays type syntax and is only read as a type or as a compile-time value once the declaration's parameter kinds are known, so the parser never guesses a kind. The expression-position speculative commit/rollback rule is unchanged; only the set of things accepted inside `<...>` grew.
 - Nested generic closers reuse the lexer's maximal-munch `>>` token. The private `TokenCursor` may split it into two synthetic `>` observations while keeping token position, pending `>`, and last-consumed span together. Grammar code should use the `Parser` facade rather than reproduce cursor bookkeeping.
 - Recursive expression/type descent shares `MAX_NESTING_DEPTH`. The limit protects the native stack and indirectly bounds later AST/HIR traversal depth. It is an implementation safety limit, not a language-semantic maximum.
 

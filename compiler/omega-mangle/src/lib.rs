@@ -8,4 +8,7 @@ pub mod symbol;
 pub use decode::decode;
 pub use display::demangle;
 pub use encode::encode;
-pub use symbol::{FunctionSignature, MangleConvention, ManglePath, MangleType, Namespace, Symbol};
+pub use symbol::{
+    FunctionSignature, MangleConvention, MangleGenericArg, MangleIntType, ManglePath, MangleType,
+    MangleValue, Namespace, Symbol,
+};

@@ -398,7 +398,7 @@ pub enum AnalysisErrorKind {
     MissingSpecFunction {
         implementor: Ident,
         spec: Ident,
-        spec_type_args: Vec<ResolvedType>,
+        spec_args: Vec<ResolvedGenericArg>,
         function: Ident,
     },
     ForLoopSourceNotIterable {
@@ -754,12 +754,12 @@ impl fmt::Display for AnalysisErrorKind {
             Self::NotAValue(path) => write!(f, "'{}' is a type, not a value", join(path)),
             Self::UnresolvedGenericParam(ident) => write!(
                 f,
-                "cannot infer type parameter '{}' from this call's arguments",
+                "cannot infer generic parameter '{}' from this call's arguments",
                 ident.as_ref()
             ),
             Self::GenericParamFromFatPointer { parameter, .. } => write!(
                 f,
-                "cannot infer type parameter '{}' from this call's arguments",
+                "cannot infer generic parameter '{}' from this call's arguments",
                 parameter.as_ref()
             ),
             Self::UnresolvedLiteralGeneric { r#type, generics } => write!(
@@ -1138,13 +1138,13 @@ impl fmt::Display for AnalysisErrorKind {
             Self::MissingSpecFunction {
                 implementor,
                 spec,
-                spec_type_args,
+                spec_args,
                 function,
             } => write!(
                 f,
                 "'{}' does not implement spec '{}': missing '{}'",
                 implementor.as_ref(),
-                generic_name(spec, spec_type_args),
+                generic_name(spec, spec_args),
                 function.as_ref()
             ),
             Self::ForLoopSourceNotIterable { r#type } => {

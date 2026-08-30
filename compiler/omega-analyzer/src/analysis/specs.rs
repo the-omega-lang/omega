@@ -3,19 +3,22 @@ use super::*;
 pub(super) struct FlattenedSpecFn {
     pub(super) name: Ident,
     pub(super) fn_type: ResolvedFunctionType,
-    pub(super) return_type_bound: Vec<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)>,
+    pub(super) return_type_bound: Vec<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedGenericArg>)>,
     pub(super) raw: RawSpecFunctionSig,
     pub(super) spec_id: HirId,
     pub(super) spec_name: Ident,
     pub(super) visibility: Visibility,
-    pub(super) substitution: Vec<(Ident, ResolvedType)>,
+    pub(super) substitution: GenericSubstitution,
 }
 
 impl FlattenedSpecFn {
-    pub(super) fn type_args(&self) -> Vec<ResolvedType> {
-        self.substitution[1..]
+    /// The spec's own generic arguments: everything the requirement was
+    /// substituted with except the implementing `Self` type.
+    pub(super) fn spec_args(&self) -> Vec<ResolvedGenericArg> {
+        self.substitution
             .iter()
-            .map(|(_, ty)| ty.clone())
+            .filter(|(name, _)| name.as_ref() != "Self")
+            .map(|(_, arg)| arg.clone())
             .collect()
     }
 }
@@ -24,9 +27,9 @@ impl FlattenedSpecFn {
 pub struct PendingSpecMethod {
     pub id: HirId,
     pub fn_type: ResolvedFunctionType,
-    pub return_type_bound: Vec<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)>,
+    pub return_type_bound: Vec<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedGenericArg>)>,
     pub raw: RawSpecFunctionSig,
-    pub substitution: Vec<(Ident, ResolvedType)>,
+    pub substitution: GenericSubstitution,
 }
 
 impl<'r> Analyzer<'r> {
@@ -128,12 +131,12 @@ impl<'r> Analyzer<'r> {
         id: HirId,
         span: Span,
         target: &ResolvedType,
-        spec: &(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>),
+        spec: &(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedGenericArg>),
         functions: &[HirFunctionDef],
         method_ids: &[HirId],
     ) -> Option<(
         Rc<RefCell<ResolvedSpecType>>,
-        Vec<ResolvedType>,
+        Vec<ResolvedGenericArg>,
         Vec<(Ident, ResolvedMethod)>,
         Vec<PendingSpecMethod>,
     )> {
@@ -203,7 +206,7 @@ impl<'r> Analyzer<'r> {
                     AnalysisErrorKind::MissingSpecFunction {
                         implementor: Ident(target.to_string()),
                         spec: requirement.spec_name.clone(),
-                        spec_type_args: requirement.type_args(),
+                        spec_args: requirement.spec_args(),
                         function: requirement.name,
                     },
                 );
@@ -232,19 +235,11 @@ impl<'r> Analyzer<'r> {
         id: HirId,
         span: Span,
         ty: &Type,
-    ) -> Option<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)> {
-        let raw_args: Vec<Type> = match ty {
+    ) -> Option<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedGenericArg>)> {
+        let raw_args: Vec<GenericArg> = match ty {
             Type::Generic(_, args) => args.clone(),
             _ => vec![],
         };
-        let mut resolved_args = Vec::with_capacity(raw_args.len());
-        let mut ok = true;
-        for arg in &raw_args {
-            match self.resolve_type_or_error(id, span, arg, true) {
-                Some(r) => resolved_args.push(r),
-                None => ok = false,
-            }
-        }
         let name = match ty {
             Type::Named(path) | Type::Generic(path, _) => path.head.clone(),
             _ => Ident("<spec>".to_string()),
@@ -254,6 +249,20 @@ impl<'r> Analyzer<'r> {
         // else that resolves a type), so this deliberately bypasses the
         // wrapper's bare-spec-is-never-a-value-type check.
         let resolved = self.resolve_type_or_error_raw(id, span, ty, true)?;
+        // The spec's own parameter kinds decide how its written arguments
+        // are read, so they are resolved only after the spec is known.
+        let params = match &resolved {
+            ResolvedType::Spec(spec) => spec.borrow().generics.clone(),
+            _ => Vec::new(),
+        };
+        let mut resolved_args = Vec::with_capacity(raw_args.len());
+        let mut ok = true;
+        for (index, arg) in raw_args.iter().enumerate() {
+            match self.resolve_generic_arg_or_error(id, span, arg, params.get(index)) {
+                Some(r) => resolved_args.push(r),
+                None => ok = false,
+            }
+        }
         if !ok {
             return None;
         }
@@ -358,7 +367,7 @@ impl<'r> Analyzer<'r> {
         ty: &Type,
         ambient_fallback: bool,
         module: &[Ident],
-    ) -> Option<(Rc<RefCell<ResolvedSpecType>>, Vec<Type>)> {
+    ) -> Option<(Rc<RefCell<ResolvedSpecType>>, Vec<GenericArg>)> {
         let (path, raw_args) = match ty {
             Type::Generic(path, args) => (path, args.clone()),
             Type::Named(path) => (path, vec![]),
@@ -482,11 +491,11 @@ impl<'r> Analyzer<'r> {
         id: HirId,
         span: Span,
         raw: &RawSpecFunctionSig,
-        substitution: &[(Ident, ResolvedType)],
+        substitution: &GenericSubstitution,
         module: &[Ident],
     ) -> Option<(
         ResolvedFunctionType,
-        Vec<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)>,
+        Vec<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedGenericArg>)>,
     )> {
         self.with_substitution(substitution, |this| {
             let mut params = Vec::with_capacity(raw.params.len());
@@ -504,10 +513,18 @@ impl<'r> Analyzer<'r> {
                     for member in members {
                         match this.resolve_spec_application_cell(id, span, member, true, module) {
                             Some((cell, raw_args)) => {
-                                let resolved_args: Option<Vec<ResolvedType>> = raw_args
+                                let params = cell.borrow().generics.clone();
+                                let resolved_args: Option<Vec<ResolvedGenericArg>> = raw_args
                                     .iter()
-                                    .map(|a| {
-                                        this.resolve_type_or_error_in(id, span, a, true, module)
+                                    .enumerate()
+                                    .map(|(index, a)| {
+                                        this.resolve_generic_arg_in(
+                                            id,
+                                            span,
+                                            a,
+                                            params.get(index),
+                                            module,
+                                        )
                                     })
                                     .collect();
                                 match resolved_args {
@@ -547,11 +564,11 @@ impl<'r> Analyzer<'r> {
         id: HirId,
         span: Span,
         spec: &Rc<RefCell<ResolvedSpecType>>,
-        type_args: &[ResolvedType],
+        spec_args: &[ResolvedGenericArg],
         self_type: &ResolvedType,
     ) -> Option<Vec<FlattenedSpecFn>> {
         let mut out = Vec::new();
-        self.flatten_spec_into(id, span, spec, type_args, self_type, &mut out)?;
+        self.flatten_spec_into(id, span, spec, spec_args, self_type, &mut out)?;
         Some(out)
     }
 
@@ -560,7 +577,7 @@ impl<'r> Analyzer<'r> {
         id: HirId,
         span: Span,
         spec: &Rc<RefCell<ResolvedSpecType>>,
-        type_args: &[ResolvedType],
+        spec_args: &[ResolvedGenericArg],
         self_type: &ResolvedType,
         out: &mut Vec<FlattenedSpecFn>,
     ) -> Option<()> {
@@ -576,9 +593,14 @@ impl<'r> Analyzer<'r> {
         };
 
         let self_ident = Ident("Self".to_string());
-        let substitution: Vec<(Ident, ResolvedType)> =
-            std::iter::once((self_ident, self_type.clone()))
-                .chain(generics.iter().cloned().zip(type_args.iter().cloned()))
+        let substitution: GenericSubstitution =
+            std::iter::once((self_ident, ResolvedGenericArg::Type(self_type.clone())))
+                .chain(
+                    generics
+                        .iter()
+                        .map(|p| p.ident.clone())
+                        .zip(spec_args.iter().cloned()),
+                )
                 .collect();
 
         for (name, raw) in &functions {
@@ -587,7 +609,7 @@ impl<'r> Analyzer<'r> {
             // Identity dedup only -- same spec, same type args, same name.
             if out.iter().any(|existing| {
                 existing.spec_id == spec_id
-                    && existing.type_args() == *type_args
+                    && existing.spec_args() == *spec_args
                     && existing.name == *name
             }) {
                 continue;
@@ -612,7 +634,7 @@ impl<'r> Analyzer<'r> {
         span: Span,
         own: &ResolvedFunctionType,
         req_fn_type: &ResolvedFunctionType,
-        req_bound: &[(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)],
+        req_bound: &[(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedGenericArg>)],
     ) -> bool {
         if req_bound.is_empty() {
             return own == req_fn_type;
@@ -620,8 +642,8 @@ impl<'r> Analyzer<'r> {
         own.self_mode == req_fn_type.self_mode
             && own.is_variadic == req_fn_type.is_variadic
             && own.params == req_fn_type.params
-            && req_bound.iter().all(|(spec, type_args)| {
-                self.type_implements_spec(id, span, &own.return_type, spec, type_args, false)
+            && req_bound.iter().all(|(spec, spec_args)| {
+                self.type_implements_spec(id, span, &own.return_type, spec, spec_args, false)
                     .is_ok()
             })
     }
@@ -634,8 +656,8 @@ impl<'r> Analyzer<'r> {
         _id: HirId,
         _span: Span,
         bounds: &[ResolvedBound],
-    ) -> Vec<(HirId, Vec<ResolvedType>)> {
-        let mut out: Vec<(HirId, Vec<ResolvedType>)> = Vec::new();
+    ) -> Vec<(HirId, Vec<ResolvedGenericArg>)> {
+        let mut out: Vec<(HirId, Vec<ResolvedGenericArg>)> = Vec::new();
         for bound in bounds {
             let key = (bound.spec.borrow().id, bound.spec_args.clone());
             if !out.contains(&key) {
@@ -651,18 +673,17 @@ impl<'r> Analyzer<'r> {
         span: Span,
         ty: &ResolvedType,
         spec: &Rc<RefCell<ResolvedSpecType>>,
-        spec_type_args: &[ResolvedType],
+        spec_args: &[ResolvedGenericArg],
         _check_method_visibility: bool,
     ) -> Result<Vec<HirId>, Vec<Ident>> {
-        match self.resolver.conformance_for(ty, spec, spec_type_args) {
+        match self.resolver.conformance_for(ty, spec, spec_args) {
             Ok(Some(conform)) => Ok(conform
                 .methods
                 .iter()
                 .map(|(_, method)| method.decl_id)
                 .collect()),
             Ok(None) => {
-                let Some(requirements) = self.flatten_spec(id, span, spec, spec_type_args, ty)
-                else {
+                let Some(requirements) = self.flatten_spec(id, span, spec, spec_args, ty) else {
                     return Err(vec![]);
                 };
                 let spec_id = spec.borrow().id;
@@ -674,18 +695,18 @@ impl<'r> Analyzer<'r> {
                         return Err(vec![]);
                     }
                 };
-                let available: Vec<(HirId, Vec<ResolvedType>, Ident, ResolvedMethod)> = candidates
-                    .into_iter()
-                    .filter(|entry| entry.spec.borrow().id == spec_id)
-                    .flat_map(|entry| {
-                        let spec_id = entry.spec.borrow().id;
-                        let spec_args = entry.spec_args.clone();
-                        entry
-                            .methods
-                            .into_iter()
-                            .map(move |(name, method)| (spec_id, spec_args.clone(), name, method))
-                    })
-                    .collect();
+                let available: Vec<(HirId, Vec<ResolvedGenericArg>, Ident, ResolvedMethod)> =
+                    candidates
+                        .into_iter()
+                        .filter(|entry| entry.spec.borrow().id == spec_id)
+                        .flat_map(|entry| {
+                            let spec_id = entry.spec.borrow().id;
+                            let spec_args = entry.spec_args.clone();
+                            entry.methods.into_iter().map(move |(name, method)| {
+                                (spec_id, spec_args.clone(), name, method)
+                            })
+                        })
+                        .collect();
 
                 let mut slots = Vec::with_capacity(requirements.len());
                 let mut missing = Vec::new();
@@ -694,7 +715,7 @@ impl<'r> Analyzer<'r> {
                         .iter()
                         .position(|(spec_id, spec_args, name, method)| {
                             *spec_id == requirement.spec_id
-                                && *spec_args == requirement.type_args()
+                                && *spec_args == requirement.spec_args()
                                 && *name == requirement.name
                                 && self.fn_satisfies_requirement(
                                     id,
@@ -787,7 +808,7 @@ impl<'r> Analyzer<'r> {
         span: Span,
         bound: &Type,
         concrete: &ResolvedType,
-    ) -> Option<Result<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>), (Ident, Vec<Ident>)>>
+    ) -> Option<Result<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedGenericArg>), (Ident, Vec<Ident>)>>
     {
         let (spec, spec_args) = self.resolve_spec_reference(id, span, bound)?;
         let spec_name = spec.borrow().name.clone();

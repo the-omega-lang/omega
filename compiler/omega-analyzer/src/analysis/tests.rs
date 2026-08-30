@@ -68,10 +68,17 @@ impl ModuleResolver for NoResolver {
         &mut self,
         _accessor_module_path: &[Ident],
         _absolute_path: &[Ident],
-        _type_args: &[ResolvedType],
+        _generic_args: &[crate::resolved_type::ResolvedGenericArg],
         _options: ResolveItemOptions,
     ) -> Result<ResolvedItem, ResolveError> {
         unreachable!("test never triggers item resolution")
+    }
+
+    fn item_generic_params(
+        &mut self,
+        _absolute_path: &[Ident],
+    ) -> Result<Option<Vec<omega_hir::HirGenericParam>>, ResolveError> {
+        Ok(None)
     }
 
     fn is_item_visible(
@@ -145,7 +152,7 @@ impl ModuleResolver for NoResolver {
         &mut self,
         _target: &ResolvedType,
         _spec: &Rc<RefCell<ResolvedSpecType>>,
-        _spec_args: &[ResolvedType],
+        _spec_args: &[crate::resolved_type::ResolvedGenericArg],
     ) -> Result<Option<ResolvedConformance>, ResolveError> {
         unreachable!("test never triggers conformance lookup")
     }
@@ -192,7 +199,7 @@ pub(crate) fn analyzer(resolver: &mut NoResolver) -> Analyzer<'_> {
     Analyzer::new(
         resolver,
         vec![],
-        &[],
+        &crate::generics::GenericSubstitution::new(),
         AnalysisSite::new(id(0), sp()),
         Target::DEFAULT,
     )
@@ -203,7 +210,7 @@ pub(crate) fn dummy_struct_type() -> ResolvedType {
         id: id(1),
         name: Ident("S".into()),
         module_path: vec![],
-        type_args: vec![],
+        generic_args: vec![],
         fields: vec![],
         functions: vec![],
         layout: crate::annotations::Layout::default(),

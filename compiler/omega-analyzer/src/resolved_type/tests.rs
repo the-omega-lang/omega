@@ -101,7 +101,7 @@ fn spec_cell(id: u32, name: &str) -> Rc<RefCell<ResolvedSpecType>> {
         visibility: Visibility::Exposed,
         generics: vec![],
         module_path: vec![],
-        type_args: vec![],
+        generic_args: vec![],
         is_object_safe: true,
         functions: vec![],
         suppress: vec![],
@@ -136,6 +136,10 @@ fn spec_shape_canonicalizes_duplicate_members_away() {
 }
 
 fn struct_cell(id: u32, name: &str, type_args: Vec<ResolvedType>) -> ResolvedType {
+    let generic_args: Vec<ResolvedGenericArg> = type_args
+        .into_iter()
+        .map(ResolvedGenericArg::Type)
+        .collect();
     ResolvedType::Struct(Rc::new(RefCell::new(ResolvedStructType {
         id: HirId {
             module: omega_hir::ModuleId(0),
@@ -143,7 +147,7 @@ fn struct_cell(id: u32, name: &str, type_args: Vec<ResolvedType>) -> ResolvedTyp
         },
         name: Ident(name.to_string()),
         module_path: vec![Ident("pkg".into())],
-        type_args,
+        generic_args,
         fields: vec![],
         functions: vec![],
         layout: crate::annotations::Layout::default(),
@@ -161,7 +165,7 @@ fn enum_cell(id: u32, name: &str) -> ResolvedType {
             },
             name: Ident(name.to_string()),
             module_path: vec![Ident("pkg".into())],
-            type_args: vec![],
+            generic_args: vec![],
             tag_type: ResolvedType::U8,
             header: vec![],
             dynamic_fields: vec![],
@@ -466,12 +470,18 @@ fn spec_shape_orders_generic_applications_of_one_spec_deterministically() {
     let int_pair = struct_cell(2, "Pair", vec![ResolvedType::I32]);
     let float_pair = struct_cell(3, "Pair", vec![ResolvedType::F64]);
     let forwards = ResolvedSpecShape::canonicalize(vec![
-        ResolvedSpecApplication::new(convert.clone(), vec![int_pair.clone()]),
-        ResolvedSpecApplication::new(convert.clone(), vec![float_pair.clone()]),
+        ResolvedSpecApplication::new(
+            convert.clone(),
+            vec![ResolvedGenericArg::Type(int_pair.clone())],
+        ),
+        ResolvedSpecApplication::new(
+            convert.clone(),
+            vec![ResolvedGenericArg::Type(float_pair.clone())],
+        ),
     ]);
     let backwards = ResolvedSpecShape::canonicalize(vec![
-        ResolvedSpecApplication::new(convert.clone(), vec![float_pair]),
-        ResolvedSpecApplication::new(convert, vec![int_pair]),
+        ResolvedSpecApplication::new(convert.clone(), vec![ResolvedGenericArg::Type(float_pair)]),
+        ResolvedSpecApplication::new(convert, vec![ResolvedGenericArg::Type(int_pair)]),
     ]);
     assert_eq!(forwards.members.len(), 2);
     assert_eq!(forwards, backwards);
@@ -718,6 +728,10 @@ fn variant_enum_cell(
     name: &str,
     type_args: Vec<ResolvedType>,
 ) -> Rc<RefCell<ResolvedEnumType>> {
+    let generic_args: Vec<ResolvedGenericArg> = type_args
+        .into_iter()
+        .map(ResolvedGenericArg::Type)
+        .collect();
     Rc::new(RefCell::new(ResolvedEnumType {
         id: HirId {
             module: omega_hir::ModuleId(0),
@@ -725,7 +739,7 @@ fn variant_enum_cell(
         },
         name: Ident(name.to_string()),
         module_path: vec![Ident("pkg".into()), Ident("inner".into())],
-        type_args,
+        generic_args,
         tag_type: ResolvedType::U8,
         header: vec![],
         dynamic_fields: vec![],
@@ -767,7 +781,7 @@ fn an_enum_variant_suffix_follows_the_instantiated_type_name() {
 #[test]
 fn a_spec_renders_its_own_type_arguments() {
     let cell = spec_cell(4, "Into");
-    cell.borrow_mut().type_args = vec![ResolvedType::U32];
+    cell.borrow_mut().generic_args = vec![ResolvedGenericArg::Type(ResolvedType::U32)];
     assert_eq!(ResolvedType::Spec(cell).to_string(), "Into<u32>");
 }
 
@@ -781,7 +795,7 @@ fn two_same_named_types_from_different_modules_can_be_told_apart() {
         },
         name: Ident("Buffer".into()),
         module_path: vec![Ident("other".into())],
-        type_args: vec![],
+        generic_args: vec![],
         fields: vec![],
         functions: vec![],
         layout: crate::annotations::Layout::default(),
@@ -804,4 +818,146 @@ fn types_that_already_differ_keep_their_short_names() {
     );
     assert_eq!(left, "Holder<i32>");
     assert_eq!(right, "Holder<u8>");
+}
+
+// --- canonical `comp` generic argument values ----------------------------
+
+fn number(value: i64) -> ConstValue {
+    ConstValue::Number(crate::checked::NumberValue::Signed(value))
+}
+
+fn unsigned(value: u64) -> ConstValue {
+    ConstValue::Number(crate::checked::NumberValue::Unsigned(value))
+}
+
+#[test]
+fn an_integer_of_any_comp_type_normalizes_to_the_declared_type() {
+    // The declared type is authoritative: a differently typed `comp` binding
+    // that is exactly representable converges on the same canonical value.
+    let declared = CompScalarType::Int(CompIntType::USize);
+    assert_eq!(
+        CompScalar::normalize(&number(123), declared, 64),
+        Some(CompScalar::Int {
+            r#type: CompIntType::USize,
+            value: 123
+        })
+    );
+    assert_eq!(
+        CompScalar::normalize(&unsigned(123), declared, 64),
+        CompScalar::normalize(&number(123), declared, 64)
+    );
+}
+
+#[test]
+fn a_value_outside_the_declared_type_is_rejected_rather_than_wrapped() {
+    let u8_param = CompScalarType::Int(CompIntType::U8);
+    assert_eq!(CompScalar::normalize(&number(300), u8_param, 64), None);
+    assert_eq!(CompScalar::normalize(&number(-1), u8_param, 64), None);
+    assert!(CompScalar::normalize(&number(255), u8_param, 64).is_some());
+}
+
+#[test]
+fn target_width_decides_the_usize_and_isize_domains() {
+    let usize_param = CompScalarType::Int(CompIntType::USize);
+    let isize_param = CompScalarType::Int(CompIntType::ISize);
+    assert!(CompScalar::normalize(&unsigned(70000), usize_param, 64).is_some());
+    assert!(CompScalar::normalize(&unsigned(70000), usize_param, 16).is_none());
+    assert!(CompScalar::normalize(&number(-40000), isize_param, 64).is_some());
+    assert!(CompScalar::normalize(&number(-40000), isize_param, 16).is_none());
+}
+
+#[test]
+fn comp_value_kinds_never_convert_into_each_other() {
+    let int_param = CompScalarType::Int(CompIntType::I32);
+    assert_eq!(
+        CompScalar::normalize(&ConstValue::Bool(true), int_param, 64),
+        None
+    );
+    assert_eq!(
+        CompScalar::normalize(&ConstValue::Char('a'), int_param, 64),
+        None
+    );
+    assert_eq!(
+        CompScalar::normalize(&number(1), CompScalarType::Bool, 64),
+        None
+    );
+    assert_eq!(
+        CompScalar::normalize(&ConstValue::Bool(true), CompScalarType::Bool, 64),
+        Some(CompScalar::Bool(true))
+    );
+}
+
+#[test]
+fn a_float_is_never_a_comp_generic_argument() {
+    assert_eq!(CompScalarType::from_resolved(&ResolvedType::F64), None);
+    assert_eq!(
+        CompScalar::normalize(
+            &ConstValue::Number(crate::checked::NumberValue::Float(1.0)),
+            CompScalarType::Int(CompIntType::I32),
+            64
+        ),
+        None
+    );
+}
+
+#[test]
+fn the_declared_type_is_part_of_a_comp_value_identity() {
+    let as_usize = CompScalar::Int {
+        r#type: CompIntType::USize,
+        value: 7,
+    };
+    let as_u8 = CompScalar::Int {
+        r#type: CompIntType::U8,
+        value: 7,
+    };
+    assert_ne!(as_usize, as_u8);
+    assert_ne!(
+        ResolvedGenericArg::Comp(as_usize),
+        ResolvedGenericArg::Comp(as_u8)
+    );
+}
+
+#[test]
+fn comp_arguments_participate_in_a_nominal_type_key() {
+    let ten = struct_with_args(20, "Buffer", vec![comp_usize(10)]);
+    let eleven = struct_with_args(21, "Buffer", vec![comp_usize(11)]);
+    assert_ne!(
+        crate::type_key::structural_key(&ten),
+        crate::type_key::structural_key(&eleven)
+    );
+
+    // A value and a type in the same position must not collide either.
+    let as_type = struct_with_args(
+        22,
+        "Buffer",
+        vec![ResolvedGenericArg::Type(ResolvedType::USize)],
+    );
+    assert_ne!(
+        crate::type_key::structural_key(&ten),
+        crate::type_key::structural_key(&as_type)
+    );
+}
+
+fn comp_usize(value: i128) -> ResolvedGenericArg {
+    ResolvedGenericArg::Comp(CompScalar::Int {
+        r#type: CompIntType::USize,
+        value,
+    })
+}
+
+fn struct_with_args(id: u32, name: &str, generic_args: Vec<ResolvedGenericArg>) -> ResolvedType {
+    ResolvedType::Struct(Rc::new(RefCell::new(ResolvedStructType {
+        id: HirId {
+            module: omega_hir::ModuleId(0),
+            local: id,
+        },
+        name: Ident(name.to_string()),
+        module_path: vec![Ident("pkg".into())],
+        generic_args,
+        fields: vec![],
+        functions: vec![],
+        layout: crate::annotations::Layout::default(),
+        suppress: vec![],
+        is_marker: false,
+    })))
 }

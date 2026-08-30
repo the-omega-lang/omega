@@ -1,0 +1,8 @@
+comp-generic-sizes: 3 3 9
+comp-generic-layout: 12 16
+comp-generic-converges: true
+comp-generic-repeat: 6 1
+comp-generic-defaults: 8 4 1 4
+comp-generic-alias: 4 2
+comp-generic-infer: 5
+comp-generic-scalars: true z 4

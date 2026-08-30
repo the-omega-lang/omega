@@ -1,6 +1,6 @@
 use omega_mangle::{
-    FunctionSignature, MangleConvention, ManglePath, MangleType, Namespace, Symbol, decode,
-    demangle, encode,
+    FunctionSignature, MangleConvention, MangleGenericArg, MangleIntType, ManglePath, MangleType,
+    MangleValue, Namespace, Symbol, decode, demangle, encode,
 };
 
 fn sig(params: Vec<MangleType>, return_type: MangleType) -> FunctionSignature {
@@ -487,4 +487,121 @@ fn a_refined_anonymous_member_keeps_its_own_identity() {
     let second = assert_round_trips(&takes(MangleType::AnonymousEnum(members, Some(1))));
     assert_ne!(parent, first);
     assert_ne!(first, second);
+}
+
+// --- mixed (value-carrying) generic applications -------------------------
+
+fn value_symbol(args: Vec<MangleGenericArg>) -> Symbol {
+    Symbol {
+        path: ManglePath::generic(nested(root("pkg"), Namespace::Type, "Buffer"), args),
+        signature: Some(sig(vec![], MangleType::Void)),
+        vendor_suffix: None,
+    }
+}
+
+fn usize_value(value: i128) -> MangleGenericArg {
+    MangleGenericArg::Value(MangleValue::Int {
+        r#type: MangleIntType::USize,
+        value,
+    })
+}
+
+#[test]
+fn an_all_type_argument_list_keeps_the_legacy_encoding() {
+    // The mixed model must not migrate a single existing generic symbol, so
+    // this fixture pins the exact bytes an all-type list produces.
+    let symbol = Symbol {
+        path: generic(
+            nested(root("pkg"), Namespace::Type, "Pair"),
+            vec![MangleType::I32, MangleType::U8],
+        ),
+        signature: Some(sig(vec![], MangleType::Void)),
+        vendor_suffix: None,
+    };
+    assert_eq!(encode(&symbol), "_omg_INtC3pkg4PairlhEEv");
+    assert_round_trips(&symbol);
+
+    // The same list built through the kind-aware constructor must produce
+    // the identical bytes.
+    let via_constructor = value_symbol(vec![
+        MangleGenericArg::Type(MangleType::I32),
+        MangleGenericArg::Type(MangleType::U8),
+    ]);
+    assert!(matches!(via_constructor.path, ManglePath::Generic(..)));
+}
+
+#[test]
+fn mixed_generic_arguments_round_trip() {
+    let symbol = value_symbol(vec![
+        usize_value(10),
+        MangleGenericArg::Type(MangleType::I32),
+    ]);
+    assert!(matches!(symbol.path, ManglePath::MixedGeneric(..)));
+    let mangled = assert_round_trips(&symbol);
+    assert_eq!(
+        demangle(&mangled).unwrap(),
+        "pkg::Buffer<10, i32>() -> void"
+    );
+}
+
+#[test]
+fn differing_comp_values_produce_differing_symbols() {
+    let ten = encode(&value_symbol(vec![usize_value(10)]));
+    let eleven = encode(&value_symbol(vec![usize_value(11)]));
+    assert_ne!(ten, eleven);
+}
+
+#[test]
+fn a_value_never_collides_with_a_type_argument() {
+    let value = encode(&value_symbol(vec![usize_value(1)]));
+    let r#type = encode(&value_symbol(vec![MangleGenericArg::Type(
+        MangleType::USize,
+    )]));
+    assert_ne!(value, r#type);
+}
+
+#[test]
+fn the_same_digits_under_two_declared_types_stay_distinct() {
+    let as_usize = encode(&value_symbol(vec![usize_value(7)]));
+    let as_u8 = encode(&value_symbol(vec![MangleGenericArg::Value(
+        MangleValue::Int {
+            r#type: MangleIntType::U8,
+            value: 7,
+        },
+    )]));
+    assert_ne!(as_usize, as_u8);
+}
+
+#[test]
+fn negative_bool_and_char_values_round_trip() {
+    let symbol = value_symbol(vec![
+        MangleGenericArg::Value(MangleValue::Int {
+            r#type: MangleIntType::I64,
+            value: i64::MIN as i128,
+        }),
+        MangleGenericArg::Value(MangleValue::Bool(true)),
+        MangleGenericArg::Value(MangleValue::Bool(false)),
+        MangleGenericArg::Value(MangleValue::Char('z')),
+    ]);
+    let mangled = assert_round_trips(&symbol);
+    assert_eq!(
+        demangle(&mangled).unwrap(),
+        "pkg::Buffer<-9223372036854775808, true, false, 'z'>() -> void"
+    );
+}
+
+#[test]
+fn a_mixed_generic_path_is_usable_as_a_named_type() {
+    let symbol = Symbol {
+        path: nested(root("pkg"), Namespace::Value, "takes_buffer"),
+        signature: Some(sig(
+            vec![named(ManglePath::generic(
+                nested(root("pkg"), Namespace::Type, "Buffer"),
+                vec![usize_value(4), MangleGenericArg::Type(MangleType::U8)],
+            ))],
+            MangleType::Void,
+        )),
+        vendor_suffix: None,
+    };
+    assert_round_trips(&symbol);
 }

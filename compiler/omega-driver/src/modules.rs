@@ -5,6 +5,7 @@ use indexmap::map::Entry;
 use omega_analyzer::analysis::{AnalysisSite, item_id_span, item_name};
 use omega_analyzer::annotations::{self, ItemKind};
 use omega_analyzer::error::{AnalysisError, AnalysisErrorKind};
+use omega_analyzer::generics::GenericSubstitution;
 use omega_analyzer::resolver::ResolveError;
 use omega_diagnostics::{SourceFile, SourceId, SourceRegistry, Span};
 use omega_hir::{HirGenericParam, HirId, HirItem, HirModule, ModuleId};
@@ -821,7 +822,7 @@ impl Driver {
                 None => {
                     let suppress = self.analyze(
                         path,
-                        &[],
+                        &GenericSubstitution::new(),
                         AnalysisSite::new(import.id, import.span),
                         |analyzer| {
                             annotations::resolve(

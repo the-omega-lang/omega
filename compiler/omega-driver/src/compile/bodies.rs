@@ -1,4 +1,5 @@
 use super::*;
+use omega_analyzer::generics::GenericSubstitution;
 
 impl Driver {
     /// Visits every module whose prerequisites resolved. A poisoned module has
@@ -103,7 +104,7 @@ impl Driver {
                 };
                 let run = self.with_analyzer(
                     path,
-                    &[],
+                    &GenericSubstitution::new(),
                     AnalysisSite::new(function.id, function.span),
                     |analyzer| {
                         analyzer.check_function_body(&function, &fn_type, function.id, &annotations)

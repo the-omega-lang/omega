@@ -19,6 +19,7 @@ This is **not** the normative language definition. For exact rules, follow the l
 | macro invocation | `println$("hi");` | `println!("hi")` |
 | type/name alias | `alias Short = Long;` | `type Short = Long;` |
 | fixed array type | `[64]u8` | `[u8; 64]` |
+| compile-time value generic | `struct B<comp N: usize, T>` | `struct B<const N: usize, T>` |
 | struct literal field | `x = 1;` | `x: 1,` |
 
 When editing `.omg`, do not infer missing syntax from Rust simply because the languages look similar.
@@ -331,6 +332,34 @@ bounded<T: Animal + Display>(value: T) => void {
     ...
 }
 ```
+
+A `comp` parameter binds a compile-time value instead of a type. Its value
+type is mandatory, and it is usable wherever an ordinary `comp` value is --
+including as an array length:
+
+```omega
+struct Buffer<comp N: usize, T> {
+    exposed data: [N]T;
+
+    exposed len(*self) => usize { N }
+}
+
+count<comp N: usize, T>(values: [N]T) => usize { N }
+
+comp SIZE := 3;
+
+b := Buffer<3, i32> { data = [1, 2, 3]; };
+c := Buffer<SIZE, i32> { data = [4, 5, 6]; };   # the same type as `b`
+n := count(b.data);                             # N and T inferred from [3]i32
+```
+
+A generic argument is written as the kind its parameter declares: a type for a
+type parameter, and a scalar literal (integer, `bool`, `char`) or the name of a
+`comp` binding for a `comp` parameter. A runtime binding is never a `comp`
+argument, and arbitrary expressions are not generic-argument syntax -- compute
+the value once as a `comp` binding and pass it by name.
+
+See [`../language/generics.md`](../language/generics.md).
 
 Static member access uses `::`; a receiver-bearing function is named through `::self::` instead:
 

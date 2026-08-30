@@ -498,14 +498,19 @@ impl<'r> Analyzer<'r> {
                 .and_then(|raw| self.resolve_type_or_error(f.id, f.span, raw, true));
             let available: Vec<ResolvedType> = to_iterator
                 .iter()
-                .filter_map(|conform| conform.spec_args.first().cloned())
+                .filter_map(|conform| {
+                    conform
+                        .spec_args
+                        .first()
+                        .and_then(|arg| arg.as_type().cloned())
+                })
                 .collect();
             let candidates: Vec<_> = to_iterator
                 .into_iter()
                 .filter(|conform| {
-                    expected_element
-                        .as_ref()
-                        .is_none_or(|expected| conform.spec_args.first() == Some(expected))
+                    expected_element.as_ref().is_none_or(|expected| {
+                        conform.spec_args.first().and_then(|arg| arg.as_type()) == Some(expected)
+                    })
                 })
                 .collect();
             if candidates.len() == 1 {

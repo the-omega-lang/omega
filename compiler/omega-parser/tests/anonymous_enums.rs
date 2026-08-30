@@ -110,7 +110,10 @@ fn a_member_list_ends_where_a_type_can_no_longer_continue() {
     let Type::Generic(_, args) = ty else {
         panic!("expected a generic type");
     };
-    assert_eq!(members(&args[0]).len(), 2);
+    assert_eq!(
+        members(args[0].as_type().expect("a type argument")).len(),
+        2
+    );
 }
 
 #[test]

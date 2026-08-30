@@ -16,11 +16,11 @@ error: 't26b_alias_errors::helper::Secret' is not visible here
 15 | alias Rewrapped = helper::Secret;
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not visible from this module
 
-error: 't26b_alias_errors::Pair' expects 2 type argument(s), found 1
+error: 't26b_alias_errors::Pair' expects 2 generic argument(s), found 1
   --> tests/t26b_alias_errors/t26b_alias_errors.omg:19:1
    |
 19 | alias UnusedBadArity<T> = Pair<T>;
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected 2 type arguments
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected 2 generic arguments
 
 error: alias 't26b_alias_errors::UnusedFunctionAsType' cannot name the function 't26b_alias_errors::takes_nothing'
   --> tests/t26b_alias_errors/t26b_alias_errors.omg:30:1

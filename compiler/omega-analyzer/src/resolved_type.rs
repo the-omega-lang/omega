@@ -225,14 +225,14 @@ impl ResolvedMethod {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConformanceSource {
     pub spec: Rc<RefCell<ResolvedSpecType>>,
-    pub spec_args: Vec<ResolvedType>,
+    pub spec_args: Vec<ResolvedGenericArg>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ResolvedConformance {
     pub target: ResolvedType,
     pub spec: Rc<RefCell<ResolvedSpecType>>,
-    pub spec_args: Vec<ResolvedType>,
+    pub spec_args: Vec<ResolvedGenericArg>,
     pub methods: Vec<(Ident, ResolvedMethod)>,
 }
 
@@ -240,14 +240,14 @@ pub struct ResolvedConformance {
 pub struct ResolvedBound {
     pub target: ResolvedType,
     pub spec: Rc<RefCell<ResolvedSpecType>>,
-    pub spec_args: Vec<ResolvedType>,
+    pub spec_args: Vec<ResolvedGenericArg>,
 }
 
 impl ResolvedBound {
     pub fn new(
         target: ResolvedType,
         spec: Rc<RefCell<ResolvedSpecType>>,
-        spec_args: Vec<ResolvedType>,
+        spec_args: Vec<ResolvedGenericArg>,
     ) -> Self {
         Self {
             target,
@@ -279,7 +279,7 @@ pub struct ResolvedStructType {
     pub id: HirId,
     pub name: Ident,
     pub module_path: Vec<Ident>,
-    pub type_args: Vec<ResolvedType>,
+    pub generic_args: Vec<ResolvedGenericArg>,
     pub fields: Vec<ResolvedField>,
     pub functions: Vec<(Ident, ResolvedMethod)>,
     pub layout: crate::annotations::Layout,
@@ -305,7 +305,7 @@ pub struct ResolvedUnionType {
     pub id: HirId,
     pub name: Ident,
     pub module_path: Vec<Ident>,
-    pub type_args: Vec<ResolvedType>,
+    pub generic_args: Vec<ResolvedGenericArg>,
     pub fields: Vec<ResolvedField>,
     pub functions: Vec<(Ident, ResolvedMethod)>,
     pub suppress: Vec<Ident>,
@@ -329,7 +329,7 @@ pub struct ResolvedEnumType {
     pub id: HirId,
     pub name: Ident,
     pub module_path: Vec<Ident>,
-    pub type_args: Vec<ResolvedType>,
+    pub generic_args: Vec<ResolvedGenericArg>,
     pub tag_type: ResolvedType,
     pub header: Vec<ResolvedField>,
     pub dynamic_fields: Vec<ResolvedField>,
@@ -374,9 +374,9 @@ pub struct ResolvedSpecType {
     pub id: HirId,
     pub name: Ident,
     pub visibility: Visibility,
-    pub generics: Vec<Ident>,
+    pub generics: Vec<omega_hir::HirGenericParam>,
     pub module_path: Vec<Ident>,
-    pub type_args: Vec<ResolvedType>,
+    pub generic_args: Vec<ResolvedGenericArg>,
     pub is_object_safe: bool,
     pub functions: Vec<(Ident, RawSpecFunctionSig)>,
     pub suppress: Vec<Ident>,
@@ -403,11 +403,11 @@ impl Hash for ResolvedSpecType {
 #[derive(Debug, Clone)]
 pub struct ResolvedSpecApplication {
     pub spec: Rc<RefCell<ResolvedSpecType>>,
-    pub spec_args: Vec<ResolvedType>,
+    pub spec_args: Vec<ResolvedGenericArg>,
 }
 
 impl ResolvedSpecApplication {
-    pub fn new(spec: Rc<RefCell<ResolvedSpecType>>, spec_args: Vec<ResolvedType>) -> Self {
+    pub fn new(spec: Rc<RefCell<ResolvedSpecType>>, spec_args: Vec<ResolvedGenericArg>) -> Self {
         Self { spec, spec_args }
     }
 
@@ -655,6 +655,232 @@ impl ConstValue {
     }
 }
 
+/// The integer primitives a `comp` generic parameter may be declared with.
+/// Keeping the set closed here is what gives every comp argument a stable
+/// cross-query equality, hash, and mangling; widening it is a deliberate
+/// language decision, not an implementation detail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CompIntType {
+    I8,
+    I16,
+    I32,
+    I64,
+    ISize,
+    U8,
+    U16,
+    U32,
+    U64,
+    USize,
+}
+
+impl CompIntType {
+    pub fn from_resolved(r#type: &ResolvedType) -> Option<Self> {
+        Some(match r#type {
+            ResolvedType::I8 => Self::I8,
+            ResolvedType::I16 => Self::I16,
+            ResolvedType::I32 => Self::I32,
+            ResolvedType::I64 => Self::I64,
+            ResolvedType::ISize => Self::ISize,
+            ResolvedType::U8 => Self::U8,
+            ResolvedType::U16 => Self::U16,
+            ResolvedType::U32 => Self::U32,
+            ResolvedType::U64 => Self::U64,
+            ResolvedType::USize => Self::USize,
+            _ => return None,
+        })
+    }
+
+    pub fn resolved(self) -> ResolvedType {
+        match self {
+            Self::I8 => ResolvedType::I8,
+            Self::I16 => ResolvedType::I16,
+            Self::I32 => ResolvedType::I32,
+            Self::I64 => ResolvedType::I64,
+            Self::ISize => ResolvedType::ISize,
+            Self::U8 => ResolvedType::U8,
+            Self::U16 => ResolvedType::U16,
+            Self::U32 => ResolvedType::U32,
+            Self::U64 => ResolvedType::U64,
+            Self::USize => ResolvedType::USize,
+        }
+    }
+
+    pub fn is_signed(self) -> bool {
+        matches!(
+            self,
+            Self::I8 | Self::I16 | Self::I32 | Self::I64 | Self::ISize
+        )
+    }
+}
+
+/// The full set of types a `comp` generic parameter may currently be
+/// declared with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CompScalarType {
+    Int(CompIntType),
+    Bool,
+    Char,
+}
+
+impl CompScalarType {
+    pub fn from_resolved(r#type: &ResolvedType) -> Option<Self> {
+        match r#type {
+            ResolvedType::Bool => Some(Self::Bool),
+            ResolvedType::Char => Some(Self::Char),
+            other => CompIntType::from_resolved(other).map(Self::Int),
+        }
+    }
+
+    pub fn resolved(self) -> ResolvedType {
+        match self {
+            Self::Int(int) => int.resolved(),
+            Self::Bool => ResolvedType::Bool,
+            Self::Char => ResolvedType::Char,
+        }
+    }
+}
+
+/// A canonical compile-time value bound to a `comp` generic parameter. The
+/// declared type is part of the value's identity: the same digits under
+/// `comp N: usize` and `comp N: u8` are different instantiations, so they
+/// must not share a query entry or a symbol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CompScalar {
+    Int { r#type: CompIntType, value: i128 },
+    Bool(bool),
+    Char(char),
+}
+
+impl CompScalar {
+    pub fn resolved_type(&self) -> ResolvedType {
+        match self {
+            Self::Int { r#type, .. } => r#type.resolved(),
+            Self::Bool(_) => ResolvedType::Bool,
+            Self::Char(_) => ResolvedType::Char,
+        }
+    }
+
+    pub fn as_int(&self) -> Option<i128> {
+        match self {
+            Self::Int { value, .. } => Some(*value),
+            _ => None,
+        }
+    }
+
+    /// The ordinary compile-time value this binding hands to the rest of the
+    /// analyzer, so a reference to a comp generic behaves exactly like a
+    /// reference to any other `comp` binding.
+    pub fn const_value(&self) -> ConstValue {
+        match self {
+            Self::Int { r#type, value } if r#type.is_signed() => {
+                ConstValue::Number(crate::checked::NumberValue::Signed(*value as i64))
+            }
+            Self::Int { value, .. } => {
+                ConstValue::Number(crate::checked::NumberValue::Unsigned(*value as u64))
+            }
+            Self::Bool(value) => ConstValue::Bool(*value),
+            Self::Char(value) => ConstValue::Char(*value),
+        }
+    }
+
+    /// Canonicalizes an already-evaluated compile-time value against the
+    /// declared parameter type, which is authoritative. An integer of any
+    /// compile-time integer type is accepted when it is exactly
+    /// representable there; nothing is truncated, wrapped, or implicitly
+    /// converted across kinds.
+    pub fn normalize(
+        value: &ConstValue,
+        declared: CompScalarType,
+        pointer_bits: u32,
+    ) -> Option<Self> {
+        match (declared, value) {
+            (CompScalarType::Int(r#type), ConstValue::Number(number)) => {
+                let value = match number {
+                    crate::checked::NumberValue::Signed(v) => i128::from(*v),
+                    crate::checked::NumberValue::Unsigned(v) => i128::from(*v),
+                    crate::checked::NumberValue::Float(_) => return None,
+                };
+                let (min, max) = r#type.resolved().integer_domain(pointer_bits)?;
+                (min..=max)
+                    .contains(&value)
+                    .then_some(Self::Int { r#type, value })
+            }
+            (CompScalarType::Bool, ConstValue::Bool(value)) => Some(Self::Bool(*value)),
+            (CompScalarType::Char, ConstValue::Char(value)) => Some(Self::Char(*value)),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for CompScalar {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Int { value, .. } => write!(f, "{value}"),
+            Self::Bool(value) => write!(f, "{value}"),
+            Self::Char(value) => write!(f, "'{value}'"),
+        }
+    }
+}
+
+/// One resolved generic argument. Generic argument lists are ordered and
+/// mixed: a position is a type or a compile-time value according to the
+/// declared parameter's kind, and both participate in type identity, query
+/// identity, and symbol identity.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ResolvedGenericArg {
+    Type(ResolvedType),
+    Comp(CompScalar),
+}
+
+impl ResolvedGenericArg {
+    pub fn as_type(&self) -> Option<&ResolvedType> {
+        match self {
+            Self::Type(r#type) => Some(r#type),
+            Self::Comp(_) => None,
+        }
+    }
+
+    pub fn as_comp(&self) -> Option<CompScalar> {
+        match self {
+            Self::Comp(value) => Some(*value),
+            Self::Type(_) => None,
+        }
+    }
+
+    pub fn is_comp(&self) -> bool {
+        matches!(self, Self::Comp(_))
+    }
+
+    pub fn widened(&self) -> Self {
+        match self {
+            Self::Type(r#type) => Self::Type(r#type.widened()),
+            Self::Comp(value) => Self::Comp(*value),
+        }
+    }
+
+    fn nested(&self, qualified: bool) -> String {
+        match self {
+            Self::Type(r#type) => r#type.nested(qualified),
+            Self::Comp(value) => value.to_string(),
+        }
+    }
+}
+
+impl From<ResolvedType> for ResolvedGenericArg {
+    fn from(r#type: ResolvedType) -> Self {
+        Self::Type(r#type)
+    }
+}
+
+impl std::fmt::Display for ResolvedGenericArg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Type(r#type) => write!(f, "{type}"),
+            Self::Comp(value) => write!(f, "{value}"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NumericKind {
     Signed(u32),
@@ -819,9 +1045,9 @@ impl ResolvedType {
         }
     }
 
-    fn write_type_args(
+    fn write_generic_args(
         f: &mut std::fmt::Formatter<'_>,
-        args: &[ResolvedType],
+        args: &[ResolvedGenericArg],
         qualified: bool,
     ) -> std::fmt::Result {
         if args.is_empty() {
@@ -904,7 +1130,7 @@ impl ResolvedType {
                     write_module_path(f, &s.module_path)?;
                 }
                 write!(f, "{}", s.name.as_ref())?;
-                Self::write_type_args(f, &s.type_args, qualified)
+                Self::write_generic_args(f, &s.generic_args, qualified)
             }
             Self::Union(cell) => {
                 let u = cell.borrow();
@@ -912,7 +1138,7 @@ impl ResolvedType {
                     write_module_path(f, &u.module_path)?;
                 }
                 write!(f, "{}", u.name.as_ref())?;
-                Self::write_type_args(f, &u.type_args, qualified)
+                Self::write_generic_args(f, &u.generic_args, qualified)
             }
             Self::Enum { cell, variant } => {
                 let e = cell.borrow();
@@ -920,7 +1146,7 @@ impl ResolvedType {
                     write_module_path(f, &e.module_path)?;
                 }
                 write!(f, "{}", e.name.as_ref())?;
-                Self::write_type_args(f, &e.type_args, qualified)?;
+                Self::write_generic_args(f, &e.generic_args, qualified)?;
                 if let Some(index) = variant {
                     write!(f, "::{}", e.variants[*index].name.as_ref())?;
                 }
@@ -932,7 +1158,7 @@ impl ResolvedType {
                     write_module_path(f, &sp.module_path)?;
                 }
                 write!(f, "{}", sp.name.as_ref())?;
-                Self::write_type_args(f, &sp.type_args, qualified)
+                Self::write_generic_args(f, &sp.generic_args, qualified)
             }
             Self::SpecObject { shape, mutable } => {
                 write!(f, "*{}spec {shape}", if *mutable { "mut " } else { "" })

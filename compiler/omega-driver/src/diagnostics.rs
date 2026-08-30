@@ -3,7 +3,7 @@ use crate::{Driver, ModulePath};
 use omega_analyzer::analysis::{AnalysisMode, AnalysisSite, Analyzer};
 use omega_analyzer::dead_code::FieldUsage;
 use omega_analyzer::error::{AnalysisError, AnalysisWarning};
-use omega_analyzer::resolved_type::ResolvedType;
+use omega_analyzer::generics::GenericSubstitution;
 use omega_diagnostics::Span;
 use omega_hir::HirId;
 use omega_parser::prelude::Ident;
@@ -185,7 +185,7 @@ impl Driver {
     pub(crate) fn with_analyzer<R>(
         &mut self,
         module: &[Ident],
-        generics: &[(Ident, ResolvedType)],
+        generics: &GenericSubstitution,
         owner: AnalysisSite,
         f: impl FnOnce(&mut Analyzer) -> R,
     ) -> AnalyzerRun<R> {
@@ -195,7 +195,7 @@ impl Driver {
     pub(crate) fn with_analyzer_in<R>(
         &mut self,
         module: &[Ident],
-        generics: &[(Ident, ResolvedType)],
+        generics: &GenericSubstitution,
         bounds: &[omega_analyzer::resolved_type::ResolvedBound],
         owner: AnalysisSite,
         f: impl FnOnce(&mut Analyzer) -> R,
@@ -229,7 +229,7 @@ impl Driver {
     pub(crate) fn analyze<R>(
         &mut self,
         module: &[Ident],
-        generics: &[(Ident, ResolvedType)],
+        generics: &GenericSubstitution,
         owner: AnalysisSite,
         f: impl FnOnce(&mut Analyzer) -> R,
     ) -> R {

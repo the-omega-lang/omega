@@ -44,7 +44,7 @@ Not every aggregate is nominal. A dynamic spec object and an anonymous enum are 
 
 Both are canonicalized once — a deterministically ordered, exact-duplicate-free member list — before any equality, hash, layout, or mangling question is asked. For an anonymous enum that canonical list is a **leaf** list: `ResolvedAnonymousEnum::canonicalize` first replaces every immediate `ResolvedType::AnonymousEnum` member by its own members, recursively, so no stored member is itself an anonymous enum. Type resolution is the sole producer of the shape, so an alias or generic substitution that lands one anonymous enum inside another normalizes there and downstream phases — layout, tags, const values, pattern coverage, mangling — consume the already-flattened list and must not re-sort or re-flatten it. Ordering comes from `omega-analyzer::type_key`, the single structural identity key for a `ResolvedType`:
 
-- it uses fully qualified nominal names plus normalized generic arguments, recursively;
+- it uses fully qualified nominal names plus normalized generic arguments, recursively -- a compile-time value argument is keyed by its declared scalar type and value under a tag no type key uses, so a value never collides with a type in the same position;
 - it never observes `HirId`, pointer addresses, or discovery order, so separate compilations and separate packages agree;
 - it distinguishes everything `ResolvedType`'s own `PartialEq` distinguishes, so sorting by it groups equal types adjacently and deduplication is exact.
 

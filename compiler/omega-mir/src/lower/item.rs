@@ -11,7 +11,7 @@ use omega_analyzer::checked::{
     CheckedForeignBinding, CheckedForeignFunctionDef, CheckedFunctionDef, CheckedItem,
     CheckedModule, CheckedStmt, CheckedStructDef, CheckedUnionDef,
 };
-use omega_analyzer::resolved_type::ResolvedType;
+use omega_analyzer::resolved_type::{ResolvedGenericArg, ResolvedType};
 use omega_parser::prelude::Ident;
 
 pub(crate) fn lower_module(module: CheckedModule, path: &[Ident], entry: &[Ident]) -> MirModule {
@@ -170,10 +170,10 @@ fn lower_method(
     function: CheckedFunctionDef,
     path: &[Ident],
     owner_name: &Ident,
-    owner_type_args: &[ResolvedType],
+    owner_generic_args: &[ResolvedGenericArg],
 ) -> MirFunctionDef {
-    let symbol = method_symbol(&function, path, owner_name, owner_type_args);
-    let linkage = if owner_type_args.is_empty() {
+    let symbol = method_symbol(&function, path, owner_name, owner_generic_args);
+    let linkage = if owner_generic_args.is_empty() {
         MirLinkage::Export
     } else {
         MirLinkage::Weak
@@ -190,7 +190,7 @@ fn lower_function(
         id,
         span,
         name,
-        type_args,
+        generic_args,
         self_mode,
         is_variadic,
         params,
@@ -218,7 +218,7 @@ fn lower_function(
         id,
         span,
         name,
-        type_args,
+        generic_args,
         self_mode,
         is_variadic,
         params,
@@ -310,7 +310,7 @@ fn free_function_symbol(function: &CheckedFunctionDef, path: &[Ident], entry: &[
         (ManglingMode::Enabled, None, None) => mangle::encode(&mangle::free_function_symbol(
             path,
             &function.name,
-            &function.type_args,
+            &function.generic_args,
             &function.fn_type(),
         )),
     }
@@ -320,7 +320,7 @@ fn method_symbol(
     function: &CheckedFunctionDef,
     path: &[Ident],
     owner_name: &Ident,
-    owner_type_args: &[ResolvedType],
+    owner_generic_args: &[ResolvedGenericArg],
 ) -> String {
     match &function.mangling {
         ManglingMode::Forced(name) => name.clone(),
@@ -340,7 +340,7 @@ fn method_symbol(
         ManglingMode::Enabled => mangle::encode(&mangle::method_symbol(
             path,
             owner_name,
-            owner_type_args,
+            owner_generic_args,
             &function.name,
             &function.fn_type(),
         )),
@@ -352,7 +352,7 @@ fn function_linkage(function: &CheckedFunctionDef) -> MirLinkage {
         .conformance_owner
         .as_ref()
         .is_some_and(|owner| owner.monomorphized)
-        || !function.type_args.is_empty()
+        || !function.generic_args.is_empty()
     {
         MirLinkage::Weak
     } else {
@@ -368,11 +368,11 @@ fn lower_methods(
     functions: Vec<CheckedFunctionDef>,
     path: &[Ident],
     owner_name: &Ident,
-    owner_type_args: &[ResolvedType],
+    owner_generic_args: &[ResolvedGenericArg],
 ) -> Vec<MirFunctionDef> {
     functions
         .into_iter()
-        .map(|function| lower_method(function, path, owner_name, owner_type_args))
+        .map(|function| lower_method(function, path, owner_name, owner_generic_args))
         .collect()
 }
 
@@ -381,17 +381,17 @@ fn lower_struct_def(definition: CheckedStructDef, path: &[Ident]) -> MirStructDe
         id,
         span,
         name,
-        type_args,
+        generic_args,
         fields,
         functions,
     } = definition;
-    let functions = lower_methods(functions, path, &name, &type_args);
+    let functions = lower_methods(functions, path, &name, &generic_args);
 
     MirStructDef {
         id,
         span,
         name,
-        type_args,
+        generic_args,
         fields,
         functions,
     }
@@ -402,17 +402,17 @@ fn lower_union_def(definition: CheckedUnionDef, path: &[Ident]) -> MirUnionDef {
         id,
         span,
         name,
-        type_args,
+        generic_args,
         fields,
         functions,
     } = definition;
-    let functions = lower_methods(functions, path, &name, &type_args);
+    let functions = lower_methods(functions, path, &name, &generic_args);
 
     MirUnionDef {
         id,
         span,
         name,
-        type_args,
+        generic_args,
         fields,
         functions,
     }
@@ -423,16 +423,16 @@ fn lower_enum_def(definition: CheckedEnumDef, path: &[Ident]) -> MirEnumDef {
         id,
         span,
         name,
-        type_args,
+        generic_args,
         functions,
     } = definition;
-    let functions = lower_methods(functions, path, &name, &type_args);
+    let functions = lower_methods(functions, path, &name, &generic_args);
 
     MirEnumDef {
         id,
         span,
         name,
-        type_args,
+        generic_args,
         functions,
     }
 }

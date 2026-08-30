@@ -713,13 +713,13 @@ fn parse_expr_path(p: &mut Parser) -> Option<crate::ast::identifier::ExprPath> {
     })
 }
 
-fn try_parse_generic_args(p: &mut Parser) -> Option<Vec<crate::ast::r#type::Type>> {
+fn try_parse_generic_args(p: &mut Parser) -> Option<Vec<crate::ast::r#type::GenericArg>> {
     let mark = p.mark();
     p.advance(); // '<'
     let mut args = Vec::new();
     loop {
-        match crate::parser::r#type::parse_type(p) {
-            Some(ty) => args.push(ty),
+        match crate::parser::r#type::parse_generic_arg(p) {
+            Some(arg) => args.push(arg),
             None => {
                 p.reset(mark);
                 return None;

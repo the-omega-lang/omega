@@ -89,7 +89,7 @@ process<T: Animal>(value: T) => void {
 }
 ```
 
-Function type arguments are inferred from arguments and expected result context, and a call may fix a left-to-right prefix of them explicitly with `f<T, ...>(...)`. Omega has no turbofish spelling; `::<...>` is not syntax. Bounds and inference rules are specified in [`generics.md`](generics.md).
+A function's generic arguments are inferred from arguments and expected result context, and a call may fix a left-to-right prefix of them explicitly with `f<T, ...>(...)`. Omega has no turbofish spelling; `::<...>` is not syntax. Bounds and inference rules are specified in [`generics.md`](generics.md).
 
 ## Overloading
 

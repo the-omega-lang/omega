@@ -16,7 +16,8 @@
 //! path and no generic arguments, so `Vec<i32>` and `Vec<f64>` render alike.
 
 use crate::resolved_type::{
-    CallingConvention, ResolvedFunctionType, ResolvedSpecApplication, ResolvedType,
+    CallingConvention, ResolvedFunctionType, ResolvedGenericArg, ResolvedSpecApplication,
+    ResolvedType,
 };
 use omega_parser::prelude::{Ident, SelfMode};
 
@@ -43,10 +44,21 @@ fn write_nominal(out: &mut String, tag: char, module_path: &[Ident], name: &Iden
     out.push_str(name.as_ref());
 }
 
-fn write_args(out: &mut String, args: &[ResolvedType]) {
+fn write_args(out: &mut String, args: &[ResolvedGenericArg]) {
     out.push('<');
     for arg in args {
-        write_type(out, arg);
+        match arg {
+            ResolvedGenericArg::Type(r#type) => write_type(out, r#type),
+            // A distinct tag so a value can never collide with a type key,
+            // and the declared type is part of the key so the same digits
+            // under two different `comp` parameter types stay distinct.
+            ResolvedGenericArg::Comp(value) => {
+                out.push('=');
+                write_type(out, &value.resolved_type());
+                out.push(':');
+                out.push_str(&value.to_string());
+            }
+        }
         out.push(',');
     }
     out.push('>');
@@ -103,17 +115,17 @@ fn write_type(out: &mut String, ty: &ResolvedType) {
         ResolvedType::Struct(cell) => {
             let cell = cell.borrow();
             write_nominal(out, 'S', &cell.module_path, &cell.name);
-            write_args(out, &cell.type_args);
+            write_args(out, &cell.generic_args);
         }
         ResolvedType::Union(cell) => {
             let cell = cell.borrow();
             write_nominal(out, 'U', &cell.module_path, &cell.name);
-            write_args(out, &cell.type_args);
+            write_args(out, &cell.generic_args);
         }
         ResolvedType::Enum { cell, variant } => {
             let cell = cell.borrow();
             write_nominal(out, 'E', &cell.module_path, &cell.name);
-            write_args(out, &cell.type_args);
+            write_args(out, &cell.generic_args);
             // The refined form is a distinct `ResolvedType` even though it
             // shares the parent's representation, so it must key distinctly.
             match variant {
@@ -127,7 +139,7 @@ fn write_type(out: &mut String, ty: &ResolvedType) {
         ResolvedType::Spec(cell) => {
             let cell = cell.borrow();
             write_nominal(out, 'P', &cell.module_path, &cell.name);
-            write_args(out, &cell.type_args);
+            write_args(out, &cell.generic_args);
         }
         ResolvedType::SpecObject { shape, mutable } => {
             out.push('O');

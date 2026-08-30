@@ -1,14 +1,14 @@
 use super::annotations::reject_annotations;
 use crate::ast::annotation::AnnotationNode;
-use crate::ast::generics::GenericParam;
+use crate::ast::generics::{GenericParam, GenericParamKind};
 use crate::ast::item::Item;
 use crate::ast::statement::{FunctionDefinitionStmt, WalrusStmt};
 use crate::ast::visibility::Visibility;
 use crate::diagnostics::{ParseErrorKind, Span};
 use crate::lexer::TokenKind;
-use crate::parser::Parser;
 use crate::parser::expression::{parse_codeblock, parse_expression};
 use crate::parser::statement::parse_declaration;
+use crate::parser::{Parser, contextual};
 
 pub(super) fn parse_declaration_or_function_definition(
     p: &mut Parser,
@@ -139,21 +139,43 @@ pub(super) fn parse_optional_generics(p: &mut Parser) -> Option<Vec<GenericParam
 }
 
 fn parse_generic_param(p: &mut Parser, seen_default: &mut bool) -> Option<GenericParam> {
+    // `comp` is contextual, so it only introduces a value parameter when an
+    // actual parameter name follows it; `<comp, T>` still declares a type
+    // parameter spelled `comp`.
+    let is_comp = p.at_contextual(contextual::COMP) && matches!(p.peek_at(1), TokenKind::Ident(_));
+    if is_comp {
+        p.advance();
+    }
     let ident = p.expect_ident()?;
     let name_span = p.last_span();
-    // `+` after a type in bound position is unambiguous -- no type contains
-    // `+` -- so the whole `A + B + C` conjunction is parsed greedily here.
-    let bounds = if p.eat(&TokenKind::Colon) {
-        let mut bounds = vec![crate::parser::r#type::parse_type(p)?];
-        while p.eat(&TokenKind::Plus) {
-            bounds.push(crate::parser::r#type::parse_type(p)?);
+    let kind = if is_comp {
+        if !p.eat(&TokenKind::Colon) {
+            p.error(ParseErrorKind::Expected {
+                expected: "':' and the value type of a 'comp' generic parameter",
+                found: p.peek().describe(),
+            });
+            return None;
         }
-        bounds
+        GenericParamKind::Comp {
+            value_type: crate::parser::r#type::parse_type(p)?,
+        }
     } else {
-        Vec::new()
+        // `+` after a type in bound position is unambiguous -- no type
+        // contains `+` -- so the whole `A + B + C` conjunction is parsed
+        // greedily here.
+        let bounds = if p.eat(&TokenKind::Colon) {
+            let mut bounds = vec![crate::parser::r#type::parse_type(p)?];
+            while p.eat(&TokenKind::Plus) {
+                bounds.push(crate::parser::r#type::parse_type(p)?);
+            }
+            bounds
+        } else {
+            Vec::new()
+        };
+        GenericParamKind::Type { bounds }
     };
     let default = if p.eat(&TokenKind::Eq) {
-        Some(crate::parser::r#type::parse_type(p)?)
+        Some(crate::parser::r#type::parse_generic_arg(p)?)
     } else {
         None
     };
@@ -169,7 +191,7 @@ fn parse_generic_param(p: &mut Parser, seen_default: &mut bool) -> Option<Generi
     }
     Some(GenericParam {
         ident,
-        bounds,
+        kind,
         default,
     })
 }

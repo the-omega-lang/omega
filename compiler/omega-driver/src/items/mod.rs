@@ -6,8 +6,8 @@ use omega_analyzer::annotations::ResolvedAnnotations;
 use omega_analyzer::checked::{CheckedItem, Storage};
 use omega_analyzer::error::AnalysisWarning;
 use omega_analyzer::resolved_type::{
-    ResolvedBound, ResolvedEnumType, ResolvedFunctionType, ResolvedMethod, ResolvedSpecType,
-    ResolvedStructType, ResolvedType, ResolvedUnionType,
+    ResolvedBound, ResolvedEnumType, ResolvedFunctionType, ResolvedGenericArg, ResolvedMethod,
+    ResolvedSpecType, ResolvedStructType, ResolvedType, ResolvedUnionType,
 };
 use omega_analyzer::resolver::{ResolveError, ResolveItemOptions, ResolvedItem};
 use omega_diagnostics::Span;
@@ -21,20 +21,20 @@ use std::rc::Rc;
 pub(crate) struct ItemKey {
     pub module: ModulePath,
     pub name: Ident,
-    pub type_args: Vec<ResolvedType>,
+    pub generic_args: Vec<ResolvedGenericArg>,
 }
 
 impl ItemKey {
-    pub fn new(module: &[Ident], name: &Ident, type_args: &[ResolvedType]) -> Self {
+    pub fn new(module: &[Ident], name: &Ident, generic_args: &[ResolvedGenericArg]) -> Self {
         Self {
             module: module.to_vec(),
             name: name.clone(),
-            type_args: type_args.to_vec(),
+            generic_args: generic_args.to_vec(),
         }
     }
 
     pub fn is_instantiation(&self) -> bool {
-        !self.type_args.is_empty()
+        !self.generic_args.is_empty()
     }
 
     fn failed(&self) -> ResolveError {
@@ -114,7 +114,7 @@ impl TypeCells {
                     id,
                     name: key.name.clone(),
                     module_path: key.module.clone(),
-                    type_args: key.type_args.clone(),
+                    generic_args: key.generic_args.clone(),
                     fields: vec![],
                     functions: vec![],
                     layout: Default::default(),
@@ -133,7 +133,7 @@ impl TypeCells {
                     id,
                     name: key.name.clone(),
                     module_path: key.module.clone(),
-                    type_args: key.type_args.clone(),
+                    generic_args: key.generic_args.clone(),
                     tag_type: ResolvedType::U16,
                     header: vec![],
                     dynamic_fields: vec![],
@@ -154,7 +154,7 @@ impl TypeCells {
                     id,
                     name: key.name.clone(),
                     module_path: key.module.clone(),
-                    type_args: key.type_args.clone(),
+                    generic_args: key.generic_args.clone(),
                     fields: vec![],
                     functions: vec![],
                     suppress: vec![],

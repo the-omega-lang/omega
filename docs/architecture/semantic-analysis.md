@@ -198,7 +198,7 @@ Call analysis is one of the densest semantic junctions, so its implementation is
 
 The key architecture rule is that a call must emerge from analysis with its target and type facts decided. MIR/codegen should not repeat overload or method lookup.
 
-When generic type arguments are omitted, call analysis may ask the resolver for a raw generic signature, infer type arguments from written argument shapes, and then resolve the concrete instantiated item through the ordinary query model.
+When generic arguments are omitted, call analysis may ask the resolver for a raw generic signature, infer arguments from written argument shapes, and then resolve the concrete instantiated item through the ordinary query model. Type parameters are inferred from argument types; `comp` parameters are inferred only from compile-time structure, currently a fixed array's length and a matching nominal generic application.
 
 ## Places and storage semantics
 
@@ -218,7 +218,7 @@ The analyzer decides *whether* a place operation is legal. MIR/codegen decide *h
 
 Omega uses monomorphization, not type erasure.
 
-`generics.rs` provides structural unification/inference helpers. The driver supplies raw generic declaration shapes for inference and owns the concrete `ItemKey(module, name, type_args)` query.
+`generics.rs` provides structural unification/inference helpers plus `GenericSubstitution`, the ordered map from a declaration's parameter names to the type and compile-time value bindings one instantiation installs. `Analyzer::with_substitution` installs a type binding as a defined type and a `comp` binding as a real `Storage::Comp` binding under a fresh synthetic declaration id, so a reference to a `comp` parameter becomes an ordinary `CheckedExpr::Const` and nothing reaches MIR as a parameter. The driver supplies raw generic declaration shapes for inference and owns the concrete `ItemKey(module, name, generic_args)` query.
 
 Analysis of a concrete instantiation runs with concrete type substitutions in the initial context. The resulting checked item is concrete and can be lowered/emitted without unresolved type parameters.
 

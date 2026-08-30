@@ -66,7 +66,15 @@ impl<'r> Analyzer<'r> {
         let spec_args = if expr_path.generic_args.is_empty() {
             Vec::new()
         } else {
-            let Some(args) = self.resolve_generic_arg_list(node_id, span, expr_path) else {
+            let (params, owner) = {
+                let cell = spec.borrow();
+                let mut owner = cell.module_path.clone();
+                owner.push(cell.name.clone());
+                (cell.generics.clone(), owner)
+            };
+            let Some(args) =
+                self.resolve_generic_arg_list(node_id, span, expr_path, &owner, &params)
+            else {
                 return Intercepted::Claimed(None);
             };
             args
@@ -315,7 +323,7 @@ impl<'r> Analyzer<'r> {
         span: Span,
         target: &ResolvedType,
         spec: &Rc<RefCell<ResolvedSpecType>>,
-        spec_args: &[ResolvedType],
+        spec_args: &[ResolvedGenericArg],
     ) -> Option<Vec<(Ident, ResolvedMethod)>> {
         match self.resolver.conformance_for(target, spec, spec_args) {
             Ok(Some(conform)) => Some(conform.methods),
@@ -368,7 +376,7 @@ impl<'r> Analyzer<'r> {
         span: Span,
         call: &HirFunctionCall,
         spec: &Rc<RefCell<ResolvedSpecType>>,
-        spec_args: &[ResolvedType],
+        spec_args: &[ResolvedGenericArg],
         method_name: &Ident,
         declared: &FlattenedSpecFn,
         target: Option<&ResolvedType>,
@@ -489,7 +497,7 @@ impl<'r> Analyzer<'r> {
         span: Span,
         call: &HirFunctionCall,
         spec: &Rc<RefCell<ResolvedSpecType>>,
-        spec_args: &[ResolvedType],
+        spec_args: &[ResolvedGenericArg],
         method_name: &Ident,
         target_override: Option<&ResolvedType>,
     ) -> Intercepted {

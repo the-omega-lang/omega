@@ -2,7 +2,8 @@ use crate::body::{MirBody, MirInlineAsm};
 use omega_analyzer::annotations::{InlineMode, ManglingMode};
 use omega_analyzer::checked::{CheckedField, CheckedParam, ConformanceOwner};
 use omega_analyzer::resolved_type::{
-    CallingConvention, ConstValue, ResolvedFunctionParam, ResolvedFunctionType, ResolvedType,
+    CallingConvention, ConstValue, ResolvedFunctionParam, ResolvedFunctionType, ResolvedGenericArg,
+    ResolvedType,
 };
 use omega_hir::ModuleId;
 use omega_parser::prelude::{Ident, SelfMode, Span};
@@ -85,7 +86,7 @@ pub struct MirFunctionDef {
     pub id: omega_hir::HirId,
     pub span: Span,
     pub name: Ident,
-    pub type_args: Vec<ResolvedType>,
+    pub generic_args: Vec<ResolvedGenericArg>,
     pub self_mode: Option<SelfMode>,
     pub is_variadic: bool,
     pub params: Vec<CheckedParam>,
@@ -132,7 +133,7 @@ pub struct MirStructDef {
     pub id: omega_hir::HirId,
     pub span: Span,
     pub name: Ident,
-    pub type_args: Vec<ResolvedType>,
+    pub generic_args: Vec<ResolvedGenericArg>,
     pub fields: Vec<CheckedField>,
     pub functions: Vec<MirFunctionDef>,
 }
@@ -142,7 +143,7 @@ pub struct MirUnionDef {
     pub id: omega_hir::HirId,
     pub span: Span,
     pub name: Ident,
-    pub type_args: Vec<ResolvedType>,
+    pub generic_args: Vec<ResolvedGenericArg>,
     pub fields: Vec<CheckedField>,
     pub functions: Vec<MirFunctionDef>,
 }
@@ -152,6 +153,6 @@ pub struct MirEnumDef {
     pub id: omega_hir::HirId,
     pub span: Span,
     pub name: Ident,
-    pub type_args: Vec<ResolvedType>,
+    pub generic_args: Vec<ResolvedGenericArg>,
     pub functions: Vec<MirFunctionDef>,
 }

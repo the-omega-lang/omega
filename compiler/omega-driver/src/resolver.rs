@@ -1,9 +1,10 @@
 use crate::{Driver, ModulePath};
 use omega_analyzer::analysis::item_visibility;
 use omega_analyzer::checked::{CheckedFunctionDef, CheckedItem};
+use omega_analyzer::generics::GenericSubstitution;
 use omega_analyzer::resolved_type::{
-    ConstValue, FunctionNamespace, ResolvedConformance, ResolvedMethod, ResolvedSpecType,
-    ResolvedType,
+    ConstValue, FunctionNamespace, ResolvedConformance, ResolvedGenericArg, ResolvedMethod,
+    ResolvedSpecType, ResolvedType,
 };
 use omega_analyzer::resolver::{
     GenericLiteralSignature, GenericOwnerFunctionSignature, GenericSignature, ImportTarget,
@@ -12,7 +13,7 @@ use omega_analyzer::resolver::{
 };
 use omega_analyzer::similarity::best_match;
 use omega_hir::{HirFunctionDef, HirGenericParam, HirId, HirItem};
-use omega_parser::prelude::{FunctionType, Ident, Path, Type, Visibility};
+use omega_parser::prelude::{FunctionType, GenericArg, Ident, Path, Type, Visibility};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -380,7 +381,7 @@ impl Driver {
         alias_module: &[Ident],
         alias_name: &Ident,
         target: ResolvedAlias,
-        type_args: &[ResolvedType],
+        generic_args: &[ResolvedGenericArg],
         options: ResolveItemOptions,
     ) -> Result<ResolvedItem, ResolveError> {
         let visibility = self
@@ -416,12 +417,12 @@ impl Driver {
                     alias_module,
                     module,
                     name,
-                    type_args,
+                    generic_args,
                     options.bypassing_visibility(true),
                 )
             }
             ResolvedAlias::Type { generics, r#type } => {
-                self.resolve_alias_type(alias_module, alias_name, &generics, &r#type, type_args)
+                self.resolve_alias_type(alias_module, alias_name, &generics, &r#type, generic_args)
             }
         }
     }
@@ -435,7 +436,7 @@ impl Driver {
         alias_name: &Ident,
         generics: &[HirGenericParam],
         r#type: &Type,
-        type_args: &[ResolvedType],
+        generic_args: &[ResolvedGenericArg],
     ) -> Result<ResolvedItem, ResolveError> {
         let index = self
             .alias_index(alias_module, alias_name)?
@@ -444,18 +445,18 @@ impl Driver {
         // ordinary item/aggregate-construction positions use, so a defaulted
         // alias argument works here exactly as it does in a plain type
         // position.
-        let type_args =
-            self.pad_generic_defaults(alias_module, alias_name, index, generics, type_args)?;
-        let type_args = type_args.as_slice();
+        let generic_args =
+            self.pad_generic_defaults(alias_module, alias_name, index, generics, generic_args)?;
+        let generic_args = generic_args.as_slice();
         let owner = omega_analyzer::analysis::item_site(
             &self.modules.parsed(alias_module).hir.items[index],
         );
-        let substitution: Vec<(Ident, ResolvedType)> = generics
+        let substitution: GenericSubstitution = generics
             .iter()
             .map(|g| g.ident.clone())
-            .zip(type_args.iter().cloned())
+            .zip(generic_args.iter().cloned())
             .collect();
-        match self.check_generic_bounds(alias_module, owner, generics, type_args) {
+        match self.check_generic_bounds(alias_module, owner, generics, generic_args) {
             Some(Ok(_)) => {}
             Some(Err(error)) => return Err(error),
             None => {
@@ -467,7 +468,12 @@ impl Driver {
         }
         let written = r#type.clone();
         let run = self.with_analyzer(alias_module, &substitution, owner, |analyzer| {
-            analyzer.resolve_under_substitution(owner.id, owner.span, &written, &[])
+            analyzer.resolve_under_substitution(
+                owner.id,
+                owner.span,
+                &written,
+                &GenericSubstitution::new(),
+            )
         });
         match (run.failed, run.result) {
             (false, Some(resolved)) => Ok(ResolvedItem::Type(resolved)),
@@ -656,7 +662,7 @@ impl ModuleResolver for Driver {
         &mut self,
         accessor_module_path: &[Ident],
         absolute_path: &[Ident],
-        type_args: &[ResolvedType],
+        generic_args: &[ResolvedGenericArg],
         options: ResolveItemOptions,
     ) -> Result<ResolvedItem, ResolveError> {
         let Some((item_name, module_path)) = absolute_path.split_last() else {
@@ -668,7 +674,7 @@ impl ModuleResolver for Driver {
                 module_path,
                 item_name,
                 target,
-                type_args,
+                generic_args,
                 options,
             );
         }
@@ -676,9 +682,39 @@ impl ModuleResolver for Driver {
             accessor_module_path,
             module_path,
             item_name,
-            type_args,
+            generic_args,
             options,
         )
+    }
+
+    /// Parameter metadata only: an alias forwards its target's parameters
+    /// unless it is a template of its own, and nothing here instantiates the
+    /// item, so a use site can learn argument kinds before resolving them.
+    fn item_generic_params(
+        &mut self,
+        absolute_path: &[Ident],
+    ) -> Result<Option<Vec<HirGenericParam>>, ResolveError> {
+        let Some((name, module_path)) = absolute_path.split_last() else {
+            return Ok(None);
+        };
+        match self.declared_alias(module_path, name)? {
+            Some(ResolvedAlias::Type { generics, .. }) => return Ok(Some(generics)),
+            Some(
+                ResolvedAlias::Item(target)
+                | ResolvedAlias::Overloads {
+                    absolute: target, ..
+                },
+            ) => {
+                return self.item_generic_params(&target);
+            }
+            Some(ResolvedAlias::Module(_)) => return Ok(None),
+            None => {}
+        }
+        match self.item_generics(module_path, name) {
+            Ok(generics) => Ok(Some(generics)),
+            Err(ResolveError::UnknownItem { .. } | ResolveError::UnknownModule(_)) => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
     fn is_item_visible(&mut self, accessor_module_path: &[Ident], absolute_path: &[Ident]) -> bool {
@@ -717,8 +753,7 @@ impl ModuleResolver for Driver {
             return Ok(None);
         }
         Ok(Some(GenericSignature {
-            generics: f.generics.iter().map(|g| g.ident.clone()).collect(),
-            defaults: f.generics.iter().map(|g| g.default.clone()).collect(),
+            generics: f.generics.clone(),
             params: f.params.iter().map(|p| p.r#type.clone()).collect(),
             return_type: f.return_type.clone(),
         }))
@@ -770,8 +805,7 @@ impl ModuleResolver for Driver {
             return Ok(None);
         }
         Ok(Some(GenericLiteralSignature {
-            generics: generics.iter().map(|g| g.ident.clone()).collect(),
-            defaults: generics.iter().map(|g| g.default.clone()).collect(),
+            generics: generics.clone(),
             fields,
         }))
     }
@@ -812,10 +846,9 @@ impl ModuleResolver for Driver {
         let Some(f) = f else {
             return Ok(None);
         };
+        let owner_generics = owner_generics.to_vec();
         let generics: Vec<Ident> = owner_generics.iter().map(|g| g.ident.clone()).collect();
         Ok(Some(GenericOwnerFunctionSignature {
-            owner_generics: generics.clone(),
-            owner_defaults: owner_generics.iter().map(|g| g.default.clone()).collect(),
             function_generics: f.generics.iter().map(|g| g.ident.clone()).collect(),
             // A member's synthetic receiver is written in terms of `Self`,
             // which inference cannot solve; the owner applied to its own
@@ -826,6 +859,7 @@ impl ModuleResolver for Driver {
                 .map(|p| rewrite_self(&p.r#type, name, &generics))
                 .collect(),
             return_type: rewrite_self(&f.return_type, name, &generics),
+            owner_generics,
         }))
     }
 
@@ -946,7 +980,7 @@ impl ModuleResolver for Driver {
         &mut self,
         target: &ResolvedType,
         spec: &Rc<RefCell<ResolvedSpecType>>,
-        spec_args: &[ResolvedType],
+        spec_args: &[ResolvedGenericArg],
     ) -> Result<Option<ResolvedConformance>, ResolveError> {
         Ok(
             Driver::conformance_for(self, target, spec, spec_args).map(|entry| {
@@ -1041,7 +1075,7 @@ fn rewrite_self(ty: &Type, owner: &Ident, owner_generics: &[Ident]) -> Type {
                 Path::from(owner.clone()),
                 owner_generics
                     .iter()
-                    .map(|generic| Type::Named(Path::from(generic.clone())))
+                    .map(|generic| GenericArg::Type(Type::Named(Path::from(generic.clone()))))
                     .collect(),
             )
         }
@@ -1068,7 +1102,12 @@ fn rewrite_self(ty: &Type, owner: &Ident, owner_generics: &[Ident]) -> Type {
         Type::Generic(path, args) => Type::Generic(
             path.clone(),
             args.iter()
-                .map(|arg| rewrite_self(arg, owner, owner_generics))
+                .map(|arg| match arg {
+                    GenericArg::Type(inner) => {
+                        GenericArg::Type(rewrite_self(inner, owner, owner_generics))
+                    }
+                    GenericArg::Value(_) => arg.clone(),
+                })
                 .collect(),
         ),
         Type::Function(f) => Type::Function(FunctionType {

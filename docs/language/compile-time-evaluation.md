@@ -11,14 +11,17 @@ comp SIZE := comp add(10, 20);
 value := comp add(20, 30);
 ```
 
-There are two independent uses:
+There are three independent uses:
 
 - `comp expression` evaluates the expression at compile time and yields the resulting value.
 - `comp name := initializer;` declares a storage-less compile-time binding. References to the binding denote its already-known value.
+- `comp NAME: TYPE` in a generic parameter list declares a compile-time value parameter. See [`generics.md`](generics.md).
 
 A `comp` binding is immutable. `mut comp name := ...` is invalid because a substituted value has no mutable runtime storage.
 
 A non-`comp` binding may still have a `comp` initializer; in that case only the initializer is evaluated at compile time and the binding itself is an ordinary runtime place.
+
+A generic `comp` parameter is a storage-less compile-time binding of exactly the kind above, bound by the instantiation rather than by an initializer. Inside the instantiated declaration it behaves as an ordinary `comp` value: it is immutable, it denotes its already-known value, and it is legal in every position this chapter allows -- array lengths, ranges, conditions, further `comp` evaluation. It adds no runtime parameter, storage, or cost.
 
 A local `comp` binding is an ordinary lexical binding for name-resolution purposes: it shadows an earlier binding of the same name and may itself be shadowed, by another `comp` binding or by a runtime one. See [`bindings-and-mutability.md`](bindings-and-mutability.md). Module-scope `comp` bindings are not shadowable, like every other module-scope declaration.
 
@@ -105,7 +108,7 @@ Mutable references into compile-time-only data are not produced: compile-time pr
 
 Some language positions require compile-time values even without an explicit `comp` prefix. In those positions, an expression may be evaluated at compile time as required by the construct.
 
-Examples include enum tag/header values and `&[...]` compile-time slice contents:
+Examples include a fixed array's length, a `comp` generic argument, enum tag/header values, and `&[...]` compile-time slice contents:
 
 ```omega
 compute_default_limit() => i32 { 10 + 5 }

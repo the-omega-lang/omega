@@ -1,5 +1,11 @@
-use omega_analyzer::resolved_type::{CallingConvention, ResolvedFunctionType, ResolvedType};
-use omega_mangle::{FunctionSignature, MangleConvention, ManglePath, MangleType, Namespace};
+use omega_analyzer::resolved_type::{
+    CallingConvention, CompIntType, CompScalar, ResolvedFunctionType, ResolvedGenericArg,
+    ResolvedType,
+};
+use omega_mangle::{
+    FunctionSignature, MangleConvention, MangleGenericArg, MangleIntType, ManglePath, MangleType,
+    MangleValue, Namespace,
+};
 use omega_parser::prelude::Ident;
 
 fn mangle_convention(convention: CallingConvention) -> MangleConvention {
@@ -29,21 +35,57 @@ pub(super) fn module_path(segments: &[Ident]) -> ManglePath {
 pub(super) fn nominal_path(
     module: &[Ident],
     name: &Ident,
-    type_args: &[ResolvedType],
+    generic_args: &[ResolvedGenericArg],
 ) -> ManglePath {
     let path = ManglePath::Nested(
         Box::new(module_path(module)),
         Namespace::Type,
         name.as_ref().to_owned(),
     );
-    generic_path(path, type_args)
+    generic_path(path, generic_args)
 }
 
-pub(super) fn generic_path(path: ManglePath, type_args: &[ResolvedType]) -> ManglePath {
-    if type_args.is_empty() {
+/// An all-type argument list keeps the pre-existing `Generic` encoding
+/// byte-for-byte; only a compile-time value argument switches to the mixed
+/// form.
+pub(super) fn generic_path(path: ManglePath, generic_args: &[ResolvedGenericArg]) -> ManglePath {
+    if generic_args.is_empty() {
         path
     } else {
-        ManglePath::Generic(Box::new(path), type_args.iter().map(mangle_type).collect())
+        ManglePath::generic(path, generic_args.iter().map(mangle_generic_arg).collect())
+    }
+}
+
+pub(super) fn mangle_generic_arg(arg: &ResolvedGenericArg) -> MangleGenericArg {
+    match arg {
+        ResolvedGenericArg::Type(r#type) => MangleGenericArg::Type(mangle_type(r#type)),
+        ResolvedGenericArg::Comp(value) => MangleGenericArg::Value(mangle_value(value)),
+    }
+}
+
+fn mangle_value(value: &CompScalar) -> MangleValue {
+    match value {
+        CompScalar::Int { r#type, value } => MangleValue::Int {
+            r#type: mangle_int_type(*r#type),
+            value: *value,
+        },
+        CompScalar::Bool(value) => MangleValue::Bool(*value),
+        CompScalar::Char(value) => MangleValue::Char(*value),
+    }
+}
+
+fn mangle_int_type(r#type: CompIntType) -> MangleIntType {
+    match r#type {
+        CompIntType::I8 => MangleIntType::I8,
+        CompIntType::I16 => MangleIntType::I16,
+        CompIntType::I32 => MangleIntType::I32,
+        CompIntType::I64 => MangleIntType::I64,
+        CompIntType::ISize => MangleIntType::ISize,
+        CompIntType::U8 => MangleIntType::U8,
+        CompIntType::U16 => MangleIntType::U16,
+        CompIntType::U32 => MangleIntType::U32,
+        CompIntType::U64 => MangleIntType::U64,
+        CompIntType::USize => MangleIntType::USize,
     }
 }
 
@@ -89,11 +131,11 @@ pub(super) fn mangle_type(ty: &ResolvedType) -> MangleType {
         }
         ResolvedType::Struct(cell) => {
             let cell = cell.borrow();
-            named_type(&cell.module_path, &cell.name, &cell.type_args, None)
+            named_type(&cell.module_path, &cell.name, &cell.generic_args, None)
         }
         ResolvedType::Union(cell) => {
             let cell = cell.borrow();
-            named_type(&cell.module_path, &cell.name, &cell.type_args, None)
+            named_type(&cell.module_path, &cell.name, &cell.generic_args, None)
         }
         ResolvedType::Enum { cell, variant } => {
             let cell = cell.borrow();
@@ -101,11 +143,11 @@ pub(super) fn mangle_type(ty: &ResolvedType) -> MangleType {
                 u32::try_from(index)
                     .expect("omega-mangle cannot represent enum variant indices above u32::MAX")
             });
-            named_type(&cell.module_path, &cell.name, &cell.type_args, variant)
+            named_type(&cell.module_path, &cell.name, &cell.generic_args, variant)
         }
         ResolvedType::Spec(cell) => {
             let cell = cell.borrow();
-            named_type(&cell.module_path, &cell.name, &cell.type_args, None)
+            named_type(&cell.module_path, &cell.name, &cell.generic_args, None)
         }
         ResolvedType::SpecObject { shape, mutable } => {
             // `shape.members` is already in canonical final-name order, so
@@ -153,8 +195,8 @@ pub(super) fn owner_path(target: &ResolvedType) -> ManglePath {
 fn named_type(
     module: &[Ident],
     name: &Ident,
-    type_args: &[ResolvedType],
+    generic_args: &[ResolvedGenericArg],
     variant: Option<u32>,
 ) -> MangleType {
-    MangleType::Named(nominal_path(module, name, type_args), variant)
+    MangleType::Named(nominal_path(module, name, generic_args), variant)
 }

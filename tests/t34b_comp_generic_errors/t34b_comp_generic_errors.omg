@@ -1,0 +1,53 @@
+# Rejected `comp` generic source. Each case names the rule it breaks.
+
+struct Buffer<comp N: usize, T> {
+	exposed data: [N]T;
+}
+
+struct Pair<A, B> {
+	exposed a: A;
+	exposed b: B;
+}
+
+struct Small<comp N: u8> {
+	exposed data: [N]u8;
+}
+
+# A `comp` parameter's type must have a canonical compile-time identity.
+struct Weighted<comp W: f64> {
+	exposed value: i32;
+}
+
+# A `comp` parameter that neither an argument nor a default can determine.
+undetermined<comp N: usize, T>(value: T) => T { value }
+
+main() => void {
+	# A runtime binding is never "constant enough".
+	not_comp := 42;
+	runtime_arg := Buffer<not_comp, i32> { data = [1, 2]; };
+
+	# A value where a type parameter is declared, and the reverse.
+	value_for_type := Pair<1, i32> { a = 1; b = 2; };
+	type_for_value := Buffer<i32, i32> { data = [1]; };
+
+	# An unsupported `comp` parameter type.
+	unsupported := Weighted<1> { value = 0; };
+
+	# A negative value cannot be represented as `usize`.
+	negative := Buffer<-1, i32> { data = [1]; };
+
+	# An out-of-range value for the declared type.
+	comp too_big := 300;
+	overflowing := Small<too_big> { data = [1u8]; };
+
+	# A dependent array length outside the fixed-array size domain.
+	oversized := Buffer<5000000000, u8> { data = [1u8]; };
+
+	# Too many, and too few, generic arguments -- of either kind.
+	too_many := Buffer<1, i32, u8> { data = [1]; };
+	too_many_values := Buffer<1, i32, 2> { data = [1]; };
+	too_few := Buffer<1> { data = [1]; };
+
+	# Inference cannot determine `N`.
+	undetermined(1);
+}

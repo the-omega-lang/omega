@@ -390,29 +390,35 @@ impl<'r> Analyzer<'r> {
                 );
                 return None;
             }
-            let type_args = self.resolve_generic_arg_list(node_id, span, path)?;
             let prefix = &segments[..=path.args_at];
             let access = self.generic_prefix_absolute(node_id, span, &path.path, prefix)?;
             let absolute = access.absolute.clone();
             let accessor = self.path_module(&path.path);
-            let resolved =
-                match self.resolve_item_with_ambient_from(&accessor, prefix, &access, &type_args) {
-                    Ok(ResolvedItem::Type(t)) => t,
-                    Ok(ResolvedItem::Value { .. }) | Ok(ResolvedItem::Gap(_)) => {
-                        self.error(
-                            node_id,
-                            span,
-                            AnalysisErrorKind::UnresolvedType(
-                                crate::error::TypeResolutionError::NotAType(absolute),
-                            ),
-                        );
-                        return None;
-                    }
-                    Err(e) => {
-                        self.error(node_id, span, AnalysisErrorKind::ModuleResolution(e));
-                        return None;
-                    }
-                };
+            let params = self.item_generic_params_for(&accessor, prefix, &access);
+            let generic_args =
+                self.resolve_generic_arg_list(node_id, span, path, &access.absolute, &params)?;
+            let resolved = match self.resolve_item_with_ambient_from(
+                &accessor,
+                prefix,
+                &access,
+                &generic_args,
+            ) {
+                Ok(ResolvedItem::Type(t)) => t,
+                Ok(ResolvedItem::Value { .. }) | Ok(ResolvedItem::Gap(_)) => {
+                    self.error(
+                        node_id,
+                        span,
+                        AnalysisErrorKind::UnresolvedType(
+                            crate::error::TypeResolutionError::NotAType(absolute),
+                        ),
+                    );
+                    return None;
+                }
+                Err(e) => {
+                    self.error(node_id, span, AnalysisErrorKind::ModuleResolution(e));
+                    return None;
+                }
+            };
             return self.literal_target_from_type(node_id, span, resolved, &rest);
         }
 
@@ -682,7 +688,7 @@ impl<'r> Analyzer<'r> {
         expected: Option<&ResolvedType>,
         origin: Origin,
     ) -> Option<Result<ResolvedItem, ResolveError>> {
-        let type_args = self.infer_literal_type_args(
+        let generic_args = self.infer_literal_type_args(
             node_id,
             span,
             &access.absolute,
@@ -690,7 +696,7 @@ impl<'r> Analyzer<'r> {
             lit_fields,
             expected,
         )?;
-        Some(self.resolve_item_checked_with_ambient_fallback(prefix, access, &type_args, origin))
+        Some(self.resolve_item_checked_with_ambient_fallback(prefix, access, &generic_args, origin))
     }
 
     pub(super) fn infer_literal_type_args(
@@ -701,20 +707,22 @@ impl<'r> Analyzer<'r> {
         sig: &GenericLiteralSignature,
         lit_fields: &[HirStructLiteralField],
         expected: Option<&ResolvedType>,
-    ) -> Option<Vec<ResolvedType>> {
-        if let Some(type_args) = Self::expected_matches_generic_item(expected, absolute) {
-            return Some(type_args);
+    ) -> Option<Vec<ResolvedGenericArg>> {
+        if let Some(generic_args) = Self::expected_matches_generic_item(expected, absolute) {
+            return Some(generic_args);
         }
-        let subst = self.probe_literal_type_args(sig, lit_fields)?;
-        match resolve_inferred_type_args(&sig.generics, &sig.defaults, &subst) {
-            Ok(type_args) => Some(type_args),
+        let comp_types =
+            self.comp_param_types(node_id, span, &sig.generics, &GenericSubstitution::new());
+        let generics = self.generic_params(&sig.generics, &comp_types);
+        let subst = self.probe_literal_generic_args(sig, &generics, lit_fields)?;
+        match resolve_inferred_generic_args(&generics, &subst) {
+            Ok(generic_args) => Some(generic_args),
             Err(_) => {
                 let missing: Vec<Ident> = sig
                     .generics
                     .iter()
-                    .zip(&sig.defaults)
-                    .filter(|(g, default)| default.is_none() && !subst.contains_key(*g))
-                    .map(|(g, _)| g.clone())
+                    .filter(|param| param.default.is_none() && !subst.contains(&param.ident))
+                    .map(|param| param.ident.clone())
                     .collect();
                 self.error(
                     node_id,
@@ -735,35 +743,48 @@ impl<'r> Analyzer<'r> {
     fn expected_matches_generic_item(
         expected: Option<&ResolvedType>,
         absolute: &[Ident],
-    ) -> Option<Vec<ResolvedType>> {
+    ) -> Option<Vec<ResolvedGenericArg>> {
         let expected = expected?;
         let (name, module) = absolute.split_last()?;
-        let (cell_module, cell_name, type_args) = match expected {
+        let (cell_module, cell_name, generic_args) = match expected {
             ResolvedType::Struct(cell) => {
                 let c = cell.borrow();
-                (c.module_path.clone(), c.name.clone(), c.type_args.clone())
+                (
+                    c.module_path.clone(),
+                    c.name.clone(),
+                    c.generic_args.clone(),
+                )
             }
             ResolvedType::Union(cell) => {
                 let c = cell.borrow();
-                (c.module_path.clone(), c.name.clone(), c.type_args.clone())
+                (
+                    c.module_path.clone(),
+                    c.name.clone(),
+                    c.generic_args.clone(),
+                )
             }
             ResolvedType::Enum { cell, .. } => {
                 let c = cell.borrow();
-                (c.module_path.clone(), c.name.clone(), c.type_args.clone())
+                (
+                    c.module_path.clone(),
+                    c.name.clone(),
+                    c.generic_args.clone(),
+                )
             }
             _ => return None,
         };
-        (cell_module == module && &cell_name == name).then_some(type_args)
+        (cell_module == module && &cell_name == name).then_some(generic_args)
     }
 
-    fn probe_literal_type_args(
+    fn probe_literal_generic_args(
         &mut self,
         sig: &GenericLiteralSignature,
+        generics: &GenericParams<'_>,
         lit_fields: &[HirStructLiteralField],
-    ) -> Option<HashMap<Ident, ResolvedType>> {
+    ) -> Option<GenericSubstitution> {
         let errors_before = self.errors.len();
         let warnings_before = self.warnings.len();
-        let mut subst = HashMap::new();
+        let mut subst = GenericSubstitution::new();
         let mut ok = true;
         for field in lit_fields {
             let Some((_, raw_type)) = sig.fields.iter().find(|(name, _)| name == &field.name)
@@ -774,13 +795,12 @@ impl<'r> Analyzer<'r> {
                 field.value.id,
                 field.value.span,
                 raw_type,
-                &sig.generics,
-                &sig.defaults,
+                generics,
                 &subst,
             );
             match self.analyze_expr(&field.value, expected.as_ref()) {
                 Some(checked) => {
-                    unify_generic_type(&sig.generics, raw_type, &checked.r#type, &mut subst)
+                    unify_generic_type(generics, raw_type, &checked.r#type, &mut subst)
                 }
                 None => ok = false,
             }

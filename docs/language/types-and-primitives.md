@@ -27,7 +27,7 @@ The primitive spellings above, plus `str`, are reserved wherever binding them wo
 
 - a package or module identity (so `i32::` and `str::` always mean the language type, never a module segment);
 - a module-scope declaration, alias, or import name;
-- a generic type parameter, including an alias's own generic parameters.
+- a generic parameter of either kind, including an alias's own generic parameters.
 
 The restriction is a name-binding rule, not a lexer keyword: these spellings stay available in unrelated namespaces, such as local value bindings, struct fields, enum variants, method names, and macro names. Using a primitive as an alias *target* (`alias Count = i32;`) is likewise unaffected — only the newly bound name is restricted.
 
@@ -94,6 +94,21 @@ Omega distinguishes these forms:
 ```
 
 `[?]T` cannot exist as a standalone value. Its valid use is behind a pointer (`*[?]T` / `*mut [?]T`).
+
+`[N]T` is a fixed array only when `N` resolves at compile time to a nonnegative integer that fits the fixed-array size domain (currently a `u32`). `N` is written either as a scalar integer literal or as a path naming a `comp` binding or a `comp` generic parameter:
+
+```omega
+bytes: [64]u8;
+
+comp LIMIT := 32;
+window: [LIMIT]u8;
+
+struct Buffer<comp N: usize, T> {
+    exposed data: [N]T;
+}
+```
+
+A runtime binding is never an array length, and a value that is negative or outside the size domain is rejected. A `comp` generic parameter may hold the full range of its own declared type; the size-domain check applies where it is used as a length. See [`generics.md`](generics.md) and [`compile-time-evaluation.md`](compile-time-evaluation.md).
 
 A bare `*T` points to one value and is not indexable as an arbitrary array. `*[?]T` is still thin and stores no length, but it may be indexed and may be range-sliced when an explicit end is available.
 

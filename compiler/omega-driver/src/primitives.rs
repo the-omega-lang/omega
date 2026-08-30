@@ -1,6 +1,8 @@
 use crate::{Driver, ModulePath};
 use omega_analyzer::analysis::AnalysisSite;
 use omega_analyzer::error::{AnalysisError, AnalysisErrorKind};
+use omega_analyzer::generics::GenericSubstitution;
+use omega_analyzer::resolved_type::ResolvedGenericArg;
 use omega_analyzer::resolved_type::{ResolvedMethod, ResolvedType};
 use omega_hir::{HirFunctionDef, HirId, HirItem, HirPrimitiveDef};
 use omega_parser::prelude::{Ident, Type};
@@ -13,7 +15,7 @@ pub(crate) struct PrimitiveEntry {
     pub methods: Vec<(Ident, ResolvedMethod)>,
     pub method_ids: Vec<HirId>,
     pub functions: Vec<HirFunctionDef>,
-    pub substitution: Vec<(Ident, ResolvedType)>,
+    pub substitution: GenericSubstitution,
     pub monomorphized: bool,
 }
 
@@ -59,7 +61,12 @@ impl Driver {
                 }
 
                 if primitive.generics.is_empty() {
-                    self.instantiate_primitive(module, &primitive, &[], None);
+                    self.instantiate_primitive(
+                        module,
+                        &primitive,
+                        &GenericSubstitution::new(),
+                        None,
+                    );
                 } else {
                     self.primitives.templates.push(PrimitiveTemplate {
                         module: module.clone(),
@@ -74,7 +81,7 @@ impl Driver {
         &mut self,
         module: &[Ident],
         primitive: &HirPrimitiveDef,
-        substitution: &[(Ident, ResolvedType)],
+        substitution: &GenericSubstitution,
         actual_target: Option<&ResolvedType>,
     ) -> Option<PrimitiveEntry> {
         let target = if let Some(actual) = actual_target {
@@ -132,14 +139,14 @@ impl Driver {
             return None;
         }
 
-        let mut method_substitution = substitution.to_vec();
+        let mut method_substitution = substitution.clone();
         let self_type = match (&primitive.target, &target) {
             (Type::InferredArray(_), ResolvedType::Slice { item, mutable }) => {
                 ResolvedType::Array(item.clone(), *mutable)
             }
             _ => target.clone(),
         };
-        method_substitution.push((Ident("Self".to_string()), self_type));
+        method_substitution.push_type(Ident("Self".to_string()), self_type);
 
         let method_ids =
             self.conformance_method_ids(module, primitive.id, &target, &primitive.functions);
@@ -249,7 +256,7 @@ impl Driver {
     fn match_primitive_target(
         primitive: &HirPrimitiveDef,
         actual: &ResolvedType,
-    ) -> Option<Vec<(Ident, ResolvedType)>> {
+    ) -> Option<GenericSubstitution> {
         let ResolvedType::Slice { item, .. } = actual else {
             return None;
         };
@@ -267,6 +274,9 @@ impl Driver {
         {
             return None;
         }
-        Some(vec![(path.head.clone(), (**item).clone())])
+        Some(GenericSubstitution::from_iter([(
+            path.head.clone(),
+            ResolvedGenericArg::Type((**item).clone()),
+        )]))
     }
 }

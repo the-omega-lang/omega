@@ -337,7 +337,7 @@ impl Lowerer {
             .iter()
             .map(|g| HirGenericParam {
                 ident: g.ident.clone(),
-                bounds: g.bounds.clone(),
+                kind: g.kind.clone(),
                 default: g.default.clone(),
             })
             .collect()

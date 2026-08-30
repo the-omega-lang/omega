@@ -101,9 +101,11 @@ Separately compiled packages must be invoked with identities that agree with the
 
 ## Generic identity
 
-Concrete type arguments participate in a generic item's mangled path. A monomorphized `Foo<u32>` therefore has stable identity distinct from `Foo<u64>`.
+Concrete generic arguments participate in a generic item's mangled path. A monomorphized `Foo<u32>` therefore has stable identity distinct from `Foo<u64>`.
 
 Generic function/method instantiations similarly include concrete args as needed in the path/signature model.
+
+An argument list is either all types or mixed. An all-type list keeps the original `ManglePath::Generic` encoding byte-for-byte, so adding compile-time value generics migrated no existing symbol. A list carrying at least one `comp` value uses `ManglePath::MixedGeneric`, a distinct grammar form in which every element is introduced by an explicit type/value tag. A value encodes its own scalar type before its magnitude, so `Buffer<10, i32>` and `Buffer<11, i32>` differ, a value never collides with a type in the same position, and the same digits under two different declared `comp` types stay distinct.
 
 ## Conformance method identity
 

@@ -237,7 +237,7 @@ impl AnalysisErrorKind {
                 .with_note("a struct's name refers to the type itself; only its instances hold values"),
             Self::UnresolvedGenericParam(name) => d
                 .with_label(span, format!("cannot deduce `{}` from this call's arguments", name.as_ref()))
-                .with_note("a generic function's type parameters are deduced from its argument types only"),
+                .with_note("a generic function's parameters are deduced from its argument types only; a `comp` parameter is deduced only from compile-time structure such as a fixed array's length"),
             Self::GenericParamFromFatPointer { parameter, found } => d
                 .with_label(span, format!("cannot deduce `{}` from this call's arguments", parameter.as_ref()))
                 .with_note(format!(
@@ -569,10 +569,10 @@ impl AnalysisErrorKind {
                     "a call site has no syntax to choose between receiving `self` by value and by pointer -- \
                      give these methods different names, or make another parameter differ too",
                 ),
-            Self::MissingSpecFunction { implementor, spec, spec_type_args, function } => d
+            Self::MissingSpecFunction { implementor, spec, spec_args, function } => d
                 .with_label(
                     span,
-                    format!("`{}` does not implement `{}`", implementor.as_ref(), generic_name(spec, spec_type_args)),
+                    format!("`{}` does not implement `{}`", implementor.as_ref(), generic_name(spec, spec_args)),
                 )
                 .with_help(format!(
                     "add a `{}` method to `{}`, or give `{}` a default implementation",
@@ -885,9 +885,30 @@ fn type_resolution_diagnostic(error: &TypeResolutionError, span: Span) -> Diagno
                 None => d,
             }
         }
-        TypeResolutionError::InvalidArraySize(_) => d
-            .with_label(span, "array size out of range")
-            .with_note("an array's length must fit in a `u32`"),
+        TypeResolutionError::InvalidArrayLength { .. } => d
+            .with_label(span, "not a usable array length")
+            .with_note("an array's length must be a compile-time integer that fits in a `u32`"),
+        TypeResolutionError::NotACompValue(_) => d
+            .with_label(span, "this is a runtime binding")
+            .with_help("declare it as `comp name := ...` so its value exists at compile time"),
+        TypeResolutionError::CompValueIsAType(_) => d
+            .with_label(span, "expected a compile-time value, found a type"),
+        TypeResolutionError::CompValueUnavailable(_) => {
+            d.with_label(span, "no compile-time value is recorded for this binding")
+        }
+        TypeResolutionError::UnsupportedCompParamType { .. } => d
+            .with_label(span, "unsupported `comp` parameter type")
+            .with_note("a `comp` generic parameter must be an integer type, `bool`, or `char`"),
+        TypeResolutionError::GenericArgKindMismatch { expected_value: true, .. } => d
+            .with_label(span, "expected a compile-time value, found a type"),
+        TypeResolutionError::GenericArgKindMismatch { expected_value: false, .. } => d
+            .with_label(span, "expected a type, found a compile-time value"),
+        TypeResolutionError::CompLiteralOutOfRange(_) => {
+            d.with_label(span, "literal is too large for any compile-time integer type")
+        }
+        TypeResolutionError::CompArgNotRepresentable { declared, .. } => d
+            .with_label(span, format!("not representable as `{declared}`"))
+            .with_note("a `comp` generic argument must be exactly representable in the parameter's declared type"),
         TypeResolutionError::ModuleResolution(e) => resolve_error_diagnostic(e, Some(span)),
         TypeResolutionError::NotAType(_) => {
             d.with_label(span, "expected a type, found a value")
@@ -983,7 +1004,7 @@ pub fn resolve_error_diagnostic(error: &ResolveError, span: Option<Span>) -> Dia
                 .with_note(format!("`{}`'s own error is reported where it is defined", item.as_ref()))
         }
         ResolveError::GenericArgCountMismatch { expected, .. } => {
-            with_label(d, format!("expected {expected} type {}", plural(*expected, "argument")))
+            with_label(d, format!("expected {expected} generic {}", plural(*expected, "argument")))
         }
         ResolveError::SpecDependencyCycle { spec, .. } => {
             with_label(d, format!("`{}` depends on itself, directly or through another spec's own dependency list", spec.as_ref()))

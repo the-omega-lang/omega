@@ -8,7 +8,7 @@ pub use crate::ast::expression::{
     NegateExpr, NotExpr, NumberBase, NumberExpr, Pattern, PatternValue, RevealExpr, SizeofExpr,
     SliceExpr, StringExpr, StructLiteralExpr, StructLiteralField, TryExpr,
 };
-pub use crate::ast::generics::GenericParam;
+pub use crate::ast::generics::{GenericParam, GenericParamKind};
 pub use crate::ast::identifier::{
     ExpansionId, ExprPath, Ident, Origin, Path, PathAnchor, QualifiedSpecPath,
 };
@@ -26,6 +26,9 @@ pub use crate::ast::statement::{
     FunctionDefinitionStmt, InlineAsmStmt, LoopStmt, ReturnStmt, Statement, StatementNode,
     WhileStmt,
 };
-pub use crate::ast::r#type::{FunctionType, FunctionTypeParam, Param, RawConvention, Type};
+pub use crate::ast::r#type::{
+    ArrayLength, CompLiteral, FunctionType, FunctionTypeParam, GenericArg, Param, RawConvention,
+    Type,
+};
 pub use crate::ast::visibility::Visibility;
 pub use crate::diagnostics::{ParseError, ParseErrorKind, Span};

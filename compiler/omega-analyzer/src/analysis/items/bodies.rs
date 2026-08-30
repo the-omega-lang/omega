@@ -44,7 +44,7 @@ impl<'r> Analyzer<'r> {
             id,
             span: f.span,
             name: f.name.clone(),
-            type_args: vec![],
+            generic_args: vec![],
             self_mode: f.self_mode,
             is_variadic: fn_type.is_variadic,
             params,
@@ -88,7 +88,7 @@ impl<'r> Analyzer<'r> {
             id,
             span: f.span,
             name: f.name.clone(),
-            type_args: vec![],
+            generic_args: vec![],
             self_mode: f.self_mode,
             is_variadic: fn_type.is_variadic,
             params,
@@ -158,8 +158,9 @@ impl<'r> Analyzer<'r> {
         // the conforming type here), never from the declaring spec.
         let owner = pending
             .substitution
-            .first()
-            .and_then(|(_, self_type)| self_type.declaring_owner())
+            .get(&Ident("Self".to_string()))
+            .and_then(|arg| arg.as_type())
+            .and_then(ResolvedType::declaring_owner)
             .map(|(_, owner_id)| owner_id);
         let check = |this: &mut Self| {
             this.check_function_body(
@@ -232,7 +233,7 @@ impl<'r> Analyzer<'r> {
             id: s.id,
             span: s.span,
             name: s.name.clone(),
-            type_args: vec![],
+            generic_args: vec![],
             fields,
             functions,
         })
@@ -259,7 +260,7 @@ impl<'r> Analyzer<'r> {
             id: u.id,
             span: u.span,
             name: u.name.clone(),
-            type_args: vec![],
+            generic_args: vec![],
             fields,
             functions,
         })
@@ -285,7 +286,7 @@ impl<'r> Analyzer<'r> {
             id: e.id,
             span: e.span,
             name: e.name.clone(),
-            type_args: vec![],
+            generic_args: vec![],
             functions,
         })
     }

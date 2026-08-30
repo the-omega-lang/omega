@@ -84,7 +84,7 @@ impl Path {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExprPath {
     pub path: Path,
-    pub generic_args: Vec<crate::ast::r#type::Type>,
+    pub generic_args: Vec<crate::ast::r#type::GenericArg>,
     pub args_at: usize,
     pub qualified_spec: Option<QualifiedSpecPath>,
 }

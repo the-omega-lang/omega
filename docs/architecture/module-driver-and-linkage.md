@@ -298,11 +298,11 @@ The primary item-query key is:
 ItemKey {
     module: ModulePath,
     name: Ident,
-    type_args: Vec<ResolvedType>,
+    generic_args: Vec<ResolvedGenericArg>,
 }
 ```
 
-An ordinary item has empty `type_args`. A concrete generic instantiation is the same query shape with concrete type arguments.
+An ordinary item has empty `generic_args`. A concrete generic instantiation is the same query shape with concrete arguments. A `ResolvedGenericArg` is either a resolved type or a canonical compile-time scalar value (`CompScalar`), so a `comp` generic argument distinguishes two instantiations exactly as a type argument does: `Buffer<10, i32>` and `Buffer<11, i32>` are different keys, different cells, and different symbols. Values are canonicalized to the parameter's declared type before the key is built, so two spellings that mean the same value share one entry.
 
 This means there is no second parallel “generic instantiation engine” for named items. It participates in the same caching/cycle machinery.
 
@@ -400,7 +400,9 @@ The analyzer never calls the filesystem and never owns cross-module query state.
 
 ## Generic inference vs instantiation
 
-For argument/field-driven inference, the analyzer sometimes needs the **raw declared shape** of a generic function/type before deciding concrete type arguments. `ModuleResolver` exposes focused raw-signature queries that do not instantiate the item just to inspect its generic pattern.
+For argument/field-driven inference, the analyzer sometimes needs the **raw declared shape** of a generic function/type before deciding concrete arguments. `ModuleResolver` exposes focused raw-signature queries that do not instantiate the item just to inspect its generic pattern.
+
+Resolving a written argument list needs the declaration's parameter kinds first, because a bare path is a type or a compile-time value according to the parameter it lands on. `ModuleResolver::item_generic_params` is the metadata-only query that supplies them; it follows alias forwarding and instantiates nothing.
 
 Once concrete arguments are known, the ordinary `ItemKey` path resolves/checks that instantiation.
 

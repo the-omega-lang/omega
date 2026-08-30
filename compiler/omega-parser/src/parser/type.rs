@@ -1,6 +1,7 @@
-use crate::ast::expression::NumberBase;
 use crate::ast::self_mode::SelfMode;
-use crate::ast::r#type::{FunctionType, FunctionTypeParam, RawConvention, Type};
+use crate::ast::r#type::{
+    ArrayLength, CompLiteral, FunctionType, FunctionTypeParam, GenericArg, RawConvention, Type,
+};
 use crate::diagnostics::ParseErrorKind;
 use crate::lexer::TokenKind;
 use crate::parser::{Parser, contextual, parse_path};
@@ -68,30 +69,62 @@ fn parse_bracket_type(p: &mut Parser) -> Option<Type> {
             Some(Type::UnknownSizeArray(Box::new(item)))
         }
         _ => {
-            let size = parse_array_size(p)?;
+            let length = parse_array_length(p)?;
             p.expect(&TokenKind::RBracket, "']'");
             let item = parse_type(p)?;
-            Some(Type::SizedArray(Box::new(item), size))
+            Some(Type::SizedArray(Box::new(item), length))
         }
     }
 }
 
-fn parse_array_size(p: &mut Parser) -> Option<String> {
-    match p.peek() {
-        TokenKind::Number(n)
-            if matches!(n.base, NumberBase::Decimal) && n.explicit_type.is_none() =>
-        {
-            let size = n.integer_part.clone();
-            p.advance();
-            Some(size)
-        }
-        _ => {
+/// A fixed array's length. A literal is checked here; a path is left for
+/// semantic resolution, which is the only layer that knows whether it names
+/// a `comp` binding and what its value is.
+fn parse_array_length(p: &mut Parser) -> Option<ArrayLength> {
+    if matches!(p.peek(), TokenKind::Ident(_)) {
+        return Some(ArrayLength::Path(parse_path(p)?));
+    }
+    match parse_comp_literal(p) {
+        Some(literal) => Some(ArrayLength::Literal(literal)),
+        None => {
             p.error(ParseErrorKind::Expected {
-                expected: "an array size",
+                expected: "an array length",
                 found: p.peek().describe(),
             });
             None
         }
+    }
+}
+
+/// One scalar compile-time literal. Returns `None` without reporting when the
+/// next token cannot start one, so callers that also accept type syntax can
+/// fall through.
+fn parse_comp_literal(p: &mut Parser) -> Option<CompLiteral> {
+    let negative = p.check(&TokenKind::Minus);
+    let literal = match p.peek_at(usize::from(negative)) {
+        TokenKind::Number(n) if n.fractional_part.is_none() => CompLiteral::Int {
+            negative,
+            number: n.clone(),
+        },
+        TokenKind::True if !negative => CompLiteral::Bool(true),
+        TokenKind::False if !negative => CompLiteral::Bool(false),
+        TokenKind::Char(c) if !negative => CompLiteral::Char(*c),
+        _ => return None,
+    };
+    if negative {
+        p.advance();
+    }
+    p.advance();
+    Some(literal)
+}
+
+/// One written generic argument. A scalar literal is a value; everything
+/// else -- including a bare path -- is kept as type syntax and interpreted
+/// against the declared parameter's kind during resolution.
+pub(crate) fn parse_generic_arg(p: &mut Parser) -> Option<GenericArg> {
+    match parse_comp_literal(p) {
+        Some(literal) => Some(GenericArg::Value(literal)),
+        None => Some(GenericArg::Type(parse_type(p)?)),
     }
 }
 
@@ -199,9 +232,9 @@ pub(crate) fn parse_raw_convention(p: &mut Parser) -> Option<RawConvention> {
 fn parse_named_type(p: &mut Parser) -> Option<Type> {
     let path = parse_path(p)?;
     if p.eat(&TokenKind::Lt) {
-        let mut args = vec![parse_type(p)?];
+        let mut args = vec![parse_generic_arg(p)?];
         while p.eat(&TokenKind::Comma) {
-            args.push(parse_type(p)?);
+            args.push(parse_generic_arg(p)?);
         }
         p.expect_close_angle("'>'");
         Some(Type::Generic(path, args))

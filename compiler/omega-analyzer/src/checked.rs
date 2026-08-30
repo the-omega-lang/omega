@@ -1,5 +1,6 @@
 use crate::resolved_type::{
-    CallingConvention, ConstValue, ResolvedFunctionParam, ResolvedFunctionType, ResolvedType,
+    CallingConvention, ConstValue, ResolvedFunctionParam, ResolvedFunctionType, ResolvedGenericArg,
+    ResolvedType,
 };
 use omega_hir::{HirId, ModuleId};
 use omega_parser::prelude::{BinaryOp, Ident, SelfMode, Span};
@@ -44,7 +45,7 @@ pub enum ExternFunctionKind {
     Conform {
         target: ResolvedType,
         spec_name: Ident,
-        spec_args: Vec<ResolvedType>,
+        spec_args: Vec<ResolvedGenericArg>,
         method_name: Ident,
     },
 }
@@ -131,7 +132,7 @@ pub struct CheckedFunctionDef {
     pub id: HirId,
     pub span: Span,
     pub name: Ident,
-    pub type_args: Vec<ResolvedType>,
+    pub generic_args: Vec<ResolvedGenericArg>,
     pub self_mode: Option<SelfMode>,
     pub is_variadic: bool,
     pub params: Vec<CheckedParam>,
@@ -149,7 +150,7 @@ pub struct ConformanceOwner {
     pub target: ResolvedType,
     pub spec_module_path: Vec<Ident>,
     pub spec_name: Ident,
-    pub spec_args: Vec<ResolvedType>,
+    pub spec_args: Vec<ResolvedGenericArg>,
     pub monomorphized: bool,
 }
 
@@ -174,7 +175,7 @@ pub struct CheckedStructDef {
     pub id: HirId,
     pub span: Span,
     pub name: Ident,
-    pub type_args: Vec<ResolvedType>,
+    pub generic_args: Vec<ResolvedGenericArg>,
     pub fields: Vec<CheckedField>,
     pub functions: Vec<CheckedFunctionDef>,
 }
@@ -184,7 +185,7 @@ pub struct CheckedUnionDef {
     pub id: HirId,
     pub span: Span,
     pub name: Ident,
-    pub type_args: Vec<ResolvedType>,
+    pub generic_args: Vec<ResolvedGenericArg>,
     pub fields: Vec<CheckedField>,
     pub functions: Vec<CheckedFunctionDef>,
 }
@@ -194,7 +195,7 @@ pub struct CheckedEnumDef {
     pub id: HirId,
     pub span: Span,
     pub name: Ident,
-    pub type_args: Vec<ResolvedType>,
+    pub generic_args: Vec<ResolvedGenericArg>,
     pub functions: Vec<CheckedFunctionDef>,
 }
 

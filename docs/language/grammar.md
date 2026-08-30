@@ -60,8 +60,21 @@ path-anchor  = "root", "::" | "self", "::" | { "super", "::" } ;
 path         = [ path-anchor ], identifier, { "::", identifier } ;
 type-path    = path, [ generic-arguments ] ;
 
-generic-arguments = "<", type, { ",", type }, ">" ;
+generic-arguments = "<", generic-argument, { ",", generic-argument }, ">" ;
+
+generic-argument  = comp-value-literal | type ;
+
+comp-value-literal = [ "-" ], integer-literal
+                   | "true" | "false"
+                   | char-literal ;
 ```
+
+A `generic-argument` is read as the kind its declared parameter binds. A
+scalar literal is syntactically a value, so it is only legal against a `comp`
+parameter; every other spelling -- including a bare `path` -- is parsed as
+`type` syntax and interpreted as a type or as a compile-time value according
+to that parameter's kind. The parser never guesses. See
+[`generics.md`](generics.md).
 
 `path-anchor` is a general part of `path`, legal wherever a path is legal --
 a type position (including nested inside pointer, array, or
@@ -121,14 +134,26 @@ foreign-block-entry = [ visibility ], identifier,
 ```ebnf
 generic-parameters = "<", generic-parameter, { ",", generic-parameter }, ">" ;
 
-generic-parameter = identifier,
-                    [ ":", spec-bound, { "+", spec-bound } ],
-                    [ "=", type ] ;
+generic-parameter = type-parameter | comp-parameter ;
+
+type-parameter = identifier,
+                 [ ":", spec-bound, { "+", spec-bound } ],
+                 [ "=", generic-argument ] ;
+
+comp-parameter = "comp", identifier, ":", type,
+                 [ "=", generic-argument ] ;
 
 spec-bound = type-path ;
 ```
 
-Once a generic parameter has a default, every later generic parameter in that list must also have a default. Full semantics are in [`generics.md`](generics.md).
+`comp` is contextual here: it introduces a compile-time value parameter only
+when an identifier follows it, so `<comp>` still declares a type parameter
+named `comp`. A `comp-parameter`'s value type is mandatory and it takes no
+bounds.
+
+A parameter's default is written as the kind that parameter binds. Once a
+generic parameter has a default, every later generic parameter in that list
+must also have a default. Full semantics are in [`generics.md`](generics.md).
 
 ## Types
 
@@ -144,7 +169,8 @@ type = pointer-type
      | type-path ;
 
 pointer-type            = "*", [ "mut" ], type ;
-fixed-array-type        = "[", decimal-integer, "]", type ;
+fixed-array-type        = "[", array-length, "]", type ;
+array-length            = comp-value-literal | path ;
 inferred-array-type     = "[", "]", type ;
 unknown-size-array-type = "[", "?", "]", type ;
 
@@ -165,6 +191,11 @@ is itself an `anonymous-enum-type` therefore consumes the rest of the list:
 already a keyword, so this never collides with `type-path`. Member identity,
 canonical ordering, tags, and conversions are in
 [`enums-and-pattern-matching.md`](enums-and-pattern-matching.md).
+
+A `fixed-array-type`'s `array-length` is compile-time syntax, not an
+expression: a scalar literal, or a `path` naming a `comp` binding or a `comp`
+generic parameter. Its semantic requirements are in
+[`types-and-primitives.md`](types-and-primitives.md).
 
 `[]T` is syntactically a type form used where array length is inferred; its legal semantic positions are restricted by [`types-and-primitives.md`](types-and-primitives.md). Slice values use pointer forms such as `*[]T`/`*mut []T`.
 

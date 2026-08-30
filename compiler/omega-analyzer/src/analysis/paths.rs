@@ -331,7 +331,7 @@ impl<'r> Analyzer<'r> {
             variant,
         ) {
             Some((real_absolute, sig)) => {
-                let type_args = self.infer_literal_type_args(
+                let generic_args = self.infer_literal_type_args(
                     node_id,
                     span,
                     &real_absolute,
@@ -345,7 +345,7 @@ impl<'r> Analyzer<'r> {
                         absolute: real_absolute,
                         bypass_visibility: access.bypass_visibility,
                     },
-                    &type_args,
+                    &generic_args,
                     path.origin,
                 )
             }
@@ -416,12 +416,14 @@ impl<'r> Analyzer<'r> {
             return None;
         }
 
-        let type_args = self.resolve_generic_arg_list(node_id, span, expr_path)?;
         let prefix = &segments[..=expr_path.args_at];
         let access = self.generic_prefix_absolute(node_id, span, &expr_path.path, prefix)?;
         let absolute = access.absolute.clone();
         let accessor = self.path_module(&expr_path.path);
-        match self.resolve_item_with_ambient_from(&accessor, prefix, &access, &type_args) {
+        let params = self.item_generic_params_for(&accessor, prefix, &access);
+        let generic_args =
+            self.resolve_generic_arg_list(node_id, span, expr_path, &access.absolute, &params)?;
+        match self.resolve_item_with_ambient_from(&accessor, prefix, &access, &generic_args) {
             Ok(ResolvedItem::Type(_)) if rest.is_empty() => {
                 self.error(node_id, span, AnalysisErrorKind::NotAValue(absolute));
                 None
@@ -463,15 +465,106 @@ impl<'r> Analyzer<'r> {
         }
     }
 
+    /// Resolves a written generic argument list against the declared
+    /// parameters of the item it applies to, so each position is read as the
+    /// kind that parameter binds.
+    ///
+    /// A surplus argument is reported here rather than at the item query:
+    /// without a declared parameter there is no kind to read it as, so it
+    /// cannot be resolved at all.
     pub(super) fn resolve_generic_arg_list(
         &mut self,
         node_id: HirId,
         span: Span,
         expr_path: &ExprPath,
-    ) -> Option<Vec<ResolvedType>> {
-        self.analyze_all(&expr_path.generic_args, |this, arg| {
-            this.resolve_type_or_error(node_id, span, arg, true)
+        owner: &[Ident],
+        params: &[HirGenericParam],
+    ) -> Option<Vec<ResolvedGenericArg>> {
+        self.check_generic_arity(node_id, span, owner, params, expr_path.generic_args.len())?;
+        let args: Vec<(usize, GenericArg)> =
+            expr_path.generic_args.iter().cloned().enumerate().collect();
+        self.analyze_all(&args, |this, (index, arg)| {
+            this.resolve_generic_arg_or_error(node_id, span, arg, params.get(*index))
         })
+    }
+
+    /// `None` when more arguments were written than the declaration accepts.
+    /// An empty parameter list means the declaration was not found, so the
+    /// item query stays the reporter.
+    pub(super) fn check_generic_arity(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        owner: &[Ident],
+        params: &[HirGenericParam],
+        found: usize,
+    ) -> Option<()> {
+        if params.is_empty() || found <= params.len() {
+            return Some(());
+        }
+        let (item, module) = owner.split_last()?;
+        self.error(
+            node_id,
+            span,
+            AnalysisErrorKind::ModuleResolution(ResolveError::GenericArgCountMismatch {
+                module: module.to_vec(),
+                item: item.clone(),
+                expected: params.len(),
+                found,
+            }),
+        );
+        None
+    }
+
+    pub(super) fn resolve_generic_arg_or_error(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        arg: &GenericArg,
+        param: Option<&HirGenericParam>,
+    ) -> Option<ResolvedGenericArg> {
+        if let GenericArg::Type(written) = arg {
+            let module = self.module_path.clone();
+            self.check_alias_generic_bounds(node_id, span, written, &module);
+        }
+        let reveals = &self.reveals;
+        match self.context.resolve_generic_arg(
+            arg,
+            param,
+            &mut *self.resolver,
+            &self.module_path,
+            ResolveItemOptions::INDIRECT,
+            &|origin| reveals.allows(origin),
+        ) {
+            Ok(resolved) => Some(resolved),
+            Err(err) => {
+                self.error(node_id, span, AnalysisErrorKind::UnresolvedType(err));
+                None
+            }
+        }
+    }
+
+    /// The declared generic parameters of the item a written prefix names,
+    /// including the ambient-`core` fallback a bare name may reach. An
+    /// unresolvable item yields no parameters: the argument list then
+    /// resolves as types and the item query reports the real problem.
+    pub(super) fn item_generic_params_for(
+        &mut self,
+        accessor: &[Ident],
+        prefix: &[Ident],
+        access: &ItemAccess,
+    ) -> Vec<HirGenericParam> {
+        match self.resolver.item_generic_params(&access.absolute) {
+            Ok(Some(params)) => return params,
+            Ok(None) | Err(_) => {}
+        }
+        let [single] = prefix else { return Vec::new() };
+        self.resolver
+            .ambient_core_candidates(accessor, single)
+            .ok()
+            .flatten()
+            .and_then(|ambient| self.resolver.item_generic_params(&ambient).ok().flatten())
+            .unwrap_or_default()
     }
 
     pub(super) fn generic_prefix_absolute(

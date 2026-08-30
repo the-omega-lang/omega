@@ -1,4 +1,5 @@
 use super::*;
+use omega_analyzer::generics::GenericSubstitution;
 
 impl Driver {
     /// Extern modules that parsed and indexed. Each is independent: a broken
@@ -88,7 +89,7 @@ impl Driver {
             for glue in glues {
                 let run = self.with_analyzer(
                     path,
-                    &[],
+                    &GenericSubstitution::new(),
                     AnalysisSite::new(glue.id, glue.span),
                     |analyzer| {
                         let gap = analyzer.resolve_gap_path(glue.id, glue.span, &glue.gap)?;

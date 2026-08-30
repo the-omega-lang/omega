@@ -10,7 +10,8 @@ use omega_analyzer::resolver::{
 };
 use omega_hir::{AliasTarget, HirAlias, HirGenericParam, HirItem};
 use omega_parser::prelude::{
-    FunctionType, FunctionTypeParam, Ident, Origin, Path, Type, Visibility,
+    ArrayLength, FunctionType, FunctionTypeParam, GenericArg, GenericParamKind, Ident, Origin,
+    Path, Type, Visibility,
 };
 use std::collections::HashMap;
 
@@ -239,10 +240,15 @@ impl Driver {
         let placeholders: Vec<Ident> = declared.generics.iter().map(|g| g.ident.clone()).collect();
         Self::check_alias_generic_params(module_path, &declared.name, &placeholders)?;
         for param in &declared.generics {
-            for bound in &param.bounds {
+            for bound in param.bounds() {
                 self.validate_alias_spec_type(module_path, &declared, &placeholders, bound)?;
             }
-            if let Some(default) = &param.default {
+            if let Some(value_type) = param.comp_type() {
+                self.validate_alias_target(module_path, &declared, &placeholders, value_type)?;
+            }
+            // A value default is a literal, so only a type-shaped default
+            // names anything that has to exist here.
+            if let Some(GenericArg::Type(default)) = &param.default {
                 self.validate_alias_target(module_path, &declared, &placeholders, default)?;
             }
         }
@@ -252,15 +258,33 @@ impl Driver {
             .iter()
             .map(|g| HirGenericParam {
                 ident: g.ident.clone(),
-                bounds: g
-                    .bounds
-                    .iter()
-                    .map(|b| self.rebind_alias_target(module_path, &placeholders, b, origin))
-                    .collect(),
-                default: g
-                    .default
-                    .as_ref()
-                    .map(|d| self.rebind_alias_target(module_path, &placeholders, d, origin)),
+                kind: match &g.kind {
+                    GenericParamKind::Type { bounds } => GenericParamKind::Type {
+                        bounds: bounds
+                            .iter()
+                            .map(|b| {
+                                self.rebind_alias_target(module_path, &placeholders, b, origin)
+                            })
+                            .collect(),
+                    },
+                    GenericParamKind::Comp { value_type } => GenericParamKind::Comp {
+                        value_type: self.rebind_alias_target(
+                            module_path,
+                            &placeholders,
+                            value_type,
+                            origin,
+                        ),
+                    },
+                },
+                default: g.default.as_ref().map(|d| match d {
+                    GenericArg::Type(written) => GenericArg::Type(self.rebind_alias_target(
+                        module_path,
+                        &placeholders,
+                        written,
+                        origin,
+                    )),
+                    GenericArg::Value(_) => d.clone(),
+                }),
             })
             .collect::<Vec<_>>();
         let r#type = self.rebind_alias_target(module_path, &placeholders, &written, origin);
@@ -308,9 +332,14 @@ impl Driver {
             | Type::SizedArray(inner, _) => {
                 self.validate_alias_target(module_path, declared, placeholders, inner)?
             }
-            Type::Generic(_, args) | Type::AnonymousEnum(args) => {
-                for arg in args {
+            Type::Generic(_, args) => {
+                for arg in args.iter().filter_map(GenericArg::as_type) {
                     self.validate_alias_target(module_path, declared, placeholders, arg)?;
+                }
+            }
+            Type::AnonymousEnum(members) => {
+                for member in members {
+                    self.validate_alias_target(module_path, declared, placeholders, member)?;
                 }
             }
             // Every member of a conjunction is a spec reference, so a type
@@ -338,7 +367,7 @@ impl Driver {
                         args,
                         true,
                     )?;
-                    for arg in args {
+                    for arg in args.iter().filter_map(GenericArg::as_type) {
                         self.validate_alias_target(module_path, declared, placeholders, arg)?;
                     }
                 }
@@ -363,7 +392,7 @@ impl Driver {
         declared: &HirAlias,
         placeholders: &[Ident],
         path: &Path,
-        args: &[Type],
+        args: &[GenericArg],
         expect_spec: bool,
     ) -> Result<(), ResolveError> {
         let invalid = |target: Vec<Ident>, kind: &'static str| ResolveError::InvalidAliasTarget {
@@ -532,7 +561,7 @@ impl Driver {
                     args,
                     true,
                 )?;
-                for arg in args {
+                for arg in args.iter().filter_map(GenericArg::as_type) {
                     self.validate_alias_target(module_path, declared, placeholders, arg)?;
                 }
                 Ok(())
@@ -555,7 +584,7 @@ impl Driver {
         name: &Ident,
         generics: &[HirGenericParam],
         r#type: &Type,
-        args: &[Type],
+        args: &[GenericArg],
     ) -> Result<Type, ResolveError> {
         Self::check_generic_arity(module, name, generics, args.len())?;
         let mut subst = Vec::with_capacity(generics.len());
@@ -563,7 +592,7 @@ impl Driver {
             let argument = match (args.get(index), &generic.default) {
                 (Some(argument), _) => argument.clone(),
                 (None, Some(default)) => {
-                    omega_analyzer::aliases::substitute_type_params(default, &subst)
+                    omega_analyzer::aliases::substitute_generic_arg(default, &subst)
                 }
                 (None, None) => unreachable!("generic arity was checked above"),
             };
@@ -962,14 +991,24 @@ impl Driver {
             Type::Named(path) => Type::Named(rebind_path(self, path)),
             Type::Generic(path, args) => {
                 let path = rebind_path(self, path);
-                let args = args.iter().map(|a| recur(self, a)).collect();
+                let args = args
+                    .iter()
+                    .map(|a| match a {
+                        GenericArg::Type(inner) => GenericArg::Type(recur(self, inner)),
+                        GenericArg::Value(_) => a.clone(),
+                    })
+                    .collect();
                 Type::Generic(path, args)
             }
             Type::Pointer(inner, mutable) => Type::Pointer(Box::new(recur(self, inner)), *mutable),
             Type::InferredArray(inner) => Type::InferredArray(Box::new(recur(self, inner))),
             Type::UnknownSizeArray(inner) => Type::UnknownSizeArray(Box::new(recur(self, inner))),
-            Type::SizedArray(inner, size) => {
-                Type::SizedArray(Box::new(recur(self, inner)), size.clone())
+            Type::SizedArray(inner, length) => {
+                let length = match length {
+                    ArrayLength::Path(path) => ArrayLength::Path(rebind_path(self, path)),
+                    ArrayLength::Literal(_) => length.clone(),
+                };
+                Type::SizedArray(Box::new(recur(self, inner)), length)
             }
             Type::SpecStatic(members) => {
                 Type::SpecStatic(members.iter().map(|m| recur(self, m)).collect())

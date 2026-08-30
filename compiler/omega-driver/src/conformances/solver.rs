@@ -1,12 +1,15 @@
 use super::*;
+use omega_analyzer::generics::GenericSubstitution;
+use omega_analyzer::resolved_type::ResolvedGenericArg;
 use omega_diagnostics::SourceSpan;
+use omega_parser::prelude::GenericArg;
 
 impl Driver {
     pub(crate) fn conformance_for(
         &mut self,
         target: &ResolvedType,
         spec: &Rc<RefCell<ResolvedSpecType>>,
-        spec_args: &[ResolvedType],
+        spec_args: &[ResolvedGenericArg],
     ) -> Option<ConformanceEntry> {
         let matches = |entry: &&ConformanceEntry| {
             entry.target == target.lookup_key()
@@ -91,8 +94,8 @@ impl Driver {
         &mut self,
         concrete: &ResolvedType,
         spec: Rc<RefCell<ResolvedSpecType>>,
-        spec_args: Vec<ResolvedType>,
-        declared_keys: &[(HirId, Vec<ResolvedType>)],
+        spec_args: Vec<ResolvedGenericArg>,
+        declared_keys: &[(HirId, Vec<ResolvedGenericArg>)],
     ) -> Vec<ResolvedBound> {
         let mut permitted = HashSet::new();
         permitted.insert(spec.borrow().id);
@@ -130,7 +133,7 @@ impl Driver {
     pub(crate) fn bound_context_over(
         &mut self,
         declared: &[ResolvedBound],
-        declared_keys: &[(HirId, Vec<ResolvedType>)],
+        declared_keys: &[(HirId, Vec<ResolvedGenericArg>)],
     ) -> Vec<ResolvedBound> {
         let mut context = Vec::new();
         for bound in declared {
@@ -245,8 +248,8 @@ impl Driver {
     fn template_spec(
         &mut self,
         template: &ConformanceTemplate,
-        substitution: &[(Ident, ResolvedType)],
-    ) -> Option<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedType>)> {
+        substitution: &GenericSubstitution,
+    ) -> Option<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedGenericArg>)> {
         self.with_analyzer(
             &template.module,
             substitution,
@@ -286,7 +289,7 @@ impl Driver {
             | Type::UnknownSizeArray(inner)
             | Type::SizedArray(inner, _) => Self::collect_type_idents(inner, out),
             Type::Generic(_, args) => {
-                for arg in args {
+                for arg in args.iter().filter_map(GenericArg::as_type) {
                     Self::collect_type_idents(arg, out);
                 }
             }
@@ -297,7 +300,7 @@ impl Driver {
     fn match_conform_target(
         conform: &HirConformDef,
         actual: &ResolvedType,
-    ) -> Option<Vec<(Ident, ResolvedType)>> {
+    ) -> Option<GenericSubstitution> {
         if let Type::Named(path) = &conform.target
             && path.is_unqualified()
             && conform
@@ -305,8 +308,12 @@ impl Driver {
                 .iter()
                 .any(|generic| generic.ident == path.head)
         {
-            return Analyzer::is_conformable_target(actual)
-                .then(|| vec![(path.head.clone(), actual.clone())]);
+            return Analyzer::is_conformable_target(actual).then(|| {
+                GenericSubstitution::from_iter([(
+                    path.head.clone(),
+                    ResolvedGenericArg::Type(actual.clone()),
+                )])
+            });
         }
         if let (Type::InferredArray(raw_item), ResolvedType::Slice { item, .. }) =
             (&conform.target, actual)
@@ -322,20 +329,23 @@ impl Driver {
             {
                 return None;
             }
-            return Some(vec![(path.head.clone(), (**item).clone())]);
+            return Some(GenericSubstitution::from_iter([(
+                path.head.clone(),
+                ResolvedGenericArg::Type((**item).clone()),
+            )]));
         }
         let (actual_name, actual_args) = match actual {
             ResolvedType::Struct(cell) => {
                 let cell = cell.borrow();
-                (cell.name.clone(), cell.type_args.clone())
+                (cell.name.clone(), cell.generic_args.clone())
             }
             ResolvedType::Enum { cell, .. } => {
                 let cell = cell.borrow();
-                (cell.name.clone(), cell.type_args.clone())
+                (cell.name.clone(), cell.generic_args.clone())
             }
             ResolvedType::Union(cell) => {
                 let cell = cell.borrow();
-                (cell.name.clone(), cell.type_args.clone())
+                (cell.name.clone(), cell.generic_args.clone())
             }
             _ => return None,
         };
@@ -346,9 +356,14 @@ impl Driver {
         if path.segments().last() != Some(&actual_name) || args.len() != actual_args.len() {
             return None;
         }
-        let mut substitution = Vec::new();
+        // A conform template's own parameters are written as bare paths, so
+        // a `comp` parameter is matched here exactly like a type parameter:
+        // the concrete argument, whichever kind it is, binds the name.
+        let mut substitution = GenericSubstitution::new();
         for (raw, concrete) in args.iter().zip(actual_args) {
-            let Type::Named(path) = raw else { return None };
+            let Some(Type::Named(path)) = raw.as_type() else {
+                return None;
+            };
             if !path.is_unqualified()
                 || !conform
                     .generics
@@ -357,7 +372,7 @@ impl Driver {
             {
                 return None;
             }
-            substitution.push((path.head.clone(), concrete));
+            substitution.push(path.head.clone(), concrete);
         }
         Some(substitution)
     }

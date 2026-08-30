@@ -1,8 +1,8 @@
-error: 't10b_explicit_generic_errors::identity' expects 1 type argument(s), found 2
+error: 't10b_explicit_generic_errors::identity' expects 1 generic argument(s), found 2
   --> tests/t10b_explicit_generic_errors/t10b_explicit_generic_errors.omg:13:17
    |
 13 |     too_many := identity<i32, u8>(1);
-   |                 ^^^^^^^^^^^^^^^^^^^^ expected 1 type argument
+   |                 ^^^^^^^^^^^^^^^^^^^^ expected 1 generic argument
 
 error: mismatched types: expected 'i32' for this argument, found 'Holder'
   --> tests/t10b_explicit_generic_errors/t10b_explicit_generic_errors.omg:15:35

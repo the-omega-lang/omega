@@ -1,3 +1,4 @@
+use crate::ast::expression::NumberExpr;
 use crate::ast::identifier::{Ident, Origin, Path};
 use crate::ast::self_mode::SelfMode;
 use crate::diagnostics::Span;
@@ -92,11 +93,56 @@ pub enum Type {
     Function(FunctionType),
     InferredArray(Box<Type>),
     UnknownSizeArray(Box<Type>),
-    SizedArray(Box<Type>, String),
-    Generic(Path, Vec<Type>),
+    SizedArray(Box<Type>, ArrayLength),
+    Generic(Path, Vec<GenericArg>),
     SpecStatic(Vec<Type>),
     /// `enum A | B | ...`: a structural sum whose variants are the member
     /// types. Written order is preserved here; canonical ordering and
     /// deduplication are semantic and happen during type resolution.
     AnonymousEnum(Vec<Type>),
+}
+
+/// A scalar value written directly inside generic-argument or array-length
+/// syntax. The set is deliberately small: richer compile-time values are
+/// written once as a `comp` binding and passed by name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompLiteral {
+    Int { negative: bool, number: NumberExpr },
+    Bool(bool),
+    Char(char),
+}
+
+/// One written generic argument. A bare path stays `Type(Type::Named(..))`:
+/// whether it denotes a type or a `comp` value is decided by the declared
+/// parameter's kind during resolution, never guessed here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GenericArg {
+    Type(Type),
+    Value(CompLiteral),
+}
+
+impl GenericArg {
+    /// The type syntax this argument is written as, when it is not a scalar
+    /// value literal. Syntax-only passes (traversal, alias substitution,
+    /// display) work through this.
+    pub fn as_type(&self) -> Option<&Type> {
+        match self {
+            Self::Type(r#type) => Some(r#type),
+            Self::Value(_) => None,
+        }
+    }
+}
+
+impl From<Type> for GenericArg {
+    fn from(r#type: Type) -> Self {
+        Self::Type(r#type)
+    }
+}
+
+/// A fixed array's written length: a scalar literal, or a path naming a
+/// `comp` binding or `comp` generic parameter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArrayLength {
+    Literal(CompLiteral),
+    Path(Path),
 }

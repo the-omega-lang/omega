@@ -8,28 +8,40 @@
 //! and force each of those positions to learn a second, alias-only format.
 
 use crate::resolver::{ImportTarget, ItemAccess, ModuleResolver, ResolveError, ResolvedAlias};
-use omega_parser::prelude::{FunctionType, FunctionTypeParam, Ident, Type};
+use omega_parser::prelude::{
+    ArrayLength, FunctionType, FunctionTypeParam, GenericArg, Ident, Type,
+};
 
 /// Replaces alias-owned generic parameter names with the types written for
 /// them at the use site. Substituted types keep their own paths, and with them
 /// their own resolution module, which is what lets an alias template resolve
 /// its body at the declaration site and its arguments at the use site.
-pub fn substitute_type_params(ty: &Type, subst: &[(Ident, Type)]) -> Type {
+pub fn substitute_type_params(ty: &Type, subst: &[(Ident, GenericArg)]) -> Type {
     let recur = |t: &Type| substitute_type_params(t, subst);
     match ty {
-        Type::Named(path) if path.is_unqualified() => subst
-            .iter()
-            .find(|(name, _)| name == &path.head)
-            .map(|(_, replacement)| replacement.clone())
+        // A parameter bound to a compile-time value is not a type; leaving it
+        // as written lets ordinary resolution report the kind mismatch at the
+        // position that is actually wrong.
+        Type::Named(path) if path.is_unqualified() => lookup(subst, &path.head)
+            .and_then(GenericArg::as_type)
+            .cloned()
             .unwrap_or_else(|| ty.clone()),
         Type::Named(_) => ty.clone(),
         Type::Pointer(inner, mutable) => Type::Pointer(Box::new(recur(inner)), *mutable),
         Type::InferredArray(inner) => Type::InferredArray(Box::new(recur(inner))),
         Type::UnknownSizeArray(inner) => Type::UnknownSizeArray(Box::new(recur(inner))),
-        Type::SizedArray(inner, size) => Type::SizedArray(Box::new(recur(inner)), size.clone()),
+        Type::SizedArray(inner, length) => Type::SizedArray(
+            Box::new(recur(inner)),
+            substitute_array_length(length, subst),
+        ),
         Type::SpecStatic(members) => Type::SpecStatic(members.iter().map(recur).collect()),
         Type::AnonymousEnum(members) => Type::AnonymousEnum(members.iter().map(recur).collect()),
-        Type::Generic(path, args) => Type::Generic(path.clone(), args.iter().map(recur).collect()),
+        Type::Generic(path, args) => Type::Generic(
+            path.clone(),
+            args.iter()
+                .map(|arg| substitute_generic_arg(arg, subst))
+                .collect(),
+        ),
         Type::Function(f) => Type::Function(FunctionType {
             params: f
                 .params
@@ -47,6 +59,39 @@ pub fn substitute_type_params(ty: &Type, subst: &[(Ident, Type)]) -> Type {
     }
 }
 
+fn lookup<'a>(subst: &'a [(Ident, GenericArg)], name: &Ident) -> Option<&'a GenericArg> {
+    subst
+        .iter()
+        .find_map(|(bound, arg)| (bound == name).then_some(arg))
+}
+
+/// Substitutes into one written generic argument. A bare path is the only
+/// form a parameter can appear as, and it takes whichever kind the parameter
+/// was bound to.
+pub fn substitute_generic_arg(arg: &GenericArg, subst: &[(Ident, GenericArg)]) -> GenericArg {
+    match arg {
+        GenericArg::Type(Type::Named(path)) if path.is_unqualified() => lookup(subst, &path.head)
+            .cloned()
+            .unwrap_or_else(|| arg.clone()),
+        GenericArg::Type(r#type) => GenericArg::Type(substitute_type_params(r#type, subst)),
+        GenericArg::Value(_) => arg.clone(),
+    }
+}
+
+fn substitute_array_length(length: &ArrayLength, subst: &[(Ident, GenericArg)]) -> ArrayLength {
+    let ArrayLength::Path(path) = length else {
+        return length.clone();
+    };
+    if !path.is_unqualified() {
+        return length.clone();
+    }
+    match lookup(subst, &path.head) {
+        Some(GenericArg::Value(literal)) => ArrayLength::Literal(literal.clone()),
+        Some(GenericArg::Type(Type::Named(replacement))) => ArrayLength::Path(replacement.clone()),
+        _ => length.clone(),
+    }
+}
+
 /// The alias a written type names, if any: where it is declared, the
 /// arguments the use site supplied, and the authorization the binding it was
 /// reached through already established. The accessor is the module the type
@@ -56,7 +101,7 @@ struct AliasReference {
     accessor: Vec<Ident>,
     module: Vec<Ident>,
     name: Ident,
-    args: Vec<Type>,
+    args: Vec<GenericArg>,
     bypass_visibility: bool,
 }
 
@@ -172,22 +217,27 @@ fn apply_alias_once(
         return Err(arity_mismatch());
     }
 
-    let mut subst: Vec<(Ident, Type)> = Vec::with_capacity(generics.len());
+    let mut subst: Vec<(Ident, GenericArg)> = Vec::with_capacity(generics.len());
     for (index, param) in generics.iter().enumerate() {
         let written = match (reference.args.get(index), &param.default) {
             (Some(argument), _) => argument.clone(),
-            (None, Some(default)) => substitute_type_params(default, &subst),
+            (None, Some(default)) => substitute_generic_arg(default, &subst),
             (None, None) => return Err(arity_mismatch()),
         };
-        let argument = normalize_type(resolver, module_path, placeholders, &written, obligations)?;
-        for bound in &param.bounds {
-            // A bound sees the parameters declared before it, exactly as a
-            // default does. It stays unexpanded in the obligation: a bound
-            // naming `spec A + B` is a bound *list*, and flattening it is the
-            // bound checker's own job.
-            let bound = substitute_type_params(bound, &subst);
-            normalize_type(resolver, module_path, placeholders, &bound, obligations)?;
-            obligations.push((bound, argument.clone()));
+        let argument =
+            normalize_generic_arg(resolver, module_path, placeholders, &written, obligations)?;
+        // Bounds exist only on type parameters, so an argument bound to a
+        // compile-time value never enters an obligation.
+        if let Some(argument) = argument.as_type() {
+            for bound in param.bounds() {
+                // A bound sees the parameters declared before it, exactly as
+                // a default does. It stays unexpanded in the obligation: a
+                // bound naming `spec A + B` is a bound *list*, and flattening
+                // it is the bound checker's own job.
+                let bound = substitute_type_params(bound, &subst);
+                normalize_type(resolver, module_path, placeholders, &bound, obligations)?;
+                obligations.push((bound, argument.clone()));
+            }
         }
         subst.push((param.ident.clone(), argument));
     }
@@ -209,6 +259,25 @@ fn apply_alias_once(
 /// appended to `obligations`. Aliases reached only through another alias's
 /// right-hand side, default, or bound are reached here too, which a
 /// root-only expansion loop could not do.
+fn normalize_generic_arg(
+    resolver: &mut dyn ModuleResolver,
+    module_path: &[Ident],
+    placeholders: &[Ident],
+    arg: &GenericArg,
+    obligations: &mut Vec<(Type, Type)>,
+) -> Result<GenericArg, ResolveError> {
+    match arg {
+        GenericArg::Type(r#type) => Ok(GenericArg::Type(normalize_type(
+            resolver,
+            module_path,
+            placeholders,
+            r#type,
+            obligations,
+        )?)),
+        GenericArg::Value(_) => Ok(arg.clone()),
+    }
+}
+
 fn normalize_type(
     resolver: &mut dyn ModuleResolver,
     module_path: &[Ident],
@@ -241,7 +310,10 @@ fn normalize_type(
         Type::Generic(path, args) => {
             let mut normalized = Vec::with_capacity(args.len());
             for arg in args {
-                normalized.push(recur(arg, obligations)?);
+                normalized.push(match arg {
+                    GenericArg::Type(inner) => GenericArg::Type(recur(inner, obligations)?),
+                    GenericArg::Value(_) => arg.clone(),
+                });
             }
             Type::Generic(path.clone(), normalized)
         }
