@@ -25,6 +25,10 @@ ptr_cast<A, B>(ptr: *B) => *A {
 	<*A>ptr
 }
 
+enum MyEnum {
+	First, Second, Third
+}
+
 main() => void {
 	fnptr := MyStruct::self::member_function;
 	mystruct := MyStruct { number = 10; };
@@ -39,13 +43,19 @@ main() => void {
 		value = 123;
 	};
 
-	a := 1;
-	b := 2;
-	c := 3;
+	# a := 1;
+	# b := 2;
+	# c := 3;
 	# test := a < b > c;
 
 	ptr := &shadow;
 	ptr2 := ptr_cast<u32>(ptr); # this should work; it currently does not.
+
+	my_enum := MyEnum::First;
+	println$("my enum tag: ", my_enum.tag);
+
+	anon_enum : enum i32 | *str = 10;
+	println$("anonymous enum tag: ", anon_enum.tag);
 
 	panic$("testing the panic macro");
 	# This should give a warning for unreachable code; it does NOT currently.
