@@ -12,4 +12,5 @@ indexmap = "2"
 
 [dev-dependencies]
 omega-mir = { path = "../omega-mir" }
+omega-mangle = { path = "../omega-mangle" }
 omega-codegen = { path = "../omega-codegen" }

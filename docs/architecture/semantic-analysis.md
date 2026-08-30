@@ -33,6 +33,7 @@ The analyzer can ask for:
 - import/module/name resolution;
 - visibility facts;
 - raw generic declarations for inference;
+- generic method templates and their instantiations;
 - overload candidates;
 - canonical spec declarations;
 - primitive methods;
@@ -139,7 +140,7 @@ The driver invokes analyzer entry points in two broad phases.
 Signature analysis establishes facts later users must be able to reference independent of declaration order:
 
 - value/function types;
-- aggregate identity + fields/method signatures;
+- aggregate identity + fields/method signatures (concrete declarations only: a generic method is a template with no signature until a call instantiates it);
 - generic parameter/bound shape;
 - annotations whose semantic meaning is needed later;
 - spec declaration/member information;
@@ -199,6 +200,8 @@ Call analysis is one of the densest semantic junctions, so its implementation is
 The key architecture rule is that a call must emerge from analysis with its target and type facts decided. MIR/codegen should not repeat overload or method lookup.
 
 When generic arguments are omitted, call analysis may ask the resolver for a raw generic signature, infer arguments from written argument shapes, and then resolve the concrete instantiated item through the ordinary query model. Type parameters are inferred from argument types; `comp` parameters are inferred only from compile-time structure, currently a fixed array's length and a matching nominal generic application.
+
+A generic *member or static* declaration is not an item query, because it belongs to an owner instantiation rather than to a module. It therefore has no signature to collect and is left out of its owner's resolved methods entirely; `analysis/items` skips it in both the signature and the body pass. Every call site instead asks the resolver for the declaration's raw template (`generic_method_template`), infers its arguments against the owner substitution the receiver or path already fixed, and asks for the instantiation (`instantiate_generic_method`), which is an ordinary `ResolvedMethod` from that point on. Positions that cannot instantiate -- naming one uncalled, or two templates sharing a name and namespace -- are rejected where they are written.
 
 ## Places and storage semantics
 

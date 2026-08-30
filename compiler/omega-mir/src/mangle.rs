@@ -23,16 +23,24 @@ pub fn global_symbol(module: &[Ident], name: &Ident) -> Symbol {
     data_item_symbol(value_path(module_path(module), name))
 }
 
+/// A function declared on a named owner. `generic_args` are the *method's*
+/// own, which an instantiated generic method needs in its path for the same
+/// reason a generic free function does: two instantiations of one
+/// declaration are two symbols.
 pub fn method_symbol(
     module: &[Ident],
     owner_name: &Ident,
     owner_generic_args: &[ResolvedGenericArg],
     method_name: &Ident,
+    generic_args: &[ResolvedGenericArg],
     fn_type: &ResolvedFunctionType,
 ) -> Symbol {
     let owner = nominal_path(module, owner_name, owner_generic_args);
     function_symbol(
-        associated_function_path(owner, method_name, fn_type),
+        generic_path(
+            associated_function_path(owner, method_name, fn_type),
+            generic_args,
+        ),
         fn_type,
     )
 }
@@ -66,6 +74,7 @@ pub fn glued_symbol(
         spec_name,
         &[],
         function_name,
+        &[],
         fn_type,
     ))
 }
@@ -170,6 +179,7 @@ pub fn extern_function_ref_symbol(extern_fn: &ExternFunctionRef) -> String {
             type_name,
             &[],
             method_name,
+            &[],
             &extern_fn.fn_type,
         )),
         (
@@ -319,6 +329,50 @@ mod tests {
     }
 
     #[test]
+    fn a_method_instantiation_carries_its_own_generic_arguments() {
+        // Two instantiations of one declaration are two symbols, exactly as
+        // for a generic free function.
+        let owner = ResolvedType::Pointer {
+            pointee: Box::new(concrete_struct("Thing")),
+            mutable: false,
+        };
+        let symbol_for = |argument: ResolvedType| {
+            method_symbol(
+                &[ident("mymod")],
+                &ident("Thing"),
+                &[],
+                &ident("echo"),
+                &[ResolvedGenericArg::Type(argument.clone())],
+                &member_fn_type(owner.clone(), vec![argument.clone()], argument),
+            )
+        };
+        let u32_instance = symbol_for(ResolvedType::U32);
+        let u64_instance = symbol_for(ResolvedType::U64);
+        assert_ne!(encode(&u32_instance), encode(&u64_instance));
+        assert_adapter_round_trip(u32_instance);
+    }
+
+    #[test]
+    fn a_method_without_generic_arguments_keeps_its_symbol() {
+        // Method generic arguments must not migrate the symbol of every
+        // ordinary method that has none.
+        let owner = ResolvedType::Pointer {
+            pointee: Box::new(concrete_struct("Thing")),
+            mutable: false,
+        };
+        let fn_type = member_fn_type(owner, vec![], ResolvedType::I32);
+        let symbol = method_symbol(
+            &[ident("mymod")],
+            &ident("Thing"),
+            &[],
+            &ident("same"),
+            &[],
+            &fn_type,
+        );
+        assert!(matches!(symbol.path, omega_mangle::ManglePath::Nested(..)));
+    }
+
+    #[test]
     fn primitive_method_adapter_round_trips_structural_owner() {
         let symbol = primitive_method_symbol(
             &ResolvedType::I32,
@@ -369,6 +423,7 @@ mod tests {
             &ident("Thing"),
             &[],
             &ident("same"),
+            &[],
             &fn_type(vec![owner.clone()], ResolvedType::I32),
         );
         let member = method_symbol(
@@ -376,6 +431,7 @@ mod tests {
             &ident("Thing"),
             &[],
             &ident("same"),
+            &[],
             &member_fn_type(owner, vec![], ResolvedType::I32),
         );
         assert_ne!(encode(&r#static), encode(&member));
@@ -394,6 +450,7 @@ mod tests {
             &ident("Thing"),
             &[],
             &ident("same"),
+            &[],
             &member_fn_type(owner, vec![], ResolvedType::I32),
         );
         let ManglePath::Nested(parent, Namespace::Value, name) = &member.path else {
@@ -452,6 +509,7 @@ mod tests {
             &ident("Thing"),
             &[],
             &ident("same"),
+            &[],
             &fn_type,
         ));
         let reference = extern_function_ref_symbol(&ExternFunctionRef {

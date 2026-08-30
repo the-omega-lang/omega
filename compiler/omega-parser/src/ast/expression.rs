@@ -61,6 +61,10 @@ pub struct FieldAccessExpr {
     /// site for a macro-authored member name and the caller's for a
     /// substituted one. Member visibility is decided with these rights.
     pub field_origin: Origin,
+    /// Generic arguments written on the member, as in `x.map<u8>(f)`. The
+    /// grammar only accepts them directly before a call's `(`, so they are
+    /// always a generic method's arguments rather than a field's.
+    pub generic_args: Vec<crate::ast::r#type::GenericArg>,
 }
 
 #[derive(Debug, Clone)]

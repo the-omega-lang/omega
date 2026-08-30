@@ -4,6 +4,8 @@ mod generic;
 mod overload;
 mod spec;
 
+use generic::MethodTemplate;
+
 pub(crate) enum Intercepted {
     Declined,
     Claimed(Option<CheckedExprNode>),
@@ -120,6 +122,7 @@ impl<'r> Analyzer<'r> {
         &mut self,
         callee: &HirExprNode,
         args: &[HirExprNode],
+        expected: Option<&ResolvedType>,
     ) -> Option<CalleeResolution> {
         // The call analyzer owns the reveal bypass for the whole callee
         // resolution. This function only needs the transparent inner shape.
@@ -127,12 +130,14 @@ impl<'r> Analyzer<'r> {
 
         let member = match &callee.expr {
             HirExpr::Place(place) => match place.projections.last() {
-                Some(HirProjection::FieldAccess(field, origin)) => Some((place, field, *origin)),
+                Some(HirProjection::FieldAccess(field, origin, generic_args)) => {
+                    Some((place, field, *origin, generic_args))
+                }
                 _ => None,
             },
             _ => None,
         };
-        let Some((place, field, field_origin)) = member else {
+        let Some((place, field, field_origin, generic_args)) = member else {
             let checked = self.analyze_expr(callee, None)?;
             let fn_type = self.require_callable(callee.id, callee.span, checked.r#type.clone())?;
             return Some(CalleeResolution::Ordinary(ResolvedCallee {
@@ -193,6 +198,20 @@ impl<'r> Analyzer<'r> {
             FunctionNamespace::Member,
         );
         if members.is_empty() {
+            // A generic method is not among its owner's resolved members --
+            // it has no signature until this call's arguments give it one --
+            // so it is looked up before the name is treated as missing.
+            if let Some(resolution) = self.resolve_generic_method_callee(
+                callee,
+                field,
+                field_origin,
+                &receiver,
+                generic_args,
+                args,
+                expected,
+            ) {
+                return resolution;
+            }
             let receiver_type = receiver.r#type.autoderef();
             let field_shadows = match receiver_type {
                 ResolvedType::Struct(cell) => cell
@@ -271,9 +290,128 @@ impl<'r> Analyzer<'r> {
                     }
                 }
             }
+            self.reject_member_generic_args(callee, field, &receiver.r#type, generic_args)?;
             return self.resolve_field_callee(callee, field, field_origin, receiver);
         }
+        self.reject_member_generic_args(callee, field, &receiver.r#type, generic_args)?;
         self.resolve_method_callee(callee, field, field_origin, receiver, members, args)
+    }
+
+    /// Written generic arguments belong to a generic declaration, which was
+    /// already tried by the time a member resolves to anything else.
+    fn reject_member_generic_args(
+        &mut self,
+        callee: &HirExprNode,
+        field: &Ident,
+        receiver_type: &ResolvedType,
+        generic_args: &[GenericArg],
+    ) -> Option<()> {
+        if generic_args.is_empty() {
+            return Some(());
+        }
+        self.error(
+            callee.id,
+            callee.span,
+            AnalysisErrorKind::MemberTakesNoGenericArgs {
+                owner: Self::owner_name(receiver_type),
+                member: field.clone(),
+            },
+        );
+        None
+    }
+
+    /// `value.name(...)` where `name` is one of the owner's generic
+    /// declarations. `None` declines, leaving the missing-name diagnostics to
+    /// the ordinary path.
+    ///
+    /// Completing the call lives in its own function so that `?` there means
+    /// "invalid, and reported" rather than "declined".
+    fn resolve_generic_method_callee(
+        &mut self,
+        callee: &HirExprNode,
+        field: &Ident,
+        field_origin: Origin,
+        receiver: &Receiver,
+        written_generics: &[GenericArg],
+        args: &[HirExprNode],
+        expected: Option<&ResolvedType>,
+    ) -> Option<Option<CalleeResolution>> {
+        let owner = receiver.r#type.autoderef().clone();
+        let template = match self.generic_method_template(
+            callee.id,
+            callee.span,
+            &owner,
+            field,
+            FunctionNamespace::Member,
+        ) {
+            MethodTemplate::Absent => return None,
+            MethodTemplate::Failed => return Some(None),
+            MethodTemplate::Found(template) => template,
+        };
+        Some(self.finish_generic_method_callee(
+            callee,
+            field,
+            field_origin,
+            receiver,
+            &owner,
+            &template,
+            written_generics,
+            args,
+            expected,
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn finish_generic_method_callee(
+        &mut self,
+        callee: &HirExprNode,
+        field: &Ident,
+        field_origin: Origin,
+        receiver: &Receiver,
+        owner: &ResolvedType,
+        template: &GenericMethodTemplate,
+        written_generics: &[GenericArg],
+        args: &[HirExprNode],
+        expected: Option<&ResolvedType>,
+    ) -> Option<CalleeResolution> {
+        let declared = Self::owner_item_path(owner, field);
+        let explicit = self.resolve_generic_arg_list(
+            callee.id,
+            callee.span,
+            written_generics,
+            &declared,
+            &template.generics,
+        )?;
+        // The receiver is supplied by the instance syntax itself, so it is
+        // the one parameter neither inference nor the argument check sees.
+        let (method, checked_args) = self.instantiate_generic_method_call(
+            callee.id,
+            callee.span,
+            owner,
+            field,
+            FunctionNamespace::Member,
+            template,
+            &explicit,
+            1,
+            args,
+            expected,
+        )?;
+        let checked_args = self.finish_generic_call_arguments(
+            callee.id,
+            callee.span,
+            &method.fn_type,
+            1,
+            args.len(),
+            checked_args,
+        )?;
+        self.finish_method_callee(
+            callee,
+            field,
+            field_origin,
+            receiver.clone(),
+            method,
+            Some(checked_args),
+        )
     }
 
     fn resolve_method_callee(
@@ -286,6 +424,18 @@ impl<'r> Analyzer<'r> {
         args: &[HirExprNode],
     ) -> Option<CalleeResolution> {
         let (method, checked_args) = self.pick_method(callee, field, methods, args)?;
+        self.finish_method_callee(callee, field, field_origin, receiver, method, checked_args)
+    }
+
+    fn finish_method_callee(
+        &mut self,
+        callee: &HirExprNode,
+        field: &Ident,
+        field_origin: Origin,
+        receiver: Receiver,
+        method: ResolvedMethod,
+        checked_args: Option<Vec<CheckedExprNode>>,
+    ) -> Option<CalleeResolution> {
         self.require_method_visible(callee, field, field_origin, &receiver.r#type, &method)?;
 
         let self_mode = method

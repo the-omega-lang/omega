@@ -88,7 +88,10 @@ alongside `name`, its declaration position, `0` for the overwhelmingly common
 unambiguous case), after which both parallel caches, both extra sweeps, and
 at least one trait method collapse into the ordinary path — and generic
 overloads become possible rather than structurally excluded. Breaking:
-changes the resolver trait's surface and every cache key shape.
+changes the resolver trait's surface and every cache key shape. The same
+disambiguator is what generic *member/static* overloads need: they are
+rejected today for the identical reason (see the method-instantiation entry
+below), so one key change unlocks both.
 
 A static-spec parameter (`f(x: spec A + B)`) manifests the identical
 "candidate forced non-generic" limitation: `normalize_static_spec_params`
@@ -100,6 +103,68 @@ static-spec-turned-generic candidate cannot resolve under). This is the same
 root cause as the rest of this entry, not a second one — fixed by the same
 `ItemKey` disambiguator work, not by a local workaround in alias or
 static-spec code.
+
+### Generic member/static instantiation is a third query identity beside `ItemKey`
+
+A generic declaration inside a struct/union/enum is instantiated through its
+own key, `MethodKey { owner: ItemKey, method: HirId, generic_args }`, owned by
+`omega-driver/src/items/methods.rs`. The reason is real and not a shortcut: a
+method has no name in a module index — it is a *component* of its owner's
+item result (`ResolvedStructType::functions`) — so `ItemKey` has no way to
+address "this declaration on that owner instantiation", and the demand-driven
+machinery it fronts cannot be pointed at one.
+
+But the consequence is the same shape the overloading entry above describes.
+Method instantiation now carries:
+
+- its own signature cache (`ItemQueries::method_instantiations`) with its own
+  `MethodQueryState { Resolved, Failed }`, parallel to `ItemQueryState`;
+- its own body cache (`method_bodies`), parallel to `generic_instantiations`;
+- its own identity index (`method_identities`), because a `decl_id` reaching
+  `resolve_function_body` can no longer be answered by `decl_id_owner` alone;
+- two `ModuleResolver` methods (`generic_method_template`,
+  `instantiate_generic_method`) beside the raw-signature/`resolve_item` pair
+  that answers the same question for items;
+- its own emission loop in `compile/mod.rs`, beside the one that drains
+  `generic_instantiations` under the identical declaring-module rule.
+
+What it does *not* get is everything that hangs off the item path's state
+machine: no `resolution_stack` entry, so a cycle has no breadcrumb to report;
+no `InProgress` state (see the entry below); and no coverage from the
+`failures_retain_a_cause` assertion, which walks `item_states` only.
+
+The fix is the same disambiguator the overloading entry proposes, generalized
+one step further: a query key able to name a declaration *inside* an owner as
+well as one inside a module. Method instantiation would then be an ordinary
+item query with an owner-qualified key, the three caches above would collapse
+into the existing ones, and generic member/static overloads would stop being
+structurally excluded. Breaking: resolver trait surface and every cache key
+shape, so it belongs with that work rather than as a separate change.
+
+### Method instantiation's re-entrancy guard is an ordering convention rather than a state
+
+An item query cannot re-enter itself: `ensure_item` marks the key
+`InProgress` before computing it and `begin_body` holds a `body_in_progress`
+set, so a self-reference is a *diagnosable state* — it becomes a cycle or
+recursive-type error naming the chain that produced it.
+
+Method instantiation has neither. `MethodQueryState` has no `InProgress`
+variant, and the only thing preventing a self-recursive generic method
+(`self.repeat(depth - 1, thing)`) from re-entering its own unfinished
+instantiation is *statement order* in `instantiate_generic_method`: the
+resolved signature is inserted into `method_instantiations` before
+`check_function_body` runs, so the recursive call finds it. A reordering, or
+a new early return between those two statements, converts that into unbounded
+re-entry. Nothing enforces the ordering: there is a comment at the insertion,
+and `tests/t10c_generic_member_functions` covers the behavior, but the test
+would hang rather than fail with a message, which is the failure mode hardest
+to attribute.
+
+An explicit `InProgress` state would restore the item path's property that
+re-entry is reported rather than merely avoided, and would give the cycle a
+name to print. It is a small change on its own, but it is the same
+state-machine the entry above proposes to merge into, so it is worth doing
+with that rather than bolting a second partial state machine onto this one.
 
 ### A static-spec parameter's synthesized generic uses a fabricated impossible-source name instead of a real identity
 

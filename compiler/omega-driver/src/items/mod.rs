@@ -45,6 +45,30 @@ impl ItemKey {
     }
 }
 
+/// What one generic-method instantiation query settled on. A failed
+/// instantiation keeps its state so that every later call site reaching the
+/// same broken declaration is a secondary reference to one reported error
+/// rather than a fresh copy of it.
+///
+/// There is no in-progress state: the resolved signature is recorded before
+/// the body is checked, so a declaration that instantiates itself at the
+/// same arguments finds the finished signature instead of re-entering.
+pub(crate) enum MethodQueryState {
+    Resolved(ResolvedMethod),
+    Failed,
+}
+
+/// One instantiation of a generic method: the owner query it was declared
+/// in, which declaration it is, and the arguments it was instantiated with.
+/// The owner key carries the owner's own generic arguments, so
+/// `Pair<i32>::self::map<u8>` and `Pair<u8>::self::map<u8>` stay distinct.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct MethodKey {
+    pub owner: ItemKey,
+    pub method: HirId,
+    pub generic_args: Vec<ResolvedGenericArg>,
+}
+
 type SpecKey = (ModulePath, Ident);
 
 type OverloadKey = (ModulePath, usize);
@@ -240,6 +264,12 @@ pub(crate) struct ItemQueries {
     pub overload_signatures: IndexMap<OverloadKey, ResolvedFunctionType>,
     pub overload_bodies: HashMap<OverloadKey, CheckedBody>,
     pub generic_instantiations: IndexMap<ItemKey, CheckedBody>,
+    pub method_instantiations: IndexMap<MethodKey, MethodQueryState>,
+    pub method_bodies: IndexMap<MethodKey, CheckedBody>,
+    /// The instantiation each materialized method identity belongs to, so a
+    /// use site holding only a `decl_id` -- compile-time evaluation asking
+    /// for the body behind a call -- can find it again.
+    pub method_identities: HashMap<HirId, MethodKey>,
     pub declared_bounds: HashMap<ItemKey, Vec<ResolvedBound>>,
     next_synthetic_id: u32,
     checked_bodies: HashMap<ItemKey, CheckedBody>,
@@ -419,6 +449,7 @@ impl ItemQueries {
     }
 }
 
+mod methods;
 mod resolution;
 
 #[cfg(test)]

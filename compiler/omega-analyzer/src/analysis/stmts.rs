@@ -839,6 +839,7 @@ impl<'r> Analyzer<'r> {
                 projections: vec![HirProjection::FieldAccess(
                     Ident(method.to_string()),
                     Origin::default(),
+                    Vec::new(),
                 )],
             }),
         };

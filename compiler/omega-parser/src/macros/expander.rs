@@ -592,6 +592,7 @@ impl<'a> Expander<'a> {
                 base: self.expand_expr(access.base)?,
                 field: access.field,
                 field_origin: access.field_origin,
+                generic_args: access.generic_args,
             })),
             Expression::Index(index) => Expression::Index(Box::new(IndexExpr {
                 base: self.expand_expr(index.base)?,

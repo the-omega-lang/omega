@@ -274,6 +274,7 @@ impl Lowerer {
                 place.projections.push(HirProjection::FieldAccess(
                     access.field.clone(),
                     access.field_origin,
+                    access.generic_args.clone(),
                 ));
                 place
             }

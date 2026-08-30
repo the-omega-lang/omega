@@ -290,12 +290,21 @@ fn parse_postfix_loop(p: &mut Parser, mut expr: ExpressionNode) -> Option<Expres
                 p.advance();
                 let field_span = p.peek_span();
                 let (field, field_origin) = p.expect_ident_with_origin()?;
+                // Only a call can apply generic arguments to a member, so
+                // `<...>` is read as an application here exactly when a call
+                // follows it; `a.b < c > d` stays two comparisons.
+                let generic_args = if p.check(&TokenKind::Lt) {
+                    try_parse_member_generic_args(p).unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
                 let span = expr.span.to(field_span);
                 expr = ExpressionNode {
                     expression: Expression::FieldAccess(Box::new(FieldAccessExpr {
                         base: expr,
                         field,
                         field_origin,
+                        generic_args,
                     })),
                     span,
                     origin: field_origin,
@@ -711,6 +720,19 @@ fn parse_expr_path(p: &mut Parser) -> Option<crate::ast::identifier::ExprPath> {
         args_at,
         qualified_spec: None,
     })
+}
+
+/// The member form of [`try_parse_generic_args`]: a member's generic
+/// arguments can only be applied by a call, so the attempt commits only when
+/// the argument list is followed by one.
+fn try_parse_member_generic_args(p: &mut Parser) -> Option<Vec<crate::ast::r#type::GenericArg>> {
+    let mark = p.mark();
+    let args = try_parse_generic_args(p)?;
+    if !p.check(&TokenKind::LParen) {
+        p.reset(mark);
+        return None;
+    }
+    Some(args)
 }
 
 fn try_parse_generic_args(p: &mut Parser) -> Option<Vec<crate::ast::r#type::GenericArg>> {

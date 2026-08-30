@@ -138,6 +138,7 @@ dependencies = [
  "omega-codegen",
  "omega-diagnostics",
  "omega-hir",
+ "omega-mangle",
  "omega-mir",
  "omega-parser",
 ]

@@ -445,12 +445,12 @@ impl Driver {
         // ordinary item/aggregate-construction positions use, so a defaulted
         // alias argument works here exactly as it does in a plain type
         // position.
-        let generic_args =
-            self.pad_generic_defaults(alias_module, alias_name, index, generics, generic_args)?;
-        let generic_args = generic_args.as_slice();
         let owner = omega_analyzer::analysis::item_site(
             &self.modules.parsed(alias_module).hir.items[index],
         );
+        let generic_args =
+            self.pad_generic_defaults(alias_module, alias_name, owner, generics, generic_args)?;
+        let generic_args = generic_args.as_slice();
         let substitution: GenericSubstitution = generics
             .iter()
             .map(|g| g.ident.clone())
@@ -863,6 +863,25 @@ impl ModuleResolver for Driver {
         }))
     }
 
+    fn generic_method_template(
+        &mut self,
+        owner: &ResolvedType,
+        name: &Ident,
+        namespace: FunctionNamespace,
+    ) -> Result<Option<omega_analyzer::resolver::GenericMethodTemplate>, ResolveError> {
+        Driver::generic_method_template(self, owner, name, namespace)
+    }
+
+    fn instantiate_generic_method(
+        &mut self,
+        owner: &ResolvedType,
+        name: &Ident,
+        namespace: FunctionNamespace,
+        generic_args: &[ResolvedGenericArg],
+    ) -> Result<Option<ResolvedMethod>, ResolveError> {
+        Driver::instantiate_generic_method(self, owner, name, namespace, generic_args)
+    }
+
     fn spec_declaration(
         &mut self,
         absolute_path: &[Ident],
@@ -1042,6 +1061,16 @@ impl ModuleResolver for Driver {
         &mut self,
         decl_id: HirId,
     ) -> Result<Option<CheckedFunctionDef>, ResolveError> {
+        // A generic method's instantiation is emitted on its own rather than
+        // inside its owner's definition, so it is found by its own key.
+        if let Some(key) = self.items.method_identities.get(&decl_id).cloned() {
+            return Ok(
+                match self.items.method_bodies.get(&key).map(|body| &body.item) {
+                    Some(CheckedItem::FunctionDefinition(f)) => Some(f.clone()),
+                    _ => None,
+                },
+            );
+        }
         let Some(key) = self.items.decl_id_owner.get(&decl_id).cloned() else {
             return Ok(None);
         };

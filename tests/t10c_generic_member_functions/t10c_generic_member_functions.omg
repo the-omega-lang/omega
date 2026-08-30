@@ -1,0 +1,118 @@
+import std::io::println;
+import core::range::Bounded;
+
+# A function declared inside a nominal type may declare its own generic
+# parameters, in either associated-function namespace, and is instantiated
+# by the call that determines them -- exactly like a top-level generic.
+
+exposed spec Describable {
+	describe(*self) => *str;
+}
+
+struct Widget {
+	exposed name: *str;
+}
+
+meet Describable for Widget {
+	describe(*self) => *str { self.name }
+}
+
+struct Holder {
+	exposed value: i32;
+
+	# member and static declarations of the same name stay separate
+	exposed echo<T>(*self, thing: T) => T { thing }
+	exposed echo<T>(thing: T) => T { thing }
+
+	exposed pick<T>(*self, first: T, second: T) => T { second }
+	exposed floor<T: Bounded>(*self) => T { T::min() }
+	exposed count<comp N: usize, T>(*self, values: [N]T) => usize { N }
+	exposed tell(*self, item: spec Describable) => *str { item.describe() }
+}
+
+# A generic owner: the method's parameters may name the owner's generics and
+# `Self`, and a method parameter shadows an owner parameter of the same name.
+struct Pair<A> {
+	exposed a: A;
+
+	exposed with<B>(*self, other: Pair<A>, b: B) => B { b }
+	exposed mine<B>(*self, other: Self, b: B) => A { other.a }
+	exposed shadow<A>(*self, other: A) => A { other }
+	exposed of<B>(b: B) => B { b }
+
+	# an instantiation is an ordinary function: it can call another one,
+	# through `Self`, and it can call itself
+	exposed via_self<B>(b: B) => B { Self::of(b) }
+	exposed repeat<B>(*self, depth: i32, b: B) => B {
+		if depth <= 0 { return b; }
+		self.repeat(depth - 1, b)
+	}
+}
+
+enum Signal {
+	Red,
+	Green;
+
+	exposed tag_of<T>(*self, witness: T) => i32 { 1 }
+}
+
+union Bits {
+	exposed word: u32;
+
+	exposed reinterpret<T>(*self, witness: T) => u32 { self.word }
+}
+
+comp folded := Holder::echo(21);
+
+main() => void {
+	holder := Holder { value = 3; };
+	widget := Widget { name = "widget"; };
+
+	# inference from the written arguments, and the two namespaces
+	println$("member-inference: ", holder.echo(7), " ", holder.echo(true), " ", Holder::echo(9));
+
+	# explicitly written arguments, in both spellings
+	println$(
+		"explicit-arguments: ",
+		holder.pick<u8>(1, 2),
+		" ",
+		Holder::self::pick<u8>(&holder, 3, 4)
+	);
+
+	# a bound, an expected result type, a `comp` parameter, and `spec S`
+	lowest: i32 = holder.floor();
+	println$(
+		"bounds-and-comp: ",
+		lowest,
+		" ",
+		holder.count([1, 2, 3]),
+		" ",
+		holder.tell(widget)
+	);
+
+	# a generic owner, whose own arguments the receiver or the path fixes
+	pair := Pair<i32> { a = 5; };
+	other := Pair<i32> { a = 6; };
+	println$(
+		"generic-owner: ",
+		pair.with(other, 1u8),
+		" ",
+		pair.mine(other, 2u8),
+		" ",
+		pair.shadow("shadowed"),
+		" ",
+		Pair<i32>::of(8u8),
+		" ",
+		Pair<i32>::via_self(9u8),
+		" ",
+		pair.repeat(3, 10u8)
+	);
+
+	# enums and unions own generic declarations under the same rules
+	signal := Signal::Green;
+	bits := Bits { word = 12u32; };
+	println$("other-owners: ", signal.tag_of(0u8), " ", bits.reinterpret(0u8));
+
+	# an instantiation is an ordinary function: it folds at compile time
+	println$("compile-time: ", folded);
+}

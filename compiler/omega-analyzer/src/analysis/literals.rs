@@ -395,8 +395,13 @@ impl<'r> Analyzer<'r> {
             let absolute = access.absolute.clone();
             let accessor = self.path_module(&path.path);
             let params = self.item_generic_params_for(&accessor, prefix, &access);
-            let generic_args =
-                self.resolve_generic_arg_list(node_id, span, path, &access.absolute, &params)?;
+            let generic_args = self.resolve_generic_arg_list(
+                node_id,
+                span,
+                &path.generic_args,
+                &access.absolute,
+                &params,
+            )?;
             let resolved = match self.resolve_item_with_ambient_from(
                 &accessor,
                 prefix,

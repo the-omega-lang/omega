@@ -72,9 +72,13 @@ impl<'r> Analyzer<'r> {
                 owner.push(cell.name.clone());
                 (cell.generics.clone(), owner)
             };
-            let Some(args) =
-                self.resolve_generic_arg_list(node_id, span, expr_path, &owner, &params)
-            else {
+            let Some(args) = self.resolve_generic_arg_list(
+                node_id,
+                span,
+                &expr_path.generic_args,
+                &owner,
+                &params,
+            ) else {
                 return Intercepted::Claimed(None);
             };
             args

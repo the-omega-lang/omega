@@ -397,8 +397,8 @@ fn member_name_provenance_survives_lowering() {
         panic!("expected a place");
     };
     let [
-        HirProjection::FieldAccess(substituted, caller_origin),
-        HirProjection::FieldAccess(authored, macro_origin),
+        HirProjection::FieldAccess(substituted, caller_origin, _),
+        HirProjection::FieldAccess(authored, macro_origin, _),
     ] = place.projections.as_slice()
     else {
         panic!("expected `.own` then `.tag`, got {:?}", place.projections);

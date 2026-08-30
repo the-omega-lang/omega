@@ -674,7 +674,10 @@ pub enum HirPlaceRoot {
 
 #[derive(Debug, Clone)]
 pub enum HirProjection {
-    FieldAccess(Ident, Origin),
+    /// A named member: a field, or the method a call selects. Generic
+    /// arguments are only ever written on the latter -- the grammar accepts
+    /// them solely before a call's `(`.
+    FieldAccess(Ident, Origin, Vec<GenericArg>),
     Index(Box<HirExprNode>),
     Deref,
 }

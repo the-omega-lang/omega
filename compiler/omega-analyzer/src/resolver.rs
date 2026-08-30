@@ -169,6 +169,14 @@ pub enum ResolveError {
         spec: Ident,
         missing: Vec<Ident>,
     },
+    /// Two generic declarations on one owner share a name and a namespace.
+    /// A template has no signature to rank before its arguments are known,
+    /// so the call cannot choose between them.
+    GenericMethodOverload {
+        module: Vec<Ident>,
+        owner: Ident,
+        function: Ident,
+    },
     SpecDependencyCycle {
         module: Vec<Ident>,
         spec: Ident,
@@ -305,6 +313,17 @@ impl fmt::Display for ResolveError {
                     .map(Ident::as_ref)
                     .collect::<Vec<_>>()
                     .join(", ")
+            ),
+            Self::GenericMethodOverload {
+                module,
+                owner,
+                function,
+            } => write!(
+                f,
+                "'{}::{}' declares more than one generic '{}'; generic declarations do not participate in overload resolution",
+                join(module),
+                owner.as_ref(),
+                function.as_ref()
             ),
             Self::SpecDependencyCycle { module, spec } => {
                 write!(
@@ -516,6 +535,30 @@ pub trait ModuleResolver {
         namespace: crate::resolved_type::FunctionNamespace,
     ) -> Result<Option<GenericOwnerFunctionSignature>, ResolveError>;
 
+    /// The generic function `owner` declares under `name` in `namespace`.
+    ///
+    /// A generic declaration has no signature until it is instantiated, so an
+    /// owner never lists one among its resolved methods; this is how a call
+    /// site sees the template it must infer arguments for. `Ok(None)` means
+    /// the owner declares no such template.
+    fn generic_method_template(
+        &mut self,
+        owner: &ResolvedType,
+        name: &Ident,
+        namespace: crate::resolved_type::FunctionNamespace,
+    ) -> Result<Option<GenericMethodTemplate>, ResolveError>;
+
+    /// The concrete method one argument list produces from that template.
+    /// Materializes the instantiation -- signature, body, and identity --
+    /// exactly as instantiating a generic item does.
+    fn instantiate_generic_method(
+        &mut self,
+        owner: &ResolvedType,
+        name: &Ident,
+        namespace: crate::resolved_type::FunctionNamespace,
+        generic_args: &[ResolvedGenericArg],
+    ) -> Result<Option<ResolvedMethod>, ResolveError>;
+
     /// The overload candidates `accessor` may choose between when it writes
     /// the name bound by `access`. `Ok(None)` means the name is not an
     /// overload set at all.
@@ -602,6 +645,24 @@ pub struct GenericSignature {
 pub struct GenericLiteralSignature {
     pub generics: Vec<HirGenericParam>,
     pub fields: Vec<(Ident, Type)>,
+}
+
+/// A generic function declared on a concrete owner, as written.
+///
+/// The types are still the declaration's own syntax: they may name the
+/// owner's generic parameters or `Self`, which `owner_substitution` binds.
+#[derive(Debug, Clone)]
+pub struct GenericMethodTemplate {
+    /// The declaration's effective generic parameters. A `spec S` parameter
+    /// is already normalized into one of them.
+    pub generics: Vec<HirGenericParam>,
+    /// Written parameter types, including the receiver of a member function.
+    pub params: Vec<Type>,
+    pub return_type: Type,
+    /// What the owner instantiation binds for the types above: its own
+    /// generic arguments and `Self`, minus any name the declaration's own
+    /// generics shadow.
+    pub owner_substitution: crate::generics::GenericSubstitution,
 }
 
 #[derive(Debug, Clone)]

@@ -99,6 +99,17 @@ impl Driver {
                     .map(|warning| (key.module.clone(), warning.clone())),
             );
         }
+        // Generic method instantiations follow the same rule: the owner's
+        // declaring module decides the emitted symbol's identity.
+        for (key, body) in &self.items.method_bodies {
+            let checked_module = self.emission_module(&mut modules, &key.owner.module);
+            checked_module.items.push(body.item.clone());
+            warnings.extend(
+                body.warnings
+                    .iter()
+                    .map(|warning| (key.owner.module.clone(), warning.clone())),
+            );
+        }
         self.drain_pending_declaration_bodies(&mut modules, &mut warnings);
 
         // The last relationship sweep that can still produce errors, so it

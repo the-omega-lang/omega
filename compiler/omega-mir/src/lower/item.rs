@@ -200,6 +200,7 @@ fn lower_function(
         mangling,
         conformance_owner,
         primitive_target,
+        method_owner: _,
         naked,
     } = function;
     let body = if naked {
@@ -270,7 +271,23 @@ fn lower_naked_body(body: CheckedBlock) -> MirInlineAsm {
     }
 }
 
+/// The symbol of a checked function emitted on its own, which covers three
+/// owned forms as well as an ordinary free function: conformance methods,
+/// primitive methods, and instantiated generic methods are all emitted
+/// outside their owner's definition and name their owner here.
 fn free_function_symbol(function: &CheckedFunctionDef, path: &[Ident], entry: &[Ident]) -> String {
+    if let ManglingMode::Enabled = &function.mangling
+        && let Some(owner) = &function.method_owner
+    {
+        return mangle::encode(&mangle::method_symbol(
+            &owner.module_path,
+            &owner.name,
+            &owner.generic_args,
+            &function.name,
+            &function.generic_args,
+            &function.fn_type(),
+        ));
+    }
     match (
         &function.mangling,
         &function.conformance_owner,
@@ -342,6 +359,7 @@ fn method_symbol(
             owner_name,
             owner_generic_args,
             &function.name,
+            &function.generic_args,
             &function.fn_type(),
         )),
     }

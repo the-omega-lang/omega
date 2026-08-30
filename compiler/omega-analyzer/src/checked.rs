@@ -142,7 +142,18 @@ pub struct CheckedFunctionDef {
     pub mangling: crate::annotations::ManglingMode,
     pub conformance_owner: Option<ConformanceOwner>,
     pub primitive_target: Option<ResolvedType>,
+    /// Set on an instantiated generic method, which is emitted on its own
+    /// rather than inside its owner's definition and therefore has to carry
+    /// the owner identity its symbol is built from.
+    pub method_owner: Option<CheckedMethodOwner>,
     pub naked: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct CheckedMethodOwner {
+    pub module_path: Vec<Ident>,
+    pub name: Ident,
+    pub generic_args: Vec<ResolvedGenericArg>,
 }
 
 #[derive(Debug, Clone)]

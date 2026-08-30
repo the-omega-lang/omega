@@ -113,6 +113,25 @@ impl ModuleResolver for NoResolver {
         unreachable!("test never triggers generic resolution")
     }
 
+    fn generic_method_template(
+        &mut self,
+        _owner: &ResolvedType,
+        _name: &Ident,
+        _namespace: crate::resolved_type::FunctionNamespace,
+    ) -> Result<Option<crate::resolver::GenericMethodTemplate>, ResolveError> {
+        Ok(None)
+    }
+
+    fn instantiate_generic_method(
+        &mut self,
+        _owner: &ResolvedType,
+        _name: &Ident,
+        _namespace: crate::resolved_type::FunctionNamespace,
+        _generic_args: &[ResolvedGenericArg],
+    ) -> Result<Option<ResolvedMethod>, ResolveError> {
+        unreachable!("test never instantiates a generic method")
+    }
+
     fn resolve_overload_set(
         &mut self,
         _accessor: &[Ident],

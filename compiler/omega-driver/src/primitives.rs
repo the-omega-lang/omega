@@ -160,7 +160,10 @@ impl Driver {
                     let (fn_type, annotations) = analyzer.collect_function_signature(function)?;
                     resolved.push((fn_type, annotations));
                 }
-                analyzer.check_overload_duplicates(&primitive.functions, &resolved);
+                analyzer.check_overload_duplicates(
+                    &primitive.functions.iter().collect::<Vec<_>>(),
+                    &resolved,
+                );
                 Some(
                     primitive
                         .functions

@@ -500,7 +500,7 @@ unary = "*", unary
 qualified-spec-member = "<", type, ":", type, ">", "::", identifier, { postfix-suffix } ;
 
 postfix = primary, { postfix-suffix } ;
-postfix-suffix = ".", identifier
+postfix-suffix = ".", identifier, [ generic-arguments ]
                | "[", ( expression | range-expression ), "]"
                | "(", [ argument-list ], ")"
                | "?" ;
@@ -523,6 +523,8 @@ field-initializer = identifier, "=", expression, ";" ;
 ```
 
 Calls and array literals do **not** accept a trailing comma in the current grammar. Expression-path generic arguments are accepted only when the token after the closing `>` continues the path, opens a generic struct literal, applies a call, or ends the expression; see the path rule above.
+
+Generic arguments written on a member (`value.method<u8>(x)`) commit under a narrower rule: only a call can apply them, so the attempt is kept only when `(` immediately follows the closing `>`, and `a.b < c > d` stays a chained comparison.
 
 In `if`, `while`, `match` scrutinees, and `for` headers, an unparenthesized leading struct literal is syntactically restricted so the following `{` can unambiguously begin the control-flow body. Parentheses can make the struct literal explicit when needed.
 

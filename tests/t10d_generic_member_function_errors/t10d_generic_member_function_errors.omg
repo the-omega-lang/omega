@@ -1,0 +1,31 @@
+# A generic declaration has no signature until a call determines its generic
+# arguments, so every position that cannot instantiate it is rejected, and
+# two generic declarations of one name in one namespace cannot be ranked.
+exposed spec Describable {
+	describe(*self) => *str;
+}
+
+struct Widget {
+	exposed name: *str;
+}
+
+struct Holder {
+	exposed value: i32;
+
+	exposed need<T: Describable>(*self, item: T) => *str { item.describe() }
+	exposed plain(*self, n: i32) => i32 { n }
+	exposed alone<T>(*self, thing: T) => T { thing }
+
+	exposed twin<T>(*self, thing: T) => T { thing }
+	exposed twin<T>(*self, first: T, second: T) => T { second }
+}
+
+main() => void {
+	holder := Holder { value = 1; };
+	widget := Widget { name = "widget"; };
+
+	unbounded := holder.need(widget);
+	uninstantiated := Holder::self::alone;
+	not_generic := holder.plain<i32>(1);
+	ambiguous := holder.twin(1);
+}

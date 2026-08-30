@@ -52,9 +52,9 @@ use crate::{
         ResolvedStructType, ResolvedType, ResolvedUnionType,
     },
     resolver::{
-        GenericLiteralSignature, GenericOwnerFunctionSignature, GenericSignature, ImportTarget,
-        ItemAccess, ItemNamespace, ModuleResolver, ResolveError, ResolveItemOptions, ResolvedItem,
-        ResolvedOverloadSet,
+        GenericLiteralSignature, GenericMethodTemplate, GenericOwnerFunctionSignature,
+        GenericSignature, ImportTarget, ItemAccess, ItemNamespace, ModuleResolver, ResolveError,
+        ResolveItemOptions, ResolvedItem, ResolvedOverloadSet,
     },
     similarity::best_match,
 };
@@ -1526,6 +1526,12 @@ impl<'r> Analyzer<'r> {
         Some((checked_args, subst))
     }
 
+    /// The expected type one written parameter contributes to an argument,
+    /// under what is bound so far.
+    ///
+    /// This is a hint, so nothing here is reported: a declaration whose
+    /// written types do not resolve is diagnosed once where its signature is
+    /// analyzed, not again at every call that tries to read a hint from it.
     pub(crate) fn expected_for_generic_param(
         &mut self,
         id: HirId,
@@ -1537,18 +1543,21 @@ impl<'r> Analyzer<'r> {
         if !Self::generic_refs_resolvable(raw_type, generics, subst) {
             return None;
         }
-        let mut local = subst.clone();
-        for param in generics.params {
-            if local.contains(&param.ident) {
-                continue;
+        self.without_diagnostics(|this| {
+            let mut local = subst.clone();
+            for param in generics.params {
+                if local.contains(&param.ident) {
+                    continue;
+                }
+                let Some(default) = &param.default else {
+                    continue;
+                };
+                let resolved =
+                    this.resolve_default_generic_arg(id, span, param, default, &local)?;
+                local.push(param.ident.clone(), resolved);
             }
-            let Some(default) = &param.default else {
-                continue;
-            };
-            let resolved = self.resolve_default_generic_arg(id, span, param, default, &local)?;
-            local.push(param.ident.clone(), resolved);
-        }
-        self.resolve_under_substitution(id, span, raw_type, &local)
+            this.resolve_under_substitution(id, span, raw_type, &local)
+        })
     }
 
     /// One generic parameter's default, resolved as the kind the parameter

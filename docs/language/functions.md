@@ -91,6 +91,24 @@ process<T: Animal>(value: T) => void {
 
 A function's generic arguments are inferred from arguments and expected result context, and a call may fix a left-to-right prefix of them explicitly with `f<T, ...>(...)`. Omega has no turbofish spelling; `::<...>` is not syntax. Bounds and inference rules are specified in [`generics.md`](generics.md).
 
+A function declared inside a nominal type may declare generic parameters of its own, in either associated-function namespace:
+
+```omega
+struct Holder {
+    exposed value: i32;
+
+    exposed echo<T>(*self, thing: T) => T { thing }
+    exposed make<T>(thing: T) => T { thing }
+}
+
+h.echo(1u8);                    # inferred
+h.echo<u8>(1);                  # written on the member
+Holder::make<u8>(1);            # written on the static
+Holder::self::echo<u8>(&h, 1);  # the member as an unbound value's call
+```
+
+A generic declaration has no signature until a call determines its arguments, which has two consequences. It does not participate in overload resolution: two generic declarations sharing a name and a namespace are rejected where they are called, since nothing can rank them. And it cannot be named without being called, so `Holder::self::echo` is not an unbound member value; only an instantiated declaration has a single address. Generic member/static functions are specified in [`generics.md`](generics.md).
+
 ## Overloading
 
 Several functions or methods may share a name. A call is resolved using the argument count and argument types, including literal-adaptation cost.

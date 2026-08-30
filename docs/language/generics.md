@@ -190,6 +190,29 @@ x : i32 = lowest();
 
 If a generic appears nowhere that supplies information and has no applicable default, inference fails.
 
+## Generic member and static functions
+
+A function declared inside a struct, union, or enum may declare its own generic parameters, under this chapter's rules, whether or not its owner is generic:
+
+```omega
+struct Pair<A> {
+    exposed a: A;
+
+    exposed with<B>(*self, other: Pair<A>, b: B) => B { b }
+    exposed of<B>(b: B) => B { b }
+}
+```
+
+A declaration's own parameters are in scope for its signature and body alongside the owner's parameters and `Self`, and shadow an owner parameter that spells the same name.
+
+Instantiation identity includes both lists: the owner's generic arguments and the declaration's own. `Pair<i32>::self::with<u8>` and `Pair<u8>::self::with<u8>` are distinct monomorphizations with distinct symbols, and two calls that resolve to the same pair of argument lists share one instantiation.
+
+Arguments are inferred from the call's written arguments and the expected result type exactly as for a top-level generic function. The receiver of `value.name(...)` is supplied by the instance syntax, so it is not one of the arguments inference reads; `Owner::self::name(receiver, ...)` writes it out as an ordinary argument instead. A call may fix a left-to-right prefix explicitly, on the member (`value.name<T>(...)`) or on the function segment of a type-qualified path (`Owner::name<T>(...)`, `Owner::self::name<T>(...)`). One path carries at most one written argument list, so an owner and its function cannot both be written explicitly in one call.
+
+The `spec S` parameter sugar applies here as it does to a top-level function: `f(x: spec S)` is a declaration with an anonymous bounded generic parameter, and is therefore instantiated per argument type.
+
+Because a generic declaration has no signature before its arguments are known, it does not participate in overload resolution and cannot be named uncalled; see [`functions.md`](functions.md). Positions this leaves unsupported are tracked in [`../issues/language-limitations.md`](../issues/language-limitations.md).
+
 ## Generic specs and conformances
 
 Specs, conformances, structs, unions, enums, and functions may all participate in generic substitution where their grammar permits it.

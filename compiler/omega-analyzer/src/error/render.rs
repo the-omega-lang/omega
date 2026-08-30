@@ -310,6 +310,16 @@ impl AnalysisErrorKind {
                     None => d,
                 }
             }
+            Self::MemberTakesNoGenericArgs { member, .. } => d
+                .with_label(span, "this declaration is not generic")
+                .with_help(format!("remove the generic arguments from `{}`", member.as_ref())),
+            Self::GenericFunctionNotInstantiated { owner, function, namespace } => d
+                .with_label(span, "generic, and not instantiated here")
+                .with_note(format!(
+                    "`{}` has no signature until a call determines its generic arguments",
+                    namespace.spelling(owner.as_ref(), function)
+                ))
+                .with_help("call it directly, so its arguments can be inferred or written"),
             Self::FunctionNamespaceMismatch { owner, function, declared_in } => {
                 let d = d.with_label(span, match declared_in {
                     FunctionNamespace::Member => "this names the static namespace",
@@ -1005,6 +1015,11 @@ pub fn resolve_error_diagnostic(error: &ResolveError, span: Option<Span>) -> Dia
         }
         ResolveError::GenericArgCountMismatch { expected, .. } => {
             with_label(d, format!("expected {expected} generic {}", plural(*expected, "argument")))
+        }
+        ResolveError::GenericMethodOverload { function, .. } => {
+            with_label(d, format!("`{}` is declared generic more than once here", function.as_ref()))
+                .with_note("a generic declaration has no signature until its arguments are known, so overload resolution cannot rank it")
+                .with_help("give the declarations distinct names")
         }
         ResolveError::SpecDependencyCycle { spec, .. } => {
             with_label(d, format!("`{}` depends on itself, directly or through another spec's own dependency list", spec.as_ref()))

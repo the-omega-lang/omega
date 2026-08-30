@@ -306,7 +306,21 @@ An ordinary item has empty `generic_args`. A concrete generic instantiation is t
 
 This means there is no second parallel “generic instantiation engine” for named items. It participates in the same caching/cycle machinery.
 
-Implementation ownership is split under `items/`: `items/mod.rs` owns query keys, cells, state transitions, checked-body caching, and type cells; `items/resolution.rs` owns the driver-side resolution algorithms that populate those states. Keeping cache lifetime/state separate from resolution logic makes query invariants visible without turning one file into both the database and every query implementation.
+A generic *member or static* declaration is not a named item: it belongs to an owner instantiation, not to a module, so it cannot be reached by name from a module index. Its instantiations are keyed beside the item queries, by the owner's own key plus the declaration and its arguments:
+
+```rust
+MethodKey {
+    owner: ItemKey,
+    method: HirId,
+    generic_args: Vec<ResolvedGenericArg>,
+}
+```
+
+`items/methods.rs` owns that query: it finds the template on the owner's HIR, checks bounds and fills defaults under the owner's substitution, analyzes the signature, assigns a fresh identity, and checks the body immediately -- the signature is cached before the body is checked, so a declaration that instantiates itself at the same arguments finds it rather than re-entering an unfinished query. A failed instantiation keeps a `Failed` state for the same reason ordinary item queries do: later call sites reference one reported error instead of repeating it.
+
+Each instantiation is emitted as a standalone checked function carrying its owner identity (`CheckedFunctionDef::method_owner`), into the owner module's `CheckedModule` -- the same declaring-module rule concrete item instantiations follow, and for the same symbol-identity reason. MIR builds its symbol from the owner path, the owner's generic arguments, and the declaration's own, and gives it weak linkage, so two packages that instantiate one declaration at the same arguments fold to one definition.
+
+Implementation ownership is split under `items/`: `items/mod.rs` owns query keys, cells, state transitions, checked-body caching, and type cells; `items/resolution.rs` owns the driver-side resolution algorithms that populate those states; `items/methods.rs` owns generic member/static instantiation. Keeping cache lifetime/state separate from resolution logic makes query invariants visible without turning one file into both the database and every query implementation.
 
 ## Query states and cycles
 

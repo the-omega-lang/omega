@@ -166,6 +166,19 @@ struct Vec2 {
 p := Vec2 { x = 10; y = 20; };
 ```
 
+A method may be generic, in either namespace, and its arguments are inferred or written on the member:
+
+```omega
+struct Holder {
+    exposed echo<T>(*self, thing: T) => T { thing }
+    exposed make<T>(thing: T) => T { thing }
+}
+
+h.echo(1u8);
+h.echo<u8>(1);
+Holder::make<u8>(1);
+```
+
 Receiver forms that exist in repository source:
 
 ```omega

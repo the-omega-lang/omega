@@ -233,7 +233,10 @@ impl<'r> Analyzer<'r> {
         let mut projections = Vec::with_capacity(place.projections.len());
         for projection in &place.projections {
             current_type = match projection {
-                HirProjection::FieldAccess(field, origin) => self.resolve_field_projection(
+                // Generic arguments are only ever written on a call's
+                // member segment, which `resolve_callee` consumes before a
+                // place is resolved from the projections before it.
+                HirProjection::FieldAccess(field, origin, _) => self.resolve_field_projection(
                     node_id,
                     span,
                     &mut projections,

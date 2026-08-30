@@ -1,0 +1,35 @@
+error: 'Widget' does not implement spec 'Describable' (missing: describe)
+  --> tests/t10d_generic_member_function_errors/t10d_generic_member_function_errors.omg:27:18
+   |
+27 |     unbounded := holder.need(widget);
+   |                  ^^^^^^^^^^^ does not implement this spec
+   |
+   = note: missing: describe
+
+error: 'Holder::self::alone' is generic and has no signature here
+  --> tests/t10d_generic_member_function_errors/t10d_generic_member_function_errors.omg:28:23
+   |
+28 |     uninstantiated := Holder::self::alone;
+   |                       ^^^^^^^^^^^^^^^^^^^ generic, and not instantiated here
+   |
+   = note: `Holder::self::alone` has no signature until a call determines its generic arguments
+   = help: call it directly, so its arguments can be inferred or written
+
+error: 'Holder::plain' takes no generic arguments
+  --> tests/t10d_generic_member_function_errors/t10d_generic_member_function_errors.omg:29:20
+   |
+29 |     not_generic := holder.plain<i32>(1);
+   |                    ^^^^^^^^^^^^ this declaration is not generic
+   |
+   = help: remove the generic arguments from `plain`
+
+error: 't10d_generic_member_function_errors::Holder' declares more than one generic 'twin'; generic declarations do not participate in overload resolution
+  --> tests/t10d_generic_member_function_errors/t10d_generic_member_function_errors.omg:30:18
+   |
+30 |     ambiguous := holder.twin(1);
+   |                  ^^^^^^^^^^^ `twin` is declared generic more than once here
+   |
+   = note: a generic declaration has no signature until its arguments are known, so overload resolution cannot rank it
+   = help: give the declarations distinct names
+
+error: could not compile the program due to 4 previous errors

@@ -11,6 +11,34 @@ Normative chapter: [`../language/functions.md`](../language/functions.md)
   than one level of module qualification) resolves without overload
   disambiguation at all — a documented, narrow gap distinct from the
   ordinary locally-visible-type overload path described above.
+- **A generic member/static declaration does not participate in overload
+  resolution.** Two of them sharing a name and a namespace are rejected at
+  the call, and a generic declaration never competes with a non-generic one
+  of the same name. This is the same restriction generic top-level overloads
+  have (see [`known-issues.md`](known-issues.md)): the item/method query key
+  cannot identify one candidate inside an overload group, and a template has
+  no signature to rank before its arguments are known. A concrete
+  declaration of the same name and namespace simply wins: the template is
+  never consulted, so an argument that only the generic declaration would
+  accept is an argument-type error.
+- **A generic declaration in a `meet` or `primitive` block is still
+  rejected.** Those blocks collect every declaration's signature eagerly,
+  so a declaration with its own generic parameters (including the
+  `spec S` parameter sugar) reports an unresolved type parameter rather than
+  becoming a template. Inherent declarations on structs, unions, and enums
+  are unaffected.
+- **An owner and its function cannot both be written explicitly in one
+  path.** A path carries at most one generic argument list
+  (`Owner<A>::name(...)` or `Owner::name<B>(...)`), and writing both
+  (`Owner<A>::name<B>(...)`) is rejected as a chained comparison rather than
+  with a message about generic arguments.
+- **A generic method call cannot infer its owner's generic arguments.**
+  `Owner::name(...)` infers the owner's arguments from the call only when
+  the declaration is not itself generic; for a generic declaration the owner
+  must already be concrete (an explicit `Owner<A>::name(...)`, or the
+  receiver of `value.name(...)`). Solving both argument lists from one call
+  is a single inference problem the current split between owner
+  instantiation and method instantiation does not express.
 
 
 ## Primitives & representation

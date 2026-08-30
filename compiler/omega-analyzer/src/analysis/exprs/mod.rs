@@ -447,10 +447,11 @@ impl<'r> Analyzer<'r> {
         call: &HirFunctionCall,
         expected: Option<&ResolvedType>,
     ) -> Option<CheckedExprNode> {
-        let interceptors: [Interceptor<'r>; 5] = [
+        let interceptors: [Interceptor<'r>; 6] = [
             Self::resolve_spec_qualified_call,
             Self::resolve_overloaded_call,
             Self::resolve_type_qualified_overload_call,
+            Self::resolve_generic_method_call,
             Self::resolve_generic_call,
             Self::resolve_generic_owner_function_call,
         ];
@@ -465,7 +466,7 @@ impl<'r> Analyzer<'r> {
             fn_type,
             implicit_self,
             checked_args,
-        } = match self.resolve_callee(&call.callee, &call.args)? {
+        } = match self.resolve_callee(&call.callee, &call.args, expected)? {
             CalleeResolution::Dynamic(result) => return result,
             CalleeResolution::Ordinary(resolved) => resolved,
         };

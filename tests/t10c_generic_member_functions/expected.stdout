@@ -1,0 +1,6 @@
+member-inference: 7 true 9
+explicit-arguments: 2 4
+bounds-and-comp: -2147483648 3 widget
+generic-owner: 1 6 shadowed 8 9 10
+other-owners: 1 12
+compile-time: 21

@@ -421,8 +421,13 @@ impl<'r> Analyzer<'r> {
         let absolute = access.absolute.clone();
         let accessor = self.path_module(&expr_path.path);
         let params = self.item_generic_params_for(&accessor, prefix, &access);
-        let generic_args =
-            self.resolve_generic_arg_list(node_id, span, expr_path, &access.absolute, &params)?;
+        let generic_args = self.resolve_generic_arg_list(
+            node_id,
+            span,
+            &expr_path.generic_args,
+            &access.absolute,
+            &params,
+        )?;
         match self.resolve_item_with_ambient_from(&accessor, prefix, &access, &generic_args) {
             Ok(ResolvedItem::Type(_)) if rest.is_empty() => {
                 self.error(node_id, span, AnalysisErrorKind::NotAValue(absolute));
@@ -476,13 +481,12 @@ impl<'r> Analyzer<'r> {
         &mut self,
         node_id: HirId,
         span: Span,
-        expr_path: &ExprPath,
+        written: &[GenericArg],
         owner: &[Ident],
         params: &[HirGenericParam],
     ) -> Option<Vec<ResolvedGenericArg>> {
-        self.check_generic_arity(node_id, span, owner, params, expr_path.generic_args.len())?;
-        let args: Vec<(usize, GenericArg)> =
-            expr_path.generic_args.iter().cloned().enumerate().collect();
+        self.check_generic_arity(node_id, span, owner, params, written.len())?;
+        let args: Vec<(usize, GenericArg)> = written.iter().cloned().enumerate().collect();
         self.analyze_all(&args, |this, (index, arg)| {
             this.resolve_generic_arg_or_error(node_id, span, arg, params.get(*index))
         })
@@ -866,6 +870,24 @@ impl<'r> Analyzer<'r> {
         }
 
         if candidates.is_empty() {
+            // A generic declaration is never among an owner's resolved
+            // functions, so "no such function" would be the wrong diagnosis:
+            // it exists, and this position cannot instantiate it.
+            if let Ok(Some(_)) = self
+                .resolver
+                .generic_method_template(r#type, member, namespace)
+            {
+                self.error(
+                    node_id,
+                    span,
+                    AnalysisErrorKind::GenericFunctionNotInstantiated {
+                        owner: owner.name.clone(),
+                        function: member.clone(),
+                        namespace,
+                    },
+                );
+                return None;
+            }
             let sibling = namespace.other();
             let has_sibling = !sibling.select(&owner.functions, member).is_empty()
                 || conformances

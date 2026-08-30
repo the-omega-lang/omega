@@ -591,7 +591,7 @@ impl<'r> Analyzer<'r> {
 
     pub fn check_overload_duplicates(
         &mut self,
-        functions: &[HirFunctionDef],
+        functions: &[&HirFunctionDef],
         signatures: &[(
             ResolvedFunctionType,
             crate::annotations::ResolvedAnnotations,
@@ -663,22 +663,65 @@ impl<'r> Analyzer<'r> {
         )
     }
 
+    /// A generic declaration has no signature outside an instantiation, so
+    /// it is collected as a template instead: the owner keeps only the
+    /// methods that are concrete for this instantiation, and a call site
+    /// materializes the rest through
+    /// [`crate::resolver::ModuleResolver::instantiate_generic_method`].
+    ///
+    /// The *normalized* generics decide this: a `spec S` parameter becomes an
+    /// ordinary bounded generic, so `f(x: spec S)` is as much a template as
+    /// `f<T: S>(x: T)`.
+    pub(crate) fn is_generic_method(&mut self, f: &HirFunctionDef) -> bool {
+        !f.generics.is_empty()
+            || self
+                .normalized_function(f)
+                .is_some_and(|normalized| !normalized.generics.is_empty())
+    }
+
+    /// The declarations of `functions` this instantiation resolves
+    /// concretely. Owners keep templates in declaration order, so both the
+    /// signature and the body pass must drop the same ones to stay aligned
+    /// with the resolved method list.
+    pub(crate) fn concrete_methods<'f>(
+        &mut self,
+        functions: &'f [HirFunctionDef],
+    ) -> Vec<&'f HirFunctionDef> {
+        let mut concrete = Vec::with_capacity(functions.len());
+        for f in functions {
+            if !self.is_generic_method(f) {
+                concrete.push(f);
+            }
+        }
+        concrete
+    }
+
     fn collect_methods(
         &mut self,
         functions: &[omega_hir::HirFunctionDef],
         method_ids: &[HirId],
     ) -> Option<Vec<(Ident, ResolvedMethod)>> {
+        let mut concrete = Vec::with_capacity(functions.len());
+        let mut ids = Vec::with_capacity(functions.len());
+        for (f, &decl_id) in functions.iter().zip(method_ids) {
+            if self.is_generic_method(f) {
+                continue;
+            }
+            concrete.push(f);
+            ids.push(decl_id);
+        }
+        let (functions, method_ids) = (concrete, ids);
         let (signatures, _) = self.with_scope(|this| {
-            this.analyze_all(functions, |this, f| this.collect_function_signature(f))
+            this.analyze_all(&functions, |this, f| this.collect_function_signature(f))
         });
         let signatures = signatures?;
-        self.check_overload_duplicates(functions, &signatures);
+        self.check_overload_duplicates(&functions, &signatures);
 
         let own: Vec<(Ident, ResolvedMethod)> = functions
             .iter()
             .zip(signatures)
             .zip(method_ids)
-            .map(|((f, (fn_type, annotations)), &decl_id)| {
+            .map(|((f, (fn_type, annotations)), decl_id)| {
                 (
                     f.name.clone(),
                     ResolvedMethod {

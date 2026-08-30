@@ -77,8 +77,14 @@ impl Driver {
         // instantiation.
         let index = self.local_item_index(module_path, name)?;
         let generic_params = self.item_generics(module_path, name)?;
-        let generic_args =
-            self.pad_generic_defaults(module_path, name, index, &generic_params, generic_args)?;
+        let owner_site = item_site(&self.modules.hir(module_path).items[index]);
+        let generic_args = self.pad_generic_defaults(
+            module_path,
+            name,
+            owner_site,
+            &generic_params,
+            generic_args,
+        )?;
         let key = ItemKey::new(module_path, name, &generic_args);
 
         match self.items.state(&key) {
@@ -134,7 +140,7 @@ impl Driver {
         &mut self,
         module_path: &[Ident],
         name: &Ident,
-        index: usize,
+        owner: AnalysisSite,
         generic_params: &[HirGenericParam],
         generic_args: &[ResolvedGenericArg],
     ) -> Result<Vec<ResolvedGenericArg>, ResolveError> {
@@ -150,8 +156,6 @@ impl Driver {
             return Ok(generic_args.to_vec());
         }
 
-        let hir = self.modules.hir(module_path);
-        let owner = item_site(&hir.items[index]);
         let mut padded = generic_args.to_vec();
         for param in &generic_params[generic_args.len()..] {
             let Some(default) = &param.default else {
@@ -200,11 +204,34 @@ impl Driver {
         generic_params: &[HirGenericParam],
         generic_args: &[ResolvedGenericArg],
     ) -> Option<Result<Vec<ResolvedBound>, ResolveError>> {
-        let substitution: GenericSubstitution = generic_params
+        self.check_generic_bounds_under(
+            module,
+            owner,
+            &GenericSubstitution::new(),
+            generic_params,
+            generic_args,
+        )
+    }
+
+    /// The same check for a declaration nested in an already-instantiated
+    /// one: a method's bound may name its owner's generic parameters, which
+    /// only `enclosing` binds.
+    pub(crate) fn check_generic_bounds_under(
+        &mut self,
+        module: &[Ident],
+        owner: AnalysisSite,
+        enclosing: &GenericSubstitution,
+        generic_params: &[HirGenericParam],
+        generic_args: &[ResolvedGenericArg],
+    ) -> Option<Result<Vec<ResolvedBound>, ResolveError>> {
+        let mut substitution: GenericSubstitution = generic_params
             .iter()
             .map(|g| g.ident.clone())
             .zip(generic_args.iter().cloned())
             .collect();
+        for (name, arg) in enclosing.iter() {
+            substitution.push(name.clone(), arg.clone());
+        }
 
         let mut declared = Vec::new();
         // Bounds exist only on type parameters, so a comp argument never

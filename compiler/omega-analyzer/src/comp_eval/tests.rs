@@ -349,6 +349,7 @@ fn calling_another_function_interprets_its_own_body() {
         mangling: crate::annotations::ManglingMode::Enabled,
         conformance_owner: None,
         primitive_target: None,
+        method_owner: None,
         naked: false,
     };
 
@@ -520,6 +521,7 @@ fn call_returning(body: CheckedBlock, return_type: ResolvedType) -> (CheckedExpr
         mangling: crate::annotations::ManglingMode::Enabled,
         conformance_owner: None,
         primitive_target: None,
+        method_owner: None,
         naked: false,
     };
     let fn_type = crate::resolved_type::ResolvedFunctionType {

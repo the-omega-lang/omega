@@ -270,3 +270,50 @@ fn a_comparison_chain_still_rolls_back_past_a_value_argument() {
     let function = function("f() => void { x := a < 10; y := 3 > b; }");
     assert_eq!(function.codeblock.statements.len(), 2);
 }
+
+/// The single statement of `f`'s body, as the expression it evaluates.
+fn body_expression(source: &str) -> omega_parser::prelude::Expression {
+    let function = function(source);
+    let [statement] = function.codeblock.statements.as_slice() else {
+        panic!("expected exactly one statement");
+    };
+    let omega_parser::prelude::Statement::Expression(expression) = &statement.statement else {
+        panic!("expected an expression statement");
+    };
+    expression.expression.clone()
+}
+
+#[test]
+fn a_member_call_takes_generic_arguments() {
+    let omega_parser::prelude::Expression::FunctionCall(call) =
+        body_expression("f() => void { x.method<i32>(1); }")
+    else {
+        panic!("expected a call");
+    };
+    let omega_parser::prelude::Expression::FieldAccess(access) = &call.callee.expression else {
+        panic!("expected a member callee");
+    };
+    assert_eq!(access.field.as_ref(), "method");
+    assert_eq!(access.generic_args.len(), 1);
+}
+
+#[test]
+fn a_member_without_a_call_keeps_its_comparisons() {
+    // Only a call can apply generic arguments to a member, so `<...>` not
+    // followed by `(` rolls back and the comparisons stand.
+    let function = function("f() => void { x := a.b < c; y := d > e; }");
+    assert_eq!(function.codeblock.statements.len(), 2);
+}
+
+#[test]
+fn an_ordinary_member_access_carries_no_generic_arguments() {
+    let omega_parser::prelude::Expression::FunctionCall(call) =
+        body_expression("f() => void { x.method(1); }")
+    else {
+        panic!("expected a call");
+    };
+    let omega_parser::prelude::Expression::FieldAccess(access) = &call.callee.expression else {
+        panic!("expected a member callee");
+    };
+    assert!(access.generic_args.is_empty());
+}

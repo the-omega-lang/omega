@@ -193,6 +193,19 @@ pub enum AnalysisErrorKind {
         function: Ident,
         similar: Option<Ident>,
     },
+    /// Generic arguments were written on a member call whose declaration
+    /// declares none.
+    MemberTakesNoGenericArgs {
+        owner: Ident,
+        member: Ident,
+    },
+    /// A generic declaration was named where no call can give it generic
+    /// arguments, so it has no signature to resolve to.
+    GenericFunctionNotInstantiated {
+        owner: Ident,
+        function: Ident,
+        namespace: FunctionNamespace,
+    },
     /// A type-qualified path selected one associated-function namespace
     /// while the only declaration of that name lives in the other.
     FunctionNamespaceMismatch {
@@ -839,6 +852,21 @@ impl fmt::Display for AnalysisErrorKind {
                     r#struct.as_ref()
                 )
             }
+            Self::MemberTakesNoGenericArgs { owner, member } => write!(
+                f,
+                "'{}::{}' takes no generic arguments",
+                owner.as_ref(),
+                member.as_ref()
+            ),
+            Self::GenericFunctionNotInstantiated {
+                owner,
+                function,
+                namespace,
+            } => write!(
+                f,
+                "'{}' is generic and has no signature here",
+                namespace.spelling(owner.as_ref(), function)
+            ),
             Self::FunctionNamespaceMismatch {
                 owner,
                 function,

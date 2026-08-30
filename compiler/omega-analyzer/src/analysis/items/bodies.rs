@@ -54,6 +54,7 @@ impl<'r> Analyzer<'r> {
             mangling: annotations.mangling.clone(),
             conformance_owner: None,
             primitive_target: None,
+            method_owner: None,
             naked: annotations.naked,
         })
     }
@@ -101,6 +102,7 @@ impl<'r> Analyzer<'r> {
             mangling: annotations.mangling.clone(),
             conformance_owner: None,
             primitive_target: None,
+            method_owner: None,
             naked: true,
         })
     }
@@ -181,6 +183,11 @@ impl<'r> Analyzer<'r> {
         methods: &[(Ident, ResolvedMethod)],
         suppress: &[Ident],
     ) -> Option<Vec<CheckedFunctionDef>> {
+        // Only the declarations `collect_methods` resolved concretely have a
+        // signature here, and the two lists agree on declaration order, so a
+        // generic template is skipped on both sides rather than shifting the
+        // pairing of every method after it.
+        let functions = self.concrete_methods(functions);
         self.with_suppressed(suppress, |this| {
             let mut checked = Vec::with_capacity(functions.len());
             let mut ok = true;

@@ -148,7 +148,7 @@ impl<'r> Analyzer<'r> {
             })
         });
         let signatures = signatures?;
-        self.check_overload_duplicates(functions, &signatures);
+        self.check_overload_duplicates(&functions.iter().collect::<Vec<_>>(), &signatures);
 
         let source = ConformanceSource {
             spec: spec.clone(),
