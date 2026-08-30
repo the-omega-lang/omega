@@ -1,5 +1,5 @@
 layout-struct-size: 5 8
-layout-enum-size: 2 8
+layout-enum-size: 4 8
 sizeof-primitive: 8 8
 inline-hints: 42 21
 mangling-disabled: 5
