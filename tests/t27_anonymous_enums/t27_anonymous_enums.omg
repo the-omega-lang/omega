@@ -90,6 +90,21 @@ tag_of(value: Errors) => i32 {
 	}
 }
 
+anonymous_tag(value: Errors) => u32 {
+	value.tag
+}
+
+refined_anonymous_tag(value: Errors) => u32 {
+	match value {
+		Failure => value.tag,
+		*str => value.tag,
+	}
+}
+
+pointer_anonymous_tag(value: *Errors) => u32 {
+	value.tag
+}
+
 # Refinement works through a pointer to the anonymous enum.
 through_pointer(value: *Errors) => i32 {
 	match value {
@@ -239,6 +254,7 @@ main() => void {
 
 	# --- catch-all and `else` complete coverage ---------------------------
 	println$("catch-all: ", only_str(text), " ", only_str(failure), " ", tag_of(failure), " ", tag_of(text));
+	println$("anonymous-tag: ", anonymous_tag(failure) != anonymous_tag(text), " ", anonymous_tag(failure) == refined_anonymous_tag(failure), " ", anonymous_tag(text) == pointer_anonymous_tag(&text));
 
 	# --- a refined binding reaches the member's own fields and methods ----
 	println$("member-access: ", describe(failure), " ", reordered(failure));

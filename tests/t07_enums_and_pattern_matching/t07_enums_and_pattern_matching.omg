@@ -36,6 +36,10 @@ order_label(o: Ordering) => *str {
 	}
 }
 
+ordering_tag(value: Ordering) => u32 {
+	value.tag
+}
+
 # The parameter only carries the parent enum type; body fields require
 # re-proving the variant here, independent of any refinement the caller had.
 describe_status(s: Status) => *str {
@@ -69,6 +73,7 @@ main() => void {
 	# --- basic enum: implicit tag, path construction, exhaustive match ----
 	less := Ordering::Less;
 	println$("enum-basic-match: ", order_label(less), " ", order_label(compare(2, 5)), " ", order_label(compare(5, 2)));
+	println$("enum-default-tag: ", ordering_tag(less));
 
 	# --- header fields: compile-time-constant per variant, immutable ------
 	ok := Status::Ok;

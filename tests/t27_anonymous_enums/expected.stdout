@@ -3,6 +3,7 @@ reordered-identity: 3 0
 dedup: 42
 return-and-field: failure positive failure
 catch-all: text not a string 1 0
+anonymous-tag: true true true
 member-access: failure 3
 pointer-match: 3 4
 nested: kind failure leaf
@@ -12,7 +13,7 @@ argument-injection: failure arg
 overload-rank: exact injected
 generic-argument: failure 6
 cross-module: helper-int cross-str
-comp: 7 100 6
+comp: 7 100 8
 sizeof-identity: true true
 flatten-identity: kind true
 generic-flatten: failure true

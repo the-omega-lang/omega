@@ -243,7 +243,7 @@ pub struct EnumVariantView {
 /// Every enum layout query below works from this view, and codegen reads
 /// tag/header/payload facts through it, so the two enum forms cannot acquire
 /// separate representation rules. An anonymous enum is simply the degenerate
-/// case: a `u16` tag, no header, no shared dynamic fields, and one body field
+/// case: a `u32` tag, no header, no shared dynamic fields, and one body field
 /// per variant holding that canonical member.
 #[derive(Debug, Clone)]
 pub struct EnumView {
@@ -318,8 +318,8 @@ impl EnumView {
 }
 
 /// Fixed by the language: an anonymous enum's tag is the canonical member
-/// index in a `u16`.
-pub const ANONYMOUS_ENUM_TAG_TYPE: ResolvedType = ResolvedType::U16;
+/// index in a `u32`.
+pub const ANONYMOUS_ENUM_TAG_TYPE: ResolvedType = ResolvedType::U32;
 
 pub fn enum_payload_bytes(view: &EnumView, pointer_bytes: u32) -> u32 {
     view.variants

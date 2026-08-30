@@ -323,7 +323,7 @@ impl fmt::Display for TypeResolutionError {
             ),
             Self::AnonymousEnumTooManyMembers { count } => write!(
                 f,
-                "an anonymous enum has {count} distinct members, but its tag is a 'u16' and can \
+                "an anonymous enum has {count} distinct members, but its tag is a 'u32' and can \
                  only distinguish {} of them",
                 crate::resolved_type::ResolvedAnonymousEnum::MAX_MEMBERS
             ),

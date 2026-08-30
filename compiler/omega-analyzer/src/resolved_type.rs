@@ -497,9 +497,9 @@ pub struct ResolvedAnonymousEnum {
 }
 
 impl ResolvedAnonymousEnum {
-    /// The tag is a `u16` holding the canonical member index, so a shape can
+    /// The tag is a `u32` holding the canonical member index, so a shape can
     /// have at most this many distinct members.
-    pub const MAX_MEMBERS: usize = u16::MAX as usize + 1;
+    pub const MAX_MEMBERS: u64 = u32::MAX as u64 + 1;
 
     /// Callers must resolve every member to its final type first; ordering
     /// and deduplication are meaningless on unresolved syntax.
@@ -561,11 +561,11 @@ impl ResolvedAnonymousEnum {
             .collect()
     }
 
-    /// Whether the canonical member list outgrew the fixed `u16` tag. Checked
+    /// Whether the canonical member list outgrew the fixed `u32` tag. Checked
     /// once, at type resolution, so no later phase can meet a shape it cannot
     /// tag.
     pub fn exceeds_tag_domain(&self) -> bool {
-        self.members.len() > Self::MAX_MEMBERS
+        self.members.len() as u64 > Self::MAX_MEMBERS
     }
 }
 

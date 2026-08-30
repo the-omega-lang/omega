@@ -1,4 +1,5 @@
 enum-basic-match: less less greater
+enum-default-tag: 0
 enum-header-fields: 0 ok 1 error 7
 enum-shared-body-fields: info 100 error 200 42
 match-refinement: 42

@@ -829,7 +829,7 @@ impl<'r> Analyzer<'r> {
 
         ok.then(|| EnumHeader {
             has_tag: explicit_tag.is_some(),
-            tag_type: explicit_tag.unwrap_or(ResolvedType::U16),
+            tag_type: explicit_tag.unwrap_or(ResolvedType::U32),
             fields,
         })
     }

@@ -12,6 +12,51 @@ struct EnumMember {
     owner: Option<MemberOwner>,
 }
 
+struct EnumHeader<'a> {
+    tag_type: &'a ResolvedType,
+    fields: &'a [ResolvedField],
+}
+
+enum EnumHeaderMember {
+    Tag(ResolvedType),
+    Field {
+        index: usize,
+        r#type: ResolvedType,
+        visibility: Visibility,
+    },
+}
+
+impl<'a> EnumHeader<'a> {
+    fn named(r#enum: &'a ResolvedEnumType) -> Self {
+        Self {
+            tag_type: &r#enum.tag_type,
+            fields: &r#enum.header,
+        }
+    }
+
+    fn anonymous() -> Self {
+        Self {
+            tag_type: &crate::layout::ANONYMOUS_ENUM_TAG_TYPE,
+            fields: &[],
+        }
+    }
+
+    fn find_member(&self, field: &Ident) -> Option<EnumHeaderMember> {
+        if field.as_ref() == "tag" {
+            return Some(EnumHeaderMember::Tag(self.tag_type.clone()));
+        }
+        self.fields
+            .iter()
+            .enumerate()
+            .find(|(_, candidate)| &candidate.name == field)
+            .map(|(index, field)| EnumHeaderMember::Field {
+                index,
+                r#type: field.r#type.clone(),
+                visibility: field.visibility,
+            })
+    }
+}
+
 impl<'r> Analyzer<'r> {
     /// Opens a refined anonymous binding onto the member it proves, so that
     /// naming something *on* the member -- a field, an element, a method --
@@ -56,6 +101,11 @@ impl<'r> Analyzer<'r> {
         origin: Origin,
         mutable: &mut bool,
     ) -> Option<ResolvedType> {
+        if let Some(r#type) =
+            Self::project_anonymous_enum_header(projections, current_type, field, mutable)
+        {
+            return Some(r#type);
+        }
         if let Some(member) = Self::open_refined_anonymous(projections, current_type, mutable) {
             return self.resolve_field_projection(
                 node_id,
@@ -119,6 +169,34 @@ impl<'r> Analyzer<'r> {
                 None
             }
         }
+    }
+
+    fn project_anonymous_enum_header(
+        projections: &mut Vec<CheckedProjection>,
+        current_type: &ResolvedType,
+        field: &Ident,
+        mutable: &mut bool,
+    ) -> Option<ResolvedType> {
+        let (base, pointer_mutable) = match current_type {
+            ResolvedType::Pointer { pointee, mutable } => (&**pointee, Some(*mutable)),
+            other => (other, None),
+        };
+        if !matches!(base, ResolvedType::AnonymousEnum { .. }) {
+            return None;
+        }
+        let EnumHeaderMember::Tag(r#type) = EnumHeader::anonymous().find_member(field)? else {
+            unreachable!("an anonymous enum header has only its tag")
+        };
+        if let Some(pointer_mutable) = pointer_mutable {
+            *mutable = pointer_mutable;
+            projections.push(CheckedProjection::Deref {
+                r#type: base.clone(),
+            });
+        }
+        projections.push(CheckedProjection::EnumTag {
+            r#type: r#type.clone(),
+        });
+        Some(r#type)
     }
 
     fn project_slice_field(
@@ -209,27 +287,28 @@ impl<'r> Analyzer<'r> {
             id: e.id,
         };
 
-        if field.as_ref() == "tag" {
-            let r#type = e.tag_type.clone();
-            let projection = CheckedProjection::EnumTag {
-                r#type: r#type.clone(),
-            };
-            return Some(EnumMember {
-                r#type,
-                projection,
-                owner: None,
-            });
-        }
-        if let Some((index, r#type, visibility)) = Self::find_field(&e.header, field) {
-            let projection = CheckedProjection::EnumHeader {
-                field: field.clone(),
-                index,
-                r#type: r#type.clone(),
-            };
-            return Some(EnumMember {
-                r#type,
-                projection,
-                owner: Some(owner(visibility)),
+        if let Some(member) = EnumHeader::named(e).find_member(field) {
+            return Some(match member {
+                EnumHeaderMember::Tag(r#type) => EnumMember {
+                    projection: CheckedProjection::EnumTag {
+                        r#type: r#type.clone(),
+                    },
+                    r#type,
+                    owner: None,
+                },
+                EnumHeaderMember::Field {
+                    index,
+                    r#type,
+                    visibility,
+                } => EnumMember {
+                    projection: CheckedProjection::EnumHeader {
+                        field: field.clone(),
+                        index,
+                        r#type: r#type.clone(),
+                    },
+                    r#type,
+                    owner: Some(owner(visibility)),
+                },
             });
         }
         if let Some((index, r#type, visibility)) = Self::find_field(&e.dynamic_fields, field) {

@@ -152,7 +152,7 @@ Memory offsets for header/dynamic/body fields are provided by shared helpers suc
 
 The payload can be represented as opaque integer leaves for flattened transfer; those leaves are storage chunks, not semantic numeric values. A body field therefore has no typed leaf slice of its own: reaching one means reaching memory, so a register-held enum is spilled to a stack slot before its body byte offset is applied.
 
-Those helpers do not take a declared enum. They take `layout::EnumView`, the layout-relevant shape shared by **named and anonymous enums** — tag type, header field types, shared dynamic field types, per-variant tag/header values/body field types, and pack/align. An anonymous enum is the degenerate case of that view: a `u16` tag holding the canonical member index, no header, no shared dynamic fields, and exactly one body field per variant holding that member.
+Those helpers do not take a declared enum. They take `layout::EnumView`, the layout-relevant shape shared by **named and anonymous enums** — tag type, header field types, shared dynamic field types, per-variant tag/header values/body field types, and pack/align. An anonymous enum is the degenerate case of that view: a `u32` tag holding the canonical member index, no header, no shared dynamic fields, and exactly one body field per variant holding that member.
 
 This is the only place the two enum forms are reconciled. Codegen reads tag/header/payload facts through the same view rather than destructuring a nominal enum cell, so neither form can acquire a second representation rule.
 

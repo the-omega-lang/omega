@@ -951,8 +951,8 @@ fn type_resolution_diagnostic(error: &TypeResolutionError, span: Span) -> Diagno
             .with_label(span, "'...' is not allowed here")
             .with_help("only conventions that support variadic arguments on this target may declare a '...' tail"),
         TypeResolutionError::AnonymousEnumTooManyMembers { .. } => d
-            .with_label(span, "too many distinct members for a `u16` tag")
-            .with_note("an anonymous enum tags its members with their canonical index in a `u16`"),
+            .with_label(span, "too many distinct members for a `u32` tag")
+            .with_note("an anonymous enum tags its members with their canonical index in a `u32`"),
     }
 }
 

@@ -16,7 +16,7 @@ enum Ordering {
 }
 ```
 
-When no explicit tag field is declared, every enum has an implicit `tag: u16`. Variants receive tag values in declaration order beginning at `0`.
+When no explicit tag field is declared, every enum has an implicit `tag: u32`. Variants receive tag values in declaration order beginning at `0`.
 
 An enum may declare a header:
 
@@ -179,7 +179,7 @@ text, declaration order, or compilation order.
 
 An anonymous enum uses the ordinary enum representation model described in
 [`../architecture/abi-and-representation.md`](../architecture/abi-and-representation.md):
-a `u16` tag followed by storage for the selected member's value. It has no
+a `u32` tag followed by storage for the selected member's value. It has no
 header fields and no shared dynamic fields, and each variant has exactly one
 body field — the member value itself.
 
@@ -187,10 +187,14 @@ A member's tag is its index in the canonical member list, starting at `0`.
 Because the canonical list does not depend on how the type was spelled, every
 spelling of the same anonymous enum produces the same tag for the same member.
 
-An anonymous enum may therefore have at most 65536 distinct members; a larger
-canonical member list is rejected, because the tag domain is fixed at `u16`.
+An anonymous enum may therefore have at most 4294967296 distinct members; a larger
+canonical member list is rejected, because the tag domain is fixed at `u32`.
 The limit applies to the flattened, deduplicated list, so combining two shapes
 that each fit can still exceed it.
+
+The anonymous enum itself exposes its immutable `tag: u32` field, which holds
+the active member's canonical index. It is available whether or not the value
+has been refined; member values remain unavailable until a match proves them.
 
 ### Member injection
 
@@ -473,7 +477,7 @@ The parent enum type exposes the tag, header fields, shared dynamic fields, and 
 
 A refinement can come from construction or from control-flow proof such as an enum `match`. When a refined value is widened to the parent enum type, that proof is lost. Pointer/reference operations preserve or erase refinement according to the aliasing and mutability rules in [`bindings-and-mutability.md`](bindings-and-mutability.md).
 
-For an anonymous enum, the parent type exposes nothing of its own: the member
-value requires a refined member type, obtained by matching. Widening a refined
-member back to the anonymous enum discards the proof without changing the
-value.
+For an anonymous enum, the parent type exposes only its immutable `tag` field;
+the member value requires a refined member type, obtained by matching. Widening
+a refined member back to the anonymous enum discards the proof without changing
+the value.

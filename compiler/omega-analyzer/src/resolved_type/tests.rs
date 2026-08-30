@@ -415,29 +415,13 @@ fn anonymous_enum_subset_remap_rejects_anything_but_a_subset() {
 }
 
 #[test]
-fn anonymous_enum_tag_domain_is_the_u16_range() {
-    let members: Vec<ResolvedType> = (0..=ResolvedAnonymousEnum::MAX_MEMBERS as u32)
+fn anonymous_enum_tag_domain_is_the_u32_range() {
+    assert_eq!(ResolvedAnonymousEnum::MAX_MEMBERS, u32::MAX as u64 + 1);
+
+    let members: Vec<ResolvedType> = (0..3)
         .map(|size| ResolvedType::SizedArray(Box::new(ResolvedType::U8), size))
         .collect();
-    let over = ResolvedAnonymousEnum::canonicalize(members.clone());
-    assert_eq!(over.members().len(), ResolvedAnonymousEnum::MAX_MEMBERS + 1);
-    assert!(over.exceeds_tag_domain());
-
-    let exact =
-        ResolvedAnonymousEnum::canonicalize(members[..ResolvedAnonymousEnum::MAX_MEMBERS].to_vec());
-    assert!(!exact.exceeds_tag_domain());
-
-    // The limit applies to the flattened list, so two shapes that each fit can
-    // combine into one that does not.
-    let split = ResolvedAnonymousEnum::MAX_MEMBERS / 2;
-    let left = anonymous(members[..split].to_vec());
-    let right = anonymous(members[split..].to_vec());
-    let combined = ResolvedAnonymousEnum::canonicalize(vec![left, right]);
-    assert_eq!(
-        combined.members().len(),
-        ResolvedAnonymousEnum::MAX_MEMBERS + 1
-    );
-    assert!(combined.exceeds_tag_domain());
+    assert!(!ResolvedAnonymousEnum::canonicalize(members).exceeds_tag_domain());
 }
 
 #[test]

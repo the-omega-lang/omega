@@ -22,11 +22,11 @@ fn refined(parent: &ResolvedType, index: usize) -> ResolvedType {
 }
 
 #[test]
-fn anonymous_enum_is_a_u16_tag_followed_by_the_largest_member() {
+fn anonymous_enum_is_a_u32_tag_followed_by_the_largest_member() {
     let ty = anonymous(vec![ResolvedType::I32, ResolvedType::Bool]);
     let view = EnumView::of(&ty).expect("an anonymous enum is enum-like");
 
-    assert_eq!(view.tag_type, ResolvedType::U16);
+    assert_eq!(view.tag_type, ResolvedType::U32);
     assert!(view.header.is_empty());
     assert!(view.dynamic_fields.is_empty());
     assert!(
@@ -35,7 +35,7 @@ fn anonymous_enum_is_a_u16_tag_followed_by_the_largest_member() {
             .all(|variant| variant.fields.len() == 1)
     );
 
-    let tag_bytes = total_bytes(&ResolvedType::U16, POINTER_BYTES);
+    let tag_bytes = total_bytes(&ResolvedType::U32, POINTER_BYTES);
     assert_eq!(enum_payload_offset(&view, POINTER_BYTES), tag_bytes);
     assert_eq!(enum_payload_bytes(&view, POINTER_BYTES), 4);
     assert_eq!(total_bytes(&ty, POINTER_BYTES), tag_bytes + 4);
@@ -54,7 +54,7 @@ fn anonymous_enum_payload_fits_its_largest_member() {
     assert_eq!(enum_payload_bytes(&view, POINTER_BYTES), widest);
     assert_eq!(
         total_bytes(&ty, POINTER_BYTES),
-        total_bytes(&ResolvedType::U16, POINTER_BYTES) + widest
+        total_bytes(&ResolvedType::U32, POINTER_BYTES) + widest
     );
 }
 
