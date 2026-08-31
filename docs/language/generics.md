@@ -217,6 +217,8 @@ Because a generic declaration has no signature before its arguments are known, i
 
 Specs, conformances, structs, unions, enums, and functions may all participate in generic substitution where their grammar permits it.
 
+Spec requirements may also have their own generic parameters. Their conformance-shape check and object-safety consequence are defined in [`specs-and-conformance.md`](specs-and-conformance.md).
+
 The same generic spec may be implemented at different generic arguments when the resulting required methods can coexist under ordinary overload rules. Blanket conformances may quantify over a target generic. Full rules are in [`specs-and-conformance.md`](specs-and-conformance.md).
 
 ## `spec S` parameter sugar

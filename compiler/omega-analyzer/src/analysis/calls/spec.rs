@@ -99,7 +99,19 @@ impl<'r> Analyzer<'r> {
             );
             return Intercepted::Claimed(None);
         };
-        if declared.fn_type.self_mode.is_none() {
+        let RequirementSignature::Concrete { fn_type, .. } = &declared.signature else {
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::GenericFunctionNotInstantiated {
+                    owner: spec.borrow().name.clone(),
+                    function: method_name.clone(),
+                    namespace: FunctionNamespace::Member,
+                },
+            );
+            return Intercepted::Claimed(None);
+        };
+        if fn_type.self_mode.is_none() {
             return self.resolve_static_spec_call(
                 node_id,
                 span,
@@ -298,7 +310,19 @@ impl<'r> Analyzer<'r> {
             );
             return Intercepted::Claimed(None);
         };
-        if declared.fn_type.self_mode.is_none() {
+        let RequirementSignature::Concrete { fn_type, .. } = &declared.signature else {
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::GenericFunctionNotInstantiated {
+                    owner: spec.borrow().name.clone(),
+                    function: method_name.clone(),
+                    namespace: FunctionNamespace::Member,
+                },
+            );
+            return Intercepted::Claimed(None);
+        };
+        if fn_type.self_mode.is_none() {
             return self.resolve_static_spec_call(
                 node_id,
                 span,

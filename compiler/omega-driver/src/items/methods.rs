@@ -1,7 +1,7 @@
 use super::*;
-use omega_analyzer::checked::CheckedMethodOwner;
+use omega_analyzer::checked::{CheckedMethodOwner, ConformanceOwner};
 use omega_analyzer::generics::GenericSubstitution;
-use omega_analyzer::resolved_type::{FunctionNamespace, ResolvedGenericArg};
+use omega_analyzer::resolved_type::{FunctionNamespace, ResolvedBound, ResolvedGenericArg};
 use omega_analyzer::resolver::GenericMethodTemplate;
 
 /// A generic method declaration, together with everything the owner
@@ -14,6 +14,8 @@ struct MethodTemplate {
     /// own generics shadow removed: an inner `T` must bind from the call, not
     /// from the owner that happens to spell a parameter the same way.
     owner_substitution: GenericSubstitution,
+    conformance_owner: Option<ConformanceOwner>,
+    enclosing_bounds: Vec<ResolvedBound>,
 }
 
 impl Driver {
@@ -118,7 +120,8 @@ impl Driver {
             .method_instantiations
             .insert(key.clone(), MethodQueryState::Resolved(method.clone()));
 
-        let bounds = self.method_bound_context(&key, template.site, &substitution, &declared);
+        let mut bounds = self.method_bound_context(&key, template.site, &substitution, &declared);
+        bounds.extend(template.enclosing_bounds.clone());
         let run = self.with_analyzer_in(
             &key.owner.module,
             &substitution,
@@ -130,11 +133,15 @@ impl Driver {
         );
         if let Some(mut checked) = run.result {
             checked.generic_args = key.generic_args.clone();
-            checked.method_owner = Some(CheckedMethodOwner {
-                module_path: key.owner.module.clone(),
-                name: key.owner.name.clone(),
-                generic_args: key.owner.generic_args.clone(),
-            });
+            if let Some(owner) = &template.conformance_owner {
+                checked.conformance_owner = Some(owner.clone());
+            } else {
+                checked.method_owner = Some(CheckedMethodOwner {
+                    module_path: key.owner.module.clone(),
+                    name: key.owner.name.clone(),
+                    generic_args: key.owner.generic_args.clone(),
+                });
+            }
             self.items.method_bodies.insert(
                 key,
                 CheckedBody {
@@ -211,7 +218,7 @@ impl Driver {
         namespace: FunctionNamespace,
     ) -> Result<Option<MethodTemplate>, ResolveError> {
         let Some((key, self_type)) = Self::owner_item_key(owner) else {
-            return Ok(None);
+            return self.find_generic_conformance_method(owner, name, namespace);
         };
         let index = match self.local_item_index(&key.module, &key.name) {
             Ok(index) => index,
@@ -226,7 +233,7 @@ impl Driver {
             HirItem::Struct(s) => (&s.generics, &s.functions),
             HirItem::Union(u) => (&u.generics, &u.functions),
             HirItem::Enum(e) => (&e.generics, &e.functions),
-            _ => return Ok(None),
+            _ => return self.find_generic_conformance_method(owner, name, namespace),
         };
         let generics = generics.clone();
         let candidates: Vec<HirFunctionDef> = functions
@@ -257,7 +264,7 @@ impl Driver {
         }
         let mut matches = matches.into_iter();
         let Some(function) = matches.next() else {
-            return Ok(None);
+            return self.find_generic_conformance_method(owner, name, namespace);
         };
         if matches.next().is_some() {
             return Err(ResolveError::GenericMethodOverload {
@@ -288,6 +295,75 @@ impl Driver {
             site,
             function,
             owner_substitution,
+            conformance_owner: None,
+            enclosing_bounds: Vec::new(),
+        }))
+    }
+
+    fn find_generic_conformance_method(
+        &mut self,
+        owner: &ResolvedType,
+        name: &Ident,
+        namespace: FunctionNamespace,
+    ) -> Result<Option<MethodTemplate>, ResolveError> {
+        let mut candidates = Vec::new();
+        for entry in self.conformances_for_type(owner) {
+            for (function, method_id) in entry.functions.iter().zip(&entry.method_ids) {
+                if entry.templates.contains(method_id)
+                    && function.name == *name
+                    && FunctionNamespace::of_declaration(function.self_mode) == namespace
+                {
+                    candidates.push((entry.clone(), function.clone()));
+                }
+            }
+        }
+        let mut candidates = candidates.into_iter();
+        let Some((entry, mut function)) = candidates.next() else {
+            return Ok(None);
+        };
+        if candidates.next().is_some() {
+            let (module, owner_name) = Self::owner_item_key(owner)
+                .map(|(key, _)| (key.module, key.name))
+                .unwrap_or_else(|| (entry.module.clone(), Ident(owner.to_string())));
+            return Err(ResolveError::GenericMethodOverload {
+                module,
+                owner: owner_name,
+                function: name.clone(),
+            });
+        }
+
+        let shadows = |name: &Ident| {
+            function
+                .generics
+                .iter()
+                .any(|generic| &generic.ident == name)
+        };
+        let mut owner_substitution = GenericSubstitution::new();
+        for (bound, arg) in entry.substitution.iter() {
+            if !shadows(bound) {
+                owner_substitution.push(bound.clone(), arg.clone());
+            }
+        }
+        if let Some((_, requirement)) = entry
+            .spec
+            .borrow()
+            .functions
+            .iter()
+            .find(|(requirement, _)| *requirement == function.name)
+        {
+            function.visibility = requirement.visibility;
+        }
+        Ok(Some(MethodTemplate {
+            key: MethodKey {
+                owner: Self::conformance_method_key(&entry),
+                method: function.id,
+                generic_args: Vec::new(),
+            },
+            site: AnalysisSite::new(function.id, function.span),
+            function,
+            owner_substitution,
+            conformance_owner: Some(Self::conformance_owner(&entry)),
+            enclosing_bounds: entry.declared_bounds.clone(),
         }))
     }
 

@@ -296,7 +296,7 @@ spec-declaration = [ visibility ], "spec", identifier,
                    [ generic-parameters ],
                    "{", { spec-member }, "}" ;
 
-spec-member = [ visibility ], identifier,
+spec-member = [ visibility ], identifier, [ generic-parameters ],
               "(", [ spec-parameters ], ")",
               "=>", type,
               ( ";" | code-block ) ;
@@ -306,7 +306,7 @@ spec-parameters = function-parameters, [ ",", "..." ]
                 | "..." ;
 ```
 
-A spec member does not introduce its own generic-parameter list. A body supplies a default implementation. A spec declaration never carries a dependency/composition list: `spec X : A, B { ... }` and `spec X = A + B;` are both invalid Omega syntax; express requirements as generic bounds and/or blanket conformances, and spell a conjunction directly at the type where it is needed (`spec A + B`, `*spec A + B`), optionally giving that conjunction a name with an `alias-declaration`.
+A spec member may introduce its own generic-parameter list. A body supplies a default implementation. A spec declaration never carries a dependency/composition list: `spec X : A, B { ... }` and `spec X = A + B;` are both invalid Omega syntax; express requirements as generic bounds and/or blanket conformances, and spell a conjunction directly at the type where it is needed (`spec A + B`, `*spec A + B`), optionally giving that conjunction a name with an `alias-declaration`.
 
 A spec member's visibility modifier, when given, must not exceed the declaring spec's own visibility; when omitted, it defaults to the spec's own visibility rather than to hidden (see [`visibility.md`](visibility.md)).
 

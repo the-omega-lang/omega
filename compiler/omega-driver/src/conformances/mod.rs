@@ -40,6 +40,9 @@ pub(crate) struct ConformanceEntry {
     pub spec: Rc<RefCell<ResolvedSpecType>>,
     pub spec_args: Vec<ResolvedGenericArg>,
     pub methods: Vec<(Ident, ResolvedMethod)>,
+    /// Declarations selected to satisfy generic spec requirements. They are
+    /// instantiated lazily and deliberately have no concrete method slot.
+    pub templates: Vec<HirId>,
     pub method_ids: Vec<HirId>,
     pub functions: Vec<HirFunctionDef>,
     pub pending: Vec<PendingSpecMethod>,
@@ -113,6 +116,14 @@ mod registration;
 mod solver;
 
 impl Driver {
+    pub(crate) fn conformance_method_key(entry: &ConformanceEntry) -> ItemKey {
+        ItemKey::new(
+            &entry.module,
+            &Ident(format!("__conform_{}", entry.id.local)),
+            &[ResolvedGenericArg::Type(entry.target.lookup_key())],
+        )
+    }
+
     pub(crate) fn conformance_method_ids(
         &mut self,
         module: &[Ident],

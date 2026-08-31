@@ -33,6 +33,16 @@ fn unbounded_generic_has_no_bounds() {
 }
 
 #[test]
+fn generic_spec_requirement_parses() {
+    let module = SourceModule::parse("spec Runner { execute<T>(*self, task: T) => T; }")
+        .expect("generic spec requirement should parse");
+    let Item::Spec(spec) = &module.nodes[0].item else {
+        panic!("expected spec declaration");
+    };
+    assert_eq!(spec.functions[0].generics.len(), 1);
+}
+
+#[test]
 fn bound_with_default_still_parses() {
     let function = function("f<T: A = i32>(x: T) => void {}");
     assert_eq!(function.generics[0].bounds().len(), 1);

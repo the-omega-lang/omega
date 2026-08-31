@@ -277,8 +277,7 @@ impl fmt::Display for TypeResolutionError {
             Self::SpecNotObjectSafe(name) => {
                 write!(
                     f,
-                    "'{}' can't be used as 'spec *{}' -- it has a 'spec T' (static-dispatch) return requirement, \
-                     which no dynamic-dispatch vtable slot can represent",
+                    "'{}' can't be used as 'spec *{}' -- it has a requirement that no dynamic-dispatch vtable slot can represent",
                     name.as_ref(),
                     name.as_ref()
                 )

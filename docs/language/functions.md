@@ -28,6 +28,8 @@ Parameters are immutable bindings. Methods use the same syntax inside a nominal 
 
 A function declared inside a struct, union, enum, marker, primitive block, or conformance block with no receiver is a static function. A declaration with `self`, `mut self`, `*self`, or `*mut self` is an instance method.
 
+A spec requirement uses the same optional generic-parameter syntax; see [`specs-and-conformance.md`](specs-and-conformance.md#generic-requirements) for its matching and dispatch rules.
+
 ## Associated-function namespaces
 
 Every function-bearing type has **two independent associated-function namespaces**, selected by how a type-qualified path is spelled:

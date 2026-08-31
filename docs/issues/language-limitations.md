@@ -152,6 +152,7 @@ Normative chapter: [`../language/specs-and-conformance.md`](../language/specs-an
   `mangle::vtable_symbol`.
 - **Only `core` can add inherent methods to primitives.** Any package allowed
   by the orphan rule can conform a concrete target to a spec.
+- **Generic requirements have no per-requirement dynamic-dispatch escape hatch.** A spec containing one is wholly non-object-safe because no finite vtable can contain every caller-selected instantiation.
 - **Variadic spec functions are not planned**, not a limitation. `f(*self,
   ...)` is rejected at the spec's own declaration
   (`VariadicSpecFunctionUnsatisfiable`): Omega has no ordinary Omega-convention

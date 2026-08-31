@@ -15,8 +15,8 @@ mod visibility;
 #[cfg(test)]
 mod tests;
 
-use specs::FlattenedSpecFn;
 pub use specs::PendingSpecMethod;
+use specs::{FlattenedSpecFn, RequirementSignature};
 
 use calls::{CalleeResolution, Intercepted, Interceptor, ResolvedCallee};
 use literals::parse_number_literal;

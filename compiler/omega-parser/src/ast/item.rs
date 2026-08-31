@@ -195,6 +195,7 @@ pub struct SpecFunctionStmt {
     pub return_type_span: Span,
     pub visibility: Visibility,
     pub explicit_hidden_span: Option<Span>,
+    pub generics: Vec<GenericParam>,
     pub self_mode: Option<SelfMode>,
     pub params: Vec<Param>,
     pub is_variadic: bool,

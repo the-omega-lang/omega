@@ -846,7 +846,11 @@ impl<'r> Analyzer<'r> {
                 return None;
             }
         };
-        let fn_type = flattened[slot_index].fn_type.clone();
+        let RequirementSignature::Concrete { fn_type, .. } = &flattened[slot_index].signature
+        else {
+            unreachable!("generic requirements cannot reach a dynamic spec-object slot")
+        };
+        let fn_type = fn_type.clone();
         let param_types = fn_type.params[1..].to_vec();
 
         if args.len() != param_types.len() {

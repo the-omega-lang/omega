@@ -2,13 +2,22 @@ use super::*;
 
 pub(super) struct FlattenedSpecFn {
     pub(super) name: Ident,
-    pub(super) fn_type: ResolvedFunctionType,
-    pub(super) return_type_bound: Vec<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedGenericArg>)>,
+    pub(super) signature: RequirementSignature,
     pub(super) raw: RawSpecFunctionSig,
     pub(super) spec_id: HirId,
     pub(super) spec_name: Ident,
     pub(super) visibility: Visibility,
     pub(super) substitution: GenericSubstitution,
+}
+
+pub(crate) enum RequirementSignature {
+    Concrete {
+        fn_type: ResolvedFunctionType,
+        return_type_bound: Vec<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedGenericArg>)>,
+    },
+    Template {
+        generics: Vec<HirGenericParam>,
+    },
 }
 
 impl FlattenedSpecFn {
@@ -139,16 +148,21 @@ impl<'r> Analyzer<'r> {
         Vec<ResolvedGenericArg>,
         Vec<(Ident, ResolvedMethod)>,
         Vec<PendingSpecMethod>,
+        Vec<HirId>,
     )> {
         let (spec, spec_args) = spec.clone();
         let requirements = self.flatten_spec(id, span, &spec, &spec_args, target)?;
+        let concrete_functions: Vec<_> = functions
+            .iter()
+            .filter(|function| function.generics.is_empty())
+            .collect();
         let (signatures, _) = self.with_scope(|this| {
-            this.analyze_all(functions, |this, function| {
+            this.analyze_all(&concrete_functions, |this, function| {
                 this.collect_function_signature(function)
             })
         });
         let signatures = signatures?;
-        self.check_overload_duplicates(&functions.iter().collect::<Vec<_>>(), &signatures);
+        self.check_overload_duplicates(&concrete_functions, &signatures);
 
         let source = ConformanceSource {
             spec: spec.clone(),
@@ -156,60 +170,97 @@ impl<'r> Analyzer<'r> {
         };
         let mut methods = Vec::with_capacity(requirements.len());
         let mut pending = Vec::new();
+        let mut templates = Vec::new();
         for requirement in requirements {
-            let matching = functions.iter().zip(&signatures).zip(method_ids).find(
-                |((function, (signature, _)), _)| {
-                    function.name == requirement.name
-                        && self.fn_satisfies_requirement(
+            match &requirement.signature {
+                RequirementSignature::Concrete {
+                    fn_type,
+                    return_type_bound,
+                } => {
+                    let matching = concrete_functions.iter().zip(&signatures).find(
+                        |(function, (signature, _))| {
+                            function.name == requirement.name
+                                && self.fn_satisfies_requirement(
+                                    id,
+                                    span,
+                                    signature,
+                                    fn_type,
+                                    return_type_bound,
+                                )
+                        },
+                    );
+                    if let Some((function, (signature, annotations))) = matching {
+                        let index = functions
+                            .iter()
+                            .position(|candidate| candidate.id == function.id)
+                            .expect("conformance function was selected from its declaration list");
+                        methods.push((
+                            requirement.name.clone(),
+                            ResolvedMethod {
+                                decl_id: method_ids[index],
+                                fn_type: signature.clone(),
+                                visibility: requirement.visibility,
+                                annotations: annotations.clone(),
+                                source: Some(source.clone()),
+                            },
+                        ));
+                    } else if requirement.raw.default_body.is_some() {
+                        let minted_id = self.resolver.fresh_synthetic_id();
+                        methods.push((
+                            requirement.name.clone(),
+                            ResolvedMethod {
+                                decl_id: minted_id,
+                                fn_type: fn_type.clone(),
+                                visibility: requirement.visibility,
+                                annotations: crate::annotations::ResolvedAnnotations::default(),
+                                source: Some(source.clone()),
+                            },
+                        ));
+                        pending.push(PendingSpecMethod {
+                            id: minted_id,
+                            fn_type: fn_type.clone(),
+                            return_type_bound: return_type_bound.clone(),
+                            raw: requirement.raw,
+                            substitution: requirement.substitution,
+                        });
+                    } else {
+                        self.error(
                             id,
                             span,
-                            signature,
-                            &requirement.fn_type,
-                            &requirement.return_type_bound,
-                        )
-                },
-            );
-            if let Some(((_function, (signature, annotations)), method_id)) = matching {
-                methods.push((
-                    requirement.name.clone(),
-                    ResolvedMethod {
-                        decl_id: *method_id,
-                        fn_type: signature.clone(),
-                        visibility: requirement.visibility,
-                        annotations: annotations.clone(),
-                        source: Some(source.clone()),
-                    },
-                ));
-            } else if requirement.raw.default_body.is_some() {
-                let minted_id = self.resolver.fresh_synthetic_id();
-                methods.push((
-                    requirement.name.clone(),
-                    ResolvedMethod {
-                        decl_id: minted_id,
-                        fn_type: requirement.fn_type.clone(),
-                        visibility: requirement.visibility,
-                        annotations: crate::annotations::ResolvedAnnotations::default(),
-                        source: Some(source.clone()),
-                    },
-                ));
-                pending.push(PendingSpecMethod {
-                    id: minted_id,
-                    fn_type: requirement.fn_type,
-                    return_type_bound: requirement.return_type_bound,
-                    raw: requirement.raw,
-                    substitution: requirement.substitution,
-                });
-            } else {
-                self.error(
-                    id,
-                    span,
-                    AnalysisErrorKind::MissingSpecFunction {
-                        implementor: Ident(target.to_string()),
-                        spec: requirement.spec_name.clone(),
-                        spec_args: requirement.spec_args(),
-                        function: requirement.name,
-                    },
-                );
+                            AnalysisErrorKind::MissingSpecFunction {
+                                implementor: Ident(target.to_string()),
+                                spec: requirement.spec_name.clone(),
+                                spec_args: requirement.spec_args(),
+                                function: requirement.name,
+                            },
+                        );
+                    }
+                }
+                RequirementSignature::Template { generics } => {
+                    let matching = functions.iter().zip(method_ids).find(|(function, _)| {
+                        function.name == requirement.name
+                            && Self::generic_requirement_shape_matches(
+                                &requirement.raw,
+                                function,
+                                generics,
+                            )
+                    });
+                    if let Some((function, method_id)) = matching {
+                        templates.push(*method_id);
+                        let _ = function;
+                    } else {
+                        self.error(
+                            id,
+                            span,
+                            AnalysisErrorKind::MissingSpecFunction {
+                                implementor: Ident(target.to_string()),
+                                spec: requirement.spec_name.clone(),
+                                spec_args: requirement.spec_args(),
+                                function: requirement.name,
+                            },
+                        );
+                    }
+                }
             }
         }
         let spec_name = spec.borrow().name.clone();
@@ -217,6 +268,7 @@ impl<'r> Analyzer<'r> {
             if !methods
                 .iter()
                 .any(|(_, method)| method.decl_id == *method_id)
+                && !templates.contains(method_id)
             {
                 self.error(
                     function.id,
@@ -228,7 +280,7 @@ impl<'r> Analyzer<'r> {
                 );
             }
         }
-        Some((spec, spec_args, methods, pending))
+        Some((spec, spec_args, methods, pending, templates))
     }
     pub fn resolve_spec_reference(
         &mut self,
@@ -349,6 +401,7 @@ impl<'r> Analyzer<'r> {
                     signature_span: f.signature_span,
                     return_type_span: f.return_type_span,
                     visibility: f.visibility,
+                    generics: f.generics.clone(),
                     self_mode: f.self_mode,
                     is_variadic: f.is_variadic,
                     params: f.params.clone(),
@@ -604,8 +657,18 @@ impl<'r> Analyzer<'r> {
                 .collect();
 
         for (name, raw) in &functions {
-            let (fn_type, return_type_bound) =
-                self.resolve_raw_spec_fn_type(id, span, raw, &substitution, &spec_module)?;
+            let signature = if raw.generics.is_empty() {
+                let (fn_type, return_type_bound) =
+                    self.resolve_raw_spec_fn_type(id, span, raw, &substitution, &spec_module)?;
+                RequirementSignature::Concrete {
+                    fn_type,
+                    return_type_bound,
+                }
+            } else {
+                RequirementSignature::Template {
+                    generics: raw.generics.clone(),
+                }
+            };
             // Identity dedup only -- same spec, same type args, same name.
             if out.iter().any(|existing| {
                 existing.spec_id == spec_id
@@ -616,8 +679,7 @@ impl<'r> Analyzer<'r> {
             }
             out.push(FlattenedSpecFn {
                 name: name.clone(),
-                fn_type,
-                return_type_bound,
+                signature,
                 raw: raw.clone(),
                 spec_id,
                 spec_name: spec_name.clone(),
@@ -646,6 +708,94 @@ impl<'r> Analyzer<'r> {
                 self.type_implements_spec(id, span, &own.return_type, spec, spec_args, false)
                     .is_ok()
             })
+    }
+
+    fn generic_requirement_shape_matches(
+        requirement: &RawSpecFunctionSig,
+        implementation: &HirFunctionDef,
+        generics: &[HirGenericParam],
+    ) -> bool {
+        if implementation.generics.len() != generics.len()
+            || implementation.self_mode != requirement.self_mode
+            || implementation.params.len() != requirement.params.len()
+        {
+            return false;
+        }
+        let req_names: Vec<_> = generics.iter().map(|param| &param.ident).collect();
+        let impl_names: Vec<_> = implementation
+            .generics
+            .iter()
+            .map(|param| &param.ident)
+            .collect();
+        let generic_kinds_match = generics
+            .iter()
+            .zip(&implementation.generics)
+            .all(|(required, implemented)| required.is_comp() == implemented.is_comp());
+        let params_match =
+            requirement
+                .params
+                .iter()
+                .zip(&implementation.params)
+                .all(|(required, implemented)| {
+                    Self::same_template_type(
+                        &required.r#type,
+                        &implemented.r#type,
+                        &req_names,
+                        &impl_names,
+                    )
+                });
+        let return_match = Self::same_template_type(
+            &requirement.return_type,
+            &implementation.return_type,
+            &req_names,
+            &impl_names,
+        );
+        generic_kinds_match && params_match && return_match
+    }
+
+    fn same_template_type(
+        required: &Type,
+        implemented: &Type,
+        requirement_names: &[&Ident],
+        implementation_names: &[&Ident],
+    ) -> bool {
+        match (required, implemented) {
+            (Type::Named(required), Type::Named(implemented)) => {
+                let required_index = requirement_names
+                    .iter()
+                    .position(|name| **name == required.head);
+                let implemented_index = implementation_names
+                    .iter()
+                    .position(|name| **name == implemented.head);
+                match (required_index, implemented_index) {
+                    (Some(required), Some(implemented)) => required == implemented,
+                    (None, None) => required == implemented,
+                    _ => false,
+                }
+            }
+            (
+                Type::Pointer(required, required_mut),
+                Type::Pointer(implemented, implemented_mut),
+            ) => {
+                required_mut == implemented_mut
+                    && Self::same_template_type(
+                        required,
+                        implemented,
+                        requirement_names,
+                        implementation_names,
+                    )
+            }
+            (Type::InferredArray(required), Type::InferredArray(implemented))
+            | (Type::UnknownSizeArray(required), Type::UnknownSizeArray(implemented)) => {
+                Self::same_template_type(
+                    required,
+                    implemented,
+                    requirement_names,
+                    implementation_names,
+                )
+            }
+            _ => required == implemented,
+        }
     }
 
     /// Bound-set expansion no longer follows spec-alias dependencies (they
@@ -711,6 +861,13 @@ impl<'r> Analyzer<'r> {
                 let mut slots = Vec::with_capacity(requirements.len());
                 let mut missing = Vec::new();
                 for requirement in &requirements {
+                    let RequirementSignature::Concrete {
+                        fn_type,
+                        return_type_bound,
+                    } = &requirement.signature
+                    else {
+                        continue;
+                    };
                     let found = available
                         .iter()
                         .position(|(spec_id, spec_args, name, method)| {
@@ -721,8 +878,8 @@ impl<'r> Analyzer<'r> {
                                     id,
                                     span,
                                     &method.fn_type,
-                                    &requirement.fn_type,
-                                    &requirement.return_type_bound,
+                                    fn_type,
+                                    return_type_bound,
                                 )
                         });
                     match found {

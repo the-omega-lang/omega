@@ -316,6 +316,7 @@ pub struct HirSpecFunction {
     pub visibility: Visibility,
     pub explicit_hidden_span: Option<Span>,
     pub name: Ident,
+    pub generics: Vec<HirGenericParam>,
     pub self_mode: Option<SelfMode>,
     pub params: Vec<HirParam>,
     pub is_variadic: bool,

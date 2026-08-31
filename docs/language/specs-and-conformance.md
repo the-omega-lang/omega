@@ -19,6 +19,22 @@ exposed spec Animal {
 
 A function without a body is required. A function with a body is a default implementation that a conformance may use or replace.
 
+### Generic requirements
+
+A requirement may declare its own generic parameters, independently of any parameters on its enclosing spec:
+
+```omega
+spec Runner {
+    execute<T>(*self, task: T) => T;
+}
+
+meet Runner for Direct {
+    execute<U>(*self, task: U) => U { task }
+}
+```
+
+The `meet` block checks the declaration shape immediately: generic parameter kinds/count, receiver, arity, and parameter/return shapes must agree (parameter names need not). A concrete call then infers and checks the requirement's particular arguments. A spec with any generic requirement is not object-safe, so it cannot form a `*spec Runner` object; use a generic spec such as `spec Runner<T>` when the caller's type belongs to the spec identity instead.
+
 `Self` denotes the concrete implementing type. Spec receiver parameters must use `*self` or `*mut self`; by-value `self`/`mut self` is invalid in a spec declaration.
 
 A spec declares only its own requirements. There is no spec-composition declaration: `spec AB = A + B;` is not valid Omega syntax, and a spec declaration never carries a dependency list (`spec X : A, B { ... }` is also invalid). A conjunction of specs is written directly at the type where it is needed -- see [Spec conjunctions in type syntax](#spec-conjunctions-in-type-syntax) below -- and is satisfied by conforming to each member separately; there is nothing to `meet` for a conjunction itself.

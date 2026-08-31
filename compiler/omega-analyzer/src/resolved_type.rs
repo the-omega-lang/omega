@@ -1,4 +1,4 @@
-use omega_hir::{HirBlock, HirId, HirParam};
+use omega_hir::{HirBlock, HirGenericParam, HirId, HirParam};
 use omega_parser::prelude::{Ident, SelfMode, Span, Type, Visibility};
 use std::cell::RefCell;
 use std::hash::{Hash, Hasher};
@@ -591,6 +591,7 @@ pub struct RawSpecFunctionSig {
     pub signature_span: Span,
     pub return_type_span: Span,
     pub visibility: Visibility,
+    pub generics: Vec<HirGenericParam>,
     pub self_mode: Option<SelfMode>,
     pub params: Vec<HirParam>,
     pub is_variadic: bool,

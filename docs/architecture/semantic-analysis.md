@@ -203,6 +203,8 @@ When generic arguments are omitted, call analysis may ask the resolver for a raw
 
 A generic *member or static* declaration is not an item query, because it belongs to an owner instantiation rather than to a module. It therefore has no signature to collect and is left out of its owner's resolved methods entirely; `analysis/items` skips it in both the signature and the body pass. Every call site instead asks the resolver for the declaration's raw template (`generic_method_template`), infers its arguments against the owner substitution the receiver or path already fixed, and asks for the instantiation (`instantiate_generic_method`), which is an ordinary `ResolvedMethod` from that point on. Positions that cannot instantiate -- naming one uncalled, or two templates sharing a name and namespace -- are rejected where they are written.
 
+The same lazy method-instantiation query also serves a generic requirement selected by a conformance. Such a declaration has no vtable slot or concrete `ResolvedMethod` until its call arguments are known.
+
 ## Places and storage semantics
 
 HIR already provides a flattened syntactic place chain. `analysis/places/` resolves it into a typed `CheckedPlace`:

@@ -420,6 +420,7 @@ impl Lowerer {
             visibility: f.visibility,
             explicit_hidden_span: f.explicit_hidden_span,
             name: f.ident.clone(),
+            generics: Self::lower_generics(&f.generics),
             self_mode: f.self_mode,
             params,
             is_variadic: f.is_variadic,

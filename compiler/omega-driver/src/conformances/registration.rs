@@ -353,6 +353,7 @@ impl Driver {
             spec: spec_reference.0.clone(),
             spec_args: spec_reference.1.clone(),
             methods: vec![],
+            templates: vec![],
             method_ids: vec![],
             functions: vec![],
             pending: vec![],
@@ -388,7 +389,7 @@ impl Driver {
             },
         );
         self.diagnostics.record_warnings(module, run.warnings);
-        let (spec, spec_args, methods, pending) = run.result?;
+        let (spec, spec_args, methods, pending, templates) = run.result?;
         let entry = ConformanceEntry {
             module: module.to_vec(),
             id: conform.id,
@@ -397,6 +398,7 @@ impl Driver {
             spec,
             spec_args,
             methods,
+            templates,
             method_ids,
             functions: conform.functions.clone(),
             pending,

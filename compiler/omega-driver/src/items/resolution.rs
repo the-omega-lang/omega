@@ -602,9 +602,9 @@ impl Driver {
             });
         }
         let (functions, annotations) = run.result;
-        let is_object_safe = functions
-            .iter()
-            .all(|(_, raw)| !matches!(raw.return_type, Type::SpecStatic(_)));
+        let is_object_safe = functions.iter().all(|(_, raw)| {
+            raw.generics.is_empty() && !matches!(raw.return_type, Type::SpecStatic(_))
+        });
         let cell = Rc::new(RefCell::new(ResolvedSpecType {
             id: sp.id,
             name: sp.name.clone(),

@@ -320,6 +320,8 @@ MethodKey {
 
 Each instantiation is emitted as a standalone checked function carrying its owner identity (`CheckedFunctionDef::method_owner`), into the owner module's `CheckedModule` -- the same declaring-module rule concrete item instantiations follow, and for the same symbol-identity reason. MIR builds its symbol from the owner path, the owner's generic arguments, and the declaration's own, and gives it weak linkage, so two packages that instantiate one declaration at the same arguments fold to one definition.
 
+Generic conformance methods share this cache/materialization path, retaining their `ConformanceOwner` so emission uses conformance linkage and identity rather than treating the implementation as an inherent method.
+
 Implementation ownership is split under `items/`: `items/mod.rs` owns query keys, cells, state transitions, checked-body caching, and type cells; `items/resolution.rs` owns the driver-side resolution algorithms that populate those states; `items/methods.rs` owns generic member/static instantiation. Keeping cache lifetime/state separate from resolution logic makes query invariants visible without turning one file into both the database and every query implementation.
 
 ## Query states and cycles

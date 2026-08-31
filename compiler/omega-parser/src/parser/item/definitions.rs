@@ -271,6 +271,7 @@ fn parse_spec_function(p: &mut Parser, policy: SpecMemberVisibility) -> Option<S
     let explicit_hidden_span = parsed_visibility.explicit_hidden_span();
     let ident = p.expect_ident()?;
     let name_span = p.last_span();
+    let generics = parse_optional_generics(p)?;
     p.expect(&TokenKind::LParen, "'('");
     let (self_mode, params) = crate::parser::parse_param_list(p);
     let is_variadic = if p.eat(&TokenKind::Comma) {
@@ -303,6 +304,7 @@ fn parse_spec_function(p: &mut Parser, policy: SpecMemberVisibility) -> Option<S
         return_type_span,
         visibility,
         explicit_hidden_span,
+        generics,
         self_mode,
         params,
         is_variadic,
@@ -343,6 +345,9 @@ pub(super) fn parse_gap_def(p: &mut Parser) -> Option<GapStmt> {
                     name: function.ident.clone(),
                 },
             );
+        }
+        if !function.generics.is_empty() {
+            p.error_at(function.name_span, ParseErrorKind::GapOrGlueGeneric);
         }
         if let Some(body) = &function.body {
             p.error_at(

@@ -120,6 +120,10 @@ fn gap_and_glue_reject_generics_without_cascading() {
         errors("glue Foo<i32> { f() => void { } }").as_slice(),
         [ParseErrorKind::GapOrGlueGeneric]
     ));
+    assert!(matches!(
+        errors("gap Foo { f<T>() => void; }").as_slice(),
+        [ParseErrorKind::GapOrGlueGeneric]
+    ));
 }
 
 #[test]

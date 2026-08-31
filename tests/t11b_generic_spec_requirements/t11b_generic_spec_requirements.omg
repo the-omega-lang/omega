@@ -1,0 +1,16 @@
+import std::io::println;
+
+exposed spec Runner {
+	execute<T>(*self, task: T) => T;
+}
+
+struct Direct { exposed value: i32; }
+
+meet Runner for Direct {
+	execute<U>(*self, task: U) => U { task }
+}
+
+main() => void {
+	direct := Direct { value = 0; };
+	println$("generic-spec: ", direct.execute(7), " ", Direct::self::execute(&direct, true));
+}
