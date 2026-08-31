@@ -48,14 +48,15 @@ fn compile(args: Args) -> Result<(), AppError> {
             let physical_name = basename(&entry_dir).ok_or_else(|| {
                 AppError::Message(format!(
                     "'{}' has no usable directory name -- a package root's own module file is \
-                     named after its directory, so name the directory explicitly ('--name=' \
-                     renames the module, it cannot supply a missing directory name)",
+                     named after its directory, so name the directory explicitly (a \
+                     '<name>:<dir>' entry argument renames the module, it cannot supply a \
+                     missing directory name)",
                     entry_dir.display()
                 ))
             })?;
             cli::validate_module_name(
                 physical_name.as_ref(),
-                "inferred from the entry directory name; pass --name=<name> to override",
+                "inferred from the entry directory name; pass <name>:<dir> to override",
             )?
         }
     };

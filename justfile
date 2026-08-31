@@ -23,7 +23,7 @@ build-core: build-omgc
 
 build-plat: build-omgc
     @echo "[*] Building 'plat'..."
-    ./bin/omgc-debug -v runtime/plat/libc/ --name=plat --import=core:runtime/core/ -o target/plat.o
+    ./bin/omgc-debug -v plat:runtime/plat/libc/ --import=core:runtime/core/ -o target/plat.o
 
 build-std: build-omgc
     @echo "[*] Building 'std'..."

@@ -93,7 +93,7 @@ Because this happens during checked -> MIR lowering, codegen receives only the f
 
 ## Package/module identity
 
-The first mangled path segment is the **declared package root identity**, not an arbitrary filesystem path. `--name` / `--import=<name>:<dir>` therefore affect source-visible/module ABI identity consistently.
+The first mangled path segment is the **declared package root identity**, not an arbitrary filesystem path. A declared entry identity (`<name>:<dir>`) / `--import=<name>:<dir>` therefore affect source-visible/module ABI identity consistently.
 
 Nested modules and item owners extend that path deterministically.
 
@@ -181,7 +181,7 @@ A mangling change is an ABI/separate-compilation change. Audit:
 2. `MangleType` coverage for all external type identities;
 3. MIR adapter construction for free/method/conformance/primitive/gap/vtable cases;
 4. overload uniqueness;
-5. package `--name`/extern identities;
+5. declared package/extern identities;
 6. weak/strong duplicate behavior;
 7. cross-process/separate-compilation linking tests.
 

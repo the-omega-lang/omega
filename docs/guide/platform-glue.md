@@ -4,7 +4,7 @@
 subdirectory under it is its own independent, standalone-compilable
 package, honestly named after what it physically is (`libc/` today), that
 *presents* as the same declared identity `plat` purely via a compiler-
-level alias (`--name=`/`--import=plat:...`) — the project's own files
+level alias (`plat:<dir>`/`--import=plat:...`) — the project's own files
 never lie about what they are; only the compiler's view of a root's
 identity can differ from its on-disk name. Unlike `core`
 ([the core library](core-library.md)), `plat` gets no ambient-prelude
@@ -40,13 +40,13 @@ sibling directory, its own independent package, aliased to `plat` the
 same way — not a submodule of `libc`, and not a variant of it. There is
 no selection mechanism *between* platforms (see "No platform selection"
 below); each is simply available at its own honest path, and a build
-picks one by choosing which directory its `--name=`/`--import=plat:...`
-flags point at.
+picks one by choosing which directory its `plat:<dir>`/`--import=plat:...`
+arguments point at.
 
 ## The `plat` alias
 
-`--name=<name>` (standalone compilation) and `--import=<name>:<dir>`
-(consumption) let a package's *declared* identity differ from its root
+`<name>:<dir>` as the compiled entry argument (standalone compilation) and
+`--import=<name>:<dir>` (consumption) let a package's *declared* identity differ from its root
 directory's own basename. `libc/` needs no move for the root-module layout:
 `libc.omg` is already the root's own file, even though the package presents as
 `plat`. The alias applies to *everything* discovered beneath the root, not just the root
@@ -111,7 +111,7 @@ just the one platform that exists right now, at its own honest path.
 ## Building it
 
 ```
-just build-plat     # omgc runtime/plat/libc/ --name=plat --import=core:runtime/core/ -o target/plat.o
+just build-plat     # omgc plat:runtime/plat/libc/ --import=core:runtime/core/ -o target/plat.o
 ```
 
 Built and linked exactly like any other `--import` dependency — `just

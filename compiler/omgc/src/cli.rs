@@ -44,11 +44,6 @@ fn parse_compile(args: &[String]) -> Result<Args, String> {
     while let Some(arg) = iter.next() {
         if let Some(value) = arg.strip_prefix("--import=") {
             externs.push(parse_import(arg, value)?);
-        } else if let Some(value) = arg.strip_prefix("--name=") {
-            name = Some(
-                validate_module_name(value, "declared by --name")
-                    .map_err(|reason| format!("invalid --name flag '{arg}': {reason}"))?,
-            );
         } else if arg == "-o" {
             let file = iter
                 .next()
@@ -69,12 +64,14 @@ fn parse_compile(args: &[String]) -> Result<Args, String> {
                 "unexpected extra argument '{arg}' (the entry directory was already given)"
             ));
         } else {
-            entry_dir = Some(PathBuf::from(arg));
+            let (explicit_name, dir) = parse_entry(arg)?;
+            name = explicit_name;
+            entry_dir = Some(dir);
         }
     }
 
     let entry_dir = entry_dir.ok_or_else(|| {
-        "usage: omgc <entry-dir> -o <output-file> [OPTIONS] (see --help)".to_string()
+        "usage: omgc [<name>:]<entry-dir> -o <output-file> [OPTIONS] (see --help)".to_string()
     })?;
     let output_file = output_file.ok_or_else(|| "the -o <file> flag is required".to_string())?;
 
@@ -90,8 +87,23 @@ fn parse_compile(args: &[String]) -> Result<Args, String> {
     })
 }
 
+/// The compiled package is written like an import: an optional declared
+/// identity, then its root directory (`[<name>:]<dir>`).
+fn parse_entry(arg: &str) -> Result<(Option<Ident>, PathBuf), String> {
+    let (explicit_name, dir) = split_declared_root(arg)
+        .map_err(|reason| format!("invalid entry argument '{arg}': {reason}"))?;
+    let name = explicit_name
+        .map(|raw| {
+            validate_module_name(raw.as_ref(), "declared by the entry argument")
+                .map_err(|reason| format!("invalid entry argument '{arg}': {reason}"))
+        })
+        .transpose()?;
+
+    Ok((name, dir))
+}
+
 fn parse_import(flag: &str, value: &str) -> Result<ExternRoot, String> {
-    let (explicit_name, dir) = split_import(value)
+    let (explicit_name, dir) = split_declared_root(value)
         .map_err(|reason| format!("invalid --import flag '{flag}': {reason}"))?;
     let name = match explicit_name {
         Some(raw) => validate_module_name(raw.as_ref(), "declared by --import")
@@ -133,10 +145,10 @@ pub(crate) fn validate_module_name(
     }
 }
 
-fn split_import(value: &str) -> Result<(Option<Ident>, PathBuf), String> {
+fn split_declared_root(value: &str) -> Result<(Option<Ident>, PathBuf), String> {
     // A drive letter is part of a bare Windows path, not an explicit module
-    // identity (`--import=C:\\...`). Explicit identities still work with
-    // Windows paths: `--import=core:C:\\...` splits at the first colon.
+    // identity (`C:\\...`). Explicit identities still work with Windows paths:
+    // `core:C:\\...` splits at the first colon.
     if is_windows_absolute_path(value) {
         return Ok((None, PathBuf::from(value)));
     }
@@ -166,7 +178,14 @@ pub(crate) fn print_help() {
     println!("{}", paint(colors, BOLD, "omgc"));
     println!("The Omega compiler\n");
     println!("{}", paint(colors, BOLD, "USAGE:"));
-    println!("    omgc <entry-dir> -o <output-file> [OPTIONS]\n");
+    println!("    omgc [<name>:]<entry-dir> -o <output-file> [OPTIONS]\n");
+    println!("{}", paint(colors, BOLD, "ARGS:"));
+    help_option(
+        colors,
+        "[<name>:]<entry-dir>",
+        "Root directory of the package to compile (identity defaults to the directory basename)",
+    );
+    println!();
     println!("{}", paint(colors, BOLD, "OPTIONS:"));
     help_option(colors, "-o <file>", "Output file path (required)");
     help_option(colors, "-O<0-3>", "Optimization level (default: 0)");
@@ -187,11 +206,6 @@ pub(crate) fn print_help() {
         colors,
         "--import=[<name>:]<dir>",
         "Register an external module root (repeatable; name defaults to the directory basename)",
-    );
-    help_option(
-        colors,
-        "--name=<name>",
-        "Override the local project's declared identity (default: entry directory basename)",
     );
     help_option(colors, "-v, --verbose", "Print progress information");
     help_option(colors, "-h, --help", "Print this help message");
@@ -301,14 +315,21 @@ mod tests {
     }
 
     #[test]
-    fn rejects_invalid_name_flag() {
+    fn rejects_invalid_declared_entry_name() {
         for invalid in ["foo-bar", "0abc", "if", ""] {
-            let Err(err) = parse(&args(&["src", "-o", "out.o", &format!("--name={invalid}")]))
-            else {
-                panic!("expected --name={invalid} to be rejected");
+            let Err(err) = parse(&args(&[&format!("{invalid}:src"), "-o", "out.o"])) else {
+                panic!("expected entry argument '{invalid}:src' to be rejected");
             };
             assert!(err.contains(invalid) || invalid.is_empty(), "{err}");
         }
+    }
+
+    #[test]
+    fn rejects_legacy_name_flag_as_unknown() {
+        let Err(err) = parse(&args(&["src", "-o", "out.o", "--name=my_pkg"])) else {
+            panic!("expected legacy --name flag to be rejected");
+        };
+        assert!(err.contains("--name"), "{err}");
     }
 
     #[test]
@@ -336,27 +357,36 @@ mod tests {
     }
 
     #[test]
-    fn accepts_valid_name_and_extern_identities() {
+    fn accepts_valid_entry_and_extern_identities() {
         let Ok(Command::Compile(parsed)) = parse(&args(&[
-            "src",
+            "my_pkg:src",
             "-o",
             "out.o",
-            "--name=my_pkg",
             "--import=core:deps/core",
         ])) else {
             panic!("expected compile command");
         };
         assert_eq!(parsed.name.as_ref().map(Ident::as_ref), Some("my_pkg"));
+        assert_eq!(parsed.entry_dir, PathBuf::from("src"));
         assert_eq!(parsed.externs[0].name.as_ref(), "core");
     }
 
     #[test]
-    fn windows_drive_letter_is_not_parsed_as_an_extern_name() {
-        let (name, dir) = split_import(r"C:\omega\core").unwrap();
+    fn entry_without_an_explicit_identity_leaves_the_name_inferred() {
+        let Ok(Command::Compile(parsed)) = parse(&args(&["deps/core", "-o", "out.o"])) else {
+            panic!("expected compile command");
+        };
+        assert!(parsed.name.is_none());
+        assert_eq!(parsed.entry_dir, PathBuf::from("deps/core"));
+    }
+
+    #[test]
+    fn windows_drive_letter_is_not_parsed_as_a_module_name() {
+        let (name, dir) = split_declared_root(r"C:\omega\core").unwrap();
         assert!(name.is_none());
         assert_eq!(dir, PathBuf::from(r"C:\omega\core"));
 
-        let (name, dir) = split_import(r"core:C:\omega\core").unwrap();
+        let (name, dir) = split_declared_root(r"core:C:\omega\core").unwrap();
         assert_eq!(name.as_ref().map(Ident::as_ref), Some("core"));
         assert_eq!(dir, PathBuf::from(r"C:\omega\core"));
     }

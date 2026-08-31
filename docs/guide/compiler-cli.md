@@ -3,7 +3,7 @@
 Typical shape:
 
 ```text
-omgc <entry-dir> -o <output> [--name=<name>] [--import=[<name>:]<dir>]...
+omgc [<name>:]<entry-dir> -o <output> [--import=[<name>:]<dir>]...
      [-O<0-3>] [--target=<arch>-<os>]
      [--emit=<obj|ir|asm>] [-v]
 ```
@@ -12,7 +12,12 @@ omgc <entry-dir> -o <output> [--name=<name>] [--import=[<name>:]<dir>]...
 
 ## Package identity
 
-`--name=<name>` overrides the local package's declared identity. `--import=<dir>` registers an external package using the directory basename as its identity; `--import=<name>:<dir>` supplies the identity explicitly.
+The compiled package and its dependencies use the same `[<name>:]<dir>` spelling. A bare directory takes its identity from the directory basename; `<name>:<dir>` supplies the identity explicitly:
+
+```sh
+omgc mathlib:examples/extern_lib/ -o target/mathlib.o
+omgc app/ --import=mathlib:examples/extern_lib/ -o target/app.o
+```
 
 Source-level meaning is specified in [`../language/modules-and-imports.md`](../language/modules-and-imports.md).
 

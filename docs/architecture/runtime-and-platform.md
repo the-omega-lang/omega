@@ -55,7 +55,7 @@ Owning library values use explicit lifetime/free APIs; the compiler does not inj
 
 `runtime/plat/` is a container of platform implementations, not one magical compiler-known package.
 
-Today `runtime/plat/libc/` is compiled as an ordinary package but presented to source under declared identity `plat` using `--name=plat` / `--import=plat:<dir>`.
+Today `runtime/plat/libc/` is compiled as an ordinary package but presented to source under declared identity `plat` using `plat:<dir>` / `--import=plat:<dir>`.
 
 Selecting a platform implementation is therefore selecting which root/object is built and registered, not an implicit compiler target hook.
 
@@ -107,7 +107,7 @@ Typical repository flow:
 ```text
 omgc runtime/core/                    -> core.o
 omgc runtime/std/ --import=core:...   -> std.o
-omgc runtime/plat/libc/ --name=plat \
+omgc plat:runtime/plat/libc/ \
      --import=core:...                -> plat.o
 omgc app/ --import=core:... \
           --import=std:... \
