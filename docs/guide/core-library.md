@@ -9,6 +9,7 @@ console policy; those belong to `std`.
 
 ```
 runtime/core/
+  atomic.omg     # ordering types and the AtomicityN capability gaps
   builtins.omg   # file$, line$, column$ -- compiler-implemented
   cmp.omg        # Ordering, Eq, Ord
   iterator.omg   # Iterator<T>, ToIterator<T>
@@ -40,6 +41,8 @@ compiled object: definitions from `core.o` must be linked when used.
   `str` conformances live in core because range iteration depends on them.
 - **`core::iterator`** defines `Iterator<T>::next(*mut self) => Option<T>`
   and `ToIterator<T>`, the protocols behind `for`.
+- **`core::atomic`** owns the three ordering types and the per-width atomic
+  capability gaps. See "Atomic operations" below.
 - **`core::panic`** owns `PanicInfo`, the `PanicHandler` gap, and the `panic$`
   macro; **`core::builtins`** owns the compiler-implemented `file$`, `line$`,
   and `column$` source-location macros. See "Panicking" below.
@@ -105,6 +108,48 @@ of bytes transferred. In particular, `Some(0)` is valid: it can mean EOF on
 input or a zero-progress write. Core declares these names but does not call
 them. That keeps a core-only program freestanding and free of console or
 allocator glue requirements.
+
+## Atomic operations
+
+`core::atomic` declares atomicity the same way core declares any other
+platform capability: one gap per storage width, filled by the platform.
+
+```omega
+mut slot: u32 = 0;
+
+Atomicity32::store(&mut slot, 7u32, AtomicStoreOrdering::Release);
+previous := Atomicity32::exchange(&mut slot, 9u32, AtomicRmwOrdering::AcquireRelease);
+current := Atomicity32::load(&slot, AtomicLoadOrdering::Acquire);
+```
+
+`Atomicity8`, `Atomicity16`, `Atomicity32`, and `Atomicity64` each provide
+`load`, `store`, `exchange`, `compare_exchange`, `compare_exchange_weak`,
+`fetch_add`, `fetch_sub`, `fetch_and`, `fetch_or`, `fetch_xor`, and both an
+unsigned and a signed `fetch_min`/`fetch_max`. Signed comparison is a separate
+member taking the signed pointer/value type, so it is never inferred from an
+unsigned bit pattern.
+
+Three points about using them:
+
+- These are raw operation-level atomics on ordinary storage. A wrapper type is
+  a convenience, not the source of atomicity — `std::atomic` is built on
+  exactly these calls.
+- Only `load` takes `*T`; everything that can modify the location takes
+  `*mut T`. Atomicity is not a way to write through an immutable binding, so
+  callers supply mutable storage.
+- Each operation category has its own ordering type
+  (`AtomicLoadOrdering`, `AtomicStoreOrdering`, `AtomicRmwOrdering`), and a
+  mismatched ordering is an ordinary compile-time type error rather than a
+  runtime check.
+
+Every `fetch_*` and `exchange` returns the value the location held before the
+modification; `compare_exchange` returns `Result<T, T>` — `Ok` with the
+previous value, or `Err` with the value actually observed. The full contract,
+including what concurrent access is excluded, is in
+[the language specification](../language/atomics.md).
+
+Nothing here promises lock-freedom. A platform may implement a width with a
+lock or an OS primitive, so an atomic call may block.
 
 ## Panicking
 

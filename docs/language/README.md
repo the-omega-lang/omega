@@ -45,6 +45,7 @@ The word `spec` in Omega source means the interface-like language construct. “
 19. [`compile-time-evaluation.md`](compile-time-evaluation.md) — `comp` bindings/expressions and compile-time evaluator semantics.
 20. [`annotations-and-sizeof.md`](annotations-and-sizeof.md) — annotations and `sizeof<Type>`.
 21. [`macros.md`](macros.md) — declarative token macros, parameters, repetition, hygiene and visibility.
+22. [`atomics.md`](atomics.md) — atomic locations, modification order, ordering categories, and the platform obligation behind them.
 
 ## Completeness rule
 

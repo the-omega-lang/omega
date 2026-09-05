@@ -108,6 +108,16 @@ just the one platform that exists right now, at its own honest path.
   LED) supplies its own glue in a build that does not register `plat`, rather
   than adding a second one. See [the core library](core-library.md#panicking).
 
+- **No atomic glue** — `plat` deliberately fills none of the `core::atomic`
+  `AtomicityN` gaps. There is no honest libc-only implementation of that
+  contract: it would need either architecture-specific code, which a package
+  documented as libc-only must not smuggle in, or a new external runtime
+  dependency such as libatomic or pthreads. A program that uses `core::atomic`
+  or `std::atomic` therefore supplies glue from a platform that can actually
+  uphold the contract for the widths it uses. Nothing else is affected —
+  per-function sections plus `--gc-sections` mean an unfilled capability the
+  program never calls does not have to be filled.
+
 ## Building it
 
 ```

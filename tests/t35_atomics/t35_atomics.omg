@@ -1,0 +1,130 @@
+import std::io::println;
+import core::atomic::Atomicity32;
+import core::atomic::AtomicLoadOrdering;
+import core::atomic::AtomicStoreOrdering;
+import core::atomic::AtomicRmwOrdering;
+import std::atomic::AtomicU32;
+import std::atomic::AtomicI32;
+import std::atomic::AtomicBool;
+
+show_u32(label: *str, result: Result<u32, u32>) => void {
+	match result {
+		Result::Ok => println$(label, ": ok ", result.value),
+		Result::Err => println$(label, ": err ", result.error),
+	}
+}
+
+show_i32(label: *str, result: Result<i32, i32>) => void {
+	match result {
+		Result::Ok => println$(label, ": ok ", result.value),
+		Result::Err => println$(label, ": err ", result.error),
+	}
+}
+
+show_bool(label: *str, result: Result<bool, bool>) => void {
+	match result {
+		Result::Ok => println$(label, ": ok ", result.value),
+		Result::Err => println$(label, ": err ", result.error),
+	}
+}
+
+# The core gaps work on ordinary mutable storage; a wrapper type is a
+# convenience, not the source of atomicity.
+raw_operations() => void {
+	mut slot: u32 = 0;
+	Atomicity32::store(&mut slot, 7u32, AtomicStoreOrdering::Relaxed);
+	println$("raw-load: ", Atomicity32::load(&slot, AtomicLoadOrdering::Acquire));
+
+	println$("raw-exchange: ", Atomicity32::exchange(&mut slot, 9u32, AtomicRmwOrdering::AcquireRelease));
+	println$("raw-after-exchange: ", Atomicity32::load(&slot, AtomicLoadOrdering::SeqConsistent));
+
+	println$("raw-fetch-add: ", Atomicity32::fetch_add(&mut slot, 3u32, AtomicRmwOrdering::Relaxed));
+	println$("raw-after-fetch-add: ", Atomicity32::load(&slot, AtomicLoadOrdering::Relaxed));
+
+	println$("raw-fetch-min-unsigned: ", Atomicity32::fetch_min_unsigned(&mut slot, 5u32, AtomicRmwOrdering::Release));
+	println$("raw-after-fetch-min-unsigned: ", Atomicity32::load(&slot, AtomicLoadOrdering::Relaxed));
+
+	show_u32("raw-compare-exchange-success", Atomicity32::compare_exchange(&mut slot, 5u32, 50u32, AtomicRmwOrdering::SeqConsistent, AtomicLoadOrdering::Relaxed));
+	show_u32("raw-compare-exchange-failure", Atomicity32::compare_exchange(&mut slot, 5u32, 60u32, AtomicRmwOrdering::SeqConsistent, AtomicLoadOrdering::Relaxed));
+	println$("raw-after-compare-exchange: ", Atomicity32::load(&slot, AtomicLoadOrdering::Relaxed));
+
+	# Signed min/max are separate gap members, so the comparison is a signed
+	# one rather than a guess about an unsigned bit pattern.
+	mut signed_slot: i32 = -5;
+	println$("raw-fetch-min-signed: ", Atomicity32::fetch_min_signed(&mut signed_slot, 3i32, AtomicRmwOrdering::Relaxed));
+	println$("raw-after-fetch-min-signed: ", signed_slot);
+	println$("raw-fetch-max-signed: ", Atomicity32::fetch_max_signed(&mut signed_slot, 3i32, AtomicRmwOrdering::Relaxed));
+	println$("raw-after-fetch-max-signed: ", signed_slot);
+}
+
+unsigned_wrapper() => void {
+	mut counter := AtomicU32::new(10u32);
+	println$("u32-load: ", counter.load(AtomicLoadOrdering::SeqConsistent));
+
+	println$("u32-fetch-add: ", counter.fetch_add(5u32, AtomicRmwOrdering::Relaxed));
+	println$("u32-fetch-sub: ", counter.fetch_sub(3u32, AtomicRmwOrdering::Relaxed));
+	println$("u32-fetch-and: ", counter.fetch_and(10u32, AtomicRmwOrdering::Relaxed));
+	println$("u32-fetch-or: ", counter.fetch_or(1u32, AtomicRmwOrdering::Relaxed));
+	println$("u32-fetch-xor: ", counter.fetch_xor(255u32, AtomicRmwOrdering::Relaxed));
+	println$("u32-after-bitwise: ", counter.load(AtomicLoadOrdering::Relaxed));
+
+	counter.store(100u32, AtomicStoreOrdering::Release);
+	println$("u32-fetch-max: ", counter.fetch_max(150u32, AtomicRmwOrdering::Relaxed));
+	println$("u32-fetch-min: ", counter.fetch_min(20u32, AtomicRmwOrdering::Relaxed));
+	println$("u32-exchange: ", counter.exchange(7u32, AtomicRmwOrdering::AcquireRelease));
+
+	show_u32("u32-compare-exchange-success", counter.compare_exchange(7u32, 8u32, AtomicRmwOrdering::AcquireRelease, AtomicLoadOrdering::Acquire));
+	show_u32("u32-compare-exchange-failure", counter.compare_exchange(7u32, 9u32, AtomicRmwOrdering::AcquireRelease, AtomicLoadOrdering::Acquire));
+
+	# Omega orders the two paths independently: a failure ordering stronger
+	# than the success ordering is a valid request, not an error.
+	show_u32("u32-compare-exchange-weak", counter.compare_exchange_weak(8u32, 11u32, AtomicRmwOrdering::Relaxed, AtomicLoadOrdering::SeqConsistent));
+	println$("u32-final: ", counter.load(AtomicLoadOrdering::Relaxed));
+}
+
+signed_wrapper() => void {
+	mut value := AtomicI32::new(-1i32);
+	println$("i32-load: ", value.load(AtomicLoadOrdering::Acquire));
+
+	println$("i32-fetch-add: ", value.fetch_add(-4i32, AtomicRmwOrdering::Relaxed));
+	println$("i32-fetch-sub: ", value.fetch_sub(-10i32, AtomicRmwOrdering::Relaxed));
+	println$("i32-after-arithmetic: ", value.load(AtomicLoadOrdering::Relaxed));
+
+	println$("i32-fetch-min: ", value.fetch_min(-7i32, AtomicRmwOrdering::Relaxed));
+	println$("i32-fetch-max: ", value.fetch_max(-9i32, AtomicRmwOrdering::Relaxed));
+	println$("i32-after-min-max: ", value.load(AtomicLoadOrdering::Relaxed));
+
+	println$("i32-fetch-xor: ", value.fetch_xor(-1i32, AtomicRmwOrdering::Relaxed));
+	println$("i32-fetch-or: ", value.fetch_or(1i32, AtomicRmwOrdering::Relaxed));
+	println$("i32-fetch-and: ", value.fetch_and(2i32, AtomicRmwOrdering::Relaxed));
+	println$("i32-after-bitwise: ", value.load(AtomicLoadOrdering::Relaxed));
+
+	println$("i32-exchange: ", value.exchange(-100i32, AtomicRmwOrdering::SeqConsistent));
+	show_i32("i32-compare-exchange-success", value.compare_exchange(-100i32, 42i32, AtomicRmwOrdering::AcquireRelease, AtomicLoadOrdering::Relaxed));
+	show_i32("i32-compare-exchange-failure", value.compare_exchange(-100i32, 43i32, AtomicRmwOrdering::AcquireRelease, AtomicLoadOrdering::Relaxed));
+	println$("i32-final: ", value.load(AtomicLoadOrdering::Relaxed));
+}
+
+boolean_wrapper() => void {
+	mut flag := AtomicBool::new(false);
+	println$("bool-load: ", flag.load(AtomicLoadOrdering::Acquire));
+
+	println$("bool-exchange: ", flag.exchange(true, AtomicRmwOrdering::AcquireRelease));
+	println$("bool-fetch-and: ", flag.fetch_and(false, AtomicRmwOrdering::Relaxed));
+	println$("bool-fetch-or: ", flag.fetch_or(true, AtomicRmwOrdering::Relaxed));
+	println$("bool-fetch-xor: ", flag.fetch_xor(true, AtomicRmwOrdering::Relaxed));
+	println$("bool-after-bitwise: ", flag.load(AtomicLoadOrdering::Relaxed));
+
+	flag.store(true, AtomicStoreOrdering::SeqConsistent);
+	show_bool("bool-compare-exchange-success", flag.compare_exchange(true, false, AtomicRmwOrdering::Release, AtomicLoadOrdering::Relaxed));
+	show_bool("bool-compare-exchange-failure", flag.compare_exchange(true, true, AtomicRmwOrdering::Release, AtomicLoadOrdering::Relaxed));
+	show_bool("bool-compare-exchange-weak", flag.compare_exchange_weak(false, true, AtomicRmwOrdering::Relaxed, AtomicLoadOrdering::Acquire));
+	println$("bool-final: ", flag.load(AtomicLoadOrdering::SeqConsistent));
+}
+
+main() => void {
+	raw_operations();
+	unsigned_wrapper();
+	signed_wrapper();
+	boolean_wrapper();
+}

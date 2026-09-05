@@ -1,0 +1,36 @@
+import core::atomic::Atomicity32;
+import core::atomic::AtomicLoadOrdering;
+import core::atomic::AtomicStoreOrdering;
+import core::atomic::AtomicRmwOrdering;
+import std::atomic::AtomicU32;
+
+# Each operation category has its own ordering type, so an ordering that has no
+# meaning for the operation is not constructible for it: these are ordinary
+# type mismatches, not a runtime validation the atomic call would have to
+# carry a panic path for.
+
+load_rejects_store_ordering(slot: *u32) => u32 {
+	Atomicity32::load(slot, AtomicStoreOrdering::Relaxed)
+}
+
+store_rejects_load_ordering(slot: *mut u32) => void {
+	Atomicity32::store(slot, 1u32, AtomicLoadOrdering::Relaxed);
+}
+
+# The success path of a compare-exchange is a read-modify-write; only its
+# failure path is a load.
+compare_exchange_rejects_load_ordering_for_success(counter: *mut AtomicU32) => Result<u32, u32> {
+	counter.compare_exchange(1u32, 2u32, AtomicLoadOrdering::Acquire, AtomicLoadOrdering::Acquire)
+}
+
+rmw_rejects_load_ordering(slot: *mut u32) => u32 {
+	Atomicity32::fetch_add(slot, 1u32, AtomicLoadOrdering::Acquire)
+}
+
+# `AcquireRelease` exists only for read-modify-write orderings.
+store_rejects_rmw_ordering(slot: *mut u32) => void {
+	Atomicity32::store(slot, 1u32, AtomicRmwOrdering::AcquireRelease);
+}
+
+main() => void {
+}

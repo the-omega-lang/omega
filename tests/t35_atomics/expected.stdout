@@ -1,0 +1,53 @@
+raw-load: 7
+raw-exchange: 7
+raw-after-exchange: 9
+raw-fetch-add: 9
+raw-after-fetch-add: 12
+raw-fetch-min-unsigned: 12
+raw-after-fetch-min-unsigned: 5
+raw-compare-exchange-success: ok 5
+raw-compare-exchange-failure: err 50
+raw-after-compare-exchange: 50
+raw-fetch-min-signed: -5
+raw-after-fetch-min-signed: -5
+raw-fetch-max-signed: -5
+raw-after-fetch-max-signed: 3
+u32-load: 10
+u32-fetch-add: 10
+u32-fetch-sub: 15
+u32-fetch-and: 12
+u32-fetch-or: 8
+u32-fetch-xor: 9
+u32-after-bitwise: 246
+u32-fetch-max: 100
+u32-fetch-min: 150
+u32-exchange: 20
+u32-compare-exchange-success: ok 7
+u32-compare-exchange-failure: err 8
+u32-compare-exchange-weak: ok 8
+u32-final: 11
+i32-load: -1
+i32-fetch-add: -1
+i32-fetch-sub: -5
+i32-after-arithmetic: 5
+i32-fetch-min: 5
+i32-fetch-max: -7
+i32-after-min-max: -7
+i32-fetch-xor: -7
+i32-fetch-or: 6
+i32-fetch-and: 7
+i32-after-bitwise: 2
+i32-exchange: 2
+i32-compare-exchange-success: ok -100
+i32-compare-exchange-failure: err 42
+i32-final: 42
+bool-load: false
+bool-exchange: false
+bool-fetch-and: true
+bool-fetch-or: false
+bool-fetch-xor: true
+bool-after-bitwise: false
+bool-compare-exchange-success: ok true
+bool-compare-exchange-failure: err false
+bool-compare-exchange-weak: ok false
+bool-final: true

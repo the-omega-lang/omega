@@ -6,7 +6,7 @@ playground: build-omgc build-runtime
     @echo "[*] Running playground..."
     rm target/playground || true
     ./bin/omgc-debug -v playground/ --import=core:runtime/core/ --import=std:runtime/std/ --import=plat:runtime/plat/libc/ -o target/playground.o
-    cc target/core.o target/plat.o target/std.o target/playground.o -o target/playground
+    cc -Wl,--gc-sections target/core.o target/plat.o target/std.o target/playground.o -o target/playground
     ./target/playground
 
 

@@ -10,6 +10,7 @@ import every name they use.
 ```
 runtime/std/
   alloc.omg       # non-generic allocator wrappers
+  atomic.omg      # fixed-width atomic types over core::atomic
   default.omg     # Default
   fmt.omg         # Display and formatting helpers
   hash.omg        # Hash
@@ -49,6 +50,39 @@ the linker's `--gc-sections` discard unused functions.
 not core. The default hashing is deterministic: integers use a SplitMix64
 style finalizer and strings use FNV-1a. It is not randomly seeded and is not
 intended as a DoS-resistant hash-table default.
+
+## Atomics
+
+`std::atomic` provides `AtomicU8`–`AtomicU64`, `AtomicI8`–`AtomicI64`, and
+`AtomicBool`, plus the three ordering types re-exported from `core::atomic` so
+one import path covers both:
+
+```omega
+import std::atomic::AtomicU32;
+import std::atomic::AtomicRmwOrdering;
+import std::atomic::AtomicLoadOrdering;
+
+mut counter := AtomicU32::new(0u32);
+previous := counter.fetch_add(1u32, AtomicRmwOrdering::AcquireRelease);
+current := counter.load(AtomicLoadOrdering::Acquire);
+```
+
+The wrappers own storage and naming only. Their methods call the matching
+`core::atomic` width gap directly, so the atomicity — and whether it is
+lock-free, or a lock, or an OS call — is the selected platform's, exactly as
+it is for code calling the gaps itself. `AtomicI*` reaches the same width gap
+through the bit-preserving unsigned operations and uses the gap's signed
+`fetch_min`/`fetch_max` for comparisons; `AtomicBool` stores one byte and
+exposes only the boolean-meaningful operations.
+
+Mutating methods take `*mut self` and `load` takes `*self`, matching the
+pointer mutability the gaps require. The backing field is not part of the
+public surface: this first surface has no `get_mut` or non-atomic accessor.
+
+`std` supplies no glue, so a program using these types links a platform that
+fills the corresponding `AtomicityN` gap. `runtime/plat/libc` does not — see
+[platform glue](platform-glue.md#api-surface). Semantics are specified in
+[the language specification](../language/atomics.md).
 
 ## Collections and ownership
 

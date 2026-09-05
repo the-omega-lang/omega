@@ -1,0 +1,99 @@
+# Local glue so the case can run: the repository's `plat` package deliberately
+# does not claim to implement the atomic contract (docs/guide/platform-glue.md).
+# A single-threaded read/modify/write is a valid implementation of every
+# operation *for this test program*, which exercises the gap/wrapper API and
+# its return values -- not a concurrent platform. Nothing here can be
+# reordered against another execution context, so the requested ordering
+# imposes no obligation and is deliberately ignored.
+
+import core::atomic::AtomicLoadOrdering;
+import core::atomic::AtomicStoreOrdering;
+import core::atomic::AtomicRmwOrdering;
+
+macro width_glue($Gap: path, $U: type, $I: type) => {
+	glue $Gap {
+		load(location: *$U, order: AtomicLoadOrdering) => $U { *location }
+
+		store(location: *mut $U, value: $U, order: AtomicStoreOrdering) => void {
+			*location = value;
+		}
+
+		exchange(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
+			previous := *location;
+			*location = value;
+			previous
+		}
+
+		compare_exchange(location: *mut $U, expected: $U, desired: $U, success: AtomicRmwOrdering, failure: AtomicLoadOrdering) => Result<$U, $U> {
+			previous := *location;
+			if previous == expected {
+				*location = desired;
+				Result<$U, $U>::Ok { value = previous; }
+			} else {
+				Result<$U, $U>::Err { error = previous; }
+			}
+		}
+
+		# A platform may implement the weak form as the strong one.
+		compare_exchange_weak(location: *mut $U, expected: $U, desired: $U, success: AtomicRmwOrdering, failure: AtomicLoadOrdering) => Result<$U, $U> {
+			$Gap::compare_exchange(location, expected, desired, success, failure)
+		}
+
+		fetch_add(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
+			previous := *location;
+			*location = previous + value;
+			previous
+		}
+
+		fetch_sub(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
+			previous := *location;
+			*location = previous - value;
+			previous
+		}
+
+		fetch_and(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
+			previous := *location;
+			*location = previous & value;
+			previous
+		}
+
+		fetch_or(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
+			previous := *location;
+			*location = previous | value;
+			previous
+		}
+
+		fetch_xor(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
+			previous := *location;
+			*location = previous ^ value;
+			previous
+		}
+
+		fetch_min_unsigned(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
+			previous := *location;
+			if value < previous { *location = value; }
+			previous
+		}
+
+		fetch_max_unsigned(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
+			previous := *location;
+			if value > previous { *location = value; }
+			previous
+		}
+
+		fetch_min_signed(location: *mut $I, value: $I, order: AtomicRmwOrdering) => $I {
+			previous := *location;
+			if value < previous { *location = value; }
+			previous
+		}
+
+		fetch_max_signed(location: *mut $I, value: $I, order: AtomicRmwOrdering) => $I {
+			previous := *location;
+			if value > previous { *location = value; }
+			previous
+		}
+	}
+}
+
+width_glue$(core::atomic::Atomicity8, u8, i8);
+width_glue$(core::atomic::Atomicity32, u32, i32);

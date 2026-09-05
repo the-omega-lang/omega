@@ -1,0 +1,210 @@
+# `std::atomic` -- fixed-width atomic types over the `core::atomic` width
+# capabilities. The wrappers own storage and spelling only: the atomicity is
+# the platform's, supplied through the `AtomicityN` gaps, so these types imply
+# nothing about lock-freedom or about which instructions a target uses. Code
+# that already has mutable storage of the right width may call the core gaps
+# directly instead. Semantics: docs/language/atomics.md.
+
+import core::atomic::Atomicity8;
+import core::atomic::Atomicity16;
+import core::atomic::Atomicity32;
+import core::atomic::Atomicity64;
+
+# Re-exported rather than redefined, so a `std::atomic` user gets the wrappers
+# and their ordering vocabulary from one module without a second set of types.
+exposed alias AtomicLoadOrdering = core::atomic::AtomicLoadOrdering;
+exposed alias AtomicStoreOrdering = core::atomic::AtomicStoreOrdering;
+exposed alias AtomicRmwOrdering = core::atomic::AtomicRmwOrdering;
+
+# Mutating methods take `*mut self`: operation-level atomicity is not a licence
+# to write through an immutable binding.
+macro unsigned_atomic($Name: ident, $Gap: path, $T: type) => {
+    exposed struct $Name {
+        # `shared`, not hidden: a macro body cannot name a hidden member of the
+        # struct it generates without revealing it at every single use
+        # (docs/language/visibility.md). Still unreachable outside `std`.
+        shared value: $T;
+
+        exposed new(value: $T) => Self {
+            Self { value = value; }
+        }
+
+        exposed load(*self, order: AtomicLoadOrdering) => $T {
+            $Gap::load(&self.value, order)
+        }
+
+        exposed store(*mut self, value: $T, order: AtomicStoreOrdering) => void {
+            $Gap::store(&mut self.value, value, order);
+        }
+
+        exposed exchange(*mut self, value: $T, order: AtomicRmwOrdering) => $T {
+            $Gap::exchange(&mut self.value, value, order)
+        }
+
+        exposed compare_exchange(*mut self, expected: $T, desired: $T, success: AtomicRmwOrdering, failure: AtomicLoadOrdering) => Result<$T, $T> {
+            $Gap::compare_exchange(&mut self.value, expected, desired, success, failure)
+        }
+
+        exposed compare_exchange_weak(*mut self, expected: $T, desired: $T, success: AtomicRmwOrdering, failure: AtomicLoadOrdering) => Result<$T, $T> {
+            $Gap::compare_exchange_weak(&mut self.value, expected, desired, success, failure)
+        }
+
+        exposed fetch_add(*mut self, value: $T, order: AtomicRmwOrdering) => $T {
+            $Gap::fetch_add(&mut self.value, value, order)
+        }
+
+        exposed fetch_sub(*mut self, value: $T, order: AtomicRmwOrdering) => $T {
+            $Gap::fetch_sub(&mut self.value, value, order)
+        }
+
+        exposed fetch_and(*mut self, value: $T, order: AtomicRmwOrdering) => $T {
+            $Gap::fetch_and(&mut self.value, value, order)
+        }
+
+        exposed fetch_or(*mut self, value: $T, order: AtomicRmwOrdering) => $T {
+            $Gap::fetch_or(&mut self.value, value, order)
+        }
+
+        exposed fetch_xor(*mut self, value: $T, order: AtomicRmwOrdering) => $T {
+            $Gap::fetch_xor(&mut self.value, value, order)
+        }
+
+        exposed fetch_min(*mut self, value: $T, order: AtomicRmwOrdering) => $T {
+            $Gap::fetch_min_unsigned(&mut self.value, value, order)
+        }
+
+        exposed fetch_max(*mut self, value: $T, order: AtomicRmwOrdering) => $T {
+            $Gap::fetch_max_unsigned(&mut self.value, value, order)
+        }
+    }
+}
+
+# A signed wrapper stores the signed type and reaches the same width gap
+# through the unsigned operations wherever the result is bit-identical: two's
+# complement makes load/store/exchange/add/sub/bitwise/compare-exchange
+# representation-preserving. Only ordering comparisons differ, so those use the
+# gap's signed members instead of guessing from an unsigned bit pattern.
+macro signed_atomic($Name: ident, $Gap: path, $T: type, $Bits: type) => {
+    exposed struct $Name {
+        shared value: $T;
+
+        shared signed_result(result: Result<$Bits, $Bits>) => Result<$T, $T> {
+            match result {
+                Result::Ok => Result<$T, $T>::Ok { value = <$T>result.value; },
+                Result::Err => Result<$T, $T>::Err { error = <$T>result.error; },
+            }
+        }
+
+        exposed new(value: $T) => Self {
+            Self { value = value; }
+        }
+
+        exposed load(*self, order: AtomicLoadOrdering) => $T {
+            <$T>$Gap::load(<*$Bits>&self.value, order)
+        }
+
+        exposed store(*mut self, value: $T, order: AtomicStoreOrdering) => void {
+            $Gap::store(<*mut $Bits>&mut self.value, <$Bits>value, order);
+        }
+
+        exposed exchange(*mut self, value: $T, order: AtomicRmwOrdering) => $T {
+            <$T>$Gap::exchange(<*mut $Bits>&mut self.value, <$Bits>value, order)
+        }
+
+        exposed compare_exchange(*mut self, expected: $T, desired: $T, success: AtomicRmwOrdering, failure: AtomicLoadOrdering) => Result<$T, $T> {
+            Self::signed_result($Gap::compare_exchange(<*mut $Bits>&mut self.value, <$Bits>expected, <$Bits>desired, success, failure))
+        }
+
+        exposed compare_exchange_weak(*mut self, expected: $T, desired: $T, success: AtomicRmwOrdering, failure: AtomicLoadOrdering) => Result<$T, $T> {
+            Self::signed_result($Gap::compare_exchange_weak(<*mut $Bits>&mut self.value, <$Bits>expected, <$Bits>desired, success, failure))
+        }
+
+        exposed fetch_add(*mut self, value: $T, order: AtomicRmwOrdering) => $T {
+            <$T>$Gap::fetch_add(<*mut $Bits>&mut self.value, <$Bits>value, order)
+        }
+
+        exposed fetch_sub(*mut self, value: $T, order: AtomicRmwOrdering) => $T {
+            <$T>$Gap::fetch_sub(<*mut $Bits>&mut self.value, <$Bits>value, order)
+        }
+
+        exposed fetch_and(*mut self, value: $T, order: AtomicRmwOrdering) => $T {
+            <$T>$Gap::fetch_and(<*mut $Bits>&mut self.value, <$Bits>value, order)
+        }
+
+        exposed fetch_or(*mut self, value: $T, order: AtomicRmwOrdering) => $T {
+            <$T>$Gap::fetch_or(<*mut $Bits>&mut self.value, <$Bits>value, order)
+        }
+
+        exposed fetch_xor(*mut self, value: $T, order: AtomicRmwOrdering) => $T {
+            <$T>$Gap::fetch_xor(<*mut $Bits>&mut self.value, <$Bits>value, order)
+        }
+
+        exposed fetch_min(*mut self, value: $T, order: AtomicRmwOrdering) => $T {
+            $Gap::fetch_min_signed(&mut self.value, value, order)
+        }
+
+        exposed fetch_max(*mut self, value: $T, order: AtomicRmwOrdering) => $T {
+            $Gap::fetch_max_signed(&mut self.value, value, order)
+        }
+    }
+}
+
+unsigned_atomic$(AtomicU8, Atomicity8, u8);
+unsigned_atomic$(AtomicU16, Atomicity16, u16);
+unsigned_atomic$(AtomicU32, Atomicity32, u32);
+unsigned_atomic$(AtomicU64, Atomicity64, u64);
+
+signed_atomic$(AtomicI8, Atomicity8, i8, u8);
+signed_atomic$(AtomicI16, Atomicity16, i16, u16);
+signed_atomic$(AtomicI32, Atomicity32, i32, u32);
+signed_atomic$(AtomicI64, Atomicity64, i64, u64);
+
+# Written out rather than generated: a bool has no arithmetic or ordering
+# operations, and its storage is the canonical `0`/`1` byte the boolean
+# bitwise operations below depend on.
+exposed struct AtomicBool {
+    value: u8;
+
+    bool_result(result: Result<u8, u8>) => Result<bool, bool> {
+        match result {
+            Result::Ok => Result<bool, bool>::Ok { value = result.value != 0u8; },
+            Result::Err => Result<bool, bool>::Err { error = result.error != 0u8; },
+        }
+    }
+
+    exposed new(value: bool) => Self {
+        Self { value = <u8>value; }
+    }
+
+    exposed load(*self, order: AtomicLoadOrdering) => bool {
+        Atomicity8::load(&self.value, order) != 0u8
+    }
+
+    exposed store(*mut self, value: bool, order: AtomicStoreOrdering) => void {
+        Atomicity8::store(&mut self.value, <u8>value, order);
+    }
+
+    exposed exchange(*mut self, value: bool, order: AtomicRmwOrdering) => bool {
+        Atomicity8::exchange(&mut self.value, <u8>value, order) != 0u8
+    }
+
+    exposed compare_exchange(*mut self, expected: bool, desired: bool, success: AtomicRmwOrdering, failure: AtomicLoadOrdering) => Result<bool, bool> {
+        Self::bool_result(Atomicity8::compare_exchange(&mut self.value, <u8>expected, <u8>desired, success, failure))
+    }
+
+    exposed compare_exchange_weak(*mut self, expected: bool, desired: bool, success: AtomicRmwOrdering, failure: AtomicLoadOrdering) => Result<bool, bool> {
+        Self::bool_result(Atomicity8::compare_exchange_weak(&mut self.value, <u8>expected, <u8>desired, success, failure))
+    }
+
+    exposed fetch_and(*mut self, value: bool, order: AtomicRmwOrdering) => bool {
+        Atomicity8::fetch_and(&mut self.value, <u8>value, order) != 0u8
+    }
+
+    exposed fetch_or(*mut self, value: bool, order: AtomicRmwOrdering) => bool {
+        Atomicity8::fetch_or(&mut self.value, <u8>value, order) != 0u8
+    }
+
+    exposed fetch_xor(*mut self, value: bool, order: AtomicRmwOrdering) => bool {
+        Atomicity8::fetch_xor(&mut self.value, <u8>value, order) != 0u8
+    }
+}

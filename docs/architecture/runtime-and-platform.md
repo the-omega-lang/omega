@@ -26,7 +26,7 @@ The exact objects linked are a build/application choice; there is no mandatory c
 
 - built-in primitive declaration blocks and inherent primitive methods;
 - allocation-free core data/protocols such as `Option`, comparison, iterators, ranges;
-- platform capability **gaps** (allocator/console/panic contracts), not implementations;
+- platform capability **gaps** (allocator/console/panic/atomic contracts), not implementations;
 - the compiler-implemented source-location macros in `core::builtins`.
 
 It is designed to remain useful in freestanding/embedded contexts.
@@ -92,11 +92,41 @@ Nothing in the compiler or `core` picks a panic policy. Panic policy is a platfo
 
 No allocation, formatting, unwinding, backtrace machinery, runtime registry, or backend intrinsic is involved: the location macros become ordinary literals during macro expansion, and the handler call is an ordinary gap call.
 
+### Atomics as a width capability
+
+`core::atomic` declares one gap per storage width -- `Atomicity8`,
+`Atomicity16`, `Atomicity32`, `Atomicity64` -- each carrying the full
+load/store/exchange/compare-exchange/`fetch_*` set for that width. `std::atomic`
+wraps them in fixed-width types. The layering rule is the same as every other
+capability, and it is deliberate that atomicity enters here rather than in the
+backend:
+
+- no compiler crate has an atomic semantic type, checked node, MIR
+  instruction, LLVM atomic instruction, or target atomic-capability table;
+- an atomic call is an ordinary direct call to a gap symbol, resolved at link
+  time like `GlobalAllocator::alloc`;
+- the platform that fills a width gap chooses the mechanism -- native atomic
+  instructions, an LL/SC or CAS retry loop, interrupt masking, an OS service,
+  or a lock -- and owes the complete contract in
+  [`../language/atomics.md`](../language/atomics.md) for that width;
+- `runtime/plat/libc` fills none of them, because no honest libc-only
+  implementation exists without an architecture-specific body or a new runtime
+  dependency. That is a platform gap left open on purpose, not an oversight.
+
+One consequence is worth recording. Codegen treats an ordinary external call
+conservatively with respect to memory, and platform inline assembly is emitted
+with a mandatory memory clobber, so an atomic gap call already acts as a
+compiler memory barrier whatever ordering it requested. Requested `Relaxed`
+therefore optimizes less than an intrinsic-based design would. That is
+stronger behavior than promised, which the language's strengthening rule
+permits, and recovering the lost freedom would mean giving the backend
+knowledge of atomic semantics -- exactly what this seam exists to avoid.
+
 ## Platform independence
 
-`core` declares allocator/console/panic capabilities but does not automatically invoke them merely by being linked. Higher-level `std` facilities reference the gaps only from functions that need them.
+`core` declares allocator/console/panic/atomic capabilities but does not automatically invoke them merely by being linked. Higher-level `std` facilities reference the gaps only from functions that need them.
 
-The repository compiles functions into independently collectible object sections and links integration binaries with `--gc-sections`, so unused library functions should not force unrelated platform capabilities into the final executable.
+The repository compiles functions into independently collectible object sections and links integration binaries with `--gc-sections`, so unused library functions should not force unrelated platform capabilities into the final executable. This is load-bearing rather than a size optimization: `std.o` contains a body for every concrete `std` function, including the `std::atomic` wrappers, so a link that keeps unreferenced sections demands glue for capabilities the program never uses. Every link line in the repository -- the `just` recipes and `bin/test-runner` alike -- must pass it.
 
 This is important to Omega's “no hidden runtime cost” and freestanding goals.
 

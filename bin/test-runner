@@ -247,6 +247,10 @@ class TestRunner
       "cc",
       object.to_s,
       *RUNTIME_OBJECTS.map(&:to_s),
+      # Every Omega link is expected to dead-strip: a runtime object that
+      # references a capability the program never uses must not force glue
+      # for it. See docs/architecture/runtime-and-platform.md.
+      "-Wl,--gc-sections",
       "-o", executable.to_s
     )
 

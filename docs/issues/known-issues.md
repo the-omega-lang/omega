@@ -155,6 +155,24 @@ Remaining known conformance/spec issues:
   same gap is always a hard error project-wide, with no way to shadow one
   intentionally. [gaps-and-glue.md](../language/gaps-and-glue.md)
 
+- **An unfilled gap warns on every compilation, reachable or not** — the
+  driver's gap sweep emits `unfilled_gap` once per gap that no `glue` in the
+  compilation implements, and the warning is deliberately non-suppressible.
+  `core::atomic`'s four `AtomicityN` gaps are unfilled on purpose, so every
+  program built against `core` now reports four warnings it cannot act on,
+  including programs that never mention an atomic. The warning's own help
+  already concedes that an unglued, uncalled gap links fine; restricting it to
+  gaps something actually calls, or letting a gap declaration opt out, needs a
+  compiler change. [gaps-and-glue.md](../language/gaps-and-glue.md)
+
+- **A `glue` function cannot carry an annotation** — the parser accepts only
+  bare function definitions inside a `glue` block, so `@suppress(...)`,
+  `@inline`, and the rest are rejected there with `expected '}', found '@'`.
+  A glue implementation that legitimately ignores a parameter (an
+  implementation of an atomic operation that needs no ordering work, for
+  example) therefore has no way to silence `unused_parameter`.
+  [gaps-and-glue.md](../language/gaps-and-glue.md)
+
 ## Macros
 
 - **`MAX_EXPANSIONS` does not actually prevent the stack overflow it

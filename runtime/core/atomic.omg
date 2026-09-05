@@ -1,0 +1,78 @@
+# Atomic operations as ordinary platform-capability gaps. Atomicity is a
+# property the selected platform supplies, not a promise of the backend or of
+# any particular ISA: a platform may fill a width gap with native atomic
+# instructions, an LL/SC or CAS loop, interrupt masking, an OS primitive, or a
+# lock, and portable code still sees one operation-level interface.
+#
+# The observable contract -- modification order, what each ordering
+# guarantees, and what concurrent access is excluded -- is normative in
+# docs/language/atomics.md. `std::atomic` wraps these calls in fixed-width
+# types; nothing here needs a wrapper to be usable.
+
+import super::result::Result;
+
+# One ordering type per operation category, rather than one enum plus runtime
+# validation: a load cannot request `Release` and a store cannot request
+# `Acquire` because those states are not constructible, so no atomic operation
+# needs a panic path merely to reject its own argument.
+exposed enum AtomicLoadOrdering {
+    Relaxed,
+    Acquire,
+    SeqConsistent;
+}
+
+exposed enum AtomicStoreOrdering {
+    Relaxed,
+    Release,
+    SeqConsistent;
+}
+
+exposed enum AtomicRmwOrdering {
+    Relaxed,
+    Acquire,
+    Release,
+    AcquireRelease,
+    SeqConsistent;
+}
+
+# One gap per storage width, with the unsigned and signed views of that width
+# named explicitly: the capability is an N-bit atomic location, not an
+# unsigned-integer wrapper, and signed ordering must not be inferred from an
+# unsigned bit pattern.
+#
+# Each operation is its own gap function instead of one `rmw` taking an
+# operation tag. Glue is separately compiled and resolved at link time, so a
+# tag would turn a compile-time-known operation into a dispatch branch inside
+# the platform.
+#
+# Every modifying operation takes `*mut`, so an atomic call never becomes a
+# way to write through an immutable Omega binding.
+macro atomicity($Gap: ident, $Unsigned: type, $Signed: type) => {
+    gap $Gap {
+        load(location: *$Unsigned, order: AtomicLoadOrdering) => $Unsigned;
+        store(location: *mut $Unsigned, value: $Unsigned, order: AtomicStoreOrdering) => void;
+        exchange(location: *mut $Unsigned, value: $Unsigned, order: AtomicRmwOrdering) => $Unsigned;
+
+        # `Ok` carries the previous value on exchange, `Err` the value actually
+        # observed on failure. Failure is a load and requests its own ordering
+        # independently of the success path.
+        compare_exchange(location: *mut $Unsigned, expected: $Unsigned, desired: $Unsigned, success: AtomicRmwOrdering, failure: AtomicLoadOrdering) => Result<$Unsigned, $Unsigned>;
+        compare_exchange_weak(location: *mut $Unsigned, expected: $Unsigned, desired: $Unsigned, success: AtomicRmwOrdering, failure: AtomicLoadOrdering) => Result<$Unsigned, $Unsigned>;
+
+        fetch_add(location: *mut $Unsigned, value: $Unsigned, order: AtomicRmwOrdering) => $Unsigned;
+        fetch_sub(location: *mut $Unsigned, value: $Unsigned, order: AtomicRmwOrdering) => $Unsigned;
+        fetch_and(location: *mut $Unsigned, value: $Unsigned, order: AtomicRmwOrdering) => $Unsigned;
+        fetch_or(location: *mut $Unsigned, value: $Unsigned, order: AtomicRmwOrdering) => $Unsigned;
+        fetch_xor(location: *mut $Unsigned, value: $Unsigned, order: AtomicRmwOrdering) => $Unsigned;
+
+        fetch_min_unsigned(location: *mut $Unsigned, value: $Unsigned, order: AtomicRmwOrdering) => $Unsigned;
+        fetch_max_unsigned(location: *mut $Unsigned, value: $Unsigned, order: AtomicRmwOrdering) => $Unsigned;
+        fetch_min_signed(location: *mut $Signed, value: $Signed, order: AtomicRmwOrdering) => $Signed;
+        fetch_max_signed(location: *mut $Signed, value: $Signed, order: AtomicRmwOrdering) => $Signed;
+    }
+}
+
+atomicity$(Atomicity8, u8, i8);
+atomicity$(Atomicity16, u16, i16);
+atomicity$(Atomicity32, u32, i32);
+atomicity$(Atomicity64, u64, i64);

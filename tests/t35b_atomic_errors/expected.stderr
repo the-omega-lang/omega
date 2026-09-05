@@ -1,0 +1,41 @@
+error: mismatched types: expected 'AtomicLoadOrdering' for this argument, found 'AtomicStoreOrdering::Relaxed'
+  --> tests/t35b_atomic_errors/t35b_atomic_errors.omg:13:29
+   |
+13 |     Atomicity32::load(slot, AtomicStoreOrdering::Relaxed)
+   |                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `AtomicLoadOrdering`, found `AtomicStoreOrdering::Relaxed`
+   |
+   = note: Omega has no implicit conversions; each argument must match its parameter's type exactly
+
+error: mismatched types: expected 'AtomicStoreOrdering' for this argument, found 'AtomicLoadOrdering::Relaxed'
+  --> tests/t35b_atomic_errors/t35b_atomic_errors.omg:17:36
+   |
+17 |     Atomicity32::store(slot, 1u32, AtomicLoadOrdering::Relaxed);
+   |                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `AtomicStoreOrdering`, found `AtomicLoadOrdering::Relaxed`
+   |
+   = note: Omega has no implicit conversions; each argument must match its parameter's type exactly
+
+error: mismatched types: expected 'AtomicRmwOrdering' for this argument, found 'AtomicLoadOrdering::Acquire'
+  --> tests/t35b_atomic_errors/t35b_atomic_errors.omg:23:42
+   |
+23 |     counter.compare_exchange(1u32, 2u32, AtomicLoadOrdering::Acquire, AtomicLoadOrdering::Acquire)
+   |                                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `AtomicRmwOrdering`, found `AtomicLoadOrdering::Acquire`
+   |
+   = note: Omega has no implicit conversions; each argument must match its parameter's type exactly
+
+error: mismatched types: expected 'AtomicRmwOrdering' for this argument, found 'AtomicLoadOrdering::Acquire'
+  --> tests/t35b_atomic_errors/t35b_atomic_errors.omg:27:40
+   |
+27 |     Atomicity32::fetch_add(slot, 1u32, AtomicLoadOrdering::Acquire)
+   |                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `AtomicRmwOrdering`, found `AtomicLoadOrdering::Acquire`
+   |
+   = note: Omega has no implicit conversions; each argument must match its parameter's type exactly
+
+error: mismatched types: expected 'AtomicStoreOrdering' for this argument, found 'AtomicRmwOrdering::AcquireRelease'
+  --> tests/t35b_atomic_errors/t35b_atomic_errors.omg:32:36
+   |
+32 |     Atomicity32::store(slot, 1u32, AtomicRmwOrdering::AcquireRelease);
+   |                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `AtomicStoreOrdering`, found `AtomicRmwOrdering::AcquireRelease`
+   |
+   = note: Omega has no implicit conversions; each argument must match its parameter's type exactly
+
+error: could not compile the program due to 5 previous errors
