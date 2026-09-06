@@ -28,12 +28,18 @@ CompiledProgram
   v
 Vec<MirModule>
   |
+  | omega_mir::plan_emission
+  v
+one EmissionUnit per physical source file
+  |
   | omega_codegen::generate(CodegenRequest)
   v
-object bytes / LLVM IR / assembly
+one artifact per source: object bytes / LLVM IR / assembly
 ```
 
-The **driver** is therefore the semantic/package compiler orchestrator. `omgc` is the outer toolchain orchestrator that connects the driver to MIR/codegen and owns CLI/output handling.
+One invocation is one semantic compilation of the whole local package, and it emits one artifact per physical source file into the directory given to `-o`. Physical source files define native emission and linkage granularity only: they are not analyzer, query, optimization-information, incremental-dependency, or scheduling boundaries. See [`mir-and-codegen.md`](mir-and-codegen.md) for the emission-unit model.
+
+The **driver** is therefore the semantic/package compiler orchestrator, and it also owns the package's physical source inventory. `omgc` is the outer toolchain orchestrator that connects the driver to MIR/codegen and owns CLI/output handling.
 
 ### Representation / data flow
 

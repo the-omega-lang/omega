@@ -15,7 +15,7 @@ Docker installed, that is:
 ./dev.sh codex      # or Codex CLI
 ./dev.sh omp        # or omp (oh-my-pi)
 ./dev.sh shell      # or just a shell
-./dev.sh run just build-exe
+./dev.sh run just test-all
 ```
 
 Nothing else needs to be installed on the host, and your agent logins, cargo

@@ -13,7 +13,7 @@ pub(crate) enum Command {
 
 pub(crate) struct Args {
     pub(crate) entry_dir: PathBuf,
-    pub(crate) output_file: PathBuf,
+    pub(crate) output_dir: PathBuf,
     pub(crate) externs: Vec<ExternRoot>,
     pub(crate) name: Option<Ident>,
     pub(crate) opt_level: OptLevel,
@@ -32,7 +32,7 @@ pub(crate) fn parse(args: &[String]) -> Result<Command, String> {
 
 fn parse_compile(args: &[String]) -> Result<Args, String> {
     let mut entry_dir = None;
-    let mut output_file = None;
+    let mut output_dir = None;
     let mut externs = Vec::new();
     let mut name = None;
     let mut opt_level = OptLevel::default();
@@ -45,10 +45,10 @@ fn parse_compile(args: &[String]) -> Result<Args, String> {
         if let Some(value) = arg.strip_prefix("--import=") {
             externs.push(parse_import(arg, value)?);
         } else if arg == "-o" {
-            let file = iter
+            let dir = iter
                 .next()
-                .ok_or_else(|| "expected a file path after '-o'".to_string())?;
-            output_file = Some(PathBuf::from(file));
+                .ok_or_else(|| "expected a directory path after '-o'".to_string())?;
+            output_dir = Some(PathBuf::from(dir));
         } else if let Some(value) = arg.strip_prefix("-O") {
             opt_level = value.parse()?;
         } else if let Some(value) = arg.strip_prefix("--target=") {
@@ -71,13 +71,13 @@ fn parse_compile(args: &[String]) -> Result<Args, String> {
     }
 
     let entry_dir = entry_dir.ok_or_else(|| {
-        "usage: omgc [<name>:]<entry-dir> -o <output-file> [OPTIONS] (see --help)".to_string()
+        "usage: omgc [<name>:]<entry-dir> -o <output-dir> [OPTIONS] (see --help)".to_string()
     })?;
-    let output_file = output_file.ok_or_else(|| "the -o <file> flag is required".to_string())?;
+    let output_dir = output_dir.ok_or_else(|| "the -o <dir> flag is required".to_string())?;
 
     Ok(Args {
         entry_dir,
-        output_file,
+        output_dir,
         externs,
         name,
         opt_level,
@@ -178,7 +178,7 @@ pub(crate) fn print_help() {
     println!("{}", paint(colors, BOLD, "omgc"));
     println!("The Omega compiler\n");
     println!("{}", paint(colors, BOLD, "USAGE:"));
-    println!("    omgc [<name>:]<entry-dir> -o <output-file> [OPTIONS]\n");
+    println!("    omgc [<name>:]<entry-dir> -o <output-dir> [OPTIONS]\n");
     println!("{}", paint(colors, BOLD, "ARGS:"));
     help_option(
         colors,
@@ -187,7 +187,11 @@ pub(crate) fn print_help() {
     );
     println!();
     println!("{}", paint(colors, BOLD, "OPTIONS:"));
-    help_option(colors, "-o <file>", "Output file path (required)");
+    help_option(
+        colors,
+        "-o <dir>",
+        "Output directory: one artifact per source file, mirroring the source tree (required)",
+    );
     help_option(colors, "-O<0-3>", "Optimization level (default: 0)");
     help_option(
         colors,
@@ -227,11 +231,11 @@ mod tests {
 
     #[test]
     fn parses_minimal_compile_command() {
-        let Ok(Command::Compile(parsed)) = parse(&args(&["src", "-o", "out.o"])) else {
+        let Ok(Command::Compile(parsed)) = parse(&args(&["src", "-o", "out"])) else {
             panic!("expected compile command");
         };
         assert_eq!(parsed.entry_dir, PathBuf::from("src"));
-        assert_eq!(parsed.output_file, PathBuf::from("out.o"));
+        assert_eq!(parsed.output_dir, PathBuf::from("out"));
         assert_eq!(parsed.opt_level, OptLevel::O0);
         assert_eq!(parsed.emit, EmitKind::Obj);
     }
@@ -241,7 +245,7 @@ mod tests {
         let Ok(Command::Compile(parsed)) = parse(&args(&[
             "src",
             "-o",
-            "out.s",
+            "out",
             "-O3",
             "--emit=asm",
             "--import=core:deps/core",
@@ -264,7 +268,7 @@ mod tests {
             ("--target=x86_64-windows", Arch::X86_64, Os::Windows),
             ("--target=avr-none", Arch::Avr, Os::None),
         ] {
-            let Ok(Command::Compile(parsed)) = parse(&args(&["src", "-o", "out.o", flag])) else {
+            let Ok(Command::Compile(parsed)) = parse(&args(&["src", "-o", "out", flag])) else {
                 panic!("expected {flag} to parse");
             };
             assert_eq!(parsed.target, Target { arch, os });
@@ -273,7 +277,7 @@ mod tests {
 
     #[test]
     fn omitting_the_target_flag_keeps_the_documented_default() {
-        let Ok(Command::Compile(parsed)) = parse(&args(&["src", "-o", "out.o"])) else {
+        let Ok(Command::Compile(parsed)) = parse(&args(&["src", "-o", "out"])) else {
             panic!("expected compile command");
         };
         assert_eq!(parsed.target, Target::DEFAULT);
@@ -288,7 +292,7 @@ mod tests {
             "--target=avr-macos",
         ] {
             assert!(
-                parse(&args(&["src", "-o", "out.o", invalid])).is_err(),
+                parse(&args(&["src", "-o", "out", invalid])).is_err(),
                 "{invalid} must be rejected before compilation"
             );
         }
@@ -297,27 +301,27 @@ mod tests {
     #[test]
     fn rejects_invalid_codegen_options() {
         for invalid in ["-Ofast", "--emit=wat"] {
-            assert!(parse(&args(&["src", "-o", "out.o", invalid])).is_err());
+            assert!(parse(&args(&["src", "-o", "out", invalid])).is_err());
         }
     }
 
     #[test]
     fn rejects_backend_flag_as_unknown() {
         for invalid in ["--backend=llvm", "--backend=cranelift"] {
-            assert!(parse(&args(&["src", "-o", "out.o", invalid])).is_err());
+            assert!(parse(&args(&["src", "-o", "out", invalid])).is_err());
         }
     }
 
     #[test]
     fn rejects_missing_output_and_extra_positionals() {
         assert!(parse(&args(&["src"])).is_err());
-        assert!(parse(&args(&["src", "other", "-o", "out.o"])).is_err());
+        assert!(parse(&args(&["src", "other", "-o", "out"])).is_err());
     }
 
     #[test]
     fn rejects_invalid_declared_entry_name() {
         for invalid in ["foo-bar", "0abc", "if", ""] {
-            let Err(err) = parse(&args(&[&format!("{invalid}:src"), "-o", "out.o"])) else {
+            let Err(err) = parse(&args(&[&format!("{invalid}:src"), "-o", "out"])) else {
                 panic!("expected entry argument '{invalid}:src' to be rejected");
             };
             assert!(err.contains(invalid) || invalid.is_empty(), "{err}");
@@ -326,7 +330,7 @@ mod tests {
 
     #[test]
     fn rejects_legacy_name_flag_as_unknown() {
-        let Err(err) = parse(&args(&["src", "-o", "out.o", "--name=my_pkg"])) else {
+        let Err(err) = parse(&args(&["src", "-o", "out", "--name=my_pkg"])) else {
             panic!("expected legacy --name flag to be rejected");
         };
         assert!(err.contains("--name"), "{err}");
@@ -334,7 +338,7 @@ mod tests {
 
     #[test]
     fn rejects_legacy_extern_flag_as_unknown() {
-        let Err(err) = parse(&args(&["src", "-o", "out.o", "--extern=core:deps/core"])) else {
+        let Err(err) = parse(&args(&["src", "-o", "out", "--extern=core:deps/core"])) else {
             panic!("expected legacy --extern flag to be rejected");
         };
         assert!(err.contains("--extern"), "{err}");
@@ -342,7 +346,7 @@ mod tests {
 
     #[test]
     fn rejects_invalid_explicit_extern_name() {
-        let Err(err) = parse(&args(&["src", "-o", "out.o", "--import=foo-bar:deps/core"])) else {
+        let Err(err) = parse(&args(&["src", "-o", "out", "--import=foo-bar:deps/core"])) else {
             panic!("expected invalid explicit extern name to be rejected");
         };
         assert!(err.contains("foo-bar"), "{err}");
@@ -350,7 +354,7 @@ mod tests {
 
     #[test]
     fn rejects_invalid_inferred_extern_basename_without_an_override() {
-        let Err(err) = parse(&args(&["src", "-o", "out.o", "--import=deps/foo-bar"])) else {
+        let Err(err) = parse(&args(&["src", "-o", "out", "--import=deps/foo-bar"])) else {
             panic!("expected invalid inferred extern basename to be rejected");
         };
         assert!(err.contains("foo-bar"), "{err}");
@@ -361,7 +365,7 @@ mod tests {
         let Ok(Command::Compile(parsed)) = parse(&args(&[
             "my_pkg:src",
             "-o",
-            "out.o",
+            "out",
             "--import=core:deps/core",
         ])) else {
             panic!("expected compile command");
@@ -373,7 +377,7 @@ mod tests {
 
     #[test]
     fn entry_without_an_explicit_identity_leaves_the_name_inferred() {
-        let Ok(Command::Compile(parsed)) = parse(&args(&["deps/core", "-o", "out.o"])) else {
+        let Ok(Command::Compile(parsed)) = parse(&args(&["deps/core", "-o", "out"])) else {
             panic!("expected compile command");
         };
         assert!(parsed.name.is_none());

@@ -22,7 +22,15 @@ RUNTIME_PACKAGES = {
   "std"  => ROOT_DIR.join("runtime", "std"),
   "plat" => ROOT_DIR.join("runtime", "plat", "libc")
 }.freeze
-RUNTIME_OBJECTS = RUNTIME_PACKAGES.keys.map{ |x| ARTIFACTS_DIR.join("#{x}.o") }.freeze
+# Each package compiles into a directory of per-source objects, so every
+# consumer gathers them recursively in a deterministic path order.
+RUNTIME_OBJECT_DIRS = RUNTIME_PACKAGES.keys.map { |x| ARTIFACTS_DIR.join(x) }.freeze
+
+def object_files(*dirs)
+  dirs.flat_map { |dir| Pathname.glob(Pathname.new(dir).join("**", "*.o")) }
+    .map(&:to_s)
+    .sort
+end
 
 # omgc
 OMGC = BIN_DIR.join("omgc-debug")
@@ -219,14 +227,14 @@ class TestRunner
     FileUtils.rm_rf(target_dir)
     FileUtils.mkdir_p(target_dir)
 
-    object = target_dir.join("#{test.name}.o")
+    objects_dir = target_dir.join("objects")
     executable = target_dir.join(test.name)
 
     compile = capture(
       OMGC.to_s,
       test.path.relative_path_from(ROOT_DIR).to_s,
       *OMGC_IMPORTS,
-      "-o", object.to_s
+      "-o", objects_dir.to_s
     )
 
     unless compile.success?
@@ -245,8 +253,8 @@ class TestRunner
 
     link = capture(
       "cc",
-      object.to_s,
-      *RUNTIME_OBJECTS.map(&:to_s),
+      *object_files(objects_dir),
+      *object_files(*RUNTIME_OBJECT_DIRS),
       # Every Omega link is expected to dead-strip: a runtime object that
       # references a capability the program never uses must not force glue
       # for it. See docs/architecture/runtime-and-platform.md.

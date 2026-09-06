@@ -1,0 +1,6 @@
+import root::counter;
+import super::triple;
+
+exposed scaled_total() => i32 {
+	triple(counter::TOTAL)
+}

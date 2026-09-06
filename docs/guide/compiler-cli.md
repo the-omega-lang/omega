@@ -3,20 +3,46 @@
 Typical shape:
 
 ```text
-omgc [<name>:]<entry-dir> -o <output> [--import=[<name>:]<dir>]...
+omgc [<name>:]<entry-dir> -o <output-dir> [--import=[<name>:]<dir>]...
      [-O<0-3>] [--target=<arch>-<os>]
      [--emit=<obj|ir|asm>] [-v]
 ```
 
 `-o` is required. Package arguments are root **directories**, not individual `.omg` files.
 
+## Output layout
+
+One `omgc` invocation is one semantic compilation of the whole package, and it
+emits **one artifact per physical source file**. `-o` names the output
+directory that receives them; the tree below it mirrors the package's source
+tree with each `.omg` extension replaced by the emit kind's:
+
+```text
+src/                          target/objects/
+  src.omg           ->          src.o
+  helper.omg        ->          helper.o
+  net/net.omg       ->          net/net.o
+  net/socket.omg    ->          net/socket.o
+```
+
+Every source-bearing `.omg` file owns an artifact, including one that declares
+nothing; a directory that only groups children declares no module of its own
+and produces none. Layout follows the files on disk, so a `<name>:<dir>`
+identity override renames the module and its symbols without moving any
+output.
+
+`omgc` creates missing directories and overwrites the artifacts it emits, but
+never deletes anything else under `-o`; a non-incremental build recipe should
+clear its own output directory first so a deleted source cannot leave a stale
+object behind. An existing `-o` path that is a regular file is rejected.
+
 ## Package identity
 
 The compiled package and its dependencies use the same `[<name>:]<dir>` spelling. A bare directory takes its identity from the directory basename; `<name>:<dir>` supplies the identity explicitly:
 
 ```sh
-omgc mathlib:examples/extern_lib/ -o target/mathlib.o
-omgc app/ --import=mathlib:examples/extern_lib/ -o target/app.o
+omgc mathlib:examples/extern_lib/ -o target/mathlib
+omgc app/ --import=mathlib:examples/extern_lib/ -o target/app
 ```
 
 Source-level meaning is specified in [`../language/modules-and-imports.md`](../language/modules-and-imports.md).
@@ -40,9 +66,9 @@ Only real architecture/OS pairs are accepted. Every architecture supports freest
 `none` may also be spelled `freestanding`, and `macos` may be spelled `darwin`. A pair outside this table — `avr-macos`, `riscv64-windows` — is rejected while parsing arguments rather than passed to the backend as an invented triple.
 
 ```sh
-omgc src/ --target=aarch64-linux   -o target/main-aarch64.o
-omgc src/ --target=x86_64-windows  -o target/main-windows.obj
-omgc src/ --target=avr-none        -o target/main-avr.o
+omgc src/ --target=aarch64-linux   -o target/main-aarch64
+omgc src/ --target=x86_64-windows  -o target/main-windows
+omgc src/ --target=avr-none        -o target/main-avr
 ```
 
 The selected target is one decision shared by semantic analysis and code generation: it fixes `usize`/`isize` width, `sizeof` results, and layout as well as the LLVM triple and data layout. `avr-none` is a 16-bit target, so `sizeof<usize>` is `2` there. Cross-compilation is host-independent — a target is never rejected merely for differing from the machine running `omgc`.
@@ -68,15 +94,25 @@ Optimization levels are `-O0` through `-O3`, defaulting to `-O0`.
 A normal multi-package build compiles each package in a separate `omgc` process and links the produced objects afterward:
 
 ```sh
-omgc runtime/core/ -o target/core.o
-omgc examples/mathlib/ -o target/mathlib.o
+omgc runtime/core/ -o target/core
+omgc examples/mathlib/ -o target/mathlib
 omgc examples/dev/ \
     --import=mathlib:examples/mathlib/ \
     --import=core:runtime/core/ \
-    -o target/main.o
-cc -Wl,--gc-sections target/main.o target/mathlib.o target/core.o -o example
+    -o target/main
+cc -Wl,--gc-sections \
+    $(find target/main target/mathlib target/core -name '*.o' | sort) \
+    -o example
 ```
 
-Generated functions use independent object-file sections; repository build recipes link with section garbage collection so unused functions do not retain unrelated dependencies.
+Each package contributes the objects of its own source files, so a consumer
+can also select them: archiving a package's objects (`ar rcs libmathlib.a
+$(find target/mathlib -name '*.o')`) lets the linker extract only the source
+objects something actually references, leaving another source's unmet
+dependency out of the link entirely.
+
+Within an object, generated functions still use independent sections;
+repository build recipes link with section garbage collection so unused
+functions do not retain unrelated dependencies.
 
 There is no implicit libc/runtime requirement in this model. The selected package/glue objects determine what the final link requires.

@@ -1,0 +1,2 @@
+# A source file that declares nothing still owns its own emitted artifact:
+# the source/object mapping is exact, not "one object per non-empty source".

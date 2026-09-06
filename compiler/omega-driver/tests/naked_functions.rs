@@ -338,19 +338,39 @@ fn codegen_ir(
 ) -> String {
     let extern_functions = program.extern_functions.clone();
     let entry = program.entry.clone();
+    let sources = emission_sources(&program);
     let modules = omega_mir::lower_program(program.modules, &entry);
-    let request = omega_codegen::CodegenRequest {
-        module_name: "main".to_string(),
+    single_artifact_text(omega_codegen::CodegenRequest {
         target: Target::DEFAULT,
         opt_level,
         emit: omega_codegen::EmitKind::Ir,
-        modules,
+        units: omega_mir::plan_emission(modules, &sources),
         entry,
         extern_functions,
-    };
-    match omega_codegen::generate(request).expect("codegen succeeds") {
+    })
+}
+
+/// Every physical source of the compiled package, in the shape MIR emission
+/// planning consumes.
+fn emission_sources(program: &omega_driver::CompiledProgram) -> Vec<omega_mir::EmissionSource> {
+    program
+        .sources
+        .iter()
+        .map(|source| omega_mir::EmissionSource {
+            module: source.module.clone(),
+            path: source.relative_path.clone(),
+        })
+        .collect()
+}
+
+/// These packages are a single source file, so emission produces exactly one
+/// artifact and a whole-module assertion stays unambiguous.
+fn single_artifact_text(request: omega_codegen::CodegenRequest) -> String {
+    let mut artifacts = omega_codegen::generate(request).expect("codegen succeeds");
+    assert_eq!(artifacts.len(), 1, "a one-source package owns one artifact");
+    match artifacts.remove(0).output {
         omega_codegen::EmitOutput::Text(text) => text,
-        omega_codegen::EmitOutput::Object(_) => unreachable!("EmitKind::Ir always emits text"),
+        omega_codegen::EmitOutput::Object(_) => unreachable!("a text emit kind never emits bytes"),
     }
 }
 
@@ -402,20 +422,16 @@ fn naked_function_x86_64_asm_has_no_compiler_generated_frame_setup() {
         .expect_ok();
         let extern_functions = program.extern_functions.clone();
         let entry = program.entry.clone();
+        let sources = emission_sources(&program);
         let modules = omega_mir::lower_program(program.modules, &entry);
-        let request = omega_codegen::CodegenRequest {
-            module_name: "main".to_string(),
+        let asm = single_artifact_text(omega_codegen::CodegenRequest {
             target: Target::DEFAULT,
             opt_level,
             emit: omega_codegen::EmitKind::Asm,
-            modules,
+            units: omega_mir::plan_emission(modules, &sources),
             entry,
             extern_functions,
-        };
-        let asm = match omega_codegen::generate(request).expect("codegen succeeds") {
-            omega_codegen::EmitOutput::Text(text) => text,
-            omega_codegen::EmitOutput::Object(_) => unreachable!("EmitKind::Asm always emits text"),
-        };
+        });
 
         // This package defines exactly one function, so a whole-module scan
         // for compiler-generated frame setup is unambiguous.

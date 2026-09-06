@@ -13,7 +13,7 @@ mod roots;
 
 pub use error::{CompileError, CompiledProgram};
 pub use fs_resolve::basename;
-pub use roots::ExternRoot;
+pub use roots::{ExternRoot, LocalSource};
 
 use aliases::AliasState;
 use conformances::Conformances;

@@ -10,11 +10,21 @@ use indexmap::IndexMap;
 use omega_analyzer::resolver::ResolveError;
 use omega_parser::prelude::Ident;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub struct ExternRoot {
     pub name: Ident,
     pub dir: PathBuf,
+}
+
+/// One physical, source-bearing local `.omg` file. `relative_path` is the
+/// file's path below the local package root and is the compiler's stable
+/// native emission identity: it mirrors on-disk layout, so a declared
+/// `<name>:<dir>` identity override never moves it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalSource {
+    pub module: ModulePath,
+    pub relative_path: PathBuf,
 }
 
 pub(crate) struct ModuleRoots {
@@ -170,6 +180,25 @@ impl ModuleRoots {
         self.local_tree.iter()
     }
 
+    /// Every source-bearing local `.omg` file, sorted by its path relative to
+    /// the package root. A namespace-only directory bears no source of its
+    /// own and therefore has no entry.
+    pub fn local_sources(&self) -> Vec<LocalSource> {
+        let mut sources: Vec<LocalSource> = self
+            .local_tree
+            .iter()
+            .filter_map(|(module, result)| {
+                let file = result.as_ref().ok()?.own_file.as_ref()?;
+                Some(LocalSource {
+                    module: module.clone(),
+                    relative_path: relative_source_path(&self.local_dir, file),
+                })
+            })
+            .collect();
+        sources.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+        sources
+    }
+
     fn real_modules(
         tree: &HashMap<ModulePath, Result<ModuleLocation, ResolveError>>,
     ) -> Vec<ModulePath> {
@@ -196,6 +225,16 @@ impl ModuleRoots {
             .values()
             .flat_map(Self::real_modules)
             .collect()
+    }
+}
+
+/// `discover_tree` only ever builds locations below the package root, so the
+/// fallback is unreachable; it keeps a caller from ever joining an absolute
+/// path under an output directory.
+fn relative_source_path(root: &Path, file: &Path) -> PathBuf {
+    match file.strip_prefix(root) {
+        Ok(relative) => relative.to_path_buf(),
+        Err(_) => PathBuf::from(file.file_name().unwrap_or(file.as_os_str())),
     }
 }
 
@@ -303,6 +342,95 @@ mod tests {
                 "expected declared dependency identity `{reserved}` to be rejected"
             );
         }
+    }
+
+    fn sources(root: &TestDir, declared: Option<&str>) -> Vec<LocalSource> {
+        ModuleRoots::new(
+            root.0.clone(),
+            declared.map(|name| Ident(name.to_string())),
+            vec![],
+        )
+        .expect("valid roots")
+        .local_sources()
+    }
+
+    fn relative_paths(sources: &[LocalSource]) -> Vec<String> {
+        sources
+            .iter()
+            .map(|source| source.relative_path.to_string_lossy().replace('\\', "/"))
+            .collect()
+    }
+
+    #[test]
+    fn every_source_bearing_local_file_gets_one_sorted_relative_emission_identity() {
+        let local = TestDir::new();
+        let name = fs_resolve::basename(&local.0).expect("test root basename");
+        write(&local.0, &format!("{}.omg", name.as_ref()));
+        write(&local.0, "child.omg");
+        write(&local.0, "sub/sub.omg");
+        write(&local.0, "sub/leaf.omg");
+        // A namespace-only directory: children but no own file.
+        write(&local.0, "space/inner.omg");
+
+        let sources = sources(&local, None);
+        let mut expected = vec![
+            format!("{}.omg", name.as_ref()),
+            "child.omg".to_string(),
+            "space/inner.omg".to_string(),
+            "sub/leaf.omg".to_string(),
+            "sub/sub.omg".to_string(),
+        ];
+        expected.sort();
+        assert_eq!(relative_paths(&sources), expected);
+        assert!(
+            !sources
+                .iter()
+                .any(|source| source.module == vec![name.clone(), Ident("space".to_string())]),
+            "a namespace-only directory owns no source and must have no emission identity"
+        );
+        let root_source = sources
+            .iter()
+            .find(|source| source.module == vec![name.clone()])
+            .expect("the root module is source-bearing");
+        assert_eq!(
+            root_source.relative_path,
+            PathBuf::from(format!("{}.omg", name.as_ref()))
+        );
+    }
+
+    #[test]
+    fn an_empty_source_still_owns_an_emission_identity() {
+        let local = TestDir::new();
+        let name = fs_resolve::basename(&local.0).expect("test root basename");
+        write(&local.0, &format!("{}.omg", name.as_ref()));
+        write(&local.0, "silent.omg");
+
+        assert!(
+            relative_paths(&sources(&local, None)).contains(&"silent.omg".to_string()),
+            "a source with no items still owns its artifact"
+        );
+    }
+
+    #[test]
+    fn a_declared_package_identity_renames_modules_but_not_source_paths() {
+        let local = TestDir::new();
+        let physical = fs_resolve::basename(&local.0).expect("test root basename");
+        write(&local.0, &format!("{}.omg", physical.as_ref()));
+        write(&local.0, "child.omg");
+
+        let sources = sources(&local, Some("renamed"));
+        let mut expected = vec![
+            format!("{}.omg", physical.as_ref()),
+            "child.omg".to_string(),
+        ];
+        expected.sort();
+        assert_eq!(relative_paths(&sources), expected);
+        assert!(
+            sources
+                .iter()
+                .all(|source| source.module[0].as_ref() == "renamed"),
+            "declared identity renames the logical module path"
+        );
     }
 
     #[test]

@@ -33,11 +33,12 @@ just build-std
 ```
 
 A consuming package registers both roots, imports the required names, and
-links `target/core.o` and `target/std.o`. It additionally links a platform
-object only for the capabilities its reachable code needs. The standard
-library's object can contain allocation or console-using functions without
-forcing those glues into every final executable: per-function sections plus
-the linker's `--gc-sections` discard unused functions.
+links the objects under `target/core/` and `target/std/`. It additionally
+links platform objects only for the capabilities its reachable code needs. The
+standard library's objects can contain allocation or console-using functions
+without forcing those glues into every final executable: per-source objects
+plus per-function sections and the linker's `--gc-sections` discard what is
+unused.
 
 ## Specs and primitive conformances
 
@@ -107,7 +108,8 @@ defer values.free();
 
 The generic collections route heap operations through the non-generic
 `std::alloc` wrappers. A program that constructs one needs a
-`GlobalAllocator` glue implementation, but merely linking `std.o` does not.
+`GlobalAllocator` glue implementation, but merely linking `std`'s objects does
+not.
 
 ## Formatting and I/O
 

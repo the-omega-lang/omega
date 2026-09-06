@@ -44,7 +44,7 @@ MIR modules
 object / LLVM IR / assembly
 ```
 
-`omega-driver::Driver::compile` is the main semantic-compilation entry point. `omgc` owns the outer toolchain handoff from semantic compilation to MIR/codegen and output files.
+`omega-driver::Driver::compile` is the main semantic-compilation entry point; it also reports the package's physical source inventory, which decides native emission granularity. `omgc` owns the outer toolchain handoff from semantic compilation to MIR/codegen and writes one artifact per source file into the `-o` directory.
 
 ### Representation / data
 
@@ -151,7 +151,7 @@ MIR lowering also assigns final linker symbols and strong/weak linkage, so codeg
 
 ### `compiler/omega-codegen`
 
-Consumes MIR through a shared `CodegenRequest`. Shared preflight, layout/ABI inputs, symbols, and linkage must agree before LLVM emission (`llvm/`).
+Consumes MIR through a shared `CodegenRequest` carrying one emission unit per physical source file, and emits one independent LLVM module/artifact per unit. Shared preflight, layout/ABI inputs, the compilation-wide declaration/symbol catalog, and linkage must agree before LLVM emission (`llvm/`).
 
 **Boundary:** LLVM translates already-decided semantics. It should not independently implement overload resolution, language validity, aggregate layout policy, or symbol identity.
 

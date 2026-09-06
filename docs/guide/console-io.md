@@ -112,11 +112,13 @@ argument remains in the caller's scope. A conforming method is reached with
 the spec-qualified `Display::fmt`, which lets literals and temporaries use the
 normal receiver adaptation rules.
 
-Build the hosted integration examples with:
+Build and run the hosted example with:
 
 ```sh
-just build-core
-just build-std
-just build-plat
-just test-io
+just playground
 ```
+
+That recipe builds `core`, `plat` and `std` first, then links
+`playground/playground.omg` against their objects and runs it. The playground
+ends on a deliberate `panic!` demonstration, so a non-zero exit at the end is
+the expected result, not a build failure.

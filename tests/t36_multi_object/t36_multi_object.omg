@@ -1,0 +1,12 @@
+import std::io::println;
+import self::counter;
+import self::math::{ self, scale::scaled_total };
+
+main() => void {
+	println$("initial-total: ", counter::TOTAL);
+	counter::bump(4);
+	math::bump_by_triple(2);
+	println$("total: ", counter::TOTAL);
+	println$("tripled: ", math::triple(counter::TOTAL));
+	println$("scaled-total: ", scaled_total());
+}

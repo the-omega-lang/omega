@@ -28,7 +28,8 @@ child modules.
 without importing `core`; files *inside* it still use ordinary imports. The
 compiler discovers all of core's modules whether core is built locally or
 registered as an extern package. It is otherwise an ordinary separately
-compiled object: definitions from `core.o` must be linked when used.
+compiled package: core's objects -- one per core source file -- must be linked
+when their definitions are used.
 
 ## What core owns
 
@@ -242,7 +243,8 @@ The compiler emits each function into its own object-file section. Link with
 `--gc-sections` (the repository's `just` recipes do) so unused sections from a
 separately compiled package do not make a capability reachable merely because
 another function in the same object uses it. A core-only executable therefore
-links with `core.o` and no `plat.o`; it provides no console or allocator glue.
+links core's objects and none of `plat`'s; it provides no console or allocator
+glue.
 
 See [the standard library](standard-library.md) for the higher-level
 facilities and [gaps and glue](../language/gaps-and-glue.md) for the capability model.

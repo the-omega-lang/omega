@@ -1,0 +1,9 @@
+import root::counter;
+
+exposed triple(value: i32) => i32 {
+	value * 3
+}
+
+exposed bump_by_triple(value: i32) => void {
+	counter::bump(triple(value));
+}

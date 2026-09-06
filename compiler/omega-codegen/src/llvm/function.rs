@@ -1,18 +1,25 @@
 use super::Codegen;
 use super::leaf;
 use crate::abi::{AbiReturn, AbiSignature};
+use crate::catalog::FunctionDecl;
 use crate::storage::{ParameterHome, parameter_storage_plan};
 
 use inkwell::attributes::{Attribute, AttributeLoc};
 use inkwell::module::Linkage;
 use inkwell::types::{BasicType, BasicTypeEnum};
 use inkwell::values::{BasicValueEnum, PointerValue};
-use omega_analyzer::checked::ExternFunctionRef;
 use omega_analyzer::layout;
 use omega_analyzer::resolved_type::{ResolvedFunctionType, ResolvedType};
 use omega_mir::{
     MirForeignFunctionDef, MirFunctionBody, MirFunctionDef, MirInlineAsm, MirTerminator,
 };
+
+fn linkage_of(linkage: omega_mir::MirLinkage) -> Linkage {
+    match linkage {
+        omega_mir::MirLinkage::Export => Linkage::External,
+        omega_mir::MirLinkage::Weak => Linkage::WeakODR,
+    }
+}
 
 impl<'ctx> Codegen<'ctx> {
     pub(super) fn needs_sret(&self, return_type: &ResolvedType) -> bool {
@@ -77,22 +84,30 @@ impl<'ctx> Codegen<'ctx> {
         }
     }
 
-    pub(super) fn declare_function_def(
-        &mut self,
-        function_def: &MirFunctionDef,
-    ) -> Result<(), String> {
-        let symbol = &function_def.symbol;
-        self.symbols.register_function(symbol, function_def.id)?;
-        let fn_type = self.llvm_function_type(&function_def.fn_type());
-        let (function, _) = self.declare_or_reuse_function(symbol, fn_type);
-        // This item owns the body about to be attached, so its linkage always wins over
-        // whatever a same-symbol extern/gap declaration set.
-        function.set_linkage(match function_def.linkage {
-            omega_mir::MirLinkage::Export => Linkage::External,
-            omega_mir::MirLinkage::Weak => Linkage::WeakODR,
-        });
+    /// A reference every object needs to the same function: correct type and
+    /// convention so calls compile and relocate, and nothing more. A
+    /// declaration alone creates no link requirement -- only an emitted use
+    /// does -- so a unit may safely declare names it never calls.
+    pub(super) fn declare_function_reference(&mut self, declaration: &FunctionDecl) {
+        let fn_type = self.llvm_function_type(&declaration.fn_type);
+        let (function, created) = self.declare_or_reuse_function(&declaration.symbol, fn_type);
+        if created {
+            function.set_linkage(Linkage::External);
+        }
+        function.set_call_conventions(crate::abi::llvm_calling_convention(
+            declaration.fn_type.calling_convention,
+        ));
+        self.functions.insert(declaration.id, function);
+    }
+
+    /// Upgrades the shared declaration to this object's own definition. Its
+    /// linkage always wins over whatever a same-symbol extern/gap declaration
+    /// set.
+    pub(super) fn configure_function_owner(&mut self, function_def: &MirFunctionDef) {
+        let function = self.owned_function(function_def.id, &function_def.symbol);
+        function.set_linkage(linkage_of(function_def.linkage));
         if self.target.os != omega_analyzer::Os::MacOs {
-            function.set_section(Some(&format!(".text.{symbol}")));
+            function.set_section(Some(&format!(".text.{}", function_def.symbol)));
         }
         if matches!(function_def.body, MirFunctionBody::Naked(_)) {
             // `naked` disables prologue/epilogue emission and forbids IR
@@ -102,8 +117,30 @@ impl<'ctx> Codegen<'ctx> {
             self.add_function_enum_attribute(function, "naked");
             self.add_function_enum_attribute(function, "noinline");
         }
-        self.functions.insert(function_def.id, function);
-        Ok(())
+    }
+
+    pub(super) fn configure_foreign_function_owner(
+        &mut self,
+        function_def: &MirForeignFunctionDef,
+    ) {
+        let function = self.owned_function(function_def.id, &function_def.symbol);
+        function.set_linkage(linkage_of(function_def.linkage));
+        function.set_call_conventions(crate::abi::llvm_calling_convention(
+            function_def.calling_convention,
+        ));
+        if self.target.os != omega_analyzer::Os::MacOs {
+            function.set_section(Some(&format!(".text.{}", function_def.symbol)));
+        }
+    }
+
+    fn owned_function(
+        &self,
+        id: omega_hir::HirId,
+        symbol: &str,
+    ) -> inkwell::values::FunctionValue<'ctx> {
+        *self.functions.get(&id).unwrap_or_else(|| {
+            unreachable!("'{symbol}' is in the catalog, so it is declared before its owner runs")
+        })
     }
 
     fn add_function_enum_attribute(
@@ -116,81 +153,16 @@ impl<'ctx> Codegen<'ctx> {
         function.add_attribute(AttributeLoc::Function, attribute);
     }
 
-    pub(super) fn declare_extern_function(&mut self, extern_fn: &ExternFunctionRef) {
-        let symbol = omega_mir::mangle::extern_function_ref_symbol(extern_fn);
-        let fn_type = self.llvm_function_type(&extern_fn.fn_type);
-        let (function, created) = self.declare_or_reuse_function(&symbol, fn_type);
-        if created {
-            function.set_linkage(Linkage::External);
-        }
-        function.set_call_conventions(crate::abi::llvm_calling_convention(
-            extern_fn.fn_type.calling_convention,
-        ));
-        self.functions.insert(extern_fn.decl_id, function);
-    }
-
-    /// A foreign function-typed binding (`foreign name : (...) => T;`) or a
-    /// direct declaration (`foreign(cc) name(...) => T;`) with no body:
-    /// declares the LLVM function with the resolved convention, but attaches
-    /// no definition. Deliberately not registered in `SymbolRegistry`: a gap
-    /// declaration and its glue definition intentionally share this exact
-    /// path/symbol under two different `HirId`s (see `declare_or_reuse_function`).
-    pub(super) fn declare_foreign_function_decl(
-        &mut self,
-        id: omega_hir::HirId,
-        symbol: &str,
-        fn_type: &ResolvedFunctionType,
-    ) -> Result<(), String> {
-        let llvm_fn_type = self.llvm_function_type(fn_type);
-        let (function, created) = self.declare_or_reuse_function(symbol, llvm_fn_type);
-        if created {
-            function.set_linkage(Linkage::External);
-        }
-        function.set_call_conventions(crate::abi::llvm_calling_convention(
-            fn_type.calling_convention,
-        ));
-        self.functions.insert(id, function);
-        Ok(())
-    }
-
-    pub(super) fn declare_foreign_function_def(
-        &mut self,
-        function_def: &MirForeignFunctionDef,
-    ) -> Result<(), String> {
-        let symbol = &function_def.symbol;
-        self.symbols.register(symbol, function_def.id)?;
-        let fn_type = self.llvm_function_type(&function_def.fn_type());
-        let (function, _) = self.declare_or_reuse_function(symbol, fn_type);
-        function.set_linkage(match function_def.linkage {
-            omega_mir::MirLinkage::Export => Linkage::External,
-            omega_mir::MirLinkage::Weak => Linkage::WeakODR,
-        });
-        function.set_call_conventions(crate::abi::llvm_calling_convention(
-            function_def.calling_convention,
-        ));
-        if self.target.os != omega_analyzer::Os::MacOs {
-            function.set_section(Some(&format!(".text.{symbol}")));
-        }
-        self.functions.insert(function_def.id, function);
-        Ok(())
-    }
-
     pub(super) fn define_foreign_function_def(&mut self, function_def: MirForeignFunctionDef) {
         let Some(body) = function_def.body else {
             return;
         };
-        let function = *self
-            .functions
-            .get(&function_def.id)
-            .expect("declared for every item, across every module, before any body is defined");
+        let function = self.owned_function(function_def.id, &function_def.symbol);
         self.define_function_body(function, function_def.return_type, body);
     }
 
     pub(super) fn define_function_def(&mut self, function_def: MirFunctionDef) {
-        let function = *self
-            .functions
-            .get(&function_def.id)
-            .expect("declared for every item, across every module, before any body is defined");
+        let function = self.owned_function(function_def.id, &function_def.symbol);
         let MirFunctionDef {
             return_type, body, ..
         } = function_def;

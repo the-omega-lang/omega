@@ -28,7 +28,7 @@ pub(crate) fn lower_module(module: CheckedModule, path: &[Ident], entry: &[Ident
 fn lower_item(item: CheckedItem, path: &[Ident], entry: &[Ident]) -> MirItem {
     match item {
         CheckedItem::Declaration(declaration) => {
-            MirItem::Declaration(lower_declaration(declaration))
+            MirItem::Declaration(lower_declaration(declaration, path))
         }
         CheckedItem::ForeignBinding(binding) => {
             MirItem::ForeignBinding(lower_foreign_binding(binding, path))
@@ -45,13 +45,15 @@ fn lower_item(item: CheckedItem, path: &[Ident], entry: &[Ident]) -> MirItem {
     }
 }
 
-fn lower_declaration(declaration: CheckedDeclaration) -> MirDeclaration {
+fn lower_declaration(declaration: CheckedDeclaration, path: &[Ident]) -> MirDeclaration {
+    let symbol = mangle::global_symbol_string(path, &declaration.ident);
     MirDeclaration {
         id: declaration.id,
         span: declaration.span,
         ident: declaration.ident,
         r#type: declaration.r#type,
         initial_value: declaration.initial_value,
+        symbol,
     }
 }
 
@@ -452,5 +454,49 @@ fn lower_enum_def(definition: CheckedEnumDef, path: &[Ident]) -> MirEnumDef {
         name,
         generic_args,
         functions,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use omega_hir::{HirId, ModuleId};
+    use omega_parser::prelude::Span;
+
+    fn declaration(name: &str) -> CheckedDeclaration {
+        CheckedDeclaration {
+            id: HirId {
+                module: ModuleId(0),
+                local: 0,
+            },
+            span: Span::default(),
+            ident: Ident(name.to_string()),
+            r#type: ResolvedType::I32,
+            mutable: true,
+            initial_value: None,
+        }
+    }
+
+    fn path(segments: &[&str]) -> Vec<Ident> {
+        segments.iter().map(|s| Ident(s.to_string())).collect()
+    }
+
+    /// A global's linker identity is settled here, from its declaring module
+    /// alone. Nothing downstream -- including which source file's object it is
+    /// emitted into -- can change it.
+    #[test]
+    fn a_global_symbol_is_decided_by_its_declaring_module_before_emission() {
+        let counter = path(&["pkg", "counter"]);
+        let other = path(&["pkg", "other"]);
+
+        assert_eq!(
+            lower_declaration(declaration("TOTAL"), &counter).symbol,
+            mangle::global_symbol_string(&counter, &Ident("TOTAL".to_string()))
+        );
+        assert_ne!(
+            lower_declaration(declaration("TOTAL"), &counter).symbol,
+            lower_declaration(declaration("TOTAL"), &other).symbol,
+            "the declaring module distinguishes two same-named globals"
+        );
     }
 }

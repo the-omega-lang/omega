@@ -9,12 +9,16 @@ CheckedModule
    v
 MirModule / MirBody CFG
    |
+   | omega_mir::plan_emission
+   v
+EmissionUnit per physical source file
+   |
    | omega_codegen::generate
    v
-shared preflight + ABI
+shared preflight + ABI + declaration catalog
    |
    v
-LLVM
+one LLVM module per emission unit -> one artifact per source
 ```
 
 ## Why MIR exists
@@ -50,6 +54,39 @@ A future expression-normalization/optimization IR can be added deliberately; it 
 It receives the checked modules and package entry path and returns corresponding `MirModule`s. Semantic monomorphization is already complete; lowering does not resolve new cross-module semantic facts.
 
 Modules lower independently.
+
+## Emission units
+
+Lowering is organized by semantic module; **native emission is organized by
+physical source file**. `omega_mir::plan_emission` bridges the two: it takes
+the lowered modules plus the driver's inventory of the package's source files
+and returns one `EmissionUnit` per source, ordered by the source's path
+relative to the package root.
+
+This one-source/one-object mapping is a durable compiler invariant, not a
+first heuristic on the way to compiler-chosen code-generation units. It exists
+so that native linkage and native recompilation granularity are visible in the
+source tree: `foo.omg` owns `foo.o`, and a build system or archive can select
+source objects independently.
+
+The invariant is deliberately narrow. Source files define **native emission
+and linkage granularity only**. They are not analyzer or query boundaries, and
+they do not define optimization-information, incremental-dependency, cache, or
+scheduling granularity -- those may be finer or coarser. Nor is native
+ownership the same as optimization visibility: a future optimizer may hand a
+unit non-owning bodies or summaries (an imported `@inline` body, say) to
+optimize against while that unit still emits only the definitions its own
+source owns, and the canonical symbol still lives with its owner.
+
+Every source-bearing `.omg` file gets a unit, including one that lowers to no
+definitions; a namespace-only directory declares no module of its own and gets
+none. Some definitions this invocation emits -- concrete generic, method,
+primitive, and conformance bodies -- are semantically owned by an extern
+package and have no local source. Their symbols already carry the declaring
+module's identity, so they only need a deterministic local home: the
+source-bearing package root when there is one, otherwise the first source in
+path order. That attachment policy never invents an artifact and never touches
+symbol identity.
 
 ## Item-level MIR
 
@@ -195,10 +232,29 @@ CodegenRequest
 OptLevel
 EmitKind
 EmitOutput
+EmittedArtifact
 generate(...)
 ```
 
-`CodegenRequest` contains the translation-unit name, target, MIR modules, entry path, extern-function references, optimization level, and requested output kind. Entry-point identity is consumed while lowering checked modules to MIR; the field remains in the public request shape for compatibility but is not interpreted by LLVM emission.
+`CodegenRequest` contains the compilation-wide configuration -- target, optimization level, requested output kind, entry path, extern-function references -- plus the ordered list of emission units. `generate` returns one `EmittedArtifact` per unit, each tagged with the relative source path that owns it, so the caller reproduces the source tree by replacing the `.omg` extension. Entry-point identity is consumed while lowering checked modules to MIR; the field remains in the public request shape for compatibility but is not interpreted by LLVM emission.
+
+### Declaration catalog
+
+Splitting one package into several LLVM modules means each module must be
+self-contained for codegen but not for linking. Before any unit is emitted,
+`catalog.rs` flattens every final definition into the lightweight facts a
+cross-object reference needs -- function id/symbol/signature/convention, global
+id/symbol/type -- together with the analyzer's extern-function references. The
+catalog carries no bodies: a unit needs types and symbols to declare a
+reference, not the definition it refers to. It is built once, is immutable
+afterwards, and is shared unchanged by every unit, which is also what lets
+future work emit source objects concurrently.
+
+Symbol-collision checking lives here, above the per-unit LLVM modules: two
+definitions that force the same linker symbol are rejected identically whether
+or not they share a source file. Gap and foreign declarations are declarations,
+not competing definitions, so a gap declaration and its matching glue still
+share one symbol legitimately.
 
 ### Shared preflight
 
@@ -225,7 +281,7 @@ See [`abi-and-representation.md`](abi-and-representation.md).
 `src/llvm/` is split by concern:
 
 - `mod.rs` — target machine/triple/data layout setup, shared codegen state, final output. The triple is derived from the shared Omega target (`avr-none` maps to LLVM's canonical `avr-unknown-unknown`), the target machine's triple/data layout are installed on the module before any declaration is created, and the relocation model is PIC for the hosted targets and LLVM's default for AVR, which has no position-independent code model;
-- `item.rs` — declarations/definitions/globals/externs;
+- `item.rs` — per-unit catalog declaration, owner configuration, and global storage;
 - `function.rs` — function CFG/block emission;
 - `expr.rs` — computation/calls/casts/aggregate construction;
 - `place.rs` — address/storage/projection loads and stores;
@@ -233,7 +289,7 @@ See [`abi-and-representation.md`](abi-and-representation.md).
 - `vtable.rs` — dynamic-spec table materialization;
 - `inline_asm.rs` — `MirExpr::InlineAsm` lowering: register-class/constraint selection and `$name`/`$N` -> LLVM template-slot binding.
 
-`Codegen` keeps caches for functions, data blobs, globals, vtables, and symbol-collision detection plus per-function local/stack state.
+`Codegen` is per emission unit. It keeps caches for functions, data blobs, globals, and vtables plus per-function local/stack state; symbol-collision detection belongs to the compilation-wide catalog above it. Target initialization and triple resolution happen once per request, and each unit builds its own target machine so no LLVM state is shared between units.
 
 LLVM `alloca` placement is deliberately centralized in the function entry block because allocating in a loop block would allocate on each execution. The backend temporarily repositions its builder to the entry before emitting scratch/local allocations.
 
@@ -247,14 +303,19 @@ Register-class selection is centralized in `inline_asm.rs` as the one place with
 
 ### Naked functions
 
-`declare_function_def` attaches LLVM's `naked` and `noinline` enum function attributes whenever `MirFunctionDef.body` is `MirFunctionBody::Naked`, using the same declared `llvm_function_type`/linkage/symbol/section path as an ordinary function -- the caller-facing ABI is unaffected. `define_function_def` matches on `MirFunctionBody` and, for `Naked`, calls a dedicated `define_naked_function` path instead of the ordinary one: it creates exactly one LLVM basic block, calls the existing `process_inline_asm` on the carried `MirInlineAsm`, and emits `build_unreachable`. It never calls `parameter_storage_plan`, reads `function.get_params()` for values, computes a locals layout, or emits an entry alloca/ordinary `Return` terminator -- LLVM's `naked` attribute disables prologue/epilogue emission and forbids IR references to function arguments, so any of that ordinary-path machinery would violate the attribute's contract. `unreachable` is required only because LLVM demands a block terminator; the target asm itself owns real control flow and `unreachable` must never become a machine instruction.
+`configure_function_owner` attaches LLVM's `naked` and `noinline` enum function attributes whenever `MirFunctionDef.body` is `MirFunctionBody::Naked`, using the same declared `llvm_function_type`/linkage/symbol/section path as an ordinary owned function -- the caller-facing ABI is unaffected. `define_function_def` matches on `MirFunctionBody` and, for `Naked`, calls a dedicated `define_naked_function` path instead of the ordinary one: it creates exactly one LLVM basic block, calls the existing `process_inline_asm` on the carried `MirInlineAsm`, and emits `build_unreachable`. It never calls `parameter_storage_plan`, reads `function.get_params()` for values, computes a locals layout, or emits an entry alloca/ordinary `Return` terminator -- LLVM's `naked` attribute disables prologue/epilogue emission and forbids IR references to function arguments, so any of that ordinary-path machinery would violate the attribute's contract. `unreachable` is required only because LLVM demands a block terminator; the target asm itself owns real control flow and `unreachable` must never become a machine instruction.
 
 ## Declare before define
 
-LLVM emission uses a declare/update pattern so references do not depend on source definition order:
+LLVM emission uses a declare/define pattern so references do not depend on source definition order. Each emission unit gets a fresh `Context`, `Module`, builder, and caches, and then:
 
-1. declare externally visible/local functions/globals needed by symbols;
-2. define function bodies/data after identities exist.
+1. declares every catalog function and every global it does not own, as plain external references;
+2. configures the definitions this source does own -- owner linkage, section, `naked` attributes, and global storage/initializers;
+3. defines the owned function bodies.
+
+A declaration alone creates no native relocation or link requirement; only an emitted use does, so a unit may safely declare names it never touches. Only the canonical owning unit attaches a body or initializer. Compiler-generated weak-ODR data (string/const blobs, vtables) may still be materialized in more than one object when referenced from several units; linker coalescing remains their contract and they never become additional artifacts.
+
+Splitting the package this way creates an ordinary cross-source optimization boundary. Recovering it is not a reason to repartition native objects: future work should import non-owning bodies, summaries, or use LTO/ThinLTO while preserving one source -> one object.
 
 This mirrors the compiler-wide rule that declaration order must not determine semantic availability.
 
@@ -264,18 +325,19 @@ Codegen may cache native objects keyed by already stable compiler identities, fo
 
 - `HirId -> native function/global`;
 - content hash -> anonymous byte/const blob;
-- resolved vtable slot list -> emitted table;
-- linker symbol -> declaring ID collision guard.
+- resolved vtable slot list -> emitted table.
 
-These caches optimize/organize emission; they must not become new semantic resolution tables.
+These caches optimize/organize emission; they must not become new semantic resolution tables. The linker-symbol -> declaring-ID collision guard is not one of them: it is compilation-wide validation and lives in the catalog.
 
 ## Output modes
 
-The same codegen pipeline can produce:
+The same codegen pipeline can produce, for each emitted source unit:
 
 - object bytes;
 - textual LLVM IR;
 - assembly.
+
+The emit kind decides only the artifact's content and extension; it never changes how many artifacts there are or where they sit in the output tree.
 
 Textual IR is inherently LLVM-specific; object-level external identity/ABI must not be.
 
@@ -289,4 +351,5 @@ Do not place these in codegen:
 - source-level control-flow reconstruction;
 - independent aggregate field offsets;
 - independent linker mangling policy;
+- deciding native object ownership, or moving a definition to an object other than its source's;
 - backend-specific acceptance of an otherwise shared language construct.

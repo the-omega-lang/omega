@@ -467,9 +467,12 @@ modules            checked modules this compilation will emit
 entry              declared entry-module path
 warnings           module-tagged analysis warnings
 extern_functions   extern-owned function references needed by codegen
+sources            physical local `.omg` files, sorted by relative path
 ```
 
 MIR lowering consumes the checked modules only after this whole semantic stage has succeeded.
+
+`sources` is the physical counterpart of `modules`: one `LocalSource` for every source-bearing local `.omg` file, carrying its logical `ModulePath` and its path relative to the package root. It is derived from `ModuleRoots`, so a namespace-only directory has no entry and a declared `<name>:<dir>` identity renames the module path without moving the file path. Native emission granularity is decided from this inventory alone -- see [`mir-and-codegen.md`](mir-and-codegen.md) -- and it never becomes semantic module identity.
 
 ## Determinism
 
@@ -491,6 +494,8 @@ During checked -> MIR lowering, that ownership/provenance becomes:
 
 - final linker symbol;
 - `MirLinkage::Export` or `MirLinkage::Weak`.
+
+Which emitted object a definition ends up in is a separate, later decision made from `sources`; it never changes the symbol or linkage settled here.
 
 See [`symbol-mangling.md`](symbol-mangling.md).
 

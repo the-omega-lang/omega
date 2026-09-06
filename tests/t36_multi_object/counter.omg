@@ -1,0 +1,8 @@
+# This global is defined in exactly one emitted object and read from two
+# others, so a cross-object reference must stay a declaration rather than
+# becoming a second definition.
+exposed mut TOTAL: i32 = 0;
+
+exposed bump(amount: i32) => void {
+	TOTAL += amount;
+}

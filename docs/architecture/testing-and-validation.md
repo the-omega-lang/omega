@@ -49,11 +49,11 @@ tests/
 `bin/test-runner` discovers those directories and, for each selected case:
 
 1. invokes `bin/omgc-debug` on the test package, registering the current `core`, `std`, and `plat` source packages as externs;
-2. if compilation succeeds, links the produced object with the prebuilt runtime objects;
+2. if compilation succeeds, gathers the case's per-source objects in sorted path order and links them with the prebuilt runtime objects;
 3. executes the resulting program;
 4. compares any present `expected.stdout` and `expected.stderr` files byte-for-byte with the relevant captured output, and any present `expected.status` file with the program's termination status.
 
-The runner keeps captured output in memory. Per-test object/executable artifacts live under `<artifacts>/tests/<case>/`, where `<artifacts>` defaults to `target/` and can be overridden with `OMEGA_ARTIFACTS_DIR`.
+The runner keeps captured output in memory. Per-test artifacts live under `<artifacts>/tests/<case>/`: the case's object tree in `objects/`, mirroring its source layout, plus the linked executable. `<artifacts>` defaults to `target/` and can be overridden with `OMEGA_ARTIFACTS_DIR`; the runtime packages' object directories (`<artifacts>/core/`, `std/`, `plat/`) are read from the same root. Each case's output directory is cleared before compiling, so a removed source cannot leave a stale object in the link.
 
 These cases are **language conformance tests implemented end-to-end**. They should be derived from observable rules in `docs/language/`. A compiler bug must not be encoded as the expected language behavior merely because the current implementation happens to do it.
 

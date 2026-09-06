@@ -152,6 +152,7 @@ impl Driver {
             entry: entry.to_vec(),
             warnings,
             extern_functions,
+            sources: self.roots.local_sources(),
         })
     }
 

@@ -1,9 +1,12 @@
 use crate::cli::{self, Args, Command};
-use omega_codegen::{CodegenRequest, EmitKind, EmitOutput};
+use omega_analyzer::Target;
+use omega_codegen::{CodegenRequest, EmitKind, EmitOutput, EmittedArtifact};
 use omega_diagnostics::{GREEN, Renderer, SourceRegistry, paint};
 use omega_driver::{Driver, basename};
+use omega_mir::EmissionSource;
 use omega_parser::highlight::OmegaHighlighter;
 use std::io::IsTerminal;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 pub(crate) enum AppError {
@@ -30,7 +33,7 @@ pub(crate) fn run(raw_args: Vec<String>) -> Result<(), AppError> {
 fn compile(args: Args) -> Result<(), AppError> {
     let Args {
         entry_dir,
-        output_file,
+        output_dir,
         externs,
         name,
         opt_level,
@@ -107,6 +110,15 @@ fn compile(args: Args) -> Result<(), AppError> {
     }
 
     let mir_modules = omega_mir::lower_program(program.modules, &program.entry);
+    let sources: Vec<EmissionSource> = program
+        .sources
+        .into_iter()
+        .map(|source| EmissionSource {
+            module: source.module,
+            path: source.relative_path,
+        })
+        .collect();
+    let units = omega_mir::plan_emission(mir_modules, &sources);
 
     if verbose {
         verbose_step(
@@ -117,47 +129,78 @@ fn compile(args: Args) -> Result<(), AppError> {
     }
 
     let request = CodegenRequest {
-        module_name: entry_name.to_string(),
         target,
         opt_level,
         emit,
-        modules: mir_modules,
+        units,
         entry: program.entry.clone(),
         extern_functions: program.extern_functions,
     };
-    let output = omega_codegen::generate(request)?;
+    let artifacts = omega_codegen::generate(request)?;
 
     if verbose {
         verbose_step(
             colors,
             "Emitting",
             &format!(
-                "{} to {}",
+                "{} {} to {}/",
+                artifacts.len(),
                 if emit == EmitKind::Obj {
-                    "object"
+                    "object(s)"
                 } else {
-                    "text"
+                    "text artifact(s)"
                 },
-                output_file.display()
+                output_dir.display()
             ),
         );
     }
 
-    match output {
-        EmitOutput::Object(bytes) => std::fs::write(&output_file, bytes),
-        EmitOutput::Text(text) => std::fs::write(&output_file, text),
-    }
-    .map_err(|error| {
-        AppError::Message(format!(
-            "failed to write '{}': {error}",
-            output_file.display()
-        ))
-    })?;
+    write_artifacts(&output_dir, &artifacts, emit, target)?;
 
     if verbose {
         verbose_step(colors, "Finished", &format!("in {:.2?}", start.elapsed()));
     }
-    println!("Saved output to: {}", output_file.display());
+    println!(
+        "Saved {} artifact(s) to: {}",
+        artifacts.len(),
+        output_dir.display()
+    );
+    Ok(())
+}
+
+/// Mirrors the package's source tree under `-o`, replacing each source's
+/// `.omg` extension with the emit kind's. Existing artifacts are overwritten
+/// in place: removing files the compiler does not own is a build system's
+/// decision, not the compiler's.
+fn write_artifacts(
+    output_dir: &Path,
+    artifacts: &[EmittedArtifact],
+    emit: EmitKind,
+    target: Target,
+) -> Result<(), AppError> {
+    if output_dir.exists() && !output_dir.is_dir() {
+        return Err(AppError::Message(format!(
+            "'{}' is not a directory -- '-o' names the output directory that receives one \
+             artifact per source file",
+            output_dir.display()
+        )));
+    }
+
+    let extension = emit.extension(target);
+    for artifact in artifacts {
+        let path: PathBuf = output_dir.join(artifact.source.with_extension(extension));
+        let write = match path.parent() {
+            Some(parent) => std::fs::create_dir_all(parent),
+            None => Ok(()),
+        }
+        .and_then(|()| match &artifact.output {
+            EmitOutput::Object(bytes) => std::fs::write(&path, bytes),
+            EmitOutput::Text(text) => std::fs::write(&path, text),
+        });
+        write.map_err(|error| {
+            AppError::Message(format!("failed to write '{}': {error}", path.display()))
+        })?;
+    }
     Ok(())
 }
 

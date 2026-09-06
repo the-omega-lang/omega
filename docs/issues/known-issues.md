@@ -63,6 +63,24 @@ Concrete current compiler/library bugs and unsupported cases. Resolved issues ar
   than MIR lowering.
   [mir-and-codegen.md](../architecture/mir-and-codegen.md)
 
+- **Reading an extern package's data global crashes the compiler.** An
+  `import` that names a function in another package works, but naming a
+  `exposed`/`exposed mut` global and then reading or writing it panics in
+  LLVM lowering with `mir body guarantees HirId { .. } was declared as a
+  global before this use` (`llvm/place.rs`). The analyzer hands codegen an
+  `ExternFunctionRef` list, which -- as the name says -- covers functions
+  only; there is no corresponding channel for extern *globals*, so the
+  symbol is never declared in the consuming package's module and the place
+  lookup finds nothing. Compiling the defining package is fine; only the
+  consumer fails. This is not a per-source-object regression: the earlier
+  single-module backend built its `globals` map from exactly the same
+  inputs (local MIR items plus `extern_functions`) and fails identically.
+  Fixing it needs the analyzer to expose referenced extern globals the way
+  it already exposes extern functions, which is a resolver/interface
+  decision rather than a local backend patch. Until then, expose the datum
+  through an accessor function in the defining package.
+  [modules-and-imports.md](../language/modules-and-imports.md)
+
 ## Types
 
 - **Ordinary indexing does not validate the index expression type during semantic

@@ -32,6 +32,7 @@ pub struct MirDeclaration {
     pub ident: Ident,
     pub r#type: ResolvedType,
     pub initial_value: Option<ConstValue>,
+    pub symbol: String,
 }
 
 #[derive(Debug, Clone)]

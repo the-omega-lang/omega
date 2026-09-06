@@ -7,16 +7,16 @@ Omega intentionally minimizes hidden runtime machinery. Most facilities normally
                          |
           +--------------+--------------+
           |                             |
-       core.o                         std.o
+     core objects                   std objects
           |                             |
           +---------- capability -------+
                          |
-                      plat.o
+                    plat objects
 
 optional target-specific assembly: runtime/shims/
 ```
 
-The exact objects linked are a build/application choice; there is no mandatory compiler-injected libc runtime object.
+Each package compiles to a directory of per-source objects rather than a single file, so `core`, `std`, and `plat` each contribute the objects of their own source files. The exact objects linked are a build/application choice; there is no mandatory compiler-injected libc runtime object.
 
 ## Package layering
 
@@ -88,7 +88,7 @@ The driver checks declaration/implementation relationship and uniqueness at comp
 
 Unrecoverable failure uses the same seam. `core::panic` declares `PanicHandler`, and `core::panic::panic$` is the source-level entry point: the macro builds a stack-local `PanicInfo` from `core::builtins`' source-location macros at the call site and tail-calls the handler, which returns `never`.
 
-Nothing in the compiler or `core` picks a panic policy. Panic policy is a platform decision like any other capability, so it lives with the platform package: `runtime/plat/libc` reports the site on descriptor 2 and calls `abort`, which is correct for a hosted program and wrong for a freestanding target that wants a trap, a reset, or a status LED -- such a target supplies its own glue in a build that does not register `plat`, since one gap still takes exactly one glue. Deliberately keeping the construction inside the macro rather than behind a core helper function is what keeps `core.o` free of any reference to the handler symbol, so a program that never panics needs no panic glue and no extra linkage.
+Nothing in the compiler or `core` picks a panic policy. Panic policy is a platform decision like any other capability, so it lives with the platform package: `runtime/plat/libc` reports the site on descriptor 2 and calls `abort`, which is correct for a hosted program and wrong for a freestanding target that wants a trap, a reset, or a status LED -- such a target supplies its own glue in a build that does not register `plat`, since one gap still takes exactly one glue. Deliberately keeping the construction inside the macro rather than behind a core helper function is what keeps `core`'s objects free of any reference to the handler symbol, so a program that never panics needs no panic glue and no extra linkage.
 
 No allocation, formatting, unwinding, backtrace machinery, runtime registry, or backend intrinsic is involved: the location macros become ordinary literals during macro expansion, and the handler call is an ordinary gap call.
 
@@ -126,7 +126,7 @@ knowledge of atomic semantics -- exactly what this seam exists to avoid.
 
 `core` declares allocator/console/panic/atomic capabilities but does not automatically invoke them merely by being linked. Higher-level `std` facilities reference the gaps only from functions that need them.
 
-The repository compiles functions into independently collectible object sections and links integration binaries with `--gc-sections`, so unused library functions should not force unrelated platform capabilities into the final executable. This is load-bearing rather than a size optimization: `std.o` contains a body for every concrete `std` function, including the `std::atomic` wrappers, so a link that keeps unreferenced sections demands glue for capabilities the program never uses. Every link line in the repository -- the `just` recipes and `bin/test-runner` alike -- must pass it.
+Native ownership is per source file, so unused capabilities can be dropped at two independent granularities. Whole objects: a build that archives a package's objects and lets the linker extract only what it references never pulls in a source file whose capabilities the program does not use. Within an object: the repository compiles functions into independently collectible sections and links integration binaries with `--gc-sections`, which is what the repository's own links rely on, because they pass every emitted object directly and therefore retain each one. That still matters even with per-source objects -- a single source file mixes used and unused functions, `std::atomic`'s wrappers among them -- so every link line in the repository, the `just` recipes and `bin/test-runner` alike, must pass `--gc-sections`.
 
 This is important to Omega's “no hidden runtime cost” and freestanding goals.
 
@@ -135,18 +135,18 @@ This is important to Omega's “no hidden runtime cost” and freestanding goals
 Typical repository flow:
 
 ```text
-omgc runtime/core/                    -> core.o
-omgc runtime/std/ --import=core:...   -> std.o
+omgc runtime/core/                    -> target/core/**.o
+omgc runtime/std/ --import=core:...   -> target/std/**.o
 omgc plat:runtime/plat/libc/ \
-     --import=core:...                -> plat.o
+     --import=core:...                -> target/plat/**.o
 omgc app/ --import=core:... \
           --import=std:... \
-          --import=plat:...           -> app.o
+          --import=plat:...           -> target/app/**.o
 
 system linker -> app executable
 ```
 
-Each `omgc` invocation resolves signatures from registered extern roots but emits only the bodies its compilation owns (plus concrete template instantiations it is responsible for).
+Each `omgc` invocation resolves signatures from registered extern roots but emits only the bodies its compilation owns (plus concrete template instantiations it is responsible for), spread across one object per source file of that package. `omgc` itself never links or archives; assembling those objects is a build-system decision.
 
 ## `core` ambient lookup
 
@@ -181,17 +181,22 @@ Runtime objects are normal separately compiled Omega objects, so they share the 
 
 Platform calls crossing into C via `extern` additionally depend on the FFI contract and current platform-C-ABI limitations documented under language/issues docs.
 
-## Build recipes as architecture tests
+## The link configuration as an architecture test
 
-The root `justfile` deliberately constructs several runtime combinations:
+`core`, `plat` and `std` are three separate `omgc` invocations, and
+`bin/test-runner` links the per-source objects of all three into every
+conformance case with `-Wl,--gc-sections`. That single uniform configuration is
+what exercises the architectural promises:
 
-- core-only binaries;
-- std + allocator but no console platform object;
-- std + platform console;
-- multiple packages independently producing generic conform instantiations;
-- mixed backend objects.
+- a case that never touches std I/O still links, with console glue
+  dead-stripped rather than kept off the link line;
+- symbols and ABI agree across separately compiled packages;
+- generic/conform instantiations that several packages produce independently
+  coalesce at link time instead of colliding.
 
-These recipes are not just demos; they exercise architectural promises such as “unused std I/O does not force console glue” and “same symbols/ABI work across separate compiler invocations”.
+The root `justfile` only builds those packages (`build-core`, `build-plat`,
+`build-std`) and links the hosted `playground` target; it does not itself
+encode runtime combinations.
 
 See [`testing-and-validation.md`](testing-and-validation.md).
 

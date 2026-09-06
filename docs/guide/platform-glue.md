@@ -115,21 +115,21 @@ just the one platform that exists right now, at its own honest path.
   dependency such as libatomic or pthreads. A program that uses `core::atomic`
   or `std::atomic` therefore supplies glue from a platform that can actually
   uphold the contract for the widths it uses. Nothing else is affected —
-  per-function sections plus `--gc-sections` mean an unfilled capability the
-  program never calls does not have to be filled.
+  per-source objects, per-function sections and `--gc-sections` together mean
+  an unfilled capability the program never calls does not have to be filled.
 
 ## Building it
 
 ```
-just build-plat     # omgc plat:runtime/plat/libc/ --import=core:runtime/core/ -o target/plat.o
+just build-plat     # omgc plat:runtime/plat/libc/ --import=core:runtime/core/ -o target/plat
 ```
 
 Built and linked exactly like any other `--import` dependency — `just
-build-exe`/`run-exec` register `--import=plat:runtime/plat/libc/` and
-link `target/plat.o` alongside `core.o`/`mathlib.o`, even though
-`examples/dev` never imports `plat` (see `examples/dev/dev.omg`'s own
-`GlobalAllocator::alloc`/`free` demo, resolved through the ambient `core`
-prelude with no `plat` reference of any kind).
+playground` registers `--import=plat:runtime/plat/libc/` and links the objects
+under `target/plat/` alongside core's and std's, even though
+`playground/playground.omg` never imports `plat`: the glue it relies on is
+resolved through the ambient `core` prelude with no `plat` reference of any
+kind.
 
 Each console capability has its own glue declaration, so an application that
 does not reach a console marker need not retain that glue at final link.

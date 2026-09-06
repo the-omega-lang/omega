@@ -45,6 +45,20 @@ pub enum EmitKind {
     Asm,
 }
 
+impl EmitKind {
+    /// The file extension one emitted artifact takes, so an output tree
+    /// mirrors the source tree with `.omg` replaced. Object files follow the
+    /// target platform's own convention.
+    pub fn extension(self, target: omega_analyzer::Target) -> &'static str {
+        match self {
+            Self::Obj if target.os == omega_analyzer::Os::Windows => "obj",
+            Self::Obj => "o",
+            Self::Ir => "ll",
+            Self::Asm => "s",
+        }
+    }
+}
+
 impl FromStr for EmitKind {
     type Err = String;
 
@@ -86,6 +100,19 @@ mod tests {
             assert_eq!(level.to_string(), source);
         }
         assert!("fast".parse::<OptLevel>().is_err());
+    }
+
+    #[test]
+    fn object_extensions_follow_the_target_platform() {
+        use omega_analyzer::{Arch, Os, Target};
+        let windows = Target {
+            arch: Arch::X86_64,
+            os: Os::Windows,
+        };
+        assert_eq!(EmitKind::Obj.extension(Target::DEFAULT), "o");
+        assert_eq!(EmitKind::Obj.extension(windows), "obj");
+        assert_eq!(EmitKind::Ir.extension(windows), "ll");
+        assert_eq!(EmitKind::Asm.extension(windows), "s");
     }
 
     #[test]
