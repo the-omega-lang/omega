@@ -61,9 +61,9 @@ exposed struct List<T> {
             }
             new_size := new_cap * sizeof<T>;
             new_data := if self.cap == 0 {
-                alloc(new_size)
+                alloc(new_size, alignof<T>)
             } else {
-                realloc(<*u8>self.data, new_size)
+                realloc(<*u8>self.data, new_size, alignof<T>)
             };
             self.data = <*mut T>new_data;
             self.cap = new_cap;

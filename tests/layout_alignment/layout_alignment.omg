@@ -1,0 +1,228 @@
+# `@layout(align = n)` is an address guarantee, not just relative field
+# placement: every compiler-created storage of a type that contains an
+# aligned member inline must satisfy that member's requirement, and the
+# value's own bytes must still land where its field offsets say.
+#
+# Specification: outward alignment and `sizeof`/`alignof` in
+# docs/language/annotations-and-sizeof.md, inline storage in
+# docs/language/types-and-primitives.md, constant address materialization in
+# docs/language/compile-time-evaluation.md.
+import std::io::println;
+
+# Deliberately above 16: a fixed 16-byte scratch slot would pass a weaker
+# check by accident.
+@layout(align = 32)
+struct Aligned {
+	exposed lo: i64;
+	exposed hi: i64;
+}
+
+@layout(align = 64)
+struct Strong {
+	exposed tag: u8;
+}
+
+# No annotation of its own: the requirement is inherited through inline
+# containment, and `trail` proves the interior padding is real.
+struct Holder {
+	exposed lead: u8;
+	exposed inner: Aligned;
+	exposed trail: u8;
+}
+
+# A weaker explicit annotation never lowers a member's requirement.
+@layout(align = 1)
+struct WeakOuter {
+	exposed inner: Aligned;
+}
+
+@suppress(unused_field, dead_code)
+union Bag {
+	exposed byte: u8;
+	exposed inner: Aligned;
+}
+
+enum Shape {
+	Empty,
+	Boxed {
+		exposed body: Aligned;
+	};
+}
+
+alias Either = enum Aligned | u8;
+
+exposed spec Describe {
+	total(*self) => i64;
+	widen(*self) => Aligned;
+}
+
+meet Describe for Holder {
+	total(*self) => i64 { self.inner.lo + self.inner.hi + <i64>self.lead + <i64>self.trail }
+	widen(*self) => Aligned { self.inner }
+}
+
+aligned_at(address: usize) => bool { address % 32 == 0 }
+
+show_aligned(label: *str, value: *Aligned) => void {
+	println$(label, ": aligned=", aligned_at(<usize>value), " lo=", (*value).lo, " hi=", (*value).hi);
+}
+
+show_holder(label: *str, value: *Holder) => void {
+	println$(label, ": aligned=", aligned_at(<usize>&(*value).inner),
+		" lead=", (*value).lead, " lo=", (*value).inner.lo,
+		" hi=", (*value).inner.hi, " trail=", (*value).trail);
+}
+
+make_aligned(lo: i64, hi: i64) => Aligned {
+	Aligned { lo = lo; hi = hi; }
+}
+
+# A by-value aligned parameter, and a by-value aligned result.
+double_aligned(value: Aligned) => Aligned {
+	Aligned { lo = value.lo * 2; hi = value.hi * 2; }
+}
+
+sum_holder(value: Holder) => i64 {
+	value.inner.lo + value.inner.hi + <i64>value.lead + <i64>value.trail
+}
+
+# Initializer side effects run in source order, whatever order the fields
+# are declared in.
+mut order_log: i64 = 0;
+
+note(step: i64) => i64 {
+	order_log = order_log * 10 + step;
+	step
+}
+
+# Module-scope storage of an aligned type.
+mut global_holder: Holder;
+
+comp COMP_ALIGNED := comp make_aligned(7i64, 11i64);
+
+sizes() => void {
+	println$("sizeof-aligned: ", sizeof<Aligned>, " alignof-aligned: ", alignof<Aligned>);
+	println$("sizeof-strong: ", sizeof<Strong>, " alignof-strong: ", alignof<Strong>);
+	println$("sizeof-holder: ", sizeof<Holder>, " alignof-holder: ", alignof<Holder>);
+	println$("sizeof-weak: ", sizeof<WeakOuter>, " alignof-weak: ", alignof<WeakOuter>);
+	println$("sizeof-bag: ", sizeof<Bag>, " alignof-bag: ", alignof<Bag>);
+	println$("sizeof-shape: ", sizeof<Shape>, " alignof-shape: ", alignof<Shape>);
+	println$("sizeof-either: ", sizeof<Either>, " alignof-either: ", alignof<Either>);
+	println$("alignof-packed: ", alignof<i64>, " alignof-pointer: ", alignof<*Aligned>);
+	println$("sizeof-array: ", sizeof<[2]Holder>, " alignof-array: ", alignof<[2]Holder>);
+}
+
+locals_and_mutation() => void {
+	mut value := Aligned { lo = 1i64; hi = 2i64; };
+	show_aligned("local", &value);
+
+	value.lo = 30i64;
+	value.hi = 40i64;
+	show_aligned("mutated", &value);
+
+	copy := value;
+	show_aligned("copy", &copy);
+
+	mut holder := Holder { lead = 5u8; inner = value; trail = 9u8; };
+	show_holder("holder", &holder);
+
+	holder.inner.lo = 100i64;
+	holder.trail = 12u8;
+	show_holder("holder-mutated", &holder);
+
+	weak := WeakOuter { inner = holder.inner; };
+	show_aligned("weak-outer", &weak.inner);
+
+	strong := Strong { tag = 3u8; };
+	println$("strong: aligned=", <usize>&strong % 64 == 0, " tag=", strong.tag);
+}
+
+arrays_and_slices() => void {
+	mut items: [2]Holder;
+	items[0] = Holder { lead = 1u8; inner = Aligned { lo = 10i64; hi = 20i64; }; trail = 2u8; };
+	items[1] = Holder { lead = 3u8; inner = Aligned { lo = 30i64; hi = 40i64; }; trail = 4u8; };
+
+	show_holder("array-0", &items[0]);
+	show_holder("array-1", &items[1]);
+
+	view := &items[0..];
+	show_holder("slice-0", &view[0]);
+	show_holder("slice-1", &view[1]);
+
+	pointer := &items[1];
+	show_holder("through-pointer", pointer);
+}
+
+calls() => void {
+	value := make_aligned(3i64, 4i64);
+	show_aligned("returned", &value);
+
+	doubled := double_aligned(value);
+	show_aligned("by-value-parameter", &doubled);
+
+	indirect: (Aligned) => Aligned = double_aligned;
+	again := indirect(doubled);
+	show_aligned("indirect-call", &again);
+
+	holder := Holder { lead = 1u8; inner = again; trail = 2u8; };
+	println$("sum-holder: ", sum_holder(holder));
+
+	object := <*spec Describe>&holder;
+	println$("dynamic-total: ", object.total());
+	widened := object.widen();
+	show_aligned("dynamic-return", &widened);
+}
+
+composites() => void {
+	mut bag: Bag;
+	bag.inner = Aligned { lo = 5i64; hi = 6i64; };
+	println$("union: aligned=", aligned_at(<usize>&bag.inner), " lo=", bag.inner.lo, " hi=", bag.inner.hi);
+
+	shape := Shape::Boxed { body = Aligned { lo = 8i64; hi = 9i64; }; };
+	match shape {
+		Shape::Boxed => {
+			println$("enum: aligned=", aligned_at(<usize>&shape.body),
+				" lo=", shape.body.lo, " hi=", shape.body.hi);
+		},
+		Shape::Empty => { println$("enum: unexpected"); },
+	}
+
+	either: Either = Aligned { lo = 12i64; hi = 13i64; };
+	match either {
+		Aligned => {
+			println$("anon-enum: aligned=", aligned_at(<usize>&either),
+				" lo=", either.lo, " hi=", either.hi);
+		},
+		u8 => { println$("anon-enum: unexpected"); },
+	}
+}
+
+constants_and_globals() => void {
+	show_aligned("comp-constant", &COMP_ALIGNED);
+
+	reference: *Aligned = &COMP_ALIGNED;
+	show_aligned("constant-reference", reference);
+
+	global_holder = Holder { lead = 7u8; inner = Aligned { lo = 21i64; hi = 22i64; }; trail = 8u8; };
+	show_holder("global", &global_holder);
+}
+
+initializer_order() => void {
+	value := Holder {
+		trail = <u8>note(1i64);
+		lead = <u8>note(2i64);
+		inner = Aligned { hi = note(3i64); lo = note(4i64); };
+	};
+	println$("order-log: ", order_log);
+	show_holder("reordered", &value);
+}
+
+main() => void {
+	sizes();
+	locals_and_mutation();
+	arrays_and_slices();
+	calls();
+	composites();
+	constants_and_globals();
+	initializer_order();
+}

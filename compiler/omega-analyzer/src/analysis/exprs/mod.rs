@@ -56,6 +56,11 @@ impl<'r> Analyzer<'r> {
                 literal(ResolvedType::USize, CheckedExpr::Sizeof(target_type))
             }
 
+            HirExpr::Alignof(target) => {
+                let target_type = self.resolve_type_or_error(id, span, target, true)?;
+                literal(ResolvedType::USize, CheckedExpr::Alignof(target_type))
+            }
+
             HirExpr::If(HirIf {
                 branches,
                 else_branch,

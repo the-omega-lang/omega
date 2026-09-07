@@ -32,7 +32,7 @@ exposed struct LinkedList<T> {
     exposed is_empty(*self) => bool { self.count == 0 }
 
     exposed push_back(*mut self, value: T) => void {
-        new_node := <*mut Node<T>>alloc(sizeof<Node<T>>);
+        new_node := <*mut Node<T>>alloc(sizeof<Node<T>>, alignof<Node<T>>);
         old_tail := self.tail;
         *new_node = Node<T> { value = value; prev = old_tail; next = <*mut Node<T>>0; };
         if old_tail == <*mut Node<T>>0 {
@@ -45,7 +45,7 @@ exposed struct LinkedList<T> {
     }
 
     exposed push_front(*mut self, value: T) => void {
-        new_node := <*mut Node<T>>alloc(sizeof<Node<T>>);
+        new_node := <*mut Node<T>>alloc(sizeof<Node<T>>, alignof<Node<T>>);
         old_head := self.head;
         *new_node = Node<T> { value = value; prev = <*mut Node<T>>0; next = old_head; };
         if old_head == <*mut Node<T>>0 {

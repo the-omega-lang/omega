@@ -11,9 +11,24 @@ import std::io::Stdin;
 import std::list::List;
 import std::string::String;
 import std::atomic::AtomicU32;
+import std::alloc::alloc;
+import std::alloc::free;
 import core::atomic::AtomicLoadOrdering;
 import core::atomic::AtomicStoreOrdering;
 import core::atomic::AtomicRmwOrdering;
+
+# Neither declaration asks for alignment, so the wrapper's own
+# `@layout(align)` is the only thing keeping `counter` naturally aligned once
+# it is nested this deep and reached through the heap.
+struct Slot {
+	exposed pad: u8;
+	exposed counter: AtomicU32;
+}
+
+struct Outer {
+	exposed lead: u8;
+	exposed slot: Slot;
+}
 
 main() => void {
 	println$("smoke-stdout: platform console reached");
@@ -43,6 +58,13 @@ main() => void {
 	loaded := counter.load(AtomicLoadOrdering::SeqConsistent);
 	previous := counter.fetch_add(5u32, AtomicRmwOrdering::SeqConsistent);
 	println$("smoke-atomic: ", loaded, " ", previous, " ", counter.load(AtomicLoadOrdering::SeqConsistent));
+
+	block := <*mut Outer>alloc(sizeof<Outer>, alignof<Outer>);
+	*block = Outer { lead = 1u8; slot = Slot { pad = 2u8; counter = AtomicU32::new(3u32); }; };
+	aligned := <usize>&(*block).slot.counter % sizeof<u32> == 0;
+	(*block).slot.counter.fetch_add(4u32, AtomicRmwOrdering::SeqConsistent);
+	println$("smoke-aligned: ", aligned, " ", (*block).slot.counter.load(AtomicLoadOrdering::SeqConsistent));
+	free(<*u8>block);
 
 	eprintln$("smoke-stderr: reached");
 }

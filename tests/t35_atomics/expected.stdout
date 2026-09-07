@@ -1,3 +1,4 @@
+raw-slot-aligned: true
 raw-load: 7
 raw-exchange: 7
 raw-after-exchange: 9
@@ -60,3 +61,16 @@ i64-fetch-min: -8
 i64-fetch-or: -100
 i64-compare-exchange-failure: err -97
 i64-final: -97
+nested-local-aligned: true
+nested-local-fetch-add: 5
+nested-local-load: 9
+nested-local-neighbours: 1 2 3
+nested-global-aligned: true
+nested-global-exchange: 30
+nested-global-load: 31
+nested-array-aligned: true
+nested-array-fetch-max: 20
+nested-array-loads: 0 10 25
+nested-heap-aligned: true
+nested-heap-fetch-sub: 50
+nested-heap-load: 42

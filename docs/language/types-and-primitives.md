@@ -186,4 +186,6 @@ Fixed arrays store elements inline. Struct fields are laid out in declaration or
 
 Structs and enums are packed by default: the current default introduces no natural-alignment padding. `@layout(pack = n, align = n)` can request explicit packing/alignment behavior on supported declarations. This packed-default model has target-safety caveats tracked in [`../issues/design-debt.md`](../issues/design-debt.md).
 
-`sizeof<Type>` evaluates the size, in bytes, of the specified type according to this layout model. See [`annotations-and-sizeof.md`](annotations-and-sizeof.md).
+Explicit alignment is an address requirement rather than only a field-placement one, and it propagates outward through inline containment: a struct, union, enum, or fixed array that stores an aligned type inline acquires at least that alignment, and its own size rounds up to it so that an array element stride keeps every element aligned. Alignment never follows a pointer -- storing a `*T` imposes nothing from `T`. Every address the compiler creates for a value satisfies its type's alignment; a raw pointer cast does not realign memory. The full rules are in [`annotations-and-sizeof.md`](annotations-and-sizeof.md).
+
+`sizeof<Type>` evaluates the size, in bytes, of the specified type according to this layout model, and `alignof<Type>` evaluates its effective alignment. See [`annotations-and-sizeof.md`](annotations-and-sizeof.md).

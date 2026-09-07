@@ -515,7 +515,8 @@ primary = literal
         | if-expression
         | match-expression
         | macro-invocation
-        | "sizeof", "<", type, ">" ;
+        | "sizeof", "<", type, ">"
+        | "alignof", "<", type, ">" ;
 
 array-literal = "[", [ expression, { ",", expression } ], "]" ;
 struct-literal = expression-path, "{", { field-initializer }, "}" ;

@@ -138,13 +138,16 @@ Observed type spellings:
 
 See [`../language/types-and-primitives.md`](../language/types-and-primitives.md) and [`../language/strings-casts-arrays-and-slices.md`](../language/strings-casts-arrays-and-slices.md).
 
-## Casts and `sizeof`
+## Casts, `sizeof`, and `alignof`
 
 ```omega
 wide := <u64>small;
 ptr := <*[]u8>raw;
 bytes := sizeof<usize>;
+boundary := alignof<MyStruct>;
 ```
+
+`alignof<T>` is Omega's effective alignment, not a target's natural one: `alignof<u64>` is `1` because primitives are packed by default. It rises only where `@layout(align = n)` asks for it, and it propagates outward through inline containment.
 
 ## Structs
 
@@ -475,6 +478,8 @@ struct Header {
     ...
 }
 ```
+
+`align` is an address guarantee. A type containing `Header` inline inherits its alignment even without an annotation of its own, and `sizeof<Header>` rounds up to it.
 
 Other supported annotations are normative in [`../language/annotations-and-sizeof.md`](../language/annotations-and-sizeof.md).
 

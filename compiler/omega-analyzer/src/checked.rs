@@ -349,6 +349,7 @@ pub enum CheckedExpr {
     Match(CheckedMatch),
     Cast(CheckedCast),
     Sizeof(ResolvedType),
+    Alignof(ResolvedType),
     UnionConstruct(CheckedUnionConstruct),
     Const(ConstValue),
     SpecCoerce(CheckedSpecCoerce),

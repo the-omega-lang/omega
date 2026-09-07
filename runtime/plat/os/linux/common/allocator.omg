@@ -10,8 +10,10 @@
 import root::os::syscall;
 
 # 16 bytes, not `sizeof<usize>`: a mapping starts page-aligned, so a 16-byte
-# header leaves the returned block aligned for every Omega value on these
-# targets rather than only for a pointer.
+# header keeps the returned block 16-byte aligned. That is a property of this
+# raw byte allocator, not a promise covering every Omega value -- a stronger
+# `@layout(align)` is satisfied by `std::alloc`, which over-allocates here and
+# rounds the address up itself.
 comp HEADER := 16usize;
 
 length_of(block: *u8) => *mut usize {

@@ -1,0 +1,177 @@
+# `std::alloc` is the standard allocation family: it turns the raw byte
+# allocator into allocation with an explicit alignment, so a heap-backed
+# value of a type carrying `@layout(align)` gets an address that satisfies
+# it. Specification: docs/guide/standard-library.md (pairing and cost) and
+# docs/language/annotations-and-sizeof.md (what the alignment means).
+import std::io::println;
+import std::alloc::alloc;
+import std::alloc::free;
+import std::alloc::realloc;
+import std::list::List;
+import std::linked_list::LinkedList;
+import std::hash_map::HashMap;
+import std::hash::Hash;
+import core::cmp::Eq;
+
+@layout(align = 64)
+struct Cell {
+	exposed value: i64;
+}
+
+@layout(align = 64)
+struct Key {
+	exposed id: i64;
+}
+
+# `HashMap` compares a stored key through `*self`, so this conformance sees
+# the entry's own address -- the only way a program can observe where the
+# map put it.
+mut probed_entry: usize = 0;
+
+meet Eq for Key {
+	equals(*self, other: Self) => bool {
+		probed_entry = <usize>self;
+		self.id == other.id
+	}
+}
+
+meet Hash for Key {
+	hash(*self) => u64 { <u64>self.id }
+}
+
+# A stand-in for `LinkedList`'s hidden `Node<T>`: same fields in the same
+# order, so `sizeof`/`alignof` are what the list itself requests.
+@suppress(unused_field, dead_code)
+struct NodeShape {
+	exposed value: Cell;
+	exposed prev: *mut u8;
+	exposed next: *mut u8;
+}
+
+usize_max() => usize { <usize>0 - 1usize }
+
+fill(ptr: *mut u8, count: usize, base: u8) => void {
+	mut i: usize = 0;
+	while i < count {
+		*<*mut u8>(<usize>ptr + i) = base + <u8>i;
+		i += 1;
+	}
+}
+
+holds(ptr: *u8, count: usize, base: u8) => bool {
+	mut i: usize = 0;
+	mut ok := true;
+	while i < count {
+		if *<*u8>(<usize>ptr + i) != base + <u8>i { ok = false; }
+		i += 1;
+	}
+	ok
+}
+
+check_alignment(label: *str, align: usize) => void {
+	block := alloc(48, align);
+	if <usize>block == 0 {
+		println$(label, ": allocation failed");
+	} else {
+		fill(block, 48, 1u8);
+		println$(label, ": aligned=", <usize>block % align == 0,
+			" intact=", holds(block, 48, 1u8));
+		free(block);
+	}
+}
+
+powers_of_two() => void {
+	check_alignment("align-1", 1);
+	check_alignment("align-8", 8);
+	check_alignment("align-16", 16);
+	check_alignment("align-64", 64);
+	check_alignment("align-256", 256);
+	# Larger than any page these targets use.
+	check_alignment("align-8192", 8192);
+}
+
+edge_cases() => void {
+	empty := alloc(0, 64);
+	println$("zero-size: nonnull=", <usize>empty != 0, " aligned=", <usize>empty % 64 == 0);
+	free(empty);
+
+	# Freeing null is defined and does nothing.
+	free(<*u8>0);
+	println$("free-null: ok");
+
+	println$("align-zero: ", <usize>alloc(16, 0) == 0);
+	println$("align-not-power-of-two: ", <usize>alloc(16, 3) == 0);
+	println$("size-overflow: ", <usize>alloc(usize_max(), 64) == 0);
+}
+
+reallocation() => void {
+	fresh := realloc(<*u8>0, 32, 128);
+	println$("realloc-null-allocates: nonnull=", <usize>fresh != 0,
+		" aligned=", <usize>fresh % 128 == 0);
+	fill(fresh, 32, 10u8);
+
+	grown := realloc(fresh, 96, 128);
+	println$("realloc-grow: aligned=", <usize>grown % 128 == 0,
+		" kept=", holds(grown, 32, 10u8));
+
+	# A request may legitimately change the alignment.
+	moved := realloc(grown, 96, 512);
+	println$("realloc-realigns: aligned=", <usize>moved % 512 == 0,
+		" kept=", holds(moved, 32, 10u8));
+
+	shrunk := realloc(moved, 8, 64);
+	println$("realloc-shrink: aligned=", <usize>shrunk % 64 == 0,
+		" kept=", holds(shrunk, 8, 10u8));
+
+	# A failed reallocation returns null and leaves the old block alone.
+	failed := realloc(shrunk, usize_max(), 64);
+	println$("realloc-failure: null=", <usize>failed == 0,
+		" old-intact=", holds(shrunk, 8, 10u8));
+	free(shrunk);
+}
+
+collections() => void {
+	mut cells := List<Cell>::new();
+	defer cells.free();
+
+	mut i: i64 = 0;
+	mut all_aligned := true;
+	# Well past the initial capacity of 4, so growth reallocates repeatedly.
+	while i < 20 {
+		cells.push(Cell { value = i; });
+		view := cells.as_slice();
+		if <usize>&view[0] % 64 != 0 { all_aligned = false; }
+		i += 1;
+	}
+	last := cells.as_slice();
+	println$("list-growth: aligned=", all_aligned, " len=", cells.len(),
+		" first=", last[0].value, " last=", last[19].value,
+		" element-stride=", sizeof<Cell>);
+
+	mut nodes := LinkedList<Cell>::new();
+	defer nodes.free();
+	nodes.push_back(Cell { value = 100i64; });
+	nodes.push_front(Cell { value = 200i64; });
+	node_block := alloc(sizeof<NodeShape>, alignof<NodeShape>);
+	println$("linked-list: len=", nodes.len(), " node-align=", alignof<NodeShape>,
+		" node-aligned=", <usize>node_block % alignof<NodeShape> == 0);
+	free(node_block);
+
+	mut map := HashMap<Key, i64>::new();
+	defer map.free();
+	map.insert(Key { id = 1i64; }, 11i64);
+	map.insert(Key { id = 2i64; }, 22i64);
+	found := map.get(Key { id = 2i64; });
+	match found {
+		Option::Some => println$("hash-entry: value=", found.value,
+			" entry-aligned=", probed_entry % 64 == 0),
+		Option::None => println$("hash-entry: missing"),
+	}
+}
+
+main() => void {
+	powers_of_two();
+	edge_cases();
+	reallocation();
+	collections();
+}

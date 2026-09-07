@@ -1,19 +1,110 @@
-# `std::alloc` -- a thin, deliberately non-generic wrapper around
-# `core::platform::GlobalAllocator`, used by every generic collection here
-# instead of calling the gap directly. Originally a workaround for a
-# codegen bug (now fixed, see docs/architecture/module-driver-and-linkage.md); kept because
+# `std::alloc` -- the standard allocation family, and the only one every
+# generic collection here calls. `core::platform::GlobalAllocator` stays a
+# raw byte-allocation capability; this module adapts it into allocation with
+# an explicit alignment, portably and without a second platform gap.
+#
+# Deliberately non-generic. Originally a workaround for a codegen bug (now
+# fixed, see docs/architecture/module-driver-and-linkage.md); kept because
 # calling the gap directly from each generic method empirically made gap
 # reachability worse, not better (more distinct symbol references baked
 # into `std.o`). Do not inline this back into the generic methods.
+#
+# Every address these functions return must be paired with this module's
+# own `free`; a raw `GlobalAllocator::alloc` result must not be. The cost
+# and pairing contract is documented in docs/guide/standard-library.md.
 
-shared alloc(size: usize) => *mut u8 {
-    GlobalAllocator::alloc(size)
+# Stored immediately before the address handed back, so `free`/`realloc` can
+# recover the raw block and the caller's requested size. Its own fields are
+# ordinary packed `usize`s: the header sits at whatever address the caller's
+# alignment leaves it at, and nothing here may claim more.
+struct Header {
+    shared raw: usize;
+    shared size: usize;
 }
 
-shared free(ptr: *u8) => void {
-    GlobalAllocator::free(ptr);
+header_of(ptr: *u8) => *mut Header {
+    <*mut Header>(<usize>ptr - sizeof<Header>)
 }
 
-shared realloc(ptr: *u8, size: usize) => *mut u8 {
-    GlobalAllocator::realloc(ptr, size)
+is_power_of_two(value: usize) => bool {
+    value != 0 && (value & (value - 1)) == 0
+}
+
+# `offset` rounded up to a multiple of `align`, without ever forming the
+# intermediate `offset + align - 1`. The sum below is bounded by the end of
+# the raw block its only caller just allocated, so it cannot wrap even at the
+# top of the address space.
+round_up(offset: usize, align: usize) => usize {
+    remainder := offset % align;
+    if remainder == 0 { offset } else { offset + (align - remainder) }
+}
+
+# Allocates at least `size` bytes at an address that is a multiple of
+# `align`, or returns null. `align` must be a nonzero power of two.
+#
+# A zero-size request still yields a distinct, aligned, freeable address.
+# Overhead is one header plus up to `align - 1` bytes of slack.
+exposed alloc(size: usize, align: usize) => *mut u8 {
+    if !is_power_of_two(align) {
+        return <*mut u8>0;
+    }
+
+    payload := if size == 0 { 1usize } else { size };
+    slack := sizeof<Header> + (align - 1);
+    if slack < sizeof<Header> {
+        return <*mut u8>0;
+    }
+    total := slack + payload;
+    if total < slack {
+        return <*mut u8>0;
+    }
+
+    raw := GlobalAllocator::alloc(total);
+    if <usize>raw == 0 {
+        return <*mut u8>0;
+    }
+
+    address := round_up(<usize>raw + sizeof<Header>, align);
+    header := <*mut Header>(address - sizeof<Header>);
+    (*header).raw = <usize>raw;
+    (*header).size = size;
+    <*mut u8>address
+}
+
+# Frees an address obtained from this module's `alloc`/`realloc`. Freeing
+# null is a no-op.
+exposed free(ptr: *u8) => void {
+    if <usize>ptr != 0 {
+        GlobalAllocator::free(<*u8>(*header_of(ptr)).raw);
+    }
+}
+
+# Moves `ptr`'s contents into a new block of `size` bytes aligned to
+# `align`, and frees the old block. Always allocate-copy-free: the raw gap
+# cannot resize around the header and slack this module added, and a
+# request may legitimately change alignment.
+#
+# On failure the old block is left allocated and untouched. Relocating
+# storage another thread is accessing remains the caller's error --
+# alignment does not make moving a live atomic safe.
+exposed realloc(ptr: *u8, size: usize, align: usize) => *mut u8 {
+    if <usize>ptr == 0 {
+        return alloc(size, align);
+    }
+
+    fresh := alloc(size, align);
+    if <usize>fresh == 0 {
+        return <*mut u8>0;
+    }
+
+    old_size := (*header_of(ptr)).size;
+    copied := if old_size < size { old_size } else { size };
+    mut i : usize = 0;
+    while i < copied {
+        *<*mut u8>(<usize>fresh + i) = *<*u8>(<usize>ptr + i);
+        i += 1;
+    }
+
+    free(ptr);
+    fresh
 }

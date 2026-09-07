@@ -106,7 +106,8 @@ pub(crate) fn collect_expr(expr: &CheckedExprNode, usage: &mut FieldUsage) {
         | CheckedExpr::String(_)
         | CheckedExpr::ByteString(_)
         | CheckedExpr::Const(_)
-        | CheckedExpr::Sizeof(_) => {}
+        | CheckedExpr::Sizeof(_)
+        | CheckedExpr::Alignof(_) => {}
         CheckedExpr::Place(p) => collect_place(p, usage),
         CheckedExpr::FunctionCall(call) => {
             collect_expr(&call.callee, usage);

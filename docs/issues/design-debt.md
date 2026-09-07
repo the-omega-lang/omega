@@ -35,9 +35,12 @@ categorically weaker with no warning that anything changed.
 ### Packed-by-default layout has no per-target safety argument
 
 Struct and enum layout defaults to `pack = 1, align = 1`, and `type_alignment`
-(`compiler/omega-analyzer/src/layout.rs`) reports `1` for everything that is not
-a struct or enum carrying a declared `@layout(align)` — primitives included. The
-justification this default was originally written under ("x86_64 tolerates
+(`compiler/omega-analyzer/src/layout.rs`) reports `1` for every type that neither
+declares `@layout(align)` nor contains something that does — primitives
+included. The escape hatch itself is sound: an explicit alignment now propagates
+outward through inline containment and is a real address guarantee. What is
+unjustified is the *default*. The justification it was originally written under
+("x86_64 tolerates
 unaligned loads/stores with no correctness issue, so packed is safe as a
 default") is no longer in the source, but nothing has replaced it, and `Arch`
 now names eight architectures rather than the one that argument was true of.
@@ -51,9 +54,7 @@ contract now ([`atomics.md`](../language/atomics.md)), settled per-feature
 rather than by the layout default. What stays open is the default itself —
 whether "packed unless annotated" is the right whole-language choice on targets
 where unaligned ordinary access is not free or not permitted — and that nothing
-re-derives or gates it per-target. The concrete defect in the escape hatch,
-that `@layout(align)` is not yet an address guarantee, is tracked in
-[`known-issues.md`](known-issues.md).
+re-derives or gates it per-target.
 
 ### Overloading is a second, parallel item pipeline that exists only because the query key can't name a candidate
 

@@ -107,7 +107,7 @@ impl AnalysisWarning {
                 .with_label(self.span, "this is already the default here")
                 .with_help("remove the explicit 'hidden' -- it changes nothing"),
             AnalysisWarningKind::LargeStructByValue { r#type, size } => d
-                .with_label(self.span, format!("`{type}` is at least {size} bytes, passed by value"))
+                .with_label(self.span, format!("`{type}` is {size} bytes, passed by value"))
                 .with_note("this backend passes structs as flattened scalars, not by reference -- consider a pointer instead"),
             AnalysisWarningKind::UnfilledGap { functions, .. } => d
                 .with_label(self.span, "no glue implements this gap anywhere in this compilation")

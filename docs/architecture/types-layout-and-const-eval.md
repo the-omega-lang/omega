@@ -87,7 +87,7 @@ It provides:
 - scalar/aggregate flattening to abstract `Leaf`s;
 - field byte offsets and positional leaf starts;
 - total byte size;
-- alignment;
+- effective alignment;
 - struct field placement/packing;
 - enum prefix/payload layout;
 - union storage size;
@@ -95,6 +95,10 @@ It provides:
 - stack alignment requirements.
 
 Codegen may map a `Leaf` to its native scalar type, but it must not invent different aggregate offsets.
+
+`type_alignment` returns a type's **effective** alignment: the maximum of its own declared `@layout(align)` and the alignment of everything stored inline in it (struct/enum/union members, fixed-array elements). Recursion follows inline containment only -- a pointer, slice, or spec-object handle stays at 1 and its pointee is never queried, which is also what stops the query from recursing forever through a recursive nominal type. Storage size rounds up to this alignment, which is what makes `sizeof<T>` a safe array stride.
+
+Every compiler-created address of a value must satisfy its type's effective alignment: locals and the local frame's base, globals, parameter homes, every spill or scratch slot, hidden result destinations, constant materializations, and slice backing data. Where a fixed floor already exists for stack slots (`stack_align_shift`), it is a floor, not a cap.
 
 ## Abstract leaves
 
@@ -112,6 +116,8 @@ packed_end     byte end before whole-sequence trailing alignment
 When explicit layout padding exists, leaf-list position and byte offset are not safely derivable from one another, so both are computed together.
 
 ## Struct layout
+
+`struct_layout` is the one description of a struct's storage: field byte offsets, per-field leaf starts, and the complete leaf sequence *including interior and trailing padding*. Flattening and value construction both read it, so a struct's whole-value shape and its field offsets cannot disagree. A value built by concatenating only the fields' leaves would place them wrongly the moment an aligned member forces padding.
 
 For a struct, field types are passed through `layout_fields` using the resolved `@layout(pack = ...)` value. The algorithm applies:
 
@@ -160,7 +166,7 @@ Implicit enum tags are checked against the resolved tag type's integer domain be
 
 ## Union layout
 
-A union's byte storage is the maximum of its fields. Flattened payload chunks cover that storage so unions can pass through the same leaf machinery while field access itself remains a reinterpretation of the shared memory region.
+A union takes the maximum alignment of its fields, without any `@layout` syntax of its own, and its byte storage is the maximum of its fields rounded up to that alignment. Flattened payload chunks cover that storage so unions can pass through the same leaf machinery while field access itself remains a reinterpretation of the shared memory region.
 
 ## ABI vs layout
 
@@ -204,8 +210,8 @@ Codegen owns conversion of `ConstValue` into native LLVM values/memory/data obje
 
 - scalar constants become ordinary LLVM constants;
 - aggregate constants follow the same shared field/leaf/byte layout as runtime-built values;
-- addressable byte blobs are emitted as anonymous data;
-- repeated content-addressed const blobs may be deduplicated within a compilation unit;
+- addressable byte blobs are emitted as anonymous data, at the alignment their type requires;
+- repeated content-addressed const blobs may be deduplicated within a compilation unit. Because these are weak definitions merged across separately compiled objects, the content hash also covers the materialization's type identity, size, alignment and element count, so two units that disagree about a constant's storage contract cannot collide on one symbol;
 - codegen does not re-run compile-time semantic evaluation.
 
 ## Representation changes checklist
@@ -228,7 +234,7 @@ Do not patch codegen's offset arithmetic as the primary implementation of a new 
 
 A few analyzer-side representation details are intentionally shared by layout, constant evaluation, and later lowering:
 
-- Aggregate flattening includes real padding/filler leaves where required; byte offsets and flattened positional representation must stay consistent.
+- Aggregate flattening includes real padding/filler leaves where required; byte offsets and flattened positional representation must stay consistent. Padding is emitted as zero filler for determinism; padding-byte values are not a language promise.
 - Enum values retain full enum layout even when semantic analysis knows a specific variant. The representation is tag + header/shared fields + payload storage large/aligned enough for every variant body, which is what makes refinement-to-plain widening representation-preserving.
 - Compile-time projected assignment has no backing memory. It rebuilds the containing `ConstValue` tree and writes the rebuilt root back to its binding.
 - Dynamic-dispatch/vtable values are runtime constructs and have no compile-time `ConstValue` representation. If analysis proves a checked tree exhaustive but the interpreter later reaches "no matching arm," treat that as an analyzer/interpreter invariant violation rather than ordinary user input.

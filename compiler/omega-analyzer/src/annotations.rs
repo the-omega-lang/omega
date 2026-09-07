@@ -1,7 +1,6 @@
 use crate::analysis::Analyzer;
 use crate::error::AnalysisErrorKind;
 use crate::error::AnalysisWarningKind;
-use crate::resolved_type::ResolvedType;
 use omega_hir::{HirAnnotation, HirAnnotationArg, HirAnnotationValue, HirId};
 use omega_parser::prelude::{Ident, Span};
 use std::fmt;
@@ -369,7 +368,27 @@ fn resolve_layout(analyzer: &mut Analyzer, node_id: HirId, annotation: &HirAnnot
         };
         match key.as_ref() {
             "pack" => layout.pack = value,
-            "align" => layout.align = value,
+            "align" => {
+                // An alignment is an address requirement, so `alignof` and
+                // every rounding step must be able to hold it in the
+                // target's `usize`. A 16-bit target therefore caps it well
+                // below the u32 the annotation grammar accepts.
+                let pointer_bytes = analyzer.pointer_bytes();
+                if !fits_target_usize(value, pointer_bytes) {
+                    analyzer.error(
+                        node_id,
+                        annotation.span,
+                        AnalysisErrorKind::InvalidAnnotationArgs {
+                            name: annotation.name.clone(),
+                            reason: format!(
+                                "'align' must fit this target's usize ({pointer_bytes} bytes), found {value}"
+                            ),
+                        },
+                    );
+                    continue;
+                }
+                layout.align = value;
+            }
             _ => unreachable!("checked above"),
         }
     }
@@ -383,6 +402,10 @@ fn resolve_layout(analyzer: &mut Analyzer, node_id: HirId, annotation: &HirAnnot
     }
 
     layout
+}
+
+fn fits_target_usize(value: u32, pointer_bytes: u32) -> bool {
+    pointer_bytes >= 4 || u64::from(value) < (1u64 << (pointer_bytes * 8))
 }
 
 fn resolve_size_value(
@@ -441,53 +464,6 @@ fn resolve_mangling(annotation: &HirAnnotation) -> Result<ManglingMode, String> 
 }
 
 pub const LARGE_STRUCT_BY_VALUE_THRESHOLD: u32 = 128;
-
-pub fn estimate_type_size(r#type: &ResolvedType, pointer_bytes: u32) -> u32 {
-    if let Some(n) = r#type.primitive_byte_size(pointer_bytes) {
-        return n;
-    }
-    match r#type {
-        ResolvedType::Struct(cell) => cell
-            .borrow()
-            .fields
-            .iter()
-            .map(|field| estimate_type_size(&field.r#type, pointer_bytes))
-            .sum(),
-        ResolvedType::Union(cell) => cell
-            .borrow()
-            .fields
-            .iter()
-            .map(|field| estimate_type_size(&field.r#type, pointer_bytes))
-            .max()
-            .unwrap_or(0),
-        ResolvedType::Enum { .. } | ResolvedType::AnonymousEnum { .. } => {
-            let view = crate::layout::EnumView::of(r#type).expect("just matched an enum-like type");
-            let tag = estimate_type_size(&view.tag_type, pointer_bytes);
-            let prefix: u32 = view
-                .header
-                .iter()
-                .chain(&view.dynamic_fields)
-                .map(|field| estimate_type_size(field, pointer_bytes))
-                .sum();
-            let body = view
-                .variants
-                .iter()
-                .map(|variant| {
-                    variant
-                        .fields
-                        .iter()
-                        .map(|field| estimate_type_size(field, pointer_bytes))
-                        .sum::<u32>()
-                })
-                .max()
-                .unwrap_or(0);
-            tag + prefix + body
-        }
-        ResolvedType::SizedArray(item, size) => estimate_type_size(item, pointer_bytes) * size,
-        ResolvedType::Slice { .. } | ResolvedType::Str { .. } => 12,
-        _ => 0,
-    }
-}
 
 #[cfg(test)]
 mod tests;

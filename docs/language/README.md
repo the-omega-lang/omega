@@ -43,7 +43,7 @@ The word `spec` in Omega source means the interface-like language construct. “
 17. [`iteration-and-ranges.md`](iteration-and-ranges.md) — ranges and `for .. in` iteration protocol.
 18. [`strings-casts-arrays-and-slices.md`](strings-casts-arrays-and-slices.md) — string/byte-string semantics, casts, fixed arrays and slices.
 19. [`compile-time-evaluation.md`](compile-time-evaluation.md) — `comp` bindings/expressions and compile-time evaluator semantics.
-20. [`annotations-and-sizeof.md`](annotations-and-sizeof.md) — annotations and `sizeof<Type>`.
+20. [`annotations-and-sizeof.md`](annotations-and-sizeof.md) — annotations, `sizeof<Type>`, and `alignof<Type>`.
 21. [`macros.md`](macros.md) — declarative token macros, parameters, repetition, hygiene and visibility.
 22. [`atomics.md`](atomics.md) — atomic locations, modification order, ordering categories, and the platform obligation behind them.
 

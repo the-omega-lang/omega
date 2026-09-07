@@ -43,6 +43,8 @@ Pointer/integer casts use the target pointer width. A cast to a mutable pointer 
 
 Pointer-to-pointer casts are explicit reinterpretations. Pointee types need not be identical.
 
+A cast reinterprets an address; it never moves, copies, or realigns storage. Before a typed access through the result, the caller is responsible for supplying enough valid storage, aligned for the type actually being accessed -- see the effective-alignment rules in [`annotations-and-sizeof.md`](annotations-and-sizeof.md). Casting a `*u8` to a `*T` whose `alignof<T>` exceeds the address's alignment is a program error, not something the access repairs.
+
 ### Discarding a value with `<void>`
 
 `<void>expression` is the explicit discard form. It accepts any operand, evaluates it exactly once, keeps its side effects, and produces no value:

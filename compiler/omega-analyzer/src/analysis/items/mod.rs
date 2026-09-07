@@ -552,8 +552,7 @@ impl<'r> Analyzer<'r> {
                     | ResolvedType::Enum { .. }
                     | ResolvedType::AnonymousEnum { .. }
             ) {
-                let size =
-                    crate::annotations::estimate_type_size(r#type, self.target.pointer_bytes());
+                let size = crate::layout::total_bytes(r#type, self.target.pointer_bytes());
                 if size > crate::annotations::LARGE_STRUCT_BY_VALUE_THRESHOLD {
                     self.warn(
                         p.id,

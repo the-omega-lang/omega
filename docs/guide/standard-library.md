@@ -9,7 +9,7 @@ import every name they use.
 
 ```
 runtime/std/
-  alloc.omg       # non-generic allocator wrappers
+  alloc.omg       # non-generic aligned allocation over the raw byte gap
   atomic.omg      # fixed-width atomic types over core::atomic
   default.omg     # Default
   fmt.omg         # Display and formatting helpers
@@ -115,9 +115,47 @@ defer values.free();
   removal, iteration, and explicit-free operations.
 
 The generic collections route heap operations through the non-generic
-`std::alloc` wrappers. A program that constructs one needs a
+`std::alloc` functions, passing the alignment of the type they actually
+allocate: `T` for `List<T>`, the node for `LinkedList<T>`, and the entry or
+bucket element for `HashMap`. A program that constructs one needs a
 `GlobalAllocator` glue implementation, but merely linking `std`'s objects does
 not.
+
+## Aligned allocation
+
+`std::alloc` is the standard allocation family, and the only one the
+collections use:
+
+```omega
+alloc(size: usize, align: usize) => *mut u8
+realloc(ptr: *u8, size: usize, align: usize) => *mut u8
+free(ptr: *u8) => void
+```
+
+`align` must be a nonzero power of two; the returned address is a multiple of
+it, so heap storage can satisfy a type's `@layout(align)` requirement. Pass
+`alignof<T>` rather than a guess.
+
+- Invalid alignment, arithmetic overflow, and a failed underlying allocation
+  all return null. There is no diagnostic for a runtime allocation failure;
+  null is the API result.
+- A zero-size request still returns a distinct, aligned, freeable address.
+- `free(null)` does nothing.
+- `realloc(null, size, align)` allocates. Otherwise it allocates the
+  replacement, copies `min(old requested size, size)` bytes, and frees the old
+  block, so a successful request may change the alignment and always moves the
+  storage. On failure it returns null and leaves the old block untouched.
+  Moving storage another execution context is accessing concurrently remains
+  the caller's error: alignment does not make relocating a live atomic safe.
+
+**Pairing.** These results must be freed with `std::alloc::free`, and a raw
+`core::platform::GlobalAllocator::alloc` result must be freed with
+`GlobalAllocator::free`. The two families are not interchangeable.
+
+**Cost.** The adapter over-allocates: each block carries a small private
+header immediately before the returned address plus up to `align - 1` bytes of
+slack. Reallocation is always allocate-copy-free rather than an in-place
+resize.
 
 ## Formatting and I/O
 

@@ -59,7 +59,8 @@ fn collect_expr(expr: &CheckedExprNode, out: &mut Vec<(HirId, Span)>) {
         | CheckedExpr::String(_)
         | CheckedExpr::ByteString(_)
         | CheckedExpr::Const(_)
-        | CheckedExpr::Sizeof(_) => {}
+        | CheckedExpr::Sizeof(_)
+        | CheckedExpr::Alignof(_) => {}
         CheckedExpr::Place(place) => collect_place(place, out),
         CheckedExpr::FunctionCall(call) => {
             collect_expr(&call.callee, out);

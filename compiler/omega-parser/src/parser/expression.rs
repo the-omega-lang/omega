@@ -1,10 +1,10 @@
 use crate::ast::expression::{
-    AddressOfExpr, ArrayLiteralExpr, AssignmentExpr, BinaryOp, BinaryOpExpr, BitNotExpr, BoolExpr,
-    ByteStringExpr, CastExpr, CharExpr, CodeblockExpr, CompExpr, CompoundAssignExpr, DecrementExpr,
-    DerefExpr, Expression, ExpressionNode, FieldAccessExpr, FunctionCallExpr, IfExpr,
-    IncrementExpr, IndexExpr, LogicalExpr, LogicalOp, MatchArm, MatchExpr, NegateExpr, NotExpr,
-    Pattern, PatternValue, RevealExpr, SizeofExpr, SliceExpr, StringExpr, StructLiteralExpr,
-    StructLiteralField, TryExpr,
+    AddressOfExpr, AlignofExpr, ArrayLiteralExpr, AssignmentExpr, BinaryOp, BinaryOpExpr,
+    BitNotExpr, BoolExpr, ByteStringExpr, CastExpr, CharExpr, CodeblockExpr, CompExpr,
+    CompoundAssignExpr, DecrementExpr, DerefExpr, Expression, ExpressionNode, FieldAccessExpr,
+    FunctionCallExpr, IfExpr, IncrementExpr, IndexExpr, LogicalExpr, LogicalOp, MatchArm,
+    MatchExpr, NegateExpr, NotExpr, Pattern, PatternValue, RevealExpr, SizeofExpr, SliceExpr,
+    StringExpr, StructLiteralExpr, StructLiteralField, TryExpr,
 };
 use crate::ast::identifier::Origin;
 use crate::ast::range::{RangeEnd, RangeExpr};
@@ -653,6 +653,22 @@ fn parse_primary(p: &mut Parser) -> Option<ExpressionNode> {
             let span = start.to(close_span);
             Some(ExpressionNode {
                 expression: Expression::Sizeof(Box::new(SizeofExpr { r#type })),
+                span,
+                origin,
+            })
+        }
+        // `alignof` commits on the same contextual rule as `sizeof`.
+        TokenKind::Ident(name)
+            if name == contextual::ALIGNOF && matches!(p.peek_at(1), TokenKind::Lt) =>
+        {
+            p.advance(); // 'alignof'
+            p.advance(); // '<'
+            let r#type = crate::parser::r#type::parse_type(p)?;
+            let close_span = p.peek_span();
+            p.expect_close_angle("'>'");
+            let span = start.to(close_span);
+            Some(ExpressionNode {
+                expression: Expression::Alignof(Box::new(AlignofExpr { r#type })),
                 span,
                 origin,
             })

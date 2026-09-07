@@ -50,13 +50,17 @@ every operation plus a lock for the addresses that fail it -- a cost every
 correct program pays to keep an incorrect one working, which is the kind of
 hidden cost this language rejects.
 
-Omega declarations are packed by default (see
+Omega primitives are packed by default (see
 [`annotations-and-sizeof.md`](annotations-and-sizeof.md)), so an atomic
-location is aligned because a program said so, not by inheritance:
-`@layout(align = sizeof<T>)` on the type owning the location is how the
-requirement is met. The `std::atomic` wrappers carry that annotation, so code
-using them states nothing further; code calling a width gap on storage of its
-own is responsible for that storage's alignment.
+location is aligned because a program said so: `@layout(align = sizeof<T>)` on
+the type owning the location is how the requirement is met. That annotation is
+an address guarantee, and it propagates outward through inline containment --
+a container holding such a type inherits its alignment, whatever the container
+itself declares. The `std::atomic` wrappers carry the annotation, so code using
+them states nothing further, including when a wrapper is nested inside other
+declarations, stored in an array, or held in heap storage obtained with the
+wrapper's own `alignof`. Code calling a width gap on storage of its own is
+responsible for that storage's alignment.
 
 Passing a misaligned address is a program error to which this specification
 gives no meaning. What happens then is the platform's business, and the

@@ -63,7 +63,7 @@ Current compile-time evaluation supports the ordinary operations needed by Omega
 - fixed arrays and compile-time slices;
 - struct, union, marker, and enum construction and field access;
 - indexing and supported slicing;
-- `sizeof<Type>`;
+- `sizeof<Type>` and `alignof<Type>`;
 - calls to ordinary named Omega functions, including generic/overloaded/cross-module calls after normal resolution;
 - nested `comp` evaluation;
 - addresses/references to compile-time data where the resulting value can be represented as immutable static data.
@@ -95,6 +95,8 @@ ptr := &DATA;
 ```
 
 This materialization never grants mutability. Taking `&mut` of a `comp` binding or calling a `*mut self` method that would require writable storage is invalid.
+
+A materialization is storage for the value's type, so its address satisfies `alignof<Type>` exactly as any other compiler-created storage does.
 
 Plain field access, indexing, and by-value method calls can use the compile-time value directly and do not require an addressable materialization.
 

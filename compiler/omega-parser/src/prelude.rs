@@ -1,12 +1,13 @@
 pub use crate::SourceModule;
 pub use crate::ast::annotation::{AnnotationArg, AnnotationNode, AnnotationValue};
 pub use crate::ast::expression::{
-    AddressOfExpr, ArrayLiteralExpr, AssignmentExpr, BinaryOp, BinaryOpExpr, BitNotExpr, BoolExpr,
-    ByteStringExpr, CastExpr, CharExpr, CodeblockExpr, CompExpr, CompoundAssignExpr, DecrementExpr,
-    DerefExpr, Expression, ExpressionNode, FieldAccessExpr, FunctionCallExpr, IfExpr,
-    IncrementExpr, IndexExpr, LogicalExpr, LogicalOp, MacroInvocationExpr, MatchArm, MatchExpr,
-    NegateExpr, NotExpr, NumberBase, NumberExpr, Pattern, PatternValue, RevealExpr, SizeofExpr,
-    SliceExpr, StringExpr, StructLiteralExpr, StructLiteralField, TryExpr,
+    AddressOfExpr, AlignofExpr, ArrayLiteralExpr, AssignmentExpr, BinaryOp, BinaryOpExpr,
+    BitNotExpr, BoolExpr, ByteStringExpr, CastExpr, CharExpr, CodeblockExpr, CompExpr,
+    CompoundAssignExpr, DecrementExpr, DerefExpr, Expression, ExpressionNode, FieldAccessExpr,
+    FunctionCallExpr, IfExpr, IncrementExpr, IndexExpr, LogicalExpr, LogicalOp,
+    MacroInvocationExpr, MatchArm, MatchExpr, NegateExpr, NotExpr, NumberBase, NumberExpr, Pattern,
+    PatternValue, RevealExpr, SizeofExpr, SliceExpr, StringExpr, StructLiteralExpr,
+    StructLiteralField, TryExpr,
 };
 pub use crate::ast::generics::{GenericParam, GenericParamKind};
 pub use crate::ast::identifier::{

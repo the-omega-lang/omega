@@ -223,6 +223,58 @@ impl<'ctx> Codegen<'ctx> {
         slot
     }
 
+    /// Builds a struct's complete flattened value from its already-evaluated
+    /// field leaves, filling every interior and trailing padding position
+    /// shared layout describes with a zero byte.
+    ///
+    /// Concatenating only the fields' leaves would place them at the wrong
+    /// positions the moment an aligned member forces padding, and a value
+    /// built that way disagrees with the byte offsets every field access uses.
+    pub(super) fn assemble_struct_leaves(
+        &self,
+        layout: &omega_analyzer::layout::FieldLayout,
+        fields: &[Vec<inkwell::values::BasicValueEnum<'ctx>>],
+    ) -> Vec<inkwell::values::BasicValueEnum<'ctx>> {
+        let filler = self.context.i8_type().const_zero();
+        let mut leaves = vec![filler.into(); layout.leaves.len()];
+        for (start, values) in layout.leaf_starts.iter().zip(fields) {
+            leaves[*start..*start + values.len()].copy_from_slice(values);
+        }
+        leaves
+    }
+
+    /// Zero-fills a scratch slot's complete leaf sequence so that a later
+    /// whole-value load never reads an uninitialized padding or payload byte.
+    pub(super) fn zero_fill_slot(
+        &mut self,
+        slot: inkwell::values::PointerValue<'ctx>,
+        r#type: &ResolvedType,
+    ) {
+        let mut offset = 0u32;
+        for raw_leaf in omega_analyzer::layout::leaves_of(r#type, self.pointer_bytes()) {
+            let zero: inkwell::values::BasicValueEnum =
+                match leaf::llvm_type(self.context, raw_leaf, self.target) {
+                    inkwell::types::BasicTypeEnum::IntType(it) => it.const_zero().into(),
+                    inkwell::types::BasicTypeEnum::FloatType(ft) => ft.const_zero().into(),
+                    inkwell::types::BasicTypeEnum::PointerType(pointer) => {
+                        pointer.const_null().into()
+                    }
+                    _ => unreachable!("a flattened leaf is always a scalar"),
+                };
+            self.store_scalars(&slot, offset, &[zero], 1);
+            offset += raw_leaf.bytes(self.pointer_bytes());
+        }
+    }
+
+    /// The alignment a compiler-created slot for `type` must have. Scratch
+    /// storage keeps the existing stack-slot floor; a stronger declared
+    /// requirement always wins.
+    pub(super) fn slot_alignment(r#type: &ResolvedType) -> u32 {
+        1u32 << omega_analyzer::layout::stack_align_shift(omega_analyzer::layout::type_alignment(
+            r#type,
+        ))
+    }
+
     pub(super) fn ptr_type(&self) -> inkwell::types::PointerType<'ctx> {
         leaf::ptr_type(self.context)
     }

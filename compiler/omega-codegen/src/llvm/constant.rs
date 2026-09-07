@@ -1,6 +1,5 @@
 use super::Codegen;
 use super::enum_view;
-use super::leaf;
 use super::place::PlaceStorage;
 use inkwell::types::BasicTypeEnum;
 use inkwell::values::{BasicValueEnum, GlobalValue};
@@ -57,7 +56,7 @@ impl<'ctx> Codegen<'ctx> {
         elements: &[ConstValue],
         item_type: &ResolvedType,
     ) -> GlobalValue<'ctx> {
-        let mut hash_input = Vec::new();
+        let mut hash_input = self.materialization_key(item_type, elements.len() as u32);
         for element in elements {
             self.hash_const_element(&mut hash_input, element, item_type);
         }
@@ -75,13 +74,13 @@ impl<'ctx> Codegen<'ctx> {
         for (i, element) in elements.iter().enumerate() {
             self.write_const_element(&mut blob, i as u32 * stride, element, item_type);
         }
-        let global = self.declare_blob(&symbol, &blob);
+        let global = self.declare_blob(&symbol, &blob, layout::type_alignment(item_type));
         self.const_blobs.insert(symbol, global);
         global
     }
 
     fn build_const_data(&mut self, value: &ConstValue, r#type: &ResolvedType) -> GlobalValue<'ctx> {
-        let mut hash_input = Vec::new();
+        let mut hash_input = self.materialization_key(r#type, 1);
         self.hash_const_element(&mut hash_input, value, r#type);
         let symbol = omega_mir::mangle::data_symbol(&hash_input);
         if let Some(global) = self.const_blobs.get(&symbol) {
@@ -95,9 +94,26 @@ impl<'ctx> Codegen<'ctx> {
             pointer_bytes: self.pointer_bytes(),
         };
         self.write_const_element(&mut blob, 0, value, r#type);
-        let global = self.declare_blob(&symbol, &blob);
+        let global = self.declare_blob(&symbol, &blob, layout::type_alignment(r#type));
         self.const_blobs.insert(symbol, global);
         global
+    }
+
+    /// Distinguishes constant materializations that happen to share their
+    /// value bytes but not their storage contract.
+    ///
+    /// These globals are weak definitions merged across separately compiled
+    /// objects, so two units that disagree about a constant's type, size, or
+    /// alignment must not be allowed to collide on one symbol.
+    fn materialization_key(&self, r#type: &ResolvedType, count: u32) -> Vec<u8> {
+        let mut key = Vec::new();
+        key.extend_from_slice(omega_analyzer::type_key::structural_key(r#type).as_bytes());
+        key.push(0);
+        key.extend_from_slice(&count.to_le_bytes());
+        key.extend_from_slice(&layout::total_bytes(r#type, self.pointer_bytes()).to_le_bytes());
+        key.extend_from_slice(&layout::type_alignment(r#type).to_le_bytes());
+        key.extend_from_slice(&self.pointer_bytes().to_le_bytes());
+        key
     }
 
     pub(super) fn build_const_blob(
@@ -165,13 +181,18 @@ impl<'ctx> Codegen<'ctx> {
         )
     }
 
-    fn declare_blob(&mut self, symbol: &str, blob: &ConstBlob<'ctx>) -> GlobalValue<'ctx> {
+    fn declare_blob(
+        &mut self,
+        symbol: &str,
+        blob: &ConstBlob<'ctx>,
+        align: u32,
+    ) -> GlobalValue<'ctx> {
         let (ty, init) = self.materialize_blob(blob);
         let global = self.module.add_global(ty, None, symbol);
         global.set_linkage(inkwell::module::Linkage::WeakODR);
         global.set_constant(true);
         global.set_initializer(&init);
-        global.set_alignment(1);
+        global.set_alignment(align);
         if self.target.os != omega_analyzer::Os::MacOs {
             global.set_section(Some(&format!(".rodata.{symbol}")));
         }
@@ -227,17 +248,20 @@ impl<'ctx> Codegen<'ctx> {
                         unreachable!("a Struct constant's own type is always ResolvedType::Struct")
                     }
                 };
+                let struct_type = struct_type.clone();
                 let field_types: Vec<ResolvedType> = struct_type
                     .borrow()
                     .fields
                     .iter()
                     .map(|field| field.r#type.clone())
                     .collect();
-                fields
+                let per_field: Vec<Vec<BasicValueEnum>> = fields
                     .iter()
                     .zip(&field_types)
-                    .flat_map(|(value, field_type)| self.emit_const_value(value, field_type))
-                    .collect()
+                    .map(|(value, field_type)| self.emit_const_value(value, field_type))
+                    .collect();
+                let layout = layout::struct_layout(&struct_type.borrow(), self.pointer_bytes());
+                self.assemble_struct_leaves(&layout, &per_field)
             }
             ConstValue::Enum {
                 variant_index,
@@ -279,9 +303,9 @@ impl<'ctx> Codegen<'ctx> {
                     .collect();
                 let tag_type = view.tag_type.clone();
 
-                let shift = layout::stack_align_shift(layout::type_alignment(r#type));
                 let total = layout::total_bytes(r#type, pointer_bytes);
-                let slot = self.entry_alloca(total, 1u32 << shift, "enumconst");
+                let slot = self.entry_alloca(total, Self::slot_alignment(r#type), "enumconst");
+                self.zero_fill_slot(slot, r#type);
 
                 let tag_values = self.emit_const_value(&ConstValue::Number(*tag), &tag_type);
                 self.store_scalars(&slot, 0, &tag_values, layout::type_alignment(&tag_type));
@@ -321,20 +345,8 @@ impl<'ctx> Codegen<'ctx> {
             }
             ConstValue::Union { value, .. } => {
                 let total = layout::total_bytes(r#type, self.pointer_bytes());
-                let slot = self.entry_alloca(total, 16, "unionconst");
-
-                let mut chunk_offset = 0u32;
-                for raw_leaf in omega_analyzer::layout::leaves_of(r#type, self.pointer_bytes()) {
-                    let llvm_ty = leaf::llvm_type(self.context, raw_leaf, self.target);
-                    let zero = match llvm_ty {
-                        BasicTypeEnum::IntType(it) => it.const_zero().into(),
-                        BasicTypeEnum::FloatType(ft) => ft.const_zero().into(),
-                        BasicTypeEnum::PointerType(pointer) => pointer.const_null().into(),
-                        _ => unreachable!("a union chunk is always a scalar"),
-                    };
-                    self.store_scalars(&slot, chunk_offset, &[zero], 1);
-                    chunk_offset += raw_leaf.bytes(self.pointer_bytes());
-                }
+                let slot = self.entry_alloca(total, Self::slot_alignment(r#type), "unionconst");
+                self.zero_fill_slot(slot, r#type);
 
                 let union_type = match r#type {
                     ResolvedType::Union(union_type) => union_type,

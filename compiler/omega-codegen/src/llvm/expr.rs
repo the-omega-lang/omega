@@ -231,6 +231,11 @@ impl<'ctx> Codegen<'ctx> {
                 vec![self.size_type().const_int(size as u64, false).into()]
             }
 
+            MirExpr::Alignof(target_type) => {
+                let align = layout::type_alignment(target_type);
+                vec![self.size_type().const_int(u64::from(align), false).into()]
+            }
+
             MirExpr::Char(c) => vec![self.context.i32_type().const_int(*c as u64, false).into()],
 
             MirExpr::Place(place) => self.get_place_value(place),
@@ -255,8 +260,8 @@ impl<'ctx> Codegen<'ctx> {
             }
 
             MirExpr::AddressOf(MirAddressOf { place }) => {
-                let (storage, _ty, _align) = self.resolve_place_storage(place);
-                vec![self.place_storage_address(&storage).into()]
+                let (storage, r#type, _align) = self.resolve_place_storage(place);
+                vec![self.place_storage_address(&storage, &r#type).into()]
             }
 
             MirExpr::Negate(base) => {
@@ -497,17 +502,20 @@ impl<'ctx> Codegen<'ctx> {
                 let ResolvedType::Struct(struct_type) = &node.r#type else {
                     unreachable!("mir body guarantees a struct literal's own type is a struct");
                 };
+                let struct_type = struct_type.clone();
                 let field_count = struct_type.borrow().fields.len();
+                // `fields` is in source order, so every initializer's side
+                // effects still happen before any leaf is placed.
                 let mut per_field: Vec<Option<Vec<BasicValueEnum>>> = vec![None; field_count];
                 for field in fields {
                     per_field[field.field_index] = Some(self.process_expr(&field.value));
                 }
-                per_field
+                let per_field: Vec<Vec<BasicValueEnum>> = per_field
                     .into_iter()
-                    .flat_map(|leaves| {
-                        leaves.expect("mir body guarantees every field is initialized")
-                    })
-                    .collect()
+                    .map(|leaves| leaves.expect("mir body guarantees every field is initialized"))
+                    .collect();
+                let layout = layout::struct_layout(&struct_type.borrow(), self.pointer_bytes());
+                self.assemble_struct_leaves(&layout, &per_field)
             }
 
             MirExpr::EnumConstruct(MirEnumConstruct {
@@ -531,13 +539,9 @@ impl<'ctx> Codegen<'ctx> {
                         layout::enum_body_field_offset(&view, *variant_index, i, pointer_bytes)
                     }))
                     .collect();
-                let payload_offset = layout::enum_payload_offset(&view, pointer_bytes);
-                let chunk_leaves =
-                    layout::payload_chunks(layout::enum_payload_bytes(&view, pointer_bytes));
-
-                let shift = layout::stack_align_shift(layout::type_alignment(&node.r#type));
                 let total = layout::total_bytes(&node.r#type, pointer_bytes);
-                let slot = self.entry_alloca(total, 1u32 << shift, "enum");
+                let slot = self.entry_alloca(total, Self::slot_alignment(&node.r#type), "enum");
+                self.zero_fill_slot(slot, &node.r#type);
 
                 let tag_values = self.emit_const_value(&ConstValue::Number(tag), &tag_type);
                 self.store_scalars(&slot, 0, &tag_values, layout::type_alignment(&tag_type));
@@ -552,19 +556,6 @@ impl<'ctx> Codegen<'ctx> {
                         layout::type_alignment(r#type),
                     );
                     offset += layout::total_bytes(r#type, pointer_bytes);
-                }
-
-                let mut chunk_offset = payload_offset;
-                for raw_leaf in &chunk_leaves {
-                    let llvm_ty = leaf::llvm_type(self.context, *raw_leaf, self.target);
-                    let zero = match llvm_ty {
-                        BasicTypeEnum::IntType(it) => it.const_zero().into(),
-                        BasicTypeEnum::FloatType(ft) => ft.const_zero().into(),
-                        BasicTypeEnum::PointerType(pointer) => pointer.const_null().into(),
-                        _ => unreachable!("a payload chunk is always a scalar"),
-                    };
-                    self.store_scalars(&slot, chunk_offset, &[zero], 1);
-                    chunk_offset += raw_leaf.bytes(pointer_bytes);
                 }
 
                 for field in fields {
@@ -585,22 +576,8 @@ impl<'ctx> Codegen<'ctx> {
                 value,
             }) => {
                 let total = layout::total_bytes(&node.r#type, self.pointer_bytes());
-                let slot = self.entry_alloca(total, 16, "union");
-
-                let mut chunk_offset = 0u32;
-                for raw_leaf in
-                    omega_analyzer::layout::leaves_of(&node.r#type, self.pointer_bytes())
-                {
-                    let llvm_ty = leaf::llvm_type(self.context, raw_leaf, self.target);
-                    let zero = match llvm_ty {
-                        BasicTypeEnum::IntType(it) => it.const_zero().into(),
-                        BasicTypeEnum::FloatType(ft) => ft.const_zero().into(),
-                        BasicTypeEnum::PointerType(pointer) => pointer.const_null().into(),
-                        _ => unreachable!("a union chunk is always a scalar"),
-                    };
-                    self.store_scalars(&slot, chunk_offset, &[zero], 1);
-                    chunk_offset += raw_leaf.bytes(self.pointer_bytes());
-                }
+                let slot = self.entry_alloca(total, Self::slot_alignment(&node.r#type), "union");
+                self.zero_fill_slot(slot, &node.r#type);
 
                 let values = self.process_expr(value);
                 self.store_scalars(&slot, 0, &values, 1);
@@ -623,7 +600,7 @@ impl<'ctx> Codegen<'ctx> {
 
                 let (data_ptr, full_len) = match &base_type {
                     ResolvedType::SizedArray(_, size) => {
-                        let ptr = self.place_storage_address(&storage);
+                        let ptr = self.place_storage_address(&storage, &base_type);
                         let len: BasicValueEnum = self
                             .context
                             .i32_type()

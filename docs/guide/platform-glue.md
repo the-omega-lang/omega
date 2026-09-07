@@ -118,6 +118,17 @@ oversight. Referencing one is a link error naming the missing glue symbol,
 which is the intended outcome: nothing here stubs a capability out with a
 `None` or a null so a program links and then misbehaves.
 
+`GlobalAllocator` is a **raw byte allocator**: it takes a byte count and
+returns some usable address. It promises no particular alignment, and a glue
+implementation is free to hand back whatever its underlying mechanism produces.
+Allocation with an explicit alignment is `std::alloc`'s job -- it over-allocates
+here and rounds the address up itself (see
+[`standard-library.md`](standard-library.md)), so no target has to grow an
+aligned-allocation capability of its own. The two families own their own
+pairings: a `GlobalAllocator::alloc` result is freed with
+`GlobalAllocator::free`, and a `std::alloc::alloc` result with
+`std::alloc::free`.
+
 ## What each platform does
 
 ### Linux (`x86_64-linux`, `aarch64-linux`)

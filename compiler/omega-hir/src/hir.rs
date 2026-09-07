@@ -531,6 +531,7 @@ pub enum HirExpr {
     Match(HirMatch),
     Cast(HirCast),
     Sizeof(Type),
+    Alignof(Type),
     Try(HirTry),
 }
 

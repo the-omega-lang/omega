@@ -115,6 +115,7 @@ fn scan_expr(expr: &MirExprNode, arg_count: usize, homes: &mut [ParameterHome]) 
         | MirExpr::String(_)
         | MirExpr::ByteString(_)
         | MirExpr::Sizeof(_)
+        | MirExpr::Alignof(_)
         | MirExpr::Const(_) => {}
     }
 }

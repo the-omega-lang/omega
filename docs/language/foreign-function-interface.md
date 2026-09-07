@@ -19,6 +19,8 @@ shared foreign malloc_omega_abi : (size: usize) => *mut u8;
 
 This is rare in practice -- most external functions use a non-Omega ABI, spelled explicitly (see "Direct foreign functions" below). A non-function `Type` binds an external data symbol; it becomes a real linker-visible global with no initializer/storage allocated in the current object.
 
+The definition on the other side must satisfy the layout the Omega declaration states, including its effective alignment: Omega accesses the symbol as storage for `Type`, and an external definition that is laid out or aligned differently is a program error rather than something the access adapts to. See [`annotations-and-sizeof.md`](annotations-and-sizeof.md).
+
 `foreign(cc) name : Type` is rejected: a binding never applies a convention to its own type. Write the convention on `Type` directly instead:
 
 ```omega

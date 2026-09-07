@@ -53,20 +53,7 @@ pub fn leaves_of(ty: &ResolvedType, pointer_bytes: u32) -> Vec<Leaf> {
         // scalars), so `field_byte_offset`'s offsets and this list's
         // positions must agree.
         ResolvedType::Struct(struct_type) => {
-            let struct_type = struct_type.borrow();
-            let field_types: Vec<ResolvedType> = struct_type
-                .fields
-                .iter()
-                .map(|field| field.r#type.clone())
-                .collect();
-            let layout = layout_fields(&field_types, struct_type.layout.pack, pointer_bytes);
-            let mut leaves = layout.leaves;
-            let final_size = round_up(layout.packed_end, struct_type.layout.align);
-            leaves.extend(std::iter::repeat_n(
-                Leaf::I8,
-                (final_size - layout.packed_end) as usize,
-            ));
-            leaves
+            struct_layout(&struct_type.borrow(), pointer_bytes).leaves
         }
         ResolvedType::Union(union_type) => {
             payload_chunks(union_bytes(&union_type.borrow(), pointer_bytes))
@@ -101,7 +88,7 @@ pub fn leaves_of(ty: &ResolvedType, pointer_bytes: u32) -> Vec<Leaf> {
             ));
             leaves.extend(payload_chunks(payload_size));
 
-            let final_size = round_up(payload_offset + payload_size, view.align);
+            let final_size = round_up(payload_offset + payload_size, enum_alignment(&view));
             leaves.extend(std::iter::repeat_n(
                 Leaf::I8,
                 (final_size - (payload_offset + payload_size)) as usize,
@@ -128,13 +115,7 @@ pub fn project_field_access<T: Clone>(
     field_index: usize,
     pointer_bytes: u32,
 ) -> Vec<T> {
-    let field_types: Vec<ResolvedType> = struct_type
-        .fields
-        .iter()
-        .map(|field| field.r#type.clone())
-        .collect();
-    let start = layout_fields(&field_types, struct_type.layout.pack, pointer_bytes).leaf_starts
-        [field_index];
+    let start = struct_layout(struct_type, pointer_bytes).leaf_starts[field_index];
     let len = leaves_of(&struct_type.fields[field_index].r#type, pointer_bytes).len();
 
     values[start..start + len].to_vec()
@@ -151,13 +132,41 @@ pub fn is_zero_sized(ty: &ResolvedType) -> bool {
     leaves_of(ty, 0).is_empty()
 }
 
+/// A type's effective alignment: the strongest address requirement any
+/// inline part of it declares.
+///
+/// Recursion follows inline containment only. A pointer, slice, or spec
+/// object stores an address rather than the pointee, so its own alignment
+/// stays 1 and the pointee is never queried -- which is also what keeps a
+/// recursive nominal type from recursing here forever.
 pub fn type_alignment(ty: &ResolvedType) -> u32 {
     match ty {
-        ResolvedType::Struct(cell) => cell.borrow().layout.align,
-        ResolvedType::Enum { cell, .. } => cell.borrow().layout.align,
-        ResolvedType::AnonymousEnum { .. } => crate::annotations::Layout::default().align,
+        ResolvedType::Struct(cell) => {
+            let struct_type = cell.borrow();
+            max_alignment(struct_type.fields.iter().map(|field| &field.r#type))
+                .max(struct_type.layout.align)
+        }
+        ResolvedType::Union(cell) => {
+            max_alignment(cell.borrow().fields.iter().map(|field| &field.r#type))
+        }
+        ResolvedType::Enum { .. } | ResolvedType::AnonymousEnum { .. } => {
+            enum_alignment(&EnumView::of(ty).expect("just matched an enum-like type"))
+        }
+        ResolvedType::SizedArray(item_type, _) => type_alignment(item_type),
         _ => 1,
     }
+}
+
+fn max_alignment<'a>(types: impl IntoIterator<Item = &'a ResolvedType>) -> u32 {
+    types.into_iter().map(type_alignment).max().unwrap_or(1)
+}
+
+pub fn enum_alignment(view: &EnumView) -> u32 {
+    view.align
+        .max(type_alignment(&view.tag_type))
+        .max(max_alignment(&view.header))
+        .max(max_alignment(&view.dynamic_fields))
+        .max(enum_payload_alignment(view))
 }
 
 pub fn round_up(offset: u32, align: u32) -> u32 {
@@ -184,6 +193,34 @@ pub struct FieldLayout {
     pub leaf_starts: Vec<usize>,
     pub leaves: Vec<Leaf>,
     pub packed_end: u32,
+}
+
+impl FieldLayout {
+    fn pad_to(&mut self, size: u32) {
+        self.leaves.extend(std::iter::repeat_n(
+            Leaf::I8,
+            (size - self.packed_end) as usize,
+        ));
+        self.packed_end = size;
+    }
+}
+
+/// The one description of a struct's storage: field byte offsets, the leaf
+/// index each field starts at, and the complete leaf sequence including
+/// interior *and* trailing padding.
+///
+/// Flattening and value construction must both read this, or a struct's
+/// whole-value shape and its field offsets would disagree.
+pub fn struct_layout(struct_type: &ResolvedStructType, pointer_bytes: u32) -> FieldLayout {
+    let field_types: Vec<ResolvedType> = struct_type
+        .fields
+        .iter()
+        .map(|field| field.r#type.clone())
+        .collect();
+    let mut layout = layout_fields(&field_types, struct_type.layout.pack, pointer_bytes);
+    let alignment = max_alignment(&field_types).max(struct_type.layout.align);
+    layout.pad_to(round_up(layout.packed_end, alignment));
+    layout
 }
 
 pub fn layout_fields(types: &[ResolvedType], pack: u32, pointer_bytes: u32) -> FieldLayout {
@@ -217,12 +254,7 @@ pub fn field_byte_offset(
     field_index: usize,
     pointer_bytes: u32,
 ) -> u32 {
-    let field_types: Vec<ResolvedType> = struct_type
-        .fields
-        .iter()
-        .map(|field| field.r#type.clone())
-        .collect();
-    layout_fields(&field_types, struct_type.layout.pack, pointer_bytes).byte_offsets[field_index]
+    struct_layout(struct_type, pointer_bytes).byte_offsets[field_index]
 }
 
 pub fn locals_layout(local_types: &[ResolvedType], pointer_bytes: u32) -> FieldLayout {
@@ -345,12 +377,16 @@ pub fn enum_prefix_layout(view: &EnumView, pointer_bytes: u32) -> FieldLayout {
 }
 
 pub fn union_bytes(union_type: &ResolvedUnionType, pointer_bytes: u32) -> u32 {
-    union_type
+    let widest = union_type
         .fields
         .iter()
         .map(|field| total_bytes(&field.r#type, pointer_bytes))
         .max()
-        .unwrap_or(0)
+        .unwrap_or(0);
+    round_up(
+        widest,
+        max_alignment(union_type.fields.iter().map(|field| &field.r#type)),
+    )
 }
 
 pub fn payload_chunks(mut bytes: u32) -> Vec<Leaf> {

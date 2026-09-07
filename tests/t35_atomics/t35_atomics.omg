@@ -8,6 +8,8 @@ import std::atomic::AtomicI32;
 import std::atomic::AtomicBool;
 import std::atomic::AtomicU16;
 import std::atomic::AtomicI64;
+import std::alloc::alloc;
+import std::alloc::free;
 
 show_u32(label: *str, result: Result<u32, u32>) => void {
 	match result {
@@ -44,33 +46,120 @@ show_bool(label: *str, result: Result<bool, bool>) => void {
 	}
 }
 
+# `atomics.md` requires every atomic location to be naturally aligned, and
+# `std`'s wrappers state that with `@layout(align = sizeof<T>)`. That is an
+# address guarantee, so it must survive being nested inside declarations
+# that make no alignment request of their own -- a leading byte, a container
+# holding the wrapper, a trailing byte, an array element, a global, and a
+# heap block all have to keep the wrapper's own alignment.
+struct Inner {
+	exposed pad: u8;
+	exposed counter: AtomicI64;
+}
+
+struct Nested {
+	exposed lead: u8;
+	exposed inner: Inner;
+	exposed trail: u8;
+}
+
+mut global_nested: Nested;
+
+naturally_aligned(address: usize) => bool { address % sizeof<i64> == 0 }
+
+# The raw gaps take the address of ordinary storage, so this wrapper gives
+# the slots below owning storage that already meets `atomics.md` rather than
+# leaving it to where the frame happens to put them.
+@layout(align = sizeof<u32>)
+struct RawSlots {
+	exposed unsigned: u32;
+	exposed signed: i32;
+}
+
 # The core gaps work on ordinary mutable storage; a wrapper type is a
 # convenience, not the source of atomicity.
 raw_operations() => void {
-	mut slot: u32 = 0;
-	Atomicity32::store(&mut slot, 7u32, AtomicStoreOrdering::Relaxed);
-	println$("raw-load: ", Atomicity32::load(&slot, AtomicLoadOrdering::Acquire));
+	mut slots := RawSlots { unsigned = 0u32; signed = -5i32; };
+	println$("raw-slot-aligned: ", <usize>&slots.unsigned % sizeof<u32> == 0);
+	Atomicity32::store(&mut slots.unsigned, 7u32, AtomicStoreOrdering::Relaxed);
+	println$("raw-load: ", Atomicity32::load(&slots.unsigned, AtomicLoadOrdering::Acquire));
 
-	println$("raw-exchange: ", Atomicity32::exchange(&mut slot, 9u32, AtomicRmwOrdering::AcquireRelease));
-	println$("raw-after-exchange: ", Atomicity32::load(&slot, AtomicLoadOrdering::SeqConsistent));
+	println$("raw-exchange: ", Atomicity32::exchange(&mut slots.unsigned, 9u32, AtomicRmwOrdering::AcquireRelease));
+	println$("raw-after-exchange: ", Atomicity32::load(&slots.unsigned, AtomicLoadOrdering::SeqConsistent));
 
-	println$("raw-fetch-add: ", Atomicity32::fetch_add(&mut slot, 3u32, AtomicRmwOrdering::Relaxed));
-	println$("raw-after-fetch-add: ", Atomicity32::load(&slot, AtomicLoadOrdering::Relaxed));
+	println$("raw-fetch-add: ", Atomicity32::fetch_add(&mut slots.unsigned, 3u32, AtomicRmwOrdering::Relaxed));
+	println$("raw-after-fetch-add: ", Atomicity32::load(&slots.unsigned, AtomicLoadOrdering::Relaxed));
 
-	println$("raw-fetch-min-unsigned: ", Atomicity32::fetch_min_unsigned(&mut slot, 5u32, AtomicRmwOrdering::Release));
-	println$("raw-after-fetch-min-unsigned: ", Atomicity32::load(&slot, AtomicLoadOrdering::Relaxed));
+	println$("raw-fetch-min-unsigned: ", Atomicity32::fetch_min_unsigned(&mut slots.unsigned, 5u32, AtomicRmwOrdering::Release));
+	println$("raw-after-fetch-min-unsigned: ", Atomicity32::load(&slots.unsigned, AtomicLoadOrdering::Relaxed));
 
-	show_u32("raw-compare-exchange-success", Atomicity32::compare_exchange(&mut slot, 5u32, 50u32, AtomicRmwOrdering::SeqConsistent, AtomicLoadOrdering::Relaxed));
-	show_u32("raw-compare-exchange-failure", Atomicity32::compare_exchange(&mut slot, 5u32, 60u32, AtomicRmwOrdering::SeqConsistent, AtomicLoadOrdering::Relaxed));
-	println$("raw-after-compare-exchange: ", Atomicity32::load(&slot, AtomicLoadOrdering::Relaxed));
+	show_u32("raw-compare-exchange-success", Atomicity32::compare_exchange(&mut slots.unsigned, 5u32, 50u32, AtomicRmwOrdering::SeqConsistent, AtomicLoadOrdering::Relaxed));
+	show_u32("raw-compare-exchange-failure", Atomicity32::compare_exchange(&mut slots.unsigned, 5u32, 60u32, AtomicRmwOrdering::SeqConsistent, AtomicLoadOrdering::Relaxed));
+	println$("raw-after-compare-exchange: ", Atomicity32::load(&slots.unsigned, AtomicLoadOrdering::Relaxed));
 
 	# Signed min/max are separate gap members, so the comparison is a signed
 	# one rather than a guess about an unsigned bit pattern.
-	mut signed_slot: i32 = -5;
-	println$("raw-fetch-min-signed: ", Atomicity32::fetch_min_signed(&mut signed_slot, 3i32, AtomicRmwOrdering::Relaxed));
-	println$("raw-after-fetch-min-signed: ", signed_slot);
-	println$("raw-fetch-max-signed: ", Atomicity32::fetch_max_signed(&mut signed_slot, 3i32, AtomicRmwOrdering::Relaxed));
-	println$("raw-after-fetch-max-signed: ", signed_slot);
+	println$("raw-fetch-min-signed: ", Atomicity32::fetch_min_signed(&mut slots.signed, 3i32, AtomicRmwOrdering::Relaxed));
+	println$("raw-after-fetch-min-signed: ", slots.signed);
+	println$("raw-fetch-max-signed: ", Atomicity32::fetch_max_signed(&mut slots.signed, 3i32, AtomicRmwOrdering::Relaxed));
+	println$("raw-after-fetch-max-signed: ", slots.signed);
+}
+
+# Every one of these locations is reached through a declaration that never
+# asks for alignment itself; each must still be naturally aligned before the
+# operation runs, and must produce the ordinary result afterwards.
+nested_alignment() => void {
+	mut local := Nested {
+		lead = 1u8;
+		inner = Inner { pad = 2u8; counter = AtomicI64::new(5i64); };
+		trail = 3u8;
+	};
+	println$("nested-local-aligned: ", naturally_aligned(<usize>&local.inner.counter));
+	println$("nested-local-fetch-add: ", local.inner.counter.fetch_add(4i64, AtomicRmwOrdering::SeqConsistent));
+	println$("nested-local-load: ", local.inner.counter.load(AtomicLoadOrdering::Acquire));
+	println$("nested-local-neighbours: ", local.lead, " ", local.inner.pad, " ", local.trail);
+
+	global_nested = Nested {
+		lead = 6u8;
+		inner = Inner { pad = 7u8; counter = AtomicI64::new(20i64); };
+		trail = 8u8;
+	};
+	println$("nested-global-aligned: ", naturally_aligned(<usize>&global_nested.inner.counter));
+	global_nested.inner.counter.store(30i64, AtomicStoreOrdering::Release);
+	println$("nested-global-exchange: ", global_nested.inner.counter.exchange(31i64, AtomicRmwOrdering::AcquireRelease));
+	println$("nested-global-load: ", global_nested.inner.counter.load(AtomicLoadOrdering::SeqConsistent));
+
+	mut row: [3]Nested;
+	mut index: usize = 0;
+	mut row_aligned := true;
+	while index < 3 {
+		row[index] = Nested {
+			lead = <u8>index;
+			inner = Inner { pad = 9u8; counter = AtomicI64::new(<i64>index * 10i64); };
+			trail = <u8>index;
+		};
+		if !naturally_aligned(<usize>&row[index].inner.counter) { row_aligned = false; }
+		index += 1;
+	}
+	println$("nested-array-aligned: ", row_aligned);
+	println$("nested-array-fetch-max: ", row[2].inner.counter.fetch_max(25i64, AtomicRmwOrdering::Relaxed));
+	println$("nested-array-loads: ",
+		row[0].inner.counter.load(AtomicLoadOrdering::Relaxed), " ",
+		row[1].inner.counter.load(AtomicLoadOrdering::Relaxed), " ",
+		row[2].inner.counter.load(AtomicLoadOrdering::Relaxed));
+
+	# Reached through a pointer, the alignment has to come from the
+	# allocation rather than from where the frame happened to land.
+	heap := <*mut Nested>alloc(sizeof<Nested>, alignof<Nested>);
+	*heap = Nested {
+		lead = 4u8;
+		inner = Inner { pad = 5u8; counter = AtomicI64::new(50i64); };
+		trail = 6u8;
+	};
+	println$("nested-heap-aligned: ", naturally_aligned(<usize>&(*heap).inner.counter));
+	println$("nested-heap-fetch-sub: ", (*heap).inner.counter.fetch_sub(8i64, AtomicRmwOrdering::AcquireRelease));
+	println$("nested-heap-load: ", (*heap).inner.counter.load(AtomicLoadOrdering::Acquire));
+	free(<*u8>heap);
 }
 
 unsigned_wrapper() => void {
@@ -162,4 +251,5 @@ main() => void {
 	signed_wrapper();
 	boolean_wrapper();
 	remaining_widths();
+	nested_alignment();
 }

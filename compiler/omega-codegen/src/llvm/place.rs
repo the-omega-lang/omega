@@ -60,9 +60,8 @@ impl<'ctx> Codegen<'ctx> {
             MirPlaceRoot::Expr(expr) => {
                 let r#type = expr.r#type.clone();
                 let values = self.process_expr(expr);
-                let shift = layout::stack_align_shift(layout::type_alignment(&r#type));
                 let size = layout::total_bytes(&r#type, self.pointer_bytes());
-                let slot = self.entry_alloca(size, 1u32 << shift, "tmp");
+                let slot = self.entry_alloca(size, Self::slot_alignment(&r#type), "tmp");
                 let storage = PlaceStorage::Slot { slot, offset: 0 };
                 self.store_scalars(&slot, 0, &values, layout::type_alignment(&r#type));
                 (storage, r#type)
@@ -112,10 +111,12 @@ impl<'ctx> Codegen<'ctx> {
 
                 MirProjection::UnionField { r#type, .. } => {
                     if let PlaceStorage::Values(values) = &current {
-                        let shift =
-                            layout::stack_align_shift(layout::type_alignment(&current_type));
                         let size = layout::total_bytes(&current_type, self.pointer_bytes());
-                        let slot = self.entry_alloca(size, 1u32 << shift, "union_spill");
+                        let slot = self.entry_alloca(
+                            size,
+                            Self::slot_alignment(&current_type),
+                            "union_spill",
+                        );
                         self.store_scalars(&slot, 0, values, layout::type_alignment(&current_type));
                         current = PlaceStorage::Slot { slot, offset: 0 };
                     }
@@ -153,8 +154,8 @@ impl<'ctx> Codegen<'ctx> {
                     let element_size = layout::total_bytes(item_type, self.pointer_bytes());
 
                     let mut base = match &current_type {
-                        ResolvedType::SizedArray(_, _) => {
-                            self.place_storage_address(&match &current {
+                        ResolvedType::SizedArray(_, _) => self.place_storage_address(
+                            &match &current {
                                 PlaceStorage::Slot { slot, offset } => PlaceStorage::Slot {
                                     slot: *slot,
                                     offset: *offset,
@@ -166,8 +167,9 @@ impl<'ctx> Codegen<'ctx> {
                                 PlaceStorage::Values(values) => {
                                     PlaceStorage::Values(values.clone())
                                 }
-                            })
-                        }
+                            },
+                            &current_type,
+                        ),
                         ResolvedType::Array(_, _)
                         | ResolvedType::Slice { .. }
                         | ResolvedType::Str { .. } => self.load_scalars(
@@ -296,10 +298,12 @@ impl<'ctx> Codegen<'ctx> {
                     // list to slice: a register-held enum has to reach memory
                     // before its byte offset means anything.
                     if let PlaceStorage::Values(values) = &current {
-                        let shift =
-                            layout::stack_align_shift(layout::type_alignment(&current_type));
                         let size = layout::total_bytes(&current_type, self.pointer_bytes());
-                        let slot = self.entry_alloca(size, 1u32 << shift, "enum_spill");
+                        let slot = self.entry_alloca(
+                            size,
+                            Self::slot_alignment(&current_type),
+                            "enum_spill",
+                        );
                         self.store_scalars(&slot, 0, values, layout::type_alignment(&current_type));
                         current = PlaceStorage::Slot { slot, offset: 0 };
                     }
@@ -463,9 +467,13 @@ impl<'ctx> Codegen<'ctx> {
         }
     }
 
+    /// The address of a place. A register-held value has to be spilled first,
+    /// and the spill is storage for `type`, so it must satisfy that type's
+    /// alignment rather than a fixed scratch guess.
     pub(super) fn place_storage_address(
         &mut self,
         storage: &PlaceStorage<'ctx>,
+        r#type: &ResolvedType,
     ) -> PointerValue<'ctx> {
         match storage {
             PlaceStorage::Values(values) => {
@@ -473,8 +481,9 @@ impl<'ctx> Codegen<'ctx> {
                     .iter()
                     .map(|v| leaf::value_byte_width(v.get_type(), self.pointer_bytes()))
                     .sum();
-                let slot = self.entry_alloca(size, 16, "value_addr");
-                self.store_scalars(&slot, 0, values, 1);
+                let align = Self::slot_alignment(r#type);
+                let slot = self.entry_alloca(size, align, "value_addr");
+                self.store_scalars(&slot, 0, values, align);
                 slot
             }
             PlaceStorage::Slot { slot, offset } => self.byte_gep(*slot, *offset),

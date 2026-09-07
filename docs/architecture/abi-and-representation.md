@@ -123,6 +123,8 @@ A value can be held as SSA/register leaves or in addressable memory. Codegen pla
 - materializing short-lived temporary values when an address is required;
 - materializing union/enum payload storage.
 
+Every one of those storage realizations is storage *for a type*, so each carries that type's effective alignment rather than a fixed scratch guess. Access-level alignment claims stay bounded by the address actually proven: `offset_align` weakens a base claim by the accessed byte offset, so a field at an odd offset from an aligned base is not claimed aligned.
+
 The legality and resolved type of a place operation have already been decided by the analyzer. Codegen handles storage realization only.
 
 ## Globals
@@ -162,6 +164,7 @@ The repository intentionally supports linking objects produced by independent `o
 - variadic promotions;
 - mangled symbols;
 - strong/weak linkage;
-- vtable slot order and symbol identity.
+- vtable slot order and symbol identity;
+- alignment of shared globals and of weak constant materializations, including the identity that decides which materializations may share one symbol.
 
 A change to any of those should receive separate-compilation validation, not just one unit's Rust tests.

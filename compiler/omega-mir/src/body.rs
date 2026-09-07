@@ -63,6 +63,7 @@ pub enum MirExpr {
     Slice(MirSlice),
     Cast(MirCast),
     Sizeof(ResolvedType),
+    Alignof(ResolvedType),
     UnionConstruct(MirUnionConstruct),
     Const(ConstValue),
     SpecCoerce(MirSpecCoerce),

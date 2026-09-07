@@ -158,6 +158,7 @@ check "it reaches stdout, stdin, stderr, the heap and an aligned atomic" do
     smoke-alloc: 64 3969
     smoke-stdin: true platform check
     smoke-atomic: 7 7 12
+    smoke-aligned: true 7
   OUT
   problems = []
   problems << "stdout was:\n#{out}" unless out == expected_out

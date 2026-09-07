@@ -1,0 +1,35 @@
+sizeof-aligned: 32 alignof-aligned: 32
+sizeof-strong: 64 alignof-strong: 64
+sizeof-holder: 96 alignof-holder: 32
+sizeof-weak: 32 alignof-weak: 32
+sizeof-bag: 32 alignof-bag: 32
+sizeof-shape: 64 alignof-shape: 32
+sizeof-either: 64 alignof-either: 32
+alignof-packed: 1 alignof-pointer: 1
+sizeof-array: 192 alignof-array: 32
+local: aligned=true lo=1 hi=2
+mutated: aligned=true lo=30 hi=40
+copy: aligned=true lo=30 hi=40
+holder: aligned=true lead=5 lo=30 hi=40 trail=9
+holder-mutated: aligned=true lead=5 lo=100 hi=40 trail=12
+weak-outer: aligned=true lo=100 hi=40
+strong: aligned=true tag=3
+array-0: aligned=true lead=1 lo=10 hi=20 trail=2
+array-1: aligned=true lead=3 lo=30 hi=40 trail=4
+slice-0: aligned=true lead=1 lo=10 hi=20 trail=2
+slice-1: aligned=true lead=3 lo=30 hi=40 trail=4
+through-pointer: aligned=true lead=3 lo=30 hi=40 trail=4
+returned: aligned=true lo=3 hi=4
+by-value-parameter: aligned=true lo=6 hi=8
+indirect-call: aligned=true lo=12 hi=16
+sum-holder: 31
+dynamic-total: 31
+dynamic-return: aligned=true lo=12 hi=16
+union: aligned=true lo=5 hi=6
+enum: aligned=true lo=8 hi=9
+anon-enum: aligned=true lo=12 hi=13
+comp-constant: aligned=true lo=7 hi=11
+constant-reference: aligned=true lo=7 hi=11
+global: aligned=true lead=7 lo=21 hi=22 trail=8
+order-log: 1234
+reordered: aligned=true lead=2 lo=4 hi=3 trail=1

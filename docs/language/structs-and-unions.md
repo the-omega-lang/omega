@@ -53,7 +53,7 @@ v := Value { as_i32 = 42; };
 
 Unions may have methods and generics under the same rules as structs. A zero-sized union is invalid.
 
-`@layout` is not accepted on unions in the current language. Their current layout is packed with alignment 1; see [`annotations-and-sizeof.md`](annotations-and-sizeof.md) and [`../issues/design-debt.md`](../issues/design-debt.md) for target-safety caveats around the current packed layout model.
+`@layout` is not accepted on unions in the current language. A union places every field at offset zero and is packed, but it still inherits the strongest alignment its members require, and its size rounds up to that alignment; see [`annotations-and-sizeof.md`](annotations-and-sizeof.md) and [`../issues/design-debt.md`](../issues/design-debt.md) for target-safety caveats around the current packed layout model.
 
 ## Layout and `sizeof`
 

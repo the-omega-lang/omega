@@ -45,3 +45,14 @@ fn the_registry_has_no_duplicates() {
     sorted.dedup();
     assert_eq!(before, sorted.len(), "duplicate entry in contextual::ALL");
 }
+
+/// `sizeof`/`alignof` commit to the query form only when `<Type>` follows,
+/// which is what lets both stay ordinary identifiers above.
+#[test]
+fn the_type_query_forms_parse_as_expressions() {
+    for word in [contextual::SIZEOF, contextual::ALIGNOF] {
+        let source = format!("query() => usize {{ {word}<[4]u8> }}");
+        SourceModule::parse(&source)
+            .unwrap_or_else(|e| panic!("`{word}<Type>` must parse as an expression: {e:?}"));
+    }
+}

@@ -323,6 +323,9 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
             CheckedExpr::Sizeof(target) => Ok(ConstValue::Number(NumberValue::Unsigned(
                 crate::layout::total_bytes(target, self.target.pointer_bytes()) as u64,
             ))),
+            CheckedExpr::Alignof(target) => Ok(ConstValue::Number(NumberValue::Unsigned(
+                u64::from(crate::layout::type_alignment(target)),
+            ))),
             CheckedExpr::AnonymousEnumWiden(widen) => self.eval_anonymous_enum_widen(node, widen),
             CheckedExpr::Try(r#try) => self.eval_try(r#try, node.span),
             CheckedExpr::SpecCoerce(_) => Err(self.err(node.span, CompErrorKind::DynamicDispatch)),

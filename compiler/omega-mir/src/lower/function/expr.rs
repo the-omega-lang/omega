@@ -39,6 +39,7 @@ pub(super) fn lower_expr(lowerer: &mut FunctionLowerer, node: CheckedExprNode) -
         CheckedExpr::ByteString(value) => mir_node(id, span, r#type, MirExpr::ByteString(value)),
         CheckedExpr::Const(value) => mir_node(id, span, r#type, MirExpr::Const(value)),
         CheckedExpr::Sizeof(ty) => mir_node(id, span, r#type, MirExpr::Sizeof(ty)),
+        CheckedExpr::Alignof(ty) => mir_node(id, span, r#type, MirExpr::Alignof(ty)),
         CheckedExpr::FunctionCall(call) => {
             let callee = Box::new(lowerer.lower_expr(*call.callee));
             let args = call
