@@ -29,13 +29,14 @@ import core::atomic::AtomicRmwOrdering;
 
 # `SREG` is I/O address 0x3f; its bit 7 is the global interrupt enable. The
 # saved state is written through an explicit out-pointer because `asm` has no
-# output operand, and the pointer is pinned to `X` because the plain `st`
-# addressing modes accept only a pointer register.
+# output operand. The operand is left unpinned: a pointer lands in one of the
+# X/Y/Z pairs, which is exactly what the plain `st` addressing modes accept,
+# and `$saved` prints as whichever pair the backend chose.
 disable_interrupts(saved: *mut u8) => void {
-	asm(reg(saved, "r26"), clobber("r18")) => {
+	asm(reg(saved), clobber("r18")) => {
 		in r18, 0x3f
 		cli
-		st X, r18
+		st $saved, r18
 	}
 }
 

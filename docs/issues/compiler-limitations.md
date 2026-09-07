@@ -79,21 +79,27 @@ machine, not an Omega semantic difference: nothing in the language says a
 target's object emission may depend on the optimization level, and the
 restriction should disappear rather than become a documented rule.
 
-## Inline `asm` cannot name an AVR pointer register pair
+## Inline `asm` cannot pin a multi-byte AVR operand
 
-An AVR data-space access from inline assembly (`ld`/`st`) requires one of the
-pointer register pairs `X`/`Y`/`Z`, but `reg` cannot deliver one:
+An unpinned `reg(ptr)` is fine on AVR: pointer-like leaves use LLVM's pointer
+class `e`, so the backend allocates a whole `X`/`Y`/`Z` pair and `$ptr` prints
+as that pair's name, which is what `ld`/`st` accept. Naming a register for a
+value wider than one byte does not work:
 
-- `reg(ptr)` allocates a pair and prints its **low** half (`r24`), so
-  `st $ptr, r18` is not valid assembly;
-- `reg(ptr, "X")`, `"Z"` and `"r31:r30"` are rejected — LLVM's AVR backend has
-  no such named register for an inline-asm constraint;
-- `reg(ptr, "r26")` is *accepted* and silently truncates: the backend emits
-  `mov r26, r24` and never writes `r27`, so `st X, r18` stores through a
-  half-initialized address.
+- `reg(ptr, "Z")` and `reg(ptr, "r31:r30")` are rejected. `reg`'s second
+  argument always lowers to a named-register constraint `{...}`, and LLVM's AVR
+  backend has no register of either name; only the bare constraint letters
+  `x`/`y`/`z` select a specific pair, and `reg` cannot spell those.
+- `reg(ptr, "r30")` is *accepted* and silently truncates: the backend emits
+  `mov r30, r24` and never writes `r31`, so the body addresses through a
+  half-initialized pointer. This is the dangerous form, because it compiles and
+  only corrupts memory at run time.
 
-The last form is the dangerous one, because it compiles and only corrupts
-memory at run time. Until `reg` can express a pointer-register-pair class
-(the LLVM `e`/`x`/`y`/`z` constraints, or an operand modifier that prints a
-pair as `X`/`Y`/`Z`), an AVR `asm` body must not be handed a pointer, and no
-AVR platform code may pass one.
+So a body needing one particular pair cannot be written: `icall`/`ijmp` and
+`lpm` require `Z` specifically. The same truncation applies to a 16-bit
+non-pointer operand, which takes the generic `r` class and therefore prints
+only the low half of the pair it was given, so `u16`/`i16` cannot be used as
+16-bit asm operands at all.
+
+Until `reg` can express these, do not name a register for an AVR operand wider
+than a byte, and do not pass a `u16`/`i16` into an AVR body.

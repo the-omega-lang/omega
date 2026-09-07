@@ -210,3 +210,28 @@ total(item: *Fixed) => i32 { read(<*spec Counter>item) }\n";
          address-space-0 pointer:\n{ir}"
     );
 }
+
+#[test]
+fn an_avr_pointer_asm_operand_takes_the_pointer_register_class() {
+    // AVR's generic `r` class does allocate a pair for a 16-bit value, but
+    // prints only its low half -- `st r24, r18` is not an instruction, and a
+    // pinned `{r26}` silently loads half an address. Only the pointer class
+    // `e` yields a usable `ld`/`st` operand.
+    const AVR_ASM: &str = "\
+save(slot: *mut u8, flags: u8) => void {\n\
+    asm(reg(slot), reg(flags)) => {\n\
+        st $slot, $flags\n\
+    }\n\
+}\n";
+
+    let ir = ir_for(AVR_ASM, target(Arch::Avr, Os::None));
+    let constraints = ir
+        .lines()
+        .find(|line| line.contains("asm sideeffect"))
+        .unwrap_or_else(|| panic!("no inline asm call in:\n{ir}"));
+    assert!(
+        constraints.contains("\"+&e,+&r,"),
+        "a pointer operand must use AVR's pointer-pair class and a byte operand the \
+         generic one:\n{constraints}"
+    );
+}

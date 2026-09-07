@@ -157,7 +157,12 @@ fn register_class(arch: Arch, leaf: Leaf) -> &'static str {
         (Arch::Aarch64, true) => "w",
         (Arch::Riscv32 | Arch::Riscv64, false) => "r",
         (Arch::Riscv32 | Arch::Riscv64, true) => "f",
-        // AVR has no floating-point registers, so every operand class is `r`.
+        // AVR has no floating-point registers, so no operand is ever in a
+        // float class. Pointer-like leaves take `e`, the X/Y/Z pointer-pair
+        // class, rather than the generic `r`: `r` does allocate a pair for a
+        // 16-bit value but prints only its low half, which no `ld`/`st`
+        // addressing mode accepts.
+        (Arch::Avr, _) if matches!(leaf, Leaf::Ptr | Leaf::FnPtr) => "e",
         (Arch::Avr, _) => "r",
     }
 }

@@ -261,6 +261,29 @@ check "avr masks interrupts and restores only the enable bit" do
   missing = required.reject { |fragment| text.include?(fragment) }
   missing.empty? ? nil : "no #{missing.join(", ")} in the emitted AVR atomics"
 end
+
+# The two halves of each AVR pointer pair, by the name `st`/`ld` use for it.
+AVR_POINTER_HALVES = { "X" => %w[r26 r27], "Y" => %w[r28 r29], "Z" => %w[r30 r31] }.freeze
+
+# The mnemonics above are not enough on their own: the saved `SREG` is stored
+# through whichever pointer pair the backend gave the `asm` operand, and an
+# operand class that fills only the pair's low half assembles cleanly and then
+# stores through a half-initialized address. Both halves must be live before
+# the store.
+check "avr saves SREG through a fully loaded pointer pair" do
+  text = atomic_assembly("avr-none", opt: "-O1")
+  pair = text[/^\tst\t([XYZ]), r18$/, 1]
+  next "no `st <pointer>, r18` saving SREG in the emitted AVR atomics" if pair.nil?
+
+  low, high = AVR_POINTER_HALVES.fetch(pair)
+  setup = text.split(/^\tst\t#{pair}, r18$/).first
+  loaded = setup.match?(/^\tmovw\t#{low},/) ||
+           (setup.match?(/^\tmov\t#{low},/) && setup.match?(/^\tmov\t#{high},/))
+  next nil if loaded
+
+  writes = setup.lines.grep(/^\t(mov|movw|ldi)\t(#{low}|#{high}),/).map(&:strip)
+  "#{pair} is not fully loaded before `st #{pair}, r18`: #{writes.join("; ")}"
+end
 puts
 
 # --- cross targets: what can be proven without that toolchain --------------
