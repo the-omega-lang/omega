@@ -32,28 +32,28 @@ value itself (plausible whenever you want the numeric tag for
 logging/serialization/FFI alongside a match), exhaustiveness checking gets
 categorically weaker with no warning that anything changed.
 
-### Packed-by-default layout's safety argument is single-target, but `\--target` already offers a second target
+### Packed-by-default layout has no per-target safety argument
 
-`total_bytes`/the packed-layout doc comment (`compiler/omega-codegen/src/lib.rs:397-405`)
-justifies "packed by default, no implicit alignment" as safe with: "x86_64
-tolerates unaligned loads/stores with no correctness issue, so packed is safe
-as a default." That's a real, correct fact about x86_64. But `
-compiler/omega-codegen/src/target.rs` already defines `Arch::Aarch64` as a genuine,
-CLI-selectable `\--target` option (`omgc ... --target=aarch64-linux`) — and
-AArch64 does not give the same blanket guarantee: exclusive/atomic load-store
-instructions fault on misalignment, several OS/embedded configurations enable
-strict alignment-fault checking globally, and certain SIMD load/store forms
-require natural alignment. The safety argument was written for (and is only
-actually true on) one of the two architectures the compiler already advertises
-supporting. It is no longer only theoretical either: the AArch64 platform's
-atomics emit load-/store-exclusive instructions, and
-[`atomics.md`](../language/atomics.md) now requires every atomic location to be
-naturally aligned — a requirement packed-by-default layout does not help a
-program meet, and that `@layout(align)` does not yet actually deliver (see its
-entry in [`known-issues.md`](known-issues.md)). The written justification for a
-default that touches every struct/enum layout in the language no longer matches
-the compiler's own stated target surface, and nothing re-derives or gates it
-per-target.
+Struct and enum layout defaults to `pack = 1, align = 1`, and `type_alignment`
+(`compiler/omega-analyzer/src/layout.rs`) reports `1` for everything that is not
+a struct or enum carrying a declared `@layout(align)` — primitives included. The
+justification this default was originally written under ("x86_64 tolerates
+unaligned loads/stores with no correctness issue, so packed is safe as a
+default") is no longer in the source, but nothing has replaced it, and `Arch`
+now names eight architectures rather than the one that argument was true of.
+AArch64 in particular gives no comparable blanket guarantee: several
+OS/embedded configurations enable strict alignment-fault checking globally, and
+SIMD load/store forms require natural alignment — forms this backend does not
+emit today but would.
+
+Atomics are no longer an instance of this: they require natural alignment by
+contract now ([`atomics.md`](../language/atomics.md)), settled per-feature
+rather than by the layout default. What stays open is the default itself —
+whether "packed unless annotated" is the right whole-language choice on targets
+where unaligned ordinary access is not free or not permitted — and that nothing
+re-derives or gates it per-target. The concrete defect in the escape hatch,
+that `@layout(align)` is not yet an address guarantee, is tracked in
+[`known-issues.md`](known-issues.md).
 
 ### Overloading is a second, parallel item pipeline that exists only because the query key can't name a candidate
 
