@@ -73,7 +73,9 @@ Built from `alpine:3.23`:
   and no glibc compatibility shims.
 - **Codex CLI**, installed the same way with its own native installer
   (`https://chatgpt.com/codex/install.sh`) — also a self-contained musl
-  binary into `~/.local/bin`, no Node.js involved.
+  binary, no Node.js involved. `~/.local/bin/codex` is a symlink; the binary
+  itself goes to `/opt/codex`, for the reason given under
+  [What persists](#what-persists-and-what-does-not).
 - **omp (oh-my-pi)**, installed from `https://omp.sh/install` with `--binary`,
   which fetches the prebuilt `linux-musl` release into `~/.local/bin`. The
   flag matters: without it the installer prefers building from source through
@@ -147,7 +149,7 @@ image rebuilds; removed only by `./dev.sh clean`):
 | Volume | Mounted at | Contents |
 | --- | --- | --- |
 | `claude-config` | `/home/dev/.claude` | Claude Code login, settings, session history, todos |
-| `codex-config` | `/home/dev/.codex` | Codex CLI login, settings, session state |
+| `codex-config` | `/home/dev/.codex` | Codex CLI login, settings, session state (not its binary) |
 | `omp-config` | `/home/dev/.omp` | omp login, settings, session transcripts, blob store, memory |
 | `opencode-config` | `/home/dev/.config/opencode` | opencode settings (`opencode.json`, `tui.json`) |
 | `opencode-data` | `/home/dev/.local/share/opencode` | opencode credentials (`auth.json`) and session state |
@@ -161,6 +163,16 @@ credentials file lands in that one directory rather than at `~/.claude.json`,
 which lets a single volume cover all of its state. `CODEX_HOME` is set to
 `/home/dev/.codex` for the same reason on the Codex side. omp needs no
 equivalent — everything it keeps already lives under `~/.omp`.
+
+Codex needs one extra step the others do not. Its installer puts the actual
+binary under `$CODEX_HOME/packages`, and `~/.local/bin/codex` is only a
+symlink into it — so with `/home/dev/.codex` on a volume, the version that
+first filled the volume would stay in place no matter how often you rebuilt.
+The image therefore installs the payload to `/opt/codex`
+(`OMEGA_CODEX_PACKAGES`), outside every mount, and `entrypoint.sh` links
+`$CODEX_HOME/packages` to it at start-up. `./dev.sh rebuild` updates Codex
+like everything else, and the volume goes back to holding only your login and
+sessions.
 
 opencode is the exception: it has no single-directory knob, splitting settings
 (`~/.config/opencode`) from credentials and sessions

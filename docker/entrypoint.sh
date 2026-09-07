@@ -18,4 +18,19 @@ if [ -n "${GIT_USER_EMAIL:-}" ]; then
     git config --global user.email "${GIT_USER_EMAIL}"
 fi
 
+# Codex keeps its binary payload under $CODEX_HOME/packages, but $CODEX_HOME
+# is a named volume and Docker seeds one only while it is empty -- so a volume
+# created by an older image would keep serving that old codex no matter what
+# `./dev.sh rebuild` installs. The image owns the payload instead (see
+# OMEGA_CODEX_PACKAGES in docker/Dockerfile); point the volume at it, which
+# both fixes the pin and drops the stale copy an existing volume still holds.
+# Only the binaries are touched here: credentials, sessions, skills and
+# plugins are elsewhere under $CODEX_HOME and are left alone.
+if [ -n "${CODEX_HOME:-}" ] && [ -d "${OMEGA_CODEX_PACKAGES:-}/packages" ]; then
+    if [ ! -L "${CODEX_HOME}/packages" ]; then
+        rm -rf "${CODEX_HOME}/packages"
+    fi
+    ln -sfn "${OMEGA_CODEX_PACKAGES}/packages" "${CODEX_HOME}/packages"
+fi
+
 exec "$@"

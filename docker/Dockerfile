@@ -41,7 +41,10 @@ ARG USER_GID=1000
 
 # CLAUDE_CONFIG_DIR / CODEX_HOME: keep all Claude Code / Codex CLI state
 #   (config, credentials, history) inside one directory each, so a single
-#   named volume persists all of it per tool.
+#   named volume persists all of it per tool. On the Codex side that covers
+#   state *only*: its installer would also drop the ~300 MB binary payload
+#   under $CODEX_HOME/packages, which the volume would then pin to whichever
+#   version first created it -- see the install layer below.
 # DISABLE_AUTOUPDATER / CODEX_UPDATE_DISABLED: the version of each tool is
 #   pinned by this image. Without these, a session would re-download a large
 #   binary into a container whose home directory is discarded on exit.
@@ -178,13 +181,24 @@ RUN set -eux; \
     adduser -D -u "${USER_UID}" -G "$(getent group "${USER_GID}" | cut -d: -f1)" \
         -s /bin/bash dev
 
+# Where Codex's binary payload goes. Its installer keeps that payload inside
+# CODEX_HOME, which here is a named volume -- so left alone, the first image
+# to populate the volume would pin codex forever and `./dev.sh rebuild` could
+# never move it. The payload belongs to the image, like every other tool's
+# binary, so it gets a path of its own outside every mount. Named with an
+# OMEGA_ prefix because it is ours, not a knob Codex knows about.
+ENV OMEGA_CODEX_PACKAGES=/opt/codex
+
 # Pre-create every path that a named volume mounts over. Docker seeds a fresh
 # named volume from the image's contents *and ownership* of that path, so
 # creating them here (owned by dev) is what keeps the volumes writable
-# without any root-owned-mountpoint fixups at runtime.
+# without any root-owned-mountpoint fixups at runtime. OMEGA_CODEX_PACKAGES
+# joins them for the ownership half alone -- it is deliberately not a volume,
+# but the codex install below still runs as dev and has to write into it.
 RUN mkdir -p \
         /workspace \
         /workspace/target \
+        "${OMEGA_CODEX_PACKAGES}" \
         /home/dev/.claude \
         /home/dev/.codex \
         /home/dev/.omp \
@@ -195,7 +209,8 @@ RUN mkdir -p \
         "${CARGO_HOME}/git" \
     && touch /commandhistory/.bash_history \
     && chown -R "${USER_UID}:${USER_GID}" \
-        /workspace /home/dev /commandhistory "${CARGO_HOME}"
+        /workspace /home/dev /commandhistory "${CARGO_HOME}" \
+        "${OMEGA_CODEX_PACKAGES}"
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod 0755 /usr/local/bin/entrypoint.sh
@@ -222,12 +237,42 @@ RUN curl -fsSL https://claude.ai/install.sh | bash -s -- "${CLAUDE_CODE_VERSION}
 
 # Codex CLI, installed the same way and for the same reason: its own native
 # installer lays down a self-contained Rust binary (musl on this base image)
-# into ~/.local/bin, already on PATH above -- no Node.js involved, same as
-# Claude Code. CODEX_NON_INTERACTIVE skips the installer's PATH-editing
-# prompts (PATH is already correct); CODEX_RELEASE pins the version.
-RUN CODEX_RELEASE="${CODEX_VERSION}" CODEX_NON_INTERACTIVE=1 \
-        curl -fsSL https://chatgpt.com/codex/install.sh | sh \
-    && codex --version
+# -- no Node.js involved, same as Claude Code. CODEX_NON_INTERACTIVE skips
+# the installer's PATH-editing prompts (PATH is already correct);
+# CODEX_RELEASE pins the version.
+#
+# What ~/.local/bin gets is only a symlink; the installer puts the real
+# payload at $CODEX_HOME/packages/standalone. CODEX_HOME is therefore
+# overridden for this layer alone, so the payload lands in the image rather
+# than in the volume that mounts over /home/dev/.codex at run time -- the
+# runtime CODEX_HOME set above is unaffected, and Codex keeps reading its
+# credentials and sessions from the volume. entrypoint.sh points
+# $CODEX_HOME/packages back here, which also heals volumes created before
+# this split existed.
+#
+# The script is fetched to a file rather than piped, because every setting
+# here is passed through the environment and `VAR=x curl ... | sh` puts VAR on
+# curl -- the first command of the pipeline -- where the installer never sees
+# it. That silently defeated CODEX_VERSION for as long as this layer has
+# existed, and would defeat CODEX_HOME too.
+#
+# Neither knob fails loudly on its own, so both are asserted: the symlink must
+# resolve into the image, and a pinned version must be the version installed.
+# A future installer that stops honouring CODEX_HOME has to break this build
+# rather than quietly restore a codex that no rebuild can move.
+RUN curl -fsSL https://chatgpt.com/codex/install.sh -o /tmp/codex-install.sh \
+    && CODEX_HOME="${OMEGA_CODEX_PACKAGES}" \
+       CODEX_RELEASE="${CODEX_VERSION}" \
+       CODEX_NON_INTERACTIVE=1 \
+       sh /tmp/codex-install.sh \
+    && rm -f /tmp/codex-install.sh \
+    && case "$(readlink -f /home/dev/.local/bin/codex)" in \
+           "${OMEGA_CODEX_PACKAGES}"/*) ;; \
+           *) echo "codex payload is outside ${OMEGA_CODEX_PACKAGES}" >&2; exit 1 ;; \
+       esac \
+    && codex --version \
+    && { [ "${CODEX_VERSION}" = "latest" ] \
+         || codex --version | grep -qF "${CODEX_VERSION}"; }
 
 # omp (oh-my-pi), third of the four. `--binary` is not the installer's default
 # but is what keeps this image free of a Bun toolchain: left to itself the
@@ -252,13 +297,19 @@ RUN set -eux; \
 # or Bun behind it. Unlike the other three it installs into ~/.opencode/bin
 # rather than ~/.local/bin, which is why that directory is on PATH above.
 # The installer takes its version from VERSION; leaving it unset means the
-# newest release, so it is only passed when actually pinned.
+# newest release, so it is only passed when actually pinned. Fetched to a file
+# and run with the environment on `bash`, for the reason spelled out in the
+# codex layer above: piping would put VERSION on curl instead, which is where
+# this pin used to go missing.
 RUN set -eux; \
+    curl -fsSL https://opencode.ai/install -o /tmp/opencode-install.sh; \
     if [ "${OPENCODE_VERSION}" = "latest" ]; then \
-        curl -fsSL https://opencode.ai/install | bash; \
+        bash /tmp/opencode-install.sh; \
     else \
-        VERSION="${OPENCODE_VERSION}" curl -fsSL https://opencode.ai/install | bash; \
+        VERSION="${OPENCODE_VERSION}" bash /tmp/opencode-install.sh; \
+        opencode --version | grep -qF "${OPENCODE_VERSION}"; \
     fi; \
+    rm -f /tmp/opencode-install.sh; \
     opencode --version
 
 WORKDIR /workspace

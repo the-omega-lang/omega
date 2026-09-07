@@ -54,7 +54,10 @@ services:
       - claude-config:/home/dev/.claude
 
       # Same idea for Codex CLI: login/credentials and session state, so
-      # `codex` remembers you across runs too.
+      # `codex` remembers you across runs too. Its binary is *not* in here,
+      # even though Codex installs it under CODEX_HOME by default: the image
+      # keeps that (see OMEGA_CODEX_PACKAGES in Dockerfile), or this volume
+      # would pin codex to whatever version first created it.
       - codex-config:/home/dev/.codex
 
       # And for omp, whose ~/.omp holds config, credentials, session
