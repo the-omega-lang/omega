@@ -375,6 +375,28 @@ Shape problems in `omega-driver` and `omega-analyzer` that still need a delibera
   No gate covers `@layout(align)` at all today, which is why this was not
   caught earlier.
 
+  **`std::atomic` now depends on this.**
+  [`atomics.md`](../language/atomics.md) requires every atomic location to be
+  naturally aligned, and the `std` wrappers state that with
+  `@layout(align = sizeof<T>)` — so the annotation has gone from a layout
+  convenience to the mechanism backing a normative guarantee, while still not
+  being an address guarantee. A wrapper reached directly (a global, a local, a
+  field of a struct that has no smaller-aligned field before it) is aligned in
+  practice today, but one nested inside another packed declaration is not:
+
+  ```
+  struct Inner  { pad: u8; counter: AtomicU64; }   # counter at offset 8, size 16
+  struct Nested { lead: u8; inner: Inner; }        # inner at offset 1
+  ```
+
+  `Nested` does not inherit `Inner`'s alignment, so `counter` lands at offset 9
+  — measured, not predicted. On AArch64 that faults (the exclusives require
+  natural alignment and the platform no longer tests the address), and on
+  x86-64 it silently loses indivisibility when the access straddles a cache
+  line. Making `type_alignment` the max of a type's own declared alignment and
+  its fields' is the first half of the fix; the other half is an aligned
+  allocation story for atomics reached through a pointer.
+
 - **Nothing gates a 32-bit target end to end.** Phase A of the
   LLVM-backend work made every width-sensitive analyzer question read the
   real target width, and `riscv32-none`/`thumbv7em-none` objects do emit —

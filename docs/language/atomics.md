@@ -35,10 +35,34 @@ Programs must not perform those accesses concurrently. Sequential
 (non-concurrent) ordinary access to the same storage is unaffected: an atomic
 location is ordinary Omega storage, and the operations are ordinary calls.
 
-An implementation must accept every address that is valid for ordinary Omega
-access at that width. Alignment beyond what ordinary access already requires
-is a platform's problem to emulate, never a restriction the portable API
-imposes.
+## Alignment
+
+An atomic location must be **naturally aligned**: its address must be a
+multiple of the operation's access width -- 1, 2, 4 and 8 bytes for
+`Atomicity8`, `Atomicity16`, `Atomicity32` and `Atomicity64` respectively.
+Subject to that, an implementation must accept every address that is valid for
+ordinary Omega access at that width.
+
+Alignment is a requirement on the caller, not something an implementation
+emulates. The instructions that make an access indivisible require it on the
+architectures Omega targets, and hiding that would mean an address test on
+every operation plus a lock for the addresses that fail it -- a cost every
+correct program pays to keep an incorrect one working, which is the kind of
+hidden cost this language rejects.
+
+Omega declarations are packed by default (see
+[`annotations-and-sizeof.md`](annotations-and-sizeof.md)), so an atomic
+location is aligned because a program said so, not by inheritance:
+`@layout(align = sizeof<T>)` on the type owning the location is how the
+requirement is met. The `std::atomic` wrappers carry that annotation, so code
+using them states nothing further; code calling a width gap on storage of its
+own is responsible for that storage's alignment.
+
+Passing a misaligned address is a program error to which this specification
+gives no meaning. What happens then is the platform's business, and the
+outcomes genuinely differ between them: an implementation may fault, may
+complete the access without being indivisible, or may behave exactly as if the
+address had been aligned.
 
 ## Modification order
 

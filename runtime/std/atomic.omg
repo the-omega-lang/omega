@@ -19,6 +19,7 @@ exposed alias AtomicRmwOrdering = core::atomic::AtomicRmwOrdering;
 # Mutating methods take `*mut self`: operation-level atomicity is not a licence
 # to write through an immutable binding.
 macro unsigned_atomic($Name: ident, $Gap: path, $T: type) => {
+    @layout(align = sizeof<$T>)
     exposed struct $Name {
         # `shared`, not hidden: a macro body cannot name a hidden member of the
         # struct it generates without revealing it at every single use
@@ -85,6 +86,7 @@ macro unsigned_atomic($Name: ident, $Gap: path, $T: type) => {
 # representation-preserving. Only ordering comparisons differ, so those use the
 # gap's signed members instead of guessing from an unsigned bit pattern.
 macro signed_atomic($Name: ident, $Gap: path, $T: type, $Bits: type) => {
+    @layout(align = sizeof<$T>)
     exposed struct $Name {
         shared value: $T;
 
@@ -162,6 +164,9 @@ signed_atomic$(AtomicI64, Atomicity64, i64, u64);
 # Written out rather than generated: a bool has no arithmetic or ordering
 # operations, and its storage is the canonical `0`/`1` byte the boolean
 # bitwise operations below depend on.
+# The alignment names the storage type, not `bool`: the location this wraps is
+# the `u8` the `Atomicity8` gap accesses.
+@layout(align = sizeof<u8>)
 exposed struct AtomicBool {
     value: u8;
 

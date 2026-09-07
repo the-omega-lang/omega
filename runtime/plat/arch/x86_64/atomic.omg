@@ -12,11 +12,10 @@
 # `compare_exchange_weak` is the strong operation: `cmpxchg` has no spurious
 # failure to report.
 #
-# A `lock`-prefixed access is indivisible at any address, so an atomic
-# location that ordinary Omega access accepts but that is not naturally
-# aligned still works -- only the *plain* load/store instructions need the
-# alignment, and the unaligned path substitutes a locked instruction for them.
-# No lock table or allocation is involved on this architecture.
+# An atomic location is naturally aligned by contract
+# (docs/language/atomics.md), so the plain load and store instructions are
+# always usable and nothing here inspects an address. No lock table, no
+# allocation and no alignment dispatch is involved on this architecture.
 import core::atomic::AtomicLoadOrdering;
 import core::atomic::AtomicStoreOrdering;
 import core::atomic::AtomicRmwOrdering;
@@ -203,7 +202,6 @@ macro width_atomicity(
 	$Gap: path,
 	$U: type,
 	$I: type,
-	$MISALIGNED: expr,
 	$load: ident,
 	$store: ident,
 	$swap: ident,
@@ -212,28 +210,16 @@ macro width_atomicity(
 ) => {
 	glue $Gap {
 		load(location: *$U, order: AtomicLoadOrdering) => $U {
-			if (<usize>location & $MISALIGNED) == 0usize {
-				$load(location)
-			} else {
-				# Comparing the location against a value and writing that same
-				# value back reads it indivisibly whatever the outcome, which a
-				# plain load straddling a cache line would not do.
-				$cas(<*mut $U>(<usize>location), <$U>0, <$U>0)
-			}
+			$load(location)
 		}
 
 		store(location: *mut $U, value: $U, order: AtomicStoreOrdering) => void {
-			plain := (<usize>location & $MISALIGNED) == 0usize;
 			match order {
 				# `xchg` is locked, so the store cannot be reordered after a
 				# later load the way a plain `mov` could.
 				AtomicStoreOrdering::SeqConsistent => { <void>$swap(location, value); },
-				AtomicStoreOrdering::Relaxed => {
-					if plain { $store(location, value); } else { <void>$swap(location, value); }
-				},
-				AtomicStoreOrdering::Release => {
-					if plain { $store(location, value); } else { <void>$swap(location, value); }
-				},
+				AtomicStoreOrdering::Relaxed => { $store(location, value); },
+				AtomicStoreOrdering::Release => { $store(location, value); },
 			}
 		}
 
@@ -343,7 +329,7 @@ macro width_atomicity(
 	}
 }
 
-width_atomicity$(core::atomic::Atomicity8, u8, i8, 0usize, load_8, store_8, swap_8, cas_8, xadd_8);
-width_atomicity$(core::atomic::Atomicity16, u16, i16, 1usize, load_16, store_16, swap_16, cas_16, xadd_16);
-width_atomicity$(core::atomic::Atomicity32, u32, i32, 3usize, load_32, store_32, swap_32, cas_32, xadd_32);
-width_atomicity$(core::atomic::Atomicity64, u64, i64, 7usize, load_64, store_64, swap_64, cas_64, xadd_64);
+width_atomicity$(core::atomic::Atomicity8, u8, i8, load_8, store_8, swap_8, cas_8, xadd_8);
+width_atomicity$(core::atomic::Atomicity16, u16, i16, load_16, store_16, swap_16, cas_16, xadd_16);
+width_atomicity$(core::atomic::Atomicity32, u32, i32, load_32, store_32, swap_32, cas_32, xadd_32);
+width_atomicity$(core::atomic::Atomicity64, u64, i64, load_64, store_64, swap_64, cas_64, xadd_64);

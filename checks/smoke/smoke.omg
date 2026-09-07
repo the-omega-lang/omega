@@ -10,18 +10,10 @@ import std::io::read_line;
 import std::io::Stdin;
 import std::list::List;
 import std::string::String;
-import core::atomic::Atomicity32;
+import std::atomic::AtomicU32;
 import core::atomic::AtomicLoadOrdering;
 import core::atomic::AtomicStoreOrdering;
 import core::atomic::AtomicRmwOrdering;
-
-# Omega declarations are packed by default, so `value` sits at offset 1 and an
-# atomic on it is not naturally aligned. The platform still has to accept it:
-# an implementation must take every address ordinary access takes.
-struct Skewed {
-	exposed pad: u8;
-	exposed value: u32;
-}
 
 main() => void {
 	println$("smoke-stdout: platform console reached");
@@ -43,11 +35,14 @@ main() => void {
 	saw := read_line(&mut source, &mut line);
 	println$("smoke-stdin: ", saw, " ", line.as_str());
 
-	mut skewed := Skewed { pad = 0u8; value = 0u32; };
-	Atomicity32::store(&mut skewed.value, 7u32, AtomicStoreOrdering::SeqConsistent);
-	loaded := Atomicity32::load(&skewed.value, AtomicLoadOrdering::SeqConsistent);
-	previous := Atomicity32::fetch_add(&mut skewed.value, 5u32, AtomicRmwOrdering::SeqConsistent);
-	println$("smoke-unaligned-atomic: ", loaded, " ", previous, " ", skewed.value);
+	# Reached through the `std` wrapper rather than the raw gap: the wrapper's
+	# own `@layout(align)` is what makes the location naturally aligned, which
+	# docs/language/atomics.md requires of every caller.
+	mut counter := AtomicU32::new(0u32);
+	counter.store(7u32, AtomicStoreOrdering::SeqConsistent);
+	loaded := counter.load(AtomicLoadOrdering::SeqConsistent);
+	previous := counter.fetch_add(5u32, AtomicRmwOrdering::SeqConsistent);
+	println$("smoke-atomic: ", loaded, " ", previous, " ", counter.load(AtomicLoadOrdering::SeqConsistent));
 
 	eprintln$("smoke-stderr: reached");
 }

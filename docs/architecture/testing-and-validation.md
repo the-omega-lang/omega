@@ -145,7 +145,7 @@ The root language runner is intentionally simple; workflows that need several in
 `bin/check-platform` (`just check-platform`) is that dedicated recipe for the platform layer, driving the fixtures under `checks/`. It covers what one uniform link on one target cannot:
 
 - every target root under `runtime/plat/target/` compiles for its own target, and its composition symlinks are intact;
-- the hosted x86-64 Linux program links with no CRT and no libc, has no unresolved symbol and no dynamic dependency, and really reaches stdout, stdin, stderr, the heap and an unaligned atomic;
+- the hosted x86-64 Linux program links with no CRT and no libc, has no unresolved symbol and no dynamic dependency, and really reaches stdout, stdin, stderr, the heap and an aligned atomic;
 - eight host threads agree on the final value of every atomic width, linked against `core` plus only the platform's single `arch/atomic` object -- the harness may use pthreads, since what must be free of a C runtime is the platform implementation it calls;
 - each architecture emits the instructions its implementation claims (x86-64 locked forms, AArch64 baseline exclusives rather than optional LSE, AVR interrupt masking);
 - the Windows objects import Kernel32 and nothing else and define this platform's own entry symbol rather than a CRT startup one;

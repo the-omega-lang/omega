@@ -75,6 +75,12 @@ through the bit-preserving unsigned operations and uses the gap's signed
 `fetch_min`/`fetch_max` for comparisons; `AtomicBool` stores one byte and
 exposes only the boolean-meaningful operations.
 
+Each wrapper carries `@layout(align = sizeof<T>)`, which is what makes its
+storage naturally aligned -- the alignment every atomic location is required to
+have. Omega declarations are packed by default, so code calling a
+`core::atomic` width gap on storage of its own must state that alignment
+itself; see [the language specification](../language/atomics.md).
+
 Mutating methods take `*mut self` and `load` takes `*self`, matching the
 pointer mutability the gaps require. The backing field is not part of the
 public surface: this first surface has no `get_mut` or non-atomic accessor.

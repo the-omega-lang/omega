@@ -45,8 +45,12 @@ instructions fault on misalignment, several OS/embedded configurations enable
 strict alignment-fault checking globally, and certain SIMD load/store forms
 require natural alignment. The safety argument was written for (and is only
 actually true on) one of the two architectures the compiler already advertises
-supporting. Nothing has actually broken yet — nothing in this codegen currently
-emits exclusive/atomic/SIMD instructions — but the written justification for a
+supporting. It is no longer only theoretical either: the AArch64 platform's
+atomics emit load-/store-exclusive instructions, and
+[`atomics.md`](../language/atomics.md) now requires every atomic location to be
+naturally aligned — a requirement packed-by-default layout does not help a
+program meet, and that `@layout(align)` does not yet actually deliver (see its
+entry in [`known-issues.md`](known-issues.md)). The written justification for a
 default that touches every struct/enum layout in the language no longer matches
 the compiler's own stated target surface, and nothing re-derives or gates it
 per-target.

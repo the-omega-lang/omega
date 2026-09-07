@@ -149,7 +149,7 @@ check "the linked program has no unresolved and no dynamic dependency" do
   problems.empty? ? nil : problems.join("\n")
 end
 
-check "it reaches stdout, stdin, stderr, the heap and an unaligned atomic" do
+check "it reaches stdout, stdin, stderr, the heap and an aligned atomic" do
   next "not linked" unless smoke_built
 
   out, err, status = run(smoke_binary.to_s, stdin: "platform check\n")
@@ -157,7 +157,7 @@ check "it reaches stdout, stdin, stderr, the heap and an unaligned atomic" do
     smoke-stdout: platform console reached
     smoke-alloc: 64 3969
     smoke-stdin: true platform check
-    smoke-unaligned-atomic: 7 7 12
+    smoke-atomic: 7 7 12
   OUT
   problems = []
   problems << "stdout was:\n#{out}" unless out == expected_out

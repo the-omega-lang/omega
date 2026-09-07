@@ -103,3 +103,34 @@ only the low half of the pair it was given, so `u16`/`i16` cannot be used as
 
 Until `reg` can express these, do not name a register for an AVR operand wider
 than a byte, and do not pass a `u16`/`i16` into an AVR body.
+
+## A libc-free `x86_64-windows` link cannot resolve `_fltused`
+
+LLVM emits an undefined reference to `_fltused` from any MSVC-target module
+that uses floating point; the definition normally comes from the C runtime,
+which this platform deliberately does not link. Three objects in a normal build
+carry the reference:
+
+```
+target/x86_64-windows/std/fmt.obj
+target/x86_64-windows/std/primitives.obj
+target/x86_64-windows/core/primitives/numerics.obj
+```
+
+Nothing in the repository defines the symbol, so the link command documented in
+[`../guide/platform-glue.md`](../guide/platform-glue.md) fails for any program
+reaching one of those objects — which `std::fmt` means is most of them, not
+only programs that use floats themselves. `aarch64-windows` is unaffected;
+`_fltused` is an x86 MSVC convention.
+
+It cannot currently be fixed in Omega source. `@mangling` is rejected on a
+`global-declaration` (*"this item can't carry annotations"*), and a `foreign`
+binding is a declaration that takes no initializer, so neither of the two ways
+to name an exact linker symbol can also *define* one holding data. Resolving it
+means picking one of: allowing `@mangling(force = "...")` on globals, defining
+`_fltused` in the backend for MSVC x86 targets the way the CRT would, or
+shipping a hand-written object in the Windows platform.
+
+`bin/check-platform` does not catch it because its Windows checks scan only
+`<target>/plat` objects, never `core` or `std`.
+
