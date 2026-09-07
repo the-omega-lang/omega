@@ -48,12 +48,14 @@ tests/
 
 `bin/test-runner` discovers those directories and, for each selected case:
 
-1. invokes `bin/omgc-debug` on the test package, registering the current `core`, `std`, and `plat` source packages as externs;
-2. if compilation succeeds, gathers the case's per-source objects in sorted path order and links them with the prebuilt runtime objects;
+1. invokes `bin/omgc-debug` on the test package for the host target, registering the current `core`, `std`, and `plat` source packages as externs;
+2. if compilation succeeds, compiles any `*.c` sources the case ships (freestanding, no C runtime), gathers the case's per-source objects in sorted path order, and links them with the prebuilt runtime objects;
 3. executes the resulting program;
 4. compares any present `expected.stdout` and `expected.stderr` files byte-for-byte with the relevant captured output, and any present `expected.status` file with the program's termination status.
 
-The runner keeps captured output in memory. Per-test artifacts live under `<artifacts>/tests/<case>/`: the case's object tree in `objects/`, mirroring its source layout, plus the linked executable. `<artifacts>` defaults to `target/` and can be overridden with `OMEGA_ARTIFACTS_DIR`; the runtime packages' object directories (`<artifacts>/core/`, `std/`, `plat/`) are read from the same root. Each case's output directory is cleared before compiling, so a removed source cannot leave a stale object in the link.
+The link is `-nostdlib -static -no-pie -Wl,--gc-sections`: the platform package supplies the ELF entry symbol itself, so no CRT startup object or libc may take part. A case whose subject is the C ABI ships its own freestanding C helper rather than pulling a C runtime into every conformance executable.
+
+The runner keeps captured output in memory. Per-test artifacts live under `<artifacts>/tests/<case>/`: the case's object tree in `objects/`, mirroring its source layout, its native helper objects, plus the linked executable. `<artifacts>` defaults to `target/` and can be overridden with `OMEGA_ARTIFACTS_DIR`; the runtime packages' object directories (`<artifacts>/<target>/core/`, `std/`, `plat/`) are read from the same root. Each case's output directory is cleared before compiling, so a removed source cannot leave a stale object in the link.
 
 These cases are **language conformance tests implemented end-to-end**. They should be derived from observable rules in `docs/language/`. A compiler bug must not be encoded as the expected language behavior merely because the current implementation happens to do it.
 
@@ -71,7 +73,7 @@ If compilation fails, the current runner compares the compiler's stdout/stderr a
 
 Only a *failed* compilation exposes compiler output to these files; once compilation succeeds the runner compares the linked program's own streams, so warnings emitted by a successful compile are invisible here. Assert warning behavior in the owning crate's tests (`compiler/omega-driver/tests/` for whole-package warnings) instead.
 
-Without `expected.status`, a successfully linked program must exit successfully in addition to matching any expected streams. `expected.status` replaces that requirement with an exact decimal comparison, so a case may assert a deliberately abnormal termination -- a panic reaching the hosted handler, for example. A program killed by a signal has no exit code of its own and reports the shell's `128 + signal` convention instead, so `abort` is `134`.
+Without `expected.status`, a successfully linked program must exit successfully in addition to matching any expected streams. `expected.status` replaces that requirement with an exact decimal comparison, so a case may assert a deliberately abnormal termination -- a panic reaching the hosted handler, for example, which exits `134`.
 
 Because the same files can describe compiler output for a negative test or program output for a successful test, keep each case intentionally single-purpose. If future test needs make that convention ambiguous, extend the runner deliberately rather than inferring intent from filenames or compiler behavior.
 
@@ -137,6 +139,19 @@ Package identity, mangling, ABI, and weak-linkage bugs can require more than a s
 - concrete strong-definition uniqueness.
 
 The root language runner is intentionally simple; workflows that need several independently compiled packages, custom linker assertions, `nm`/`readelf`, or deliberately different runtime subsets may justify a focused compiler/workflow test or a small dedicated recipe rather than complicating every language case.
+
+### Platform-matrix validation
+
+`bin/check-platform` (`just check-platform`) is that dedicated recipe for the platform layer, driving the fixtures under `checks/`. It covers what one uniform link on one target cannot:
+
+- every target root under `runtime/plat/target/` compiles for its own target, and its composition symlinks are intact;
+- the hosted x86-64 Linux program links with no CRT and no libc, has no unresolved symbol and no dynamic dependency, and really reaches stdout, stdin, stderr, the heap and an unaligned atomic;
+- eight host threads agree on the final value of every atomic width, linked against `core` plus only the platform's single `arch/atomic` object -- the harness may use pthreads, since what must be free of a C runtime is the platform implementation it calls;
+- each architecture emits the instructions its implementation claims (x86-64 locked forms, AArch64 baseline exclusives rather than optional LSE, AVR interrupt masking);
+- the Windows objects import Kernel32 and nothing else and define this platform's own entry symbol rather than a CRT startup one;
+- `avr-none` leaves the allocator and console gaps genuinely unresolved instead of stubbed, while filling all four atomic widths and the panic handler.
+
+Cross targets are taken as far as the host toolchain honestly allows: `aarch64-linux` is linked into a static ELF, and the Windows link command is documented rather than faked because no import library is present. A check that cannot run reports as skipped with the reason, never as a pass.
 
 ## Runtime capability validation
 

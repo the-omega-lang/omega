@@ -1,0 +1,95 @@
+# The AArch64 Linux system-call boundary. Same normalized operations as every
+# other Linux architecture in this tree; only the numbers, the registers and
+# the trap instruction differ, and they stay here.
+#
+# The kernel takes the call number in `x8` and arguments in `x0`-`x5`, and
+# returns in `x0`.
+
+# `asm` has no output operand, so each result is written through an explicit
+# out-pointer operand instead of read back from a register.
+raw_transfer(number: usize, fd: i32, buffer: usize, count: usize) => isize {
+	mut result: isize = 0;
+	asm(
+		reg(number, "x8"),
+		reg(fd, "w0"),
+		reg(buffer, "x1"),
+		reg(count, "x2"),
+		reg(&mut result)
+	) => {
+		svc #0
+		str x0, [$result]
+	}
+	result
+}
+
+# A kernel error is `-errno`; every other value is the transferred count,
+# including a short transfer and a zero-length one.
+transferred(result: isize) => Option<usize> {
+	if result < 0isize {
+		Option<usize>::None
+	} else {
+		Option<usize>::Some { value = <usize>result; }
+	}
+}
+
+shared read(fd: i32, buffer: *mut u8, count: usize) => Option<usize> {
+	transferred(raw_transfer(63usize, fd, <usize>buffer, count))
+}
+
+shared write(fd: i32, buffer: *u8, count: usize) => Option<usize> {
+	transferred(raw_transfer(64usize, fd, <usize>buffer, count))
+}
+
+# `mmap(NULL, length, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0)`.
+# The constant arguments are written as immediates in the body rather than
+# passed as operands: they would otherwise pin six registers for values the
+# instruction stream already knows.
+shared map_anonymous(length: usize) => *mut u8 {
+	mut result: isize = 0;
+	asm(
+		reg(length, "x1"),
+		reg(&mut result),
+		clobber("x8"),
+		clobber("x0"),
+		clobber("x2"),
+		clobber("x3"),
+		clobber("x4"),
+		clobber("x5")
+	) => {
+		mov x8, #222
+		mov x0, xzr
+		mov x2, #3
+		mov x3, #34
+		mov x4, #-1
+		mov x5, xzr
+		svc #0
+		str x0, [$result]
+	}
+	# The kernel reports failure as `-errno`, and a user mapping never has the
+	# sign bit set on this target.
+	if result < 0isize { <*mut u8>0usize } else { <*mut u8><usize>result }
+}
+
+shared unmap(address: *u8, length: usize) => void {
+	asm(
+		reg(address, "x0"),
+		reg(length, "x1"),
+		clobber("x8")
+	) => {
+		mov x8, #215
+		svc #0
+	}
+}
+
+# `exit_group`, so every thread of the process stops, not only the caller.
+# Naked because the function never returns: there is no Omega control flow
+# after the instruction that could need a frame, and no return path to prove.
+# A naked body takes no `reg` operand, so `status` is used where the calling
+# convention already put it: `w0`, which is also where this syscall wants it.
+@naked
+shared terminate(status: i32) => never {
+	asm() => {
+		mov x8, #94
+		svc #0
+	}
+}

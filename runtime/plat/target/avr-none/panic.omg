@@ -1,0 +1,23 @@
+# `avr-none` is a generic AVR target: it names no MCU, so there is no USART
+# instance, register map, clock or board wiring to report a panic through, and
+# a gap has exactly one glue -- there is no way to write "use the console if
+# this build happens to have one". A panic therefore stops the part where it
+# is, with interrupts masked so nothing else keeps running on a broken
+# invariant, and leaves the state visible to a debugger.
+#
+# A concrete MCU/board platform that does have a serial port composes its own
+# panic glue instead of this file.
+@naked
+halt() => never {
+	asm() => {
+		cli
+	1:
+		rjmp 1b
+	}
+}
+
+glue core::panic::PanicHandler {
+	panic(info: *PanicInfo) => never {
+		halt()
+	}
+}

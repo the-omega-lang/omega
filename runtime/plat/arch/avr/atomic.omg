@@ -1,0 +1,185 @@
+# AVR atomics by interrupt masking.
+#
+# A generic AVR part is single-core, so the only thing that can interleave
+# with a sequence of instructions is an interrupt. Masking interrupts around
+# an ordinary access therefore makes it indivisible with respect to every
+# other execution context that exists on this architecture, at every width the
+# gaps declare -- including the 32- and 64-bit ones, which take several
+# instructions on an 8-bit machine.
+#
+# This is not lock-free, and it is not claimed to be: the contract in
+# docs/language/atomics.md is about indivisibility and ordering, not about
+# which mechanism a platform uses. Every ordering is strengthened to one
+# critical section, and `compare_exchange_weak` never fails spuriously, which
+# strengthening also permits.
+#
+# The critical section is an interrupt-state save/restore pair rather than a
+# bare `cli`/`sei`: code that already had interrupts disabled must not have
+# them silently enabled again on the way out. `sbrc`/`sei` restores only the
+# global interrupt-enable bit, so the arithmetic flags the surrounding
+# compiled code may depend on are left alone -- unlike writing `SREG` back
+# whole, which Omega's `asm` does not currently declare as a clobber on this
+# architecture.
+#
+# Both boundaries are `asm` statements, which Omega emits with a memory
+# clobber, so the access between them cannot be moved out of the section.
+import core::atomic::AtomicLoadOrdering;
+import core::atomic::AtomicStoreOrdering;
+import core::atomic::AtomicRmwOrdering;
+
+# `SREG` is I/O address 0x3f; its bit 7 is the global interrupt enable. The
+# saved state is written through an explicit out-pointer because `asm` has no
+# output operand, and the pointer is pinned to `X` because the plain `st`
+# addressing modes accept only a pointer register.
+disable_interrupts(saved: *mut u8) => void {
+	asm(reg(saved, "r26"), clobber("r18")) => {
+		in r18, 0x3f
+		cli
+		st X, r18
+	}
+}
+
+restore_interrupts(saved: u8) => void {
+	asm(reg(saved)) => {
+		sbrc $saved, 7
+		sei
+	}
+}
+
+# Every operation is the same shape, so unlike the architectures with native
+# atomic instructions this file needs no per-width assembly at all: inside the
+# critical section the access is ordinary Omega code.
+macro width_atomicity($Gap: path, $U: type, $I: type) => {
+	glue $Gap {
+		load(location: *$U, order: AtomicLoadOrdering) => $U {
+			mut saved: u8 = 0;
+			disable_interrupts(&mut saved);
+			value := *location;
+			restore_interrupts(saved);
+			value
+		}
+
+		store(location: *mut $U, value: $U, order: AtomicStoreOrdering) => void {
+			mut saved: u8 = 0;
+			disable_interrupts(&mut saved);
+			*location = value;
+			restore_interrupts(saved);
+		}
+
+		exchange(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
+			mut saved: u8 = 0;
+			disable_interrupts(&mut saved);
+			previous := *location;
+			*location = value;
+			restore_interrupts(saved);
+			previous
+		}
+
+		compare_exchange(location: *mut $U, expected: $U, desired: $U, success: AtomicRmwOrdering, failure: AtomicLoadOrdering) => Result<$U, $U> {
+			mut saved: u8 = 0;
+			disable_interrupts(&mut saved);
+			previous := *location;
+			exchanged := previous == expected;
+			if exchanged { *location = desired; }
+			restore_interrupts(saved);
+			if exchanged {
+				Result<$U, $U>::Ok { value = previous; }
+			} else {
+				Result<$U, $U>::Err { error = previous; }
+			}
+		}
+
+		compare_exchange_weak(location: *mut $U, expected: $U, desired: $U, success: AtomicRmwOrdering, failure: AtomicLoadOrdering) => Result<$U, $U> {
+			$Gap::compare_exchange(location, expected, desired, success, failure)
+		}
+
+		fetch_add(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
+			mut saved: u8 = 0;
+			disable_interrupts(&mut saved);
+			previous := *location;
+			*location = previous + value;
+			restore_interrupts(saved);
+			previous
+		}
+
+		fetch_sub(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
+			mut saved: u8 = 0;
+			disable_interrupts(&mut saved);
+			previous := *location;
+			*location = previous - value;
+			restore_interrupts(saved);
+			previous
+		}
+
+		fetch_and(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
+			mut saved: u8 = 0;
+			disable_interrupts(&mut saved);
+			previous := *location;
+			*location = previous & value;
+			restore_interrupts(saved);
+			previous
+		}
+
+		fetch_or(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
+			mut saved: u8 = 0;
+			disable_interrupts(&mut saved);
+			previous := *location;
+			*location = previous | value;
+			restore_interrupts(saved);
+			previous
+		}
+
+		fetch_xor(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
+			mut saved: u8 = 0;
+			disable_interrupts(&mut saved);
+			previous := *location;
+			*location = previous ^ value;
+			restore_interrupts(saved);
+			previous
+		}
+
+		fetch_min_unsigned(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
+			mut saved: u8 = 0;
+			disable_interrupts(&mut saved);
+			previous := *location;
+			if value < previous { *location = value; }
+			restore_interrupts(saved);
+			previous
+		}
+
+		fetch_max_unsigned(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
+			mut saved: u8 = 0;
+			disable_interrupts(&mut saved);
+			previous := *location;
+			if value > previous { *location = value; }
+			restore_interrupts(saved);
+			previous
+		}
+
+		# The signed views share the width's storage; only the comparison
+		# differs, which is exactly why the gap declares them separately
+		# instead of inferring a sign from a bit pattern.
+		fetch_min_signed(location: *mut $I, value: $I, order: AtomicRmwOrdering) => $I {
+			mut saved: u8 = 0;
+			disable_interrupts(&mut saved);
+			previous := *location;
+			if value < previous { *location = value; }
+			restore_interrupts(saved);
+			previous
+		}
+
+		fetch_max_signed(location: *mut $I, value: $I, order: AtomicRmwOrdering) => $I {
+			mut saved: u8 = 0;
+			disable_interrupts(&mut saved);
+			previous := *location;
+			if value > previous { *location = value; }
+			restore_interrupts(saved);
+			previous
+		}
+	}
+}
+
+width_atomicity$(core::atomic::Atomicity8, u8, i8);
+width_atomicity$(core::atomic::Atomicity16, u16, i16);
+width_atomicity$(core::atomic::Atomicity32, u32, i32);
+width_atomicity$(core::atomic::Atomicity64, u64, i64);

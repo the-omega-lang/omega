@@ -12,8 +12,6 @@ Omega intentionally minimizes hidden runtime machinery. Most facilities normally
           +---------- capability -------+
                          |
                     plat objects
-
-optional target-specific assembly: runtime/shims/
 ```
 
 Each package compiles to a directory of per-source objects rather than a single file, so `core`, `std`, and `plat` each contribute the objects of their own source files. The exact objects linked are a build/application choice; there is no mandatory compiler-injected libc runtime object.
@@ -53,15 +51,32 @@ Owning library values use explicit lifetime/free APIs; the compiler does not inj
 
 ### `runtime/plat/*`
 
-`runtime/plat/` is a container of platform implementations, not one magical compiler-known package.
+`runtime/plat/` is a container of platform implementations, not one magical compiler-known package. Only a directory under `runtime/plat/target/` is ever compiled; it is presented to source under the declared identity `plat` using `plat:<dir>` / `--import=plat:<dir>`.
 
-Today `runtime/plat/libc/` is compiled as an ordinary package but presented to source under declared identity `plat` using `plat:<dir>` / `--import=plat:<dir>`.
+Selecting a platform implementation is therefore selecting which root is built and registered, not an implicit compiler target hook. The `--target` argument and the chosen root must agree: the target fixes `usize`, layout and the platform together, so every package of one build is compiled for the same one.
 
-Selecting a platform implementation is therefore selecting which root/object is built and registered, not an implicit compiler target hook.
+#### Composition is filesystem-level
 
-### `runtime/shims`
+The implementation is split by *what decides it*, and a concrete target is assembled from those pieces with committed relative symlinks:
 
-`runtime/shims/` contains target-specific assembly for functionality that cannot/should not be expressed as ordinary portable Omega code. It is outside the normal compiler package graph and is linked explicitly when a build recipe needs it.
+```text
+arch/<arch>/              only the instruction set decides it        (atomics)
+os/<os>/common/           the OS decides it the same way everywhere  (Linux allocator/console/termination)
+os/<os>/arch/<arch>/      the OS x architecture intersection         (syscall ABI, ELF entry)
+common/<class>/           policy a class of targets shares, through gaps only (hosted panic)
+target/<target>/          composition, plus what is genuinely that target's own
+libc/                     the explicit compatibility platform
+```
+
+The OS x architecture layer exists because forcing that knowledge into a falsely pure `arch` or `os` layer is what makes such trees rot. Linux's `write` number is neither an architecture fact nor an OS-only one.
+
+Nothing in the compiler participates. `fs_resolve` discovers modules through the filesystem and keeps each file's logical path relative to the selected root, so a symlinked fragment is an ordinary module of the compiled package and its artifact lands at the same relative path. There is no target `cfg`, no compiler-side platform table, and no generated copy of the tree. The one cost is that the composition is real filesystem state: `bin/check-plat-links` fails loudly when a checkout materializes those links as plain files, because the resulting package would compile as a platform missing its allocator, console and entry point.
+
+A target root has no root-module file of its own, since a directory that only groups children declares no module. Windows composes `os` as a whole directory (one Win32 surface serves both architectures); Linux composes `os` file by file, which is the case file-level composition exists for.
+
+#### Partial platforms are normal
+
+`avr-none` fills `PanicHandler` and all four atomic widths and nothing else. A generic AVR target identifies no MCU, so there is no RAM region, USART instance, register map, clock policy, reset vector or board wiring to build an allocator, a console or a startup sequence out of. Those gaps stay unfilled, and a program that references one fails at link naming the missing glue symbol. That is the designed outcome: a stub returning `None` or null would turn a build error into a runtime one.
 
 ## Gaps and glue as the platform seam
 
@@ -88,7 +103,9 @@ The driver checks declaration/implementation relationship and uniqueness at comp
 
 Unrecoverable failure uses the same seam. `core::panic` declares `PanicHandler`, and `core::panic::panic$` is the source-level entry point: the macro builds a stack-local `PanicInfo` from `core::builtins`' source-location macros at the call site and tail-calls the handler, which returns `never`.
 
-Nothing in the compiler or `core` picks a panic policy. Panic policy is a platform decision like any other capability, so it lives with the platform package: `runtime/plat/libc` reports the site on descriptor 2 and calls `abort`, which is correct for a hosted program and wrong for a freestanding target that wants a trap, a reset, or a status LED -- such a target supplies its own glue in a build that does not register `plat`, since one gap still takes exactly one glue. Deliberately keeping the construction inside the macro rather than behind a core helper function is what keeps `core`'s objects free of any reference to the handler symbol, so a program that never panics needs no panic glue and no extra linkage.
+Nothing in the compiler or `core` picks a panic policy. Panic policy is a platform decision like any other capability, so it lives with the platform package, and it is where the layering earns its keep. `common/hosted/panic.omg` owns the message shape for every hosted target and reaches the console only through `core::platform::StandardError` and termination only through one target-private `root::os::process::panic_exit`; Linux implements that with `exit_group(134)` and Windows with `ExitProcess(134)`. `avr-none` composes none of that and supplies its own handler instead -- interrupts off, then an endless loop -- because a part with no identified serial port has nothing to report on. One gap still takes exactly one glue, so a target chooses by which files it composes, never by a conditional inside a handler.
+
+Deliberately keeping the construction inside the macro rather than behind a core helper function is what keeps `core`'s objects free of any reference to the handler symbol, so a program that never panics needs no panic glue and no extra linkage.
 
 No allocation, formatting, unwinding, backtrace machinery, runtime registry, or backend intrinsic is involved: the location macros become ordinary literals during macro expansion, and the handler call is an ordinary gap call.
 
@@ -109,9 +126,13 @@ backend:
   instructions, an LL/SC or CAS retry loop, interrupt masking, an OS service,
   or a lock -- and owes the complete contract in
   [`../language/atomics.md`](../language/atomics.md) for that width;
-- `runtime/plat/libc` fills none of them, because no honest libc-only
-  implementation exists without an architecture-specific body or a new runtime
-  dependency. That is a platform gap left open on purpose, not an oversight.
+- every `runtime/plat/target/` platform fills all four widths from its
+  `arch/<arch>/atomic.omg` fragment, which is the layer that can: x86-64 uses
+  locked instructions, AArch64 uses baseline acquire/release and exclusives
+  rather than optional LSE, and AVR masks interrupts. `runtime/plat/libc`
+  fills none of them, because no honest libc-only implementation exists
+  without an architecture-specific body or a new runtime dependency -- which
+  is exactly why atomics are an `arch/` fragment and not an OS one.
 
 One consequence is worth recording. Codegen treats an ordinary external call
 conservatively with respect to memory, and platform inline assembly is emitted
@@ -135,11 +156,13 @@ This is important to Omega's “no hidden runtime cost” and freestanding goals
 Typical repository flow:
 
 ```text
-omgc runtime/core/                    -> target/core/**.o
-omgc runtime/std/ --import=core:...   -> target/std/**.o
-omgc plat:runtime/plat/libc/ \
-     --import=core:...                -> target/plat/**.o
-omgc app/ --import=core:... \
+omgc runtime/core/ --target=<t>       -> target/<t>/core/**.o
+omgc runtime/std/  --target=<t> \
+     --import=core:...                -> target/<t>/std/**.o
+omgc plat:runtime/plat/target/<t>/ --target=<t> \
+     --import=core:...                -> target/<t>/plat/**.o
+omgc app/ --target=<t> \
+          --import=core:... \
           --import=std:... \
           --import=plat:...           -> target/app/**.o
 
@@ -194,9 +217,19 @@ what exercises the architectural promises:
 - generic/conform instantiations that several packages produce independently
   coalesce at link time instead of colliding.
 
-The root `justfile` only builds those packages (`build-core`, `build-plat`,
-`build-std`) and links the hosted `playground` target; it does not itself
-encode runtime combinations.
+The link is also `-nostdlib -static -no-pie`. That is not a build preference:
+the platform supplies the ELF entry symbol itself, so a CRT startup object
+would collide with it, and every conformance executable therefore proves the
+no-libc claim rather than asserting it. A case whose subject really is the C
+ABI ships its own freestanding C source, compiled and linked as that case's own
+object; nothing pulls a C runtime into the others.
+
+The root `justfile` builds those three packages per target
+(`build-runtime-for`) and links the hosted `playground`; it does not itself
+encode runtime combinations. `bin/check-platform` covers what one uniform link
+on one target cannot: the whole target matrix, concurrent pressure on the
+atomic glue, per-architecture instruction selection, and `avr-none`'s
+deliberately unfilled capabilities.
 
 See [`testing-and-validation.md`](testing-and-validation.md).
 

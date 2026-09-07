@@ -1,0 +1,35 @@
+# What a generic AVR target does and does not provide.
+#
+# `avr-none` names no MCU, so there is no RAM map to allocate from and no
+# USART instance to write bytes to: the allocator and the three console gaps
+# are deliberately left unfilled. This program references all of them anyway,
+# together with the atomics and the panic handler that `avr-none` does fill.
+#
+# `bin/check-platform` compiles it for `avr-none` and asserts the split: the
+# unfilled capabilities must stay unresolved external symbols so a real link
+# fails loudly, and must never be quietly satisfied by a stub that returns
+# `None` or null.
+import std::io::println;
+import std::list::List;
+import core::atomic::Atomicity8;
+import core::atomic::Atomicity32;
+import core::atomic::AtomicLoadOrdering;
+import core::atomic::AtomicRmwOrdering;
+
+main() => void {
+	# Unfilled on this target: console output and the heap.
+	println$("this target has no console to say it on");
+	mut items := List<i32>::new();
+	items.push(1);
+	items.free();
+
+	# Filled on this target: every atomic width, through interrupt masking.
+	mut flag: u8 = 0;
+	<void>Atomicity8::fetch_or(&mut flag, 1u8, AtomicRmwOrdering::SeqConsistent);
+	mut counter: u32 = 0;
+	<void>Atomicity32::fetch_add(&mut counter, 1u32, AtomicRmwOrdering::Relaxed);
+	<void>Atomicity32::load(&counter, AtomicLoadOrdering::Acquire);
+
+	# Filled on this target: the panic handler, which stops the part.
+	panic$("no board to recover on");
+}

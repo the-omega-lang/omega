@@ -1,12 +1,11 @@
-malloc-deref: 77
-abs(-5): 5
-fixed text, no variadic arguments
-sum = 5
-pi = 3.14
+scratch-deref: 77
+t19_abs(-5): 5
+variadic-ints: 10
+variadic-doubles: 464
+variadic-mixed: 2575
 c_callback direct: 13
 c_callback via pointer: 13
 sysv_add: 30
-sysv64 sum = 25
-sysv64 snprintf n: 16
+variadic-sysv64: 35
 quad_rotate: 4123
 helper-main: 999

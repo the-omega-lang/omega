@@ -52,8 +52,8 @@ Built from `alpine:3.23`:
 - **Rust 1.94.1** via `rustup` (`x86_64-unknown-linux-musl`), plus `rustfmt`
   and `clippy`. Pinned by build argument, not by whatever Alpine ships.
 - **build-base / binutils / gdb** — `cc`, `as` and `ld`, which the `justfile`
-  invokes directly to assemble `shims` and link the object files `omgc`
-  emits.
+  and `bin/test-runner` invoke directly to link the object files `omgc`
+  emits, and to build the freestanding C helpers a few tests ship.
 - **LLVM 21** (`llvm21-dev`, `llvm21-static`, `clang21`, `lld21`) — the
   `omega-codegen` backend. `llvm-config` and the rest
   of the LLVM tools live under `/usr/lib/llvm21/bin`, which is on `PATH`, so

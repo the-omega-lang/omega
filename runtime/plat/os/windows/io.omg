@@ -1,0 +1,59 @@
+# The three console capabilities on Windows, through `ReadFile`/`WriteFile` on
+# the process's standard handles. Not the console-only APIs: these work
+# unchanged when the standard handle is a file or a pipe, which is what a
+# redirected program actually gets.
+#
+# The handle is fetched per call rather than cached, so a program that calls
+# `SetStdHandle` observes the redirection immediately.
+import root::os::api;
+
+# Win32 transfer counts are `DWORD`, so a longer slice is offered one
+# `DWORD`'s worth. The gap contract already treats a short transfer as an
+# ordinary `Some(count)` result, so nothing here loops to hide it.
+transferable(length: usize) => u32 {
+	if length > <usize>0xFFFFFFFF_u32 { 0xFFFFFFFF_u32 } else { <u32>length }
+}
+
+shared write_standard(which: u32, bytes: *[]u8) => Option<usize> {
+	handle := api::GetStdHandle(which);
+	if !api::usable(handle) {
+		Option<usize>::None
+	} else {
+		mut written: u32 = 0;
+		ok := api::WriteFile(handle, <*u8>bytes, transferable(<usize>bytes.length), &mut written, <*mut u8>0usize);
+		if ok == 0 {
+			Option<usize>::None
+		} else {
+			Option<usize>::Some { value = <usize>written; }
+		}
+	}
+}
+
+glue core::platform::StandardOutput {
+	write(bytes: *[]u8) => Option<usize> {
+		write_standard(api::STD_OUTPUT, bytes)
+	}
+}
+
+glue core::platform::StandardError {
+	write(bytes: *[]u8) => Option<usize> {
+		write_standard(api::STD_ERROR, bytes)
+	}
+}
+
+glue core::platform::StandardInput {
+	read(into: *mut []u8) => Option<usize> {
+		handle := api::GetStdHandle(api::STD_INPUT);
+		if !api::usable(handle) {
+			Option<usize>::None
+		} else {
+			mut read: u32 = 0;
+			ok := api::ReadFile(handle, <*mut u8>into, transferable(<usize>into.length), &mut read, <*mut u8>0usize);
+			if ok == 0 {
+				Option<usize>::None
+			} else {
+				Option<usize>::Some { value = <usize>read; }
+			}
+		}
+	}
+}

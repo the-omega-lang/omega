@@ -1,0 +1,13 @@
+# Process termination policy for Windows, shared by both architectures: the
+# hosted panic glue in `root::common::panic` needs one target-private way to
+# stop the process.
+import root::os::api;
+
+# 134 matches what the Linux targets report and what this platform's panic
+# produced through libc's `abort` before, so the observable status of a
+# panicking program is the same everywhere in this tree. `ExitProcess` never
+# returns, so `PanicHandler::panic` keeps its `never` contract without a
+# fallback loop, and with no C runtime linked there is no cleanup path to skip.
+shared panic_exit() => never {
+	api::ExitProcess(134u32)
+}

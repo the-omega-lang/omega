@@ -109,6 +109,7 @@ fn each_requested_target_reaches_llvm_as_its_own_backend_target() {
     for (arch, os, triple) in [
         (Arch::Aarch64, Os::Linux, "aarch64-unknown-linux-gnu"),
         (Arch::X86_64, Os::Windows, "x86_64-pc-windows-msvc"),
+        (Arch::Aarch64, Os::Windows, "aarch64-pc-windows-msvc"),
         (Arch::Avr, Os::None, "avr-unknown-unknown"),
     ] {
         let ir = ir_for(POINTER_SMOKE, target(arch, os));
@@ -127,6 +128,7 @@ fn each_requested_target_reaches_llvm_as_its_own_backend_target() {
 fn pointer_sized_values_use_the_target_pointer_width() {
     for (arch, os, size_type) in [
         (Arch::Aarch64, Os::Linux, "i64"),
+        (Arch::Aarch64, Os::Windows, "i64"),
         (Arch::Avr, Os::None, "i16"),
     ] {
         let ir = ir_for(POINTER_SMOKE, target(arch, os));

@@ -51,3 +51,12 @@ bool-compare-exchange-success: ok true
 bool-compare-exchange-failure: err false
 bool-compare-exchange-weak: ok false
 bool-final: true
+u16-fetch-add: 1000
+u16-exchange: 1024
+u16-compare-exchange-success: ok 7
+u16-final: 65535
+i64-fetch-sub: -2
+i64-fetch-min: -8
+i64-fetch-or: -100
+i64-compare-exchange-failure: err -97
+i64-final: -97

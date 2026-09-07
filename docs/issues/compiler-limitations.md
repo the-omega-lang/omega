@@ -64,3 +64,36 @@ Implementation caveats migrated out of architecture chapters. These are non-norm
 ## Compile-time evaluation fuel limit
 
 A single `comp` evaluation currently has a shared fuel budget of **1,000,000** steps across loop progress and nested calls. Exhaustion is diagnosed as runaway compile-time evaluation. This is an implementation safety limit, not a normative promise that programs below or above a particular step count must be accepted by every Omega implementation.
+
+## AVR object emission needs an optimized build
+
+`avr-none` cannot emit `runtime/core` or `runtime/std` at `-O0`: LLVM's AVR
+backend reports *"ran out of registers during register allocation"* for
+functions whose unoptimized lowering keeps too many 32- and 64-bit values
+live at once (`i64::abs`, `std::fmt`'s byte writer). The same sources emit
+cleanly at `-O1` and above, so the repository's AVR matrix build compiles that
+target optimized while every other target still builds at the default `-O0`.
+
+This is a backend register-allocation limitation on a 32-register 8-bit
+machine, not an Omega semantic difference: nothing in the language says a
+target's object emission may depend on the optimization level, and the
+restriction should disappear rather than become a documented rule.
+
+## Inline `asm` cannot name an AVR pointer register pair
+
+An AVR data-space access from inline assembly (`ld`/`st`) requires one of the
+pointer register pairs `X`/`Y`/`Z`, but `reg` cannot deliver one:
+
+- `reg(ptr)` allocates a pair and prints its **low** half (`r24`), so
+  `st $ptr, r18` is not valid assembly;
+- `reg(ptr, "X")`, `"Z"` and `"r31:r30"` are rejected — LLVM's AVR backend has
+  no such named register for an inline-asm constraint;
+- `reg(ptr, "r26")` is *accepted* and silently truncates: the backend emits
+  `mov r26, r24` and never writes `r27`, so `st X, r18` stores through a
+  half-initialized address.
+
+The last form is the dangerous one, because it compiles and only corrupts
+memory at run time. Until `reg` can express a pointer-register-pair class
+(the LLVM `e`/`x`/`y`/`z` constraints, or an operand modifier that prints a
+pair as `X`/`Y`/`Z`), an AVR `asm` body must not be handed a pointer, and no
+AVR platform code may pass one.

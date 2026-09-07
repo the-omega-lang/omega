@@ -1,0 +1,12 @@
+# Process termination policy for Linux, shared by every architecture: the
+# hosted panic glue in `root::common::panic` needs one target-private way to
+# stop the process, and the syscall layer already owns the mechanism.
+import root::os::syscall;
+
+# 134 is the status a shell reports for a process killed by `SIGABRT`, which
+# is what this platform's panic used to produce through libc's `abort`. It is
+# reproduced directly so the observable exit status survives dropping libc,
+# without claiming `abort`'s signal or core-dump behavior.
+shared panic_exit() => never {
+	syscall::terminate(134);
+}

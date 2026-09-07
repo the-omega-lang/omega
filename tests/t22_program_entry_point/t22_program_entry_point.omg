@@ -1,6 +1,22 @@
 import std::io::println;
 
-shared foreign(c) exit(code: i32) => never;
+# A `never` entry point promises the process ends inside `main`, so this case
+# has to end it itself. `core` declares no process-exit capability -- the
+# platform owns termination, and `plat`'s own is package-private -- so the
+# case issues the host's `exit_group` directly. `@naked` because the function
+# must not return: there is no Omega control flow after the trap, which also
+# means no `reg` operand: `status` is used where the calling convention already
+# put it, `edi`, which is where this syscall wants it too.
+#
+# What matters for this case is that nothing here is libc: the program links
+# with no C runtime at all, exactly like every other conformance case.
+@naked
+exit(status: i32) => never {
+	asm() => {
+		mov eax, 231
+		syscall
+	}
+}
 
 main() => never {
 	println$("never-main: ran");

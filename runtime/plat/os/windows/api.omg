@@ -1,0 +1,36 @@
+# The Windows platform dependency of this tree: documented Kernel32 entry
+# points, nothing else. These are operating-system calls, not a C runtime --
+# no CRT startup object, no libc, and no unstable NT syscall numbers, which
+# Microsoft explicitly does not keep stable across releases.
+#
+# Every declaration below is scalar or pointer shaped, so the same source is
+# correct on both x86-64 and AArch64 Windows: `foreign(c)` resolves to
+# whichever machine convention the selected target uses, and `WINAPI` is that
+# convention on every 64-bit Windows target.
+
+# `HANDLE` is an opaque pointer-sized token, `DWORD` a `u32`, `BOOL` an `i32`
+# and `SIZE_T` a `usize`. They are spelled with Omega types rather than
+# re-exported Windows names so nothing outside this module has to know them.
+shared alias Handle = *mut u8;
+
+shared comp STD_INPUT := 0xFFFFFFF6_u32;
+shared comp STD_OUTPUT := 0xFFFFFFF5_u32;
+shared comp STD_ERROR := 0xFFFFFFF4_u32;
+
+shared foreign(c) GetProcessHeap() => Handle;
+shared foreign(c) HeapAlloc(heap: Handle, flags: u32, bytes: usize) => *mut u8;
+shared foreign(c) HeapReAlloc(heap: Handle, flags: u32, block: *mut u8, bytes: usize) => *mut u8;
+shared foreign(c) HeapFree(heap: Handle, flags: u32, block: *u8) => i32;
+
+shared foreign(c) GetStdHandle(which: u32) => Handle;
+shared foreign(c) ReadFile(handle: Handle, buffer: *mut u8, count: u32, read: *mut u32, overlapped: *mut u8) => i32;
+shared foreign(c) WriteFile(handle: Handle, buffer: *u8, count: u32, written: *mut u32, overlapped: *mut u8) => i32;
+
+shared foreign(c) ExitProcess(status: u32) => never;
+
+# A standard handle is absent when it is null and invalid when it is
+# `INVALID_HANDLE_VALUE`, which is an all-ones pointer rather than null.
+shared usable(handle: Handle) => bool {
+	address := <usize>handle;
+	address != 0usize && address != <usize>0 - 1usize
+}

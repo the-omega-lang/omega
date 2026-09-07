@@ -16,15 +16,24 @@ else
 end
 TEST_ARTIFACTS_DIR = ARTIFACTS_DIR.join("tests")
 
-# Dependencies
+# Every package of one build -- core, the platform and std as well as the case
+# itself -- must be compiled for the same target, which is what fixes `usize`,
+# layout and the selected platform together.
+HOST_TARGET = "x86_64-linux"
+
+# Dependencies. The platform is the composed `x86_64-linux` target root, not
+# the libc compatibility platform: a conformance case must exercise what the
+# repository actually ships.
 RUNTIME_PACKAGES = {
   "core" => ROOT_DIR.join("runtime", "core"),
   "std"  => ROOT_DIR.join("runtime", "std"),
-  "plat" => ROOT_DIR.join("runtime", "plat", "libc")
+  "plat" => ROOT_DIR.join("runtime", "plat", "target", HOST_TARGET)
 }.freeze
 # Each package compiles into a directory of per-source objects, so every
 # consumer gathers them recursively in a deterministic path order.
-RUNTIME_OBJECT_DIRS = RUNTIME_PACKAGES.keys.map { |x| ARTIFACTS_DIR.join(x) }.freeze
+RUNTIME_OBJECT_DIRS = RUNTIME_PACKAGES.keys
+  .map { |x| ARTIFACTS_DIR.join(HOST_TARGET, x) }
+  .freeze
 
 def object_files(*dirs)
   dirs.flat_map { |dir| Pathname.glob(Pathname.new(dir).join("**", "*.o")) }
@@ -234,6 +243,7 @@ class TestRunner
       OMGC.to_s,
       test.path.relative_path_from(ROOT_DIR).to_s,
       *OMGC_IMPORTS,
+      "--target=#{HOST_TARGET}",
       "-o", objects_dir.to_s
     )
 
@@ -251,10 +261,26 @@ class TestRunner
       return TestResult.new(test, failures, now - start)
     end
 
+    native = compile_native_helpers(test, target_dir)
+    unless native.is_a?(Array)
+      return TestResult.new(test, [
+        indent_message("compiling this case's native helper failed"),
+        format_command_output(native)
+      ], now - start)
+    end
+
     link = capture(
       "cc",
+      # No CRT startup object and no libc: `plat`'s own `_start` is the ELF
+      # entry point. A case that needs C code links its own helper object
+      # (below) rather than pulling a C runtime into every executable.
+      "-nostdlib",
+      "-static",
+      # That entry point does not self-relocate, so the image must not be a PIE.
+      "-no-pie",
       *object_files(objects_dir),
       *object_files(*RUNTIME_OBJECT_DIRS),
+      *native,
       # Every Omega link is expected to dead-strip: a runtime object that
       # references a capability the program never uses must not force glue
       # for it. See docs/architecture/runtime-and-platform.md.
@@ -281,6 +307,28 @@ class TestRunner
     failures.unshift(status_failure) if status_failure
 
     TestResult.new(test, failures, now - start)
+  end
+
+  # A case may ship freestanding C sources next to its Omega ones when what it
+  # tests is the C ABI itself. They are compiled without a C runtime, exactly
+  # like the rest of the executable; a helper that needed libc would defeat
+  # the point of linking these programs without one.
+  def compile_native_helpers(test, target_dir)
+    sources = Pathname.glob(test.path.join("*.c")).sort
+    return [] if sources.empty?
+
+    objects = []
+    sources.each do |source|
+      object = target_dir.join("#{source.basename(".c")}.native.o")
+      result = capture(
+        "cc", "-c", "-ffreestanding", "-fno-builtin", "-O1",
+        source.to_s, "-o", object.to_s
+      )
+      return result unless result.success?
+
+      objects << object.to_s
+    end
+    objects
   end
 
   def indent_message(text)
@@ -396,9 +444,9 @@ class TestRunner
     FRAME
   end
 
-  # `rlimit_core: 0` because a case may assert an abnormal termination through
-  # `expected.status`: a panicking program reaching libc's `abort` would
-  # otherwise drop a core file into the repository on every run.
+  # `rlimit_core: 0` because a case may terminate abnormally and assert it
+  # through `expected.status`: a program that dies on a signal would otherwise
+  # drop a core file into the repository on every run.
   def capture(*command)
     stdout, stderr, status = Open3.capture3(
       *command,

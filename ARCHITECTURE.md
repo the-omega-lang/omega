@@ -187,8 +187,7 @@ The runtime is separate from the compiler workspace and is compiled as ordinary 
 ```text
 runtime/core       portable foundational package; limited ambient compiler privilege
 runtime/std        higher-level standard library
-runtime/plat/*     platform capability implementations presented as package `plat`
-runtime/shims      target-specific low-level assembly glue
+runtime/plat/*     reusable platform fragments; `target/<target>/` composes one, presented as package `plat`
 ```
 
 `core` owns primitives/inherent methods and ambient exposed names/macros. `std` and `plat` are ordinary explicitly registered packages. Platform capability composition uses Omega `gap`/`glue`, not an implicit native runtime registry.

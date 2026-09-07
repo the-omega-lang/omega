@@ -1,0 +1,95 @@
+#!/usr/bin/env ruby
+# Validates the committed composition of `runtime/plat/target/`.
+#
+# A target root is built entirely from relative symlinks into the reusable
+# `arch/`, `os/` and `common/` fragments. A checkout that cannot create
+# symlinks materializes each one as a small text file holding its target path,
+# which still *looks* like a package: the compiler would then silently build a
+# platform with no allocator, no console and no entry point. This check makes
+# that failure loud instead.
+
+require "pathname"
+
+ROOT = Pathname.new(__dir__).join("..").expand_path
+PLAT = ROOT.join("runtime", "plat")
+TARGETS = PLAT.join("target")
+
+# Names a target root composes from the shared fragments. `os` may instead be
+# a real directory when an OS/architecture intersection needs its files chosen
+# one at a time; every file inside it is then a link of its own.
+COMPOSED = %w[arch common os].freeze
+
+errors = []
+
+def relative_to_plat(path)
+  path.relative_path_from(ROOT)
+end
+
+def check_link(link, errors)
+  target = link.readlink
+  if target.absolute?
+    errors << "#{relative_to_plat(link)}: composition links must be relative, found #{target}"
+    return
+  end
+
+  unless link.exist?
+    errors << "#{relative_to_plat(link)}: broken link to #{target}"
+    return
+  end
+
+  resolved = link.realpath
+  unless resolved.to_s.start_with?("#{PLAT.realpath}/")
+    errors << "#{relative_to_plat(link)}: resolves outside runtime/plat (#{resolved})"
+  end
+end
+
+# A materialized symlink is a regular file whose whole content is the relative
+# path the link was supposed to point at.
+def looks_materialized?(file)
+  return false unless file.size < 512
+
+  content = file.read
+  content.match?(/\A\.{1,2}\/[^\n]*\n?\z/)
+end
+
+def check_regular(file, errors)
+  if looks_materialized?(file)
+    errors << "#{relative_to_plat(file)}: a symlink was checked out as a plain file " \
+              "containing #{file.read.strip.inspect}"
+  elsif file.extname != ".omg"
+    errors << "#{relative_to_plat(file)}: unexpected non-source file in a target root"
+  end
+end
+
+abort "no target roots under #{relative_to_plat(TARGETS)}" unless TARGETS.directory?
+
+TARGETS.children.select(&:directory?).sort.each do |target_root|
+  composed = COMPOSED.map { |name| target_root.join(name) }.select(&:exist?)
+  if composed.empty?
+    errors << "#{relative_to_plat(target_root)}: composes no shared fragment at all"
+  end
+
+  composed.each do |entry|
+    next if entry.symlink?
+    next if entry.basename.to_s == "os" && entry.directory?
+
+    errors << "#{relative_to_plat(entry)}: must be a symlink into runtime/plat"
+  end
+
+  Pathname.glob(target_root.join("**", "*")).sort.each do |entry|
+    if entry.symlink?
+      check_link(entry, errors)
+    elsif entry.file?
+      check_regular(entry, errors)
+    end
+  end
+end
+
+if errors.empty?
+  puts "[*] runtime/plat/target composition OK"
+  exit 0
+end
+
+warn "runtime/plat/target composition is broken:"
+errors.each { |error| warn "  - #{error}" }
+exit 1

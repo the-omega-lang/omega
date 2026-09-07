@@ -1,0 +1,104 @@
+# The x86-64 Linux system-call boundary: the only place in this platform that
+# knows syscall numbers, the `syscall` instruction's register ABI, or the
+# kernel's negative-errno return convention. Everything above it works with
+# the normalized operations below, so the Linux policy shared with other
+# architectures never repeats a number or a register name.
+#
+# System V leaves the argument registers where the kernel wants them
+# (`rdi`, `rsi`, `rdx`, `r10`, `r8`, `r9`, number in `rax`, result in `rax`),
+# and every `syscall` destroys `rcx` and `r11`.
+
+# `asm` has no output operand, so each result is written through an explicit
+# out-pointer operand instead of read back from a register.
+raw_transfer(number: usize, fd: i32, buffer: usize, count: usize) => isize {
+	mut result: isize = 0;
+	asm(
+		reg(number, "rax"),
+		reg(fd, "edi"),
+		reg(buffer, "rsi"),
+		reg(count, "rdx"),
+		reg(&mut result),
+		clobber("rcx"),
+		clobber("r11")
+	) => {
+		syscall
+		mov qword ptr [$result], rax
+	}
+	result
+}
+
+# A kernel error is `-errno`; every other value is the transferred count,
+# including a short transfer and a zero-length one.
+transferred(result: isize) => Option<usize> {
+	if result < 0isize {
+		Option<usize>::None
+	} else {
+		Option<usize>::Some { value = <usize>result; }
+	}
+}
+
+shared read(fd: i32, buffer: *mut u8, count: usize) => Option<usize> {
+	transferred(raw_transfer(0usize, fd, <usize>buffer, count))
+}
+
+shared write(fd: i32, buffer: *u8, count: usize) => Option<usize> {
+	transferred(raw_transfer(1usize, fd, <usize>buffer, count))
+}
+
+# `mmap(NULL, length, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0)`.
+# The constant arguments are written as immediates in the body rather than
+# passed as operands: they would otherwise pin six registers for values the
+# instruction stream already knows.
+shared map_anonymous(length: usize) => *mut u8 {
+	mut result: isize = 0;
+	asm(
+		reg(length, "rsi"),
+		reg(&mut result),
+		clobber("rax"),
+		clobber("rdi"),
+		clobber("rdx"),
+		clobber("r10"),
+		clobber("r8"),
+		clobber("r9"),
+		clobber("rcx"),
+		clobber("r11")
+	) => {
+		mov eax, 9
+		xor edi, edi
+		mov edx, 3
+		mov r10d, 34
+		mov r8, -1
+		xor r9d, r9d
+		syscall
+		mov qword ptr [$result], rax
+	}
+	# The kernel reports failure as `-errno`, and a user mapping never has the
+	# sign bit set on this target.
+	if result < 0isize { <*mut u8>0usize } else { <*mut u8><usize>result }
+}
+
+shared unmap(address: *u8, length: usize) => void {
+	asm(
+		reg(address, "rdi"),
+		reg(length, "rsi"),
+		clobber("rax"),
+		clobber("rcx"),
+		clobber("r11")
+	) => {
+		mov eax, 11
+		syscall
+	}
+}
+
+# `exit_group`, so every thread of the process stops, not only the caller.
+# Naked because the function never returns: there is no Omega control flow
+# after the instruction that could need a frame, and no return path to prove.
+# A naked body takes no `reg` operand, so `status` is used where the calling
+# convention already put it: `edi`, which is also where this syscall wants it.
+@naked
+shared terminate(status: i32) => never {
+	asm() => {
+		mov eax, 231
+		syscall
+	}
+}

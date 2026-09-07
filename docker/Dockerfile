@@ -72,9 +72,9 @@ ENV RUSTUP_HOME=/usr/local/rustup \
 #   * bash/coreutils/findutils/grep/sed/diffutils -- GNU userland, so shell
 #     commands behave the way tooling (and Claude) expects instead of hitting
 #     busybox's reduced flag set.
-#   * build-base/binutils/gdb -- cc, as and ld, which the justfile invokes
-#     directly to assemble shims and link what omgc emits, plus a
-#     debugger.
+#   * build-base/binutils/gdb -- cc, as and ld, which the justfile and
+#     bin/test-runner invoke directly to link what omgc emits and to build the
+#     freestanding C helpers a few tests ship, plus a debugger.
 #   * ripgrep -- Claude Code's search backend, and useful on its own.
 #   * just -- the project's task runner.
 #   * rustup -- provides rustup-init, used below to pin the exact toolchain.

@@ -17,7 +17,7 @@ Use the root [`ARCHITECTURE.md`](../../ARCHITECTURE.md) as the compact map. Open
 | What representation/calling-convention facts does codegen rely on? | [`abi-and-representation.md`](abi-and-representation.md) |
 | How are linker symbols constructed and where is linkage decided? | [`symbol-mangling.md`](symbol-mangling.md) |
 | How do spans/errors/warnings become rendered diagnostics? | [`diagnostics.md`](diagnostics.md) |
-| How do `core`, `std`, platform glue, and shims relate to compiler packages? | [`runtime-and-platform.md`](runtime-and-platform.md) |
+| How do `core`, `std`, and the platform packages relate to compiler packages? | [`runtime-and-platform.md`](runtime-and-platform.md) |
 | Which tests protect which architectural boundaries? | [`testing-and-validation.md`](testing-and-validation.md) |
 
 ## Authority and scope

@@ -1,0 +1,394 @@
+#!/usr/bin/env ruby
+# Platform-matrix validation for `runtime/plat`.
+#
+# The root conformance suite (`bin/test-runner`) proves language semantics on
+# one target through one uniform link. This script proves the things that
+# suite deliberately cannot: that every platform root in the tree compiles for
+# its own target, that the hosted x86-64 Linux link really needs no C runtime,
+# that the atomic glue survives real concurrency, that each architecture emits
+# the instructions its implementation claims, and that `avr-none` leaves the
+# capabilities it cannot honestly provide unresolved instead of stubbed.
+#
+# Requires the runtime matrix to be built first (`just build-runtime-all`);
+# `just check-platform` does that for you.
+
+require "fileutils"
+require "open3"
+require "pathname"
+
+ROOT = Pathname.new(__dir__).join("..").expand_path
+OMGC = ROOT.join("bin", "omgc-debug")
+ARTIFACTS = if ENV["OMEGA_ARTIFACTS_DIR"]
+  Pathname.new(ENV["OMEGA_ARTIFACTS_DIR"]).expand_path
+else
+  ROOT.join("target")
+end
+WORK = ARTIFACTS.join("checks")
+
+HOST = "x86_64-linux"
+TARGETS = %w[x86_64-linux aarch64-linux x86_64-windows aarch64-windows avr-none].freeze
+
+# `nm` on this host reads its own object format only, and the matrix produces
+# COFF and AVR ELF as well.
+NM = ["llvm-nm", "/usr/lib/llvm21/bin/llvm-nm", "nm"]
+  .find { |candidate| system("command -v #{candidate} > /dev/null 2>&1") }
+
+$failures = []
+
+def run(*command, stdin: nil)
+  Open3.capture3(*command, stdin_data: stdin.to_s, chdir: ROOT.to_s)
+end
+
+def check(name)
+  problem = yield
+  if problem
+    $failures << name
+    puts "  \e[31m✗\e[0m #{name}"
+    problem.to_s.lines.each { |line| puts "      #{line.chomp}" }
+  else
+    puts "  \e[32m✓\e[0m #{name}"
+  end
+rescue => error
+  $failures << name
+  puts "  \e[31m✗\e[0m #{name}"
+  puts "      #{error.class}: #{error.message}"
+end
+
+def skip(name, reason)
+  puts "  \e[33m-\e[0m #{name} (#{reason})"
+end
+
+def objects(*dirs, extension: "o")
+  dirs.flat_map { |dir| Pathname.glob(Pathname.new(dir).join("**", "*.#{extension}")) }
+    .map(&:to_s)
+    .sort
+end
+
+def symbols(*paths, only_defined: false)
+  args = [NM]
+  args << "--defined-only" if only_defined
+  out, _err, _status = run(*args, *paths)
+  out
+end
+
+def compile(source_dir, target, output, imports:, opt: nil)
+  args = [OMGC.to_s, source_dir.to_s, "--target=#{target}", "-o", output.to_s]
+  args << opt if opt
+  imports.each { |name, path| args << "--import=#{name}:#{path}" }
+  out, err, status = run(*args)
+  [out + err, status]
+end
+
+def runtime_imports(target)
+  {
+    "core" => ROOT.join("runtime", "core"),
+    "std" => ROOT.join("runtime", "std"),
+    "plat" => ROOT.join("runtime", "plat", "target", target)
+  }
+end
+
+def runtime_objects(target, extension: "o")
+  objects(
+    ARTIFACTS.join(target, "core"),
+    ARTIFACTS.join(target, "plat"),
+    ARTIFACTS.join(target, "std"),
+    extension: extension
+  )
+end
+
+FileUtils.mkdir_p(WORK)
+puts "Omega platform checks"
+puts
+
+# --- the composed target roots are present and complete --------------------
+
+puts "composition"
+check "target roots are committed symlinks into runtime/plat" do
+  out, err, status = run(ROOT.join("bin", "check-plat-links").to_s)
+  status.success? ? nil : out + err
+end
+
+check "every target root's runtime artifacts were built" do
+  missing = TARGETS.reject do |target|
+    %w[core plat std].all? { |package| ARTIFACTS.join(target, package).directory? }
+  end
+  missing.empty? ? nil : "not built: #{missing.join(", ")} -- run `just build-runtime-all`"
+end
+puts
+
+# --- the hosted platform, linked and run without a C runtime ---------------
+
+puts "#{HOST}: hosted capabilities without libc"
+smoke_objects = WORK.join("smoke-objects")
+smoke_binary = WORK.join("smoke")
+smoke_built = false
+
+check "the smoke package compiles" do
+  output, status = compile(ROOT.join("checks", "smoke"), HOST, smoke_objects, imports: runtime_imports(HOST))
+  status.success? ? nil : output
+end
+
+check "it links with no CRT startup object and no libc" do
+  _out, err, status = run(
+    "cc", "-nostdlib", "-static", "-no-pie",
+    *objects(smoke_objects), *runtime_objects(HOST),
+    "-Wl,--gc-sections", "-o", smoke_binary.to_s
+  )
+  smoke_built = status.success?
+  status.success? ? nil : err
+end
+
+check "the linked program has no unresolved and no dynamic dependency" do
+  next "not linked" unless smoke_built
+
+  undefined = symbols(smoke_binary.to_s).lines.select { |line| line.match?(/^\s*U /) }
+  dynamic, _err, _status = run("readelf", "-d", smoke_binary.to_s)
+  problems = []
+  problems << "unresolved symbols:\n#{undefined.join}" unless undefined.empty?
+  problems << "dynamic dependency:\n#{dynamic}" if dynamic.include?("NEEDED")
+  problems.empty? ? nil : problems.join("\n")
+end
+
+check "it reaches stdout, stdin, stderr, the heap and an unaligned atomic" do
+  next "not linked" unless smoke_built
+
+  out, err, status = run(smoke_binary.to_s, stdin: "platform check\n")
+  expected_out = <<~OUT
+    smoke-stdout: platform console reached
+    smoke-alloc: 64 3969
+    smoke-stdin: true platform check
+    smoke-unaligned-atomic: 7 7 12
+  OUT
+  problems = []
+  problems << "stdout was:\n#{out}" unless out == expected_out
+  problems << "stderr was:\n#{err}" unless err == "smoke-stderr: reached\n"
+  problems << "exited with #{status.exitstatus}" unless status.success?
+  problems.empty? ? nil : problems.join("\n")
+end
+puts
+
+# --- the atomic glue under real concurrency --------------------------------
+
+puts "#{HOST}: atomics under contention"
+stress_objects = WORK.join("stress-objects")
+stress_binary = WORK.join("atomic-stress")
+stress_built = false
+
+check "the stress package compiles" do
+  imports = { "core" => ROOT.join("runtime", "core"), "plat" => ROOT.join("runtime", "plat", "target", HOST) }
+  output, status = compile(ROOT.join("checks", "atomic_stress"), HOST, stress_objects, imports: imports)
+  status.success? ? nil : output
+end
+
+# Only `core` and the single `arch/atomic` object of the platform: the atomic
+# implementation must not drag in the rest of the platform, and per-source
+# objects are what makes selecting it possible.
+check "it links against core plus only the platform's atomic object" do
+  harness = WORK.join("harness.o")
+  _out, compile_err, compiled = run(
+    "cc", "-c", "-O2", ROOT.join("checks", "atomic_stress", "harness.c").to_s,
+    "-o", harness.to_s
+  )
+  next compile_err unless compiled.success?
+
+  _out, err, status = run(
+    "cc", "-O2", "-no-pie", harness.to_s,
+    *objects(stress_objects), *objects(ARTIFACTS.join(HOST, "core")),
+    ARTIFACTS.join(HOST, "plat", "arch", "atomic.o").to_s,
+    "-Wl,--gc-sections", "-lpthread", "-o", stress_binary.to_s
+  )
+  stress_built = status.success?
+  stress_built ? nil : err
+end
+
+check "eight threads agree on every width's final value" do
+  next "not linked" unless stress_built
+
+  out, err, status = run(stress_binary.to_s)
+  expected = <<~OUT
+    stress-fetch-add-u32: 160000
+    stress-cas-u32: 160000
+    stress-fetch-add-u16: 28928
+    stress-fetch-add-u64: 480000
+    stress-fetch-or-u8: 255
+    stress-fetch-max-i32: 7
+  OUT
+  next "exited with #{status.exitstatus}: #{err}" unless status.success?
+
+  out == expected ? nil : "stdout was:\n#{out}"
+end
+puts
+
+# --- each architecture emits what its implementation claims ----------------
+
+puts "instruction selection"
+
+def atomic_assembly(target, opt: nil)
+  output = WORK.join("asm-#{target}")
+  args = [
+    OMGC.to_s, "plat:#{ROOT.join("runtime", "plat", "target", target)}",
+    "--import=core:#{ROOT.join("runtime", "core")}",
+    "--target=#{target}", "--emit=asm", "-o", output.to_s
+  ]
+  args << opt if opt
+  _out, err, status = run(*args)
+  raise "emitting #{target} assembly failed:\n#{err}" unless status.success?
+
+  output.join("arch", "atomic.s").read
+end
+
+check "x86-64 uses locked instructions and a sequencing store" do
+  text = atomic_assembly("x86_64-linux")
+  required = ["lock", "cmpxchgb", "cmpxchgq", "xaddl", "xchgl", "xchgq"]
+  missing = required.reject { |mnemonic| text.include?(mnemonic) }
+  missing.empty? ? nil : "no #{missing.join(", ")} in the emitted x86-64 atomics"
+end
+
+check "aarch64 uses baseline acquire/release and exclusives, not LSE" do
+  text = atomic_assembly("aarch64-linux")
+  required = %w[ldarb ldarh ldar stlrb stlrh stlr ldaxrb ldaxr stlxrb stlxr clrex]
+  missing = required.reject { |mnemonic| text.include?(mnemonic) }
+  forbidden = %w[casal ldadd swpal].select { |mnemonic| text.include?(mnemonic) }
+  problems = []
+  problems << "no #{missing.join(", ")} in the emitted AArch64 atomics" unless missing.empty?
+  problems << "uses optional LSE instructions: #{forbidden.join(", ")}" unless forbidden.empty?
+  problems.empty? ? nil : problems.join("\n")
+end
+
+check "avr masks interrupts and restores only the enable bit" do
+  text = atomic_assembly("avr-none", opt: "-O1")
+  required = ["in\tr18, 63", "cli", "sbrc", "sei"]
+  missing = required.reject { |fragment| text.include?(fragment) }
+  missing.empty? ? nil : "no #{missing.join(", ")} in the emitted AVR atomics"
+end
+puts
+
+# --- cross targets: what can be proven without that toolchain --------------
+
+puts "aarch64-linux"
+check "the whole runtime links into a static ELF with no libc" do
+  binary = WORK.join("smoke-aarch64-linux")
+  output = WORK.join("smoke-objects-aarch64-linux")
+  compiled, status = compile(ROOT.join("checks", "smoke"), "aarch64-linux", output, imports: runtime_imports("aarch64-linux"))
+  next compiled unless status.success?
+
+  _out, err, link = run(
+    "ld.lld", "-m", "aarch64linux", "--gc-sections",
+    *objects(output), *runtime_objects("aarch64-linux"),
+    "-o", binary.to_s
+  )
+  next err unless link.success?
+
+  undefined = symbols(binary.to_s).lines.select { |line| line.match?(/^\s*U /) }
+  undefined.empty? ? nil : "unresolved symbols:\n#{undefined.join}"
+end
+skip "running it", "no aarch64 emulator or sysroot on this host"
+puts
+
+KERNEL32 = %w[
+  GetProcessHeap HeapAlloc HeapReAlloc HeapFree
+  GetStdHandle ReadFile WriteFile ExitProcess
+].freeze
+
+%w[x86_64-windows aarch64-windows].each do |target|
+  puts target
+  check "the platform objects import Kernel32 and nothing else" do
+    coff = objects(ARTIFACTS.join(target, "plat"), extension: "obj")
+    next "no objects under #{ARTIFACTS.join(target, "plat")}" if coff.empty?
+
+    undefined = symbols(*coff).lines
+      .select { |line| line.match?(/^\s*U /) }
+      .map { |line| line.split.last }
+      .uniq
+    foreign = undefined.reject { |name| name.start_with?("_omg") || KERNEL32.include?(name) }
+    foreign.empty? ? nil : "unexpected imports: #{foreign.join(", ")}"
+  end
+
+  check "the entry point is this platform's own, not a CRT startup symbol" do
+    entry = ARTIFACTS.join(target, "plat", "os", "entry.obj")
+    defined = symbols(entry.to_s, only_defined: true)
+    crt = %w[mainCRTStartup WinMainCRTStartup __scrt_common_main _DllMainCRTStartup]
+      .select { |name| defined.include?(name) }
+    problems = []
+    problems << "omg_start is not defined in #{entry}" unless defined.include?("omg_start")
+    problems << "defines CRT startup symbols: #{crt.join(", ")}" unless crt.empty?
+    problems.empty? ? nil : problems.join("\n")
+  end
+
+  skip "linking an executable", "needs kernel32.lib: " \
+    "lld-link /entry:omg_start /subsystem:console /nodefaultlib <objects> kernel32.lib"
+  puts
+end
+
+# --- avr-none is partial on purpose ----------------------------------------
+
+puts "avr-none"
+UNFILLED = {
+  "GlobalAllocator" => "8platform15GlobalAllocator",
+  "StandardOutput" => "8platform14StandardOutput",
+  "StandardError" => "8platform13StandardError",
+  "StandardInput" => "8platform13StandardInput"
+}.freeze
+
+avr_objects = WORK.join("avr-capabilities")
+avr_output = nil
+
+check "a program using every capability compiles for avr-none" do
+  # `-O1`: the AVR backend cannot register-allocate core's unoptimized 64-bit
+  # code (docs/issues/compiler-limitations.md).
+  avr_output, status = compile(
+    ROOT.join("checks", "avr_capabilities"), "avr-none", avr_objects,
+    imports: runtime_imports("avr-none"), opt: "-O1"
+  )
+  status.success? ? nil : avr_output
+end
+
+check "it is told the allocator and console gaps are unfilled" do
+  missing = UNFILLED.keys.reject do |gap|
+    avr_output.to_s.include?("gap '#{gap}' has no glue implementation")
+  end
+  missing.empty? ? nil : "no unfilled-gap warning for #{missing.join(", ")}"
+end
+
+check "the atomic widths and the panic handler are filled" do
+  reported = ["Atomicity8", "Atomicity16", "Atomicity32", "Atomicity64", "PanicHandler"]
+    .select { |gap| avr_output.to_s.include?("gap '#{gap}' has no glue implementation") }
+  reported.empty? ? nil : "reported as unfilled: #{reported.join(", ")}"
+end
+
+check "no stub satisfies the capabilities this target cannot honestly provide" do
+  all = objects(avr_objects, ARTIFACTS.join("avr-none", "core"),
+                ARTIFACTS.join("avr-none", "plat"), ARTIFACTS.join("avr-none", "std"))
+  defined = symbols(*all, only_defined: true)
+  stubbed = UNFILLED.select { |_gap, fragment| defined.include?(fragment) }.keys
+  referenced = symbols(*all).lines.select { |line| line.match?(/^\s*U /) }.join
+  problems = []
+  problems << "defined somewhere despite being unfillable: #{stubbed.join(", ")}" unless stubbed.empty?
+  UNFILLED.each do |gap, fragment|
+    problems << "#{gap} is not referenced at all, so this proves nothing" unless referenced.include?(fragment)
+  end
+  problems.empty? ? nil : problems.join("\n")
+end
+
+check "the platform defines every atomic width and the panic handler" do
+  defined = symbols(ARTIFACTS.join("avr-none", "plat", "arch", "atomic.o").to_s, only_defined: true)
+  widths = %w[Atomicity8 Atomicity16 Atomicity32 Atomicity64].reject do |width|
+    # 14 gap functions per width.
+    defined.scan(/6atomic\d+#{width}/).length == 14
+  end
+  panic = symbols(ARTIFACTS.join("avr-none", "plat", "panic.o").to_s, only_defined: true)
+  problems = []
+  problems << "incomplete glue for #{widths.join(", ")}" unless widths.empty?
+  problems << "no PanicHandler glue" unless panic.include?("12PanicHandler5panic")
+  problems.empty? ? nil : problems.join("\n")
+end
+puts
+
+if $failures.empty?
+  puts "\e[32mall platform checks passed\e[0m"
+  exit 0
+end
+
+puts "\e[31m#{$failures.length} platform check(s) failed:\e[0m"
+$failures.each { |name| puts "  - #{name}" }
+exit 1

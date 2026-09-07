@@ -1,0 +1,86 @@
+# Real concurrent pressure on the platform's atomic glue.
+#
+# The assertion is about the *platform implementation*: it uses only the
+# architecture's own instructions, with no OS service, no libc and no
+# allocation. The harness that creates the threads is ordinary host C and may
+# use pthreads freely -- it is test infrastructure, and it is deliberately
+# linked against only `core`'s objects plus `plat`'s single `arch/atomic`
+# object, so nothing else of the platform is even present.
+import core::atomic::Atomicity8;
+import core::atomic::Atomicity16;
+import core::atomic::Atomicity32;
+import core::atomic::Atomicity64;
+import core::atomic::AtomicLoadOrdering;
+import core::atomic::AtomicRmwOrdering;
+
+@mangling(force = "omega_fetch_add_u32")
+foreign(c) fetch_add_u32(slot: *mut u32, value: u32) => u32 {
+	Atomicity32::fetch_add(slot, value, AtomicRmwOrdering::SeqConsistent)
+}
+
+# The retry loop portable code is expected to write over a weak
+# compare-exchange: it must converge under contention, and must never lose an
+# increment even when the weak form reports a spurious failure.
+@mangling(force = "omega_cas_increment_u32")
+foreign(c) cas_increment_u32(slot: *mut u32) => void {
+	mut observed := Atomicity32::load(slot, AtomicLoadOrdering::Relaxed);
+	mut running := true;
+	while running {
+		outcome := Atomicity32::compare_exchange_weak(
+			slot,
+			observed,
+			observed + 1u32,
+			AtomicRmwOrdering::AcquireRelease,
+			AtomicLoadOrdering::Relaxed
+		);
+		match outcome {
+			Result::Ok => { running = false; },
+			Result::Err => { observed = outcome.error; },
+		}
+	}
+}
+
+@mangling(force = "omega_fetch_add_u16")
+foreign(c) fetch_add_u16(slot: *mut u16, value: u16) => u16 {
+	Atomicity16::fetch_add(slot, value, AtomicRmwOrdering::SeqConsistent)
+}
+
+@mangling(force = "omega_fetch_add_u64")
+foreign(c) fetch_add_u64(slot: *mut u64, value: u64) => u64 {
+	Atomicity64::fetch_add(slot, value, AtomicRmwOrdering::SeqConsistent)
+}
+
+@mangling(force = "omega_fetch_or_u8")
+foreign(c) fetch_or_u8(slot: *mut u8, value: u8) => u8 {
+	Atomicity8::fetch_or(slot, value, AtomicRmwOrdering::SeqConsistent)
+}
+
+@mangling(force = "omega_fetch_max_i32")
+foreign(c) fetch_max_i32(slot: *mut i32, value: i32) => i32 {
+	Atomicity32::fetch_max_signed(slot, value, AtomicRmwOrdering::SeqConsistent)
+}
+
+@mangling(force = "omega_load_u32")
+foreign(c) load_u32(slot: *u32) => u32 {
+	Atomicity32::load(slot, AtomicLoadOrdering::SeqConsistent)
+}
+
+@mangling(force = "omega_load_u16")
+foreign(c) load_u16(slot: *u16) => u16 {
+	Atomicity16::load(slot, AtomicLoadOrdering::SeqConsistent)
+}
+
+@mangling(force = "omega_load_u64")
+foreign(c) load_u64(slot: *u64) => u64 {
+	Atomicity64::load(slot, AtomicLoadOrdering::SeqConsistent)
+}
+
+@mangling(force = "omega_load_u8")
+foreign(c) load_u8(slot: *u8) => u8 {
+	Atomicity8::load(slot, AtomicLoadOrdering::SeqConsistent)
+}
+
+@mangling(force = "omega_load_i32")
+foreign(c) load_i32(slot: *i32) => i32 {
+	<i32>Atomicity32::load(<*u32>(<usize>slot), AtomicLoadOrdering::SeqConsistent)
+}

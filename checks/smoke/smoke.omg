@@ -1,0 +1,53 @@
+# The native x86-64 Linux platform, exercised through the four hosted
+# capabilities at once: standard output, standard input, the heap allocator
+# (including the growth path that goes through `realloc`), and standard error.
+#
+# Driven by `bin/check-platform`, which links it without a C runtime and then
+# proves the executable has no libc dependency of any kind.
+import std::io::println;
+import std::io::eprintln;
+import std::io::read_line;
+import std::io::Stdin;
+import std::list::List;
+import std::string::String;
+import core::atomic::Atomicity32;
+import core::atomic::AtomicLoadOrdering;
+import core::atomic::AtomicStoreOrdering;
+import core::atomic::AtomicRmwOrdering;
+
+# Omega declarations are packed by default, so `value` sits at offset 1 and an
+# atomic on it is not naturally aligned. The platform still has to accept it:
+# an implementation must take every address ordinary access takes.
+struct Skewed {
+	exposed pad: u8;
+	exposed value: u32;
+}
+
+main() => void {
+	println$("smoke-stdout: platform console reached");
+
+	# Enough pushes to outgrow the initial capacity several times, so the
+	# allocator's `realloc` path -- allocate, copy, release -- really runs.
+	mut numbers := List<i32>::new();
+	defer numbers.free();
+	for mut i := 0; i < 64; ++i {
+		numbers.push(i * i);
+	}
+	mut last: i32 = 0;
+	numbers.get(63, &mut last);
+	println$("smoke-alloc: ", numbers.len(), " ", last);
+
+	mut line := String::new();
+	defer line.free();
+	mut source := Stdin {};
+	saw := read_line(&mut source, &mut line);
+	println$("smoke-stdin: ", saw, " ", line.as_str());
+
+	mut skewed := Skewed { pad = 0u8; value = 0u32; };
+	Atomicity32::store(&mut skewed.value, 7u32, AtomicStoreOrdering::SeqConsistent);
+	loaded := Atomicity32::load(&skewed.value, AtomicLoadOrdering::SeqConsistent);
+	previous := Atomicity32::fetch_add(&mut skewed.value, 5u32, AtomicRmwOrdering::SeqConsistent);
+	println$("smoke-unaligned-atomic: ", loaded, " ", previous, " ", skewed.value);
+
+	eprintln$("smoke-stderr: reached");
+}

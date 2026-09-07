@@ -28,12 +28,11 @@ runtime/std/
 Build it as a separately compiled extern package:
 
 ```sh
-just build-core
-just build-std
+just build-runtime          # core, the host platform and std together
 ```
 
 A consuming package registers both roots, imports the required names, and
-links the objects under `target/core/` and `target/std/`. It additionally
+links the objects under `target/<target>/core/` and `target/<target>/std/`. It additionally
 links platform objects only for the capabilities its reachable code needs. The
 standard library's objects can contain allocation or console-using functions
 without forcing those glues into every final executable: per-source objects
@@ -81,8 +80,11 @@ pointer mutability the gaps require. The backing field is not part of the
 public surface: this first surface has no `get_mut` or non-atomic accessor.
 
 `std` supplies no glue, so a program using these types links a platform that
-fills the corresponding `AtomicityN` gap. `runtime/plat/libc` does not — see
-[platform glue](platform-glue.md#api-surface). Semantics are specified in
+fills the corresponding `AtomicityN` gap. Every `runtime/plat/target/`
+platform fills all four widths from its architecture's own instructions; the
+`runtime/plat/libc` compatibility platform fills none, because no honest
+libc-only implementation of the contract exists — see
+[platform glue](platform-glue.md). Semantics are specified in
 [the language specification](../language/atomics.md).
 
 ## Collections and ownership

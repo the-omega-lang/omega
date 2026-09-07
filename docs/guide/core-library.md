@@ -188,8 +188,9 @@ Like every other gap, the final program or platform package supplies the one
 no default handler of its own: print-and-abort is right for a hosted program
 and wrong for a board that should reset or blink an LED.
 
-A build that registers `plat` gets the hosted answer for free -- its libc
-platform ships the panic glue described in
+A build that registers `plat` gets its target's answer for free: the four
+hosted targets report the site on standard error and stop the process, and
+`avr-none` masks interrupts and halts, both described in
 [platform glue](platform-glue.md). Because a gap takes exactly one glue
 project-wide, that also means an application linking `plat` cannot add its own
 panic policy on top; a program that wants a different one is built without
@@ -236,7 +237,7 @@ console.
 ## Building and linking
 
 ```
-just build-core
+just build-runtime
 ```
 
 The compiler emits each function into its own object-file section. Link with

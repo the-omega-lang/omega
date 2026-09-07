@@ -6,6 +6,8 @@ import core::atomic::AtomicRmwOrdering;
 import std::atomic::AtomicU32;
 import std::atomic::AtomicI32;
 import std::atomic::AtomicBool;
+import std::atomic::AtomicU16;
+import std::atomic::AtomicI64;
 
 show_u32(label: *str, result: Result<u32, u32>) => void {
 	match result {
@@ -15,6 +17,20 @@ show_u32(label: *str, result: Result<u32, u32>) => void {
 }
 
 show_i32(label: *str, result: Result<i32, i32>) => void {
+	match result {
+		Result::Ok => println$(label, ": ok ", result.value),
+		Result::Err => println$(label, ": err ", result.error),
+	}
+}
+
+show_u16(label: *str, result: Result<u16, u16>) => void {
+	match result {
+		Result::Ok => println$(label, ": ok ", result.value),
+		Result::Err => println$(label, ": err ", result.error),
+	}
+}
+
+show_i64(label: *str, result: Result<i64, i64>) => void {
 	match result {
 		Result::Ok => println$(label, ": ok ", result.value),
 		Result::Err => println$(label, ": err ", result.error),
@@ -122,9 +138,28 @@ boolean_wrapper() => void {
 	println$("bool-final: ", flag.load(AtomicLoadOrdering::SeqConsistent));
 }
 
+# Each storage width is its own capability, so a platform can fill one and
+# leave another open. The 8-bit width is reached through `AtomicBool` and the
+# 32-bit one through the wrappers above; these two reach the remaining ones.
+remaining_widths() => void {
+	mut half := AtomicU16::new(1000u16);
+	println$("u16-fetch-add: ", half.fetch_add(24u16, AtomicRmwOrdering::Relaxed));
+	println$("u16-exchange: ", half.exchange(7u16, AtomicRmwOrdering::SeqConsistent));
+	show_u16("u16-compare-exchange-success", half.compare_exchange(7u16, 65535u16, AtomicRmwOrdering::AcquireRelease, AtomicLoadOrdering::Relaxed));
+	println$("u16-final: ", half.load(AtomicLoadOrdering::SeqConsistent));
+
+	mut wide := AtomicI64::new(-2i64);
+	println$("i64-fetch-sub: ", wide.fetch_sub(6i64, AtomicRmwOrdering::Release));
+	println$("i64-fetch-min: ", wide.fetch_min(-100i64, AtomicRmwOrdering::Relaxed));
+	println$("i64-fetch-or: ", wide.fetch_or(3i64, AtomicRmwOrdering::Relaxed));
+	show_i64("i64-compare-exchange-failure", wide.compare_exchange(0i64, 1i64, AtomicRmwOrdering::SeqConsistent, AtomicLoadOrdering::Acquire));
+	println$("i64-final: ", wide.load(AtomicLoadOrdering::Relaxed));
+}
+
 main() => void {
 	raw_operations();
 	unsigned_wrapper();
 	signed_wrapper();
 	boolean_wrapper();
+	remaining_widths();
 }

@@ -1,0 +1,19 @@
+# The executable entry point. Windows calls it like an ordinary function of
+# the target's C convention, so unlike the ELF targets this needs no naked
+# body -- the loader has already established a normal stack frame.
+#
+# The symbol is named for what it is. It is deliberately not `mainCRTStartup`
+# or `WinMainCRTStartup`: naming it after the Microsoft C runtime would claim
+# a CRT contract this platform does not implement. The link selects it with
+# `/ENTRY:omg_start` (see docs/guide/platform-glue.md).
+import root::os::api;
+
+# The fixed symbol Omega emits for the root `main`
+# (docs/language/foreign-function-interface.md).
+foreign _omg_main : () => void;
+
+@mangling(force = "omg_start")
+foreign(c) process_entry() => never {
+	_omg_main();
+	api::ExitProcess(0u32)
+}

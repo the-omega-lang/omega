@@ -33,11 +33,14 @@ mut sink := Stdout {};
 Write::write(&mut sink, b"hello\n");
 ```
 
-The hosted `plat` package forwards `Stdout`/`Stderr` writes to `write(2)` and
-`Stdin` reads to `read(2)`, returning `None` for a negative libc result and
-`Some(count)` otherwise. A platform can implement the three gaps
-independently. Linking a program that uses a marker requires the corresponding
-glue; linking a program that does not reach it does not.
+A hosted `plat` target forwards these to whatever the operating system's own
+byte I/O is -- the `read`/`write` syscalls on descriptors 0, 1 and 2 on Linux,
+`ReadFile`/`WriteFile` on the standard handles on Windows -- with no libc in
+between. An OS error is `None`; every successful transfer, including a zero
+or short one, is `Some(count)`. A platform can implement the three gaps
+independently, and `avr-none` implements none of them: a generic AVR target
+identifies no serial port. Linking a program that uses a marker requires the
+corresponding glue; linking a program that does not reach it does not.
 
 ## Caller-owned adapters
 

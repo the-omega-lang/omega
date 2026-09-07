@@ -1,0 +1,24 @@
+# The three console capabilities on Linux: descriptors 0, 1 and 2 through the
+# ordinary `read`/`write` syscalls. The gap contract is preserved exactly --
+# a kernel error is `None`, and every non-negative result including zero and a
+# short transfer is `Some(count)`. Retry and short-transfer policy belong to
+# the caller (`std::io`), so nothing here loops.
+import root::os::syscall;
+
+glue core::platform::StandardOutput {
+	write(bytes: *[]u8) => Option<usize> {
+		syscall::write(1, <*u8>bytes, <usize>bytes.length)
+	}
+}
+
+glue core::platform::StandardError {
+	write(bytes: *[]u8) => Option<usize> {
+		syscall::write(2, <*u8>bytes, <usize>bytes.length)
+	}
+}
+
+glue core::platform::StandardInput {
+	read(into: *mut []u8) => Option<usize> {
+		syscall::read(0, <*mut u8>into, <usize>into.length)
+	}
+}

@@ -1,0 +1,23 @@
+# The ELF process entry point. The kernel does not call this like a function:
+# it hands over control with the initial stack holding `argc`, `argv`, `envp`
+# and the auxiliary vector, and with no return address. A `@naked` function is
+# the only shape that leaves that state alone -- an ordinary Omega prologue
+# would treat the stack as a normal frame.
+#
+# `_omg_main` is the fixed symbol Omega emits for the root `main`
+# (docs/language/foreign-function-interface.md); a program whose `main`
+# returns comes back here and terminates with status 0. `exit_group` is
+# spelled out rather than routed through `root::os::syscall` because a naked
+# body cannot contain an Omega call.
+@naked
+@mangling(force = "_start")
+process_entry() => never {
+	asm() => {
+		mov x29, xzr
+		mov x30, xzr
+		bl _omg_main
+		mov x0, xzr
+		mov x8, #94
+		svc #0
+	}
+}

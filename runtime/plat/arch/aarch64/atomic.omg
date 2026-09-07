@@ -1,0 +1,465 @@
+# AArch64 atomics built on the baseline load-acquire/store-release and
+# load-/store-exclusive instructions, not on the optional LSE (`CAS`/`LDADD`)
+# extension, so the same objects run on any AArch64 CPU.
+#
+# Ordering is deliberately uniform: every load is `LDAR`, every store is
+# `STLR`, and every read-modify-write is an `LDAXR`/`STLXR` pair. That is the
+# architecture's own sequentially-consistent mapping, so `Relaxed`, `Acquire`,
+# `Release` and `AcquireRelease` are all strengthened to it rather than
+# selecting a weaker instruction per request. Strengthening is explicitly
+# permitted (docs/language/atomics.md); choosing weaker forms per ordering
+# would multiply the number of raw `asm` bodies without changing what portable
+# code may rely on.
+#
+# `compare_exchange_weak` reports a store-exclusive failure as `Err`, which is
+# exactly what an LL/SC machine can observe cheaply; the strong form retries
+# instead, and only stops when the value it compared really did change.
+#
+# The exclusive and acquire/release instructions require a naturally aligned
+# address, while ordinary Omega access does not (declarations are packed by
+# default), so an unaligned atomic location falls back to one process-wide
+# spin lock and an ordinary access under it. That is allocation-free and keeps
+# the documented contract -- an implementation must accept every address
+# ordinary access accepts -- without weakening the aligned fast path.
+import core::atomic::AtomicLoadOrdering;
+import core::atomic::AtomicStoreOrdering;
+import core::atomic::AtomicRmwOrdering;
+
+# --- the misaligned fallback lock ------------------------------------------
+
+# An Omega declaration is packed by default and a global carries no alignment
+# promise of its own, so the lock word is placed by hand inside a slightly
+# oversized byte array instead of being declared as a `u32` and hoped for.
+mut LOCK_STORAGE: [8]u8;
+
+fallback_lock() => *mut u32 {
+	base := <usize>&mut LOCK_STORAGE[0];
+	<*mut u32>((base + 3usize) & ~3usize)
+}
+
+fallback_acquire() => void {
+	lock := fallback_lock();
+	while exclusive_cas_32(lock, 0u32, 1u32) != 0u32 { }
+}
+
+fallback_release() => void {
+	exclusive_store_32(fallback_lock(), 0u32);
+}
+
+# --- width primitives ------------------------------------------------------
+# One set per storage width, because an `asm` body is raw target text that a
+# macro cannot parameterize: the operand-size suffix and the register letter
+# are part of the instruction, not of the Omega call.
+#
+# `try_exclusive_*` performs one LL/SC attempt and reports both what it
+# observed and whether the store actually happened. A failed `STLXR` and a
+# value mismatch are different outcomes, and the weak compare-exchange
+# contract needs to tell them apart.
+
+# Every operand is handed to the assembler as a 64-bit value and moved into a
+# fixed scratch register when a narrower form of it is needed: an inline-asm
+# operand always prints as an `x` register on this target, which the byte,
+# halfword and 32-bit instructions below do not accept in their value
+# position.
+
+exclusive_load_8(location: *u8) => u8 {
+	mut result: u8 = 0;
+	asm(reg(location), reg(&mut result), clobber("x9")) => {
+		ldarb w9, [$location]
+		strb w9, [$result]
+	}
+	result
+}
+
+exclusive_store_8(location: *mut u8, value: u8) => void {
+	wide := <u64>value;
+	asm(reg(location), reg(wide), clobber("x9")) => {
+		mov x9, $wide
+		stlrb w9, [$location]
+	}
+}
+
+try_exclusive_cas_8(location: *mut u8, expected: u8, desired: u8, observed: *mut u8, stored: *mut u8) => void {
+	wanted := <u64>expected;
+	replacement := <u64>desired;
+	asm(
+		reg(location), reg(wanted), reg(replacement), reg(observed), reg(stored),
+		clobber("x9"), clobber("x10"), clobber("x11"), clobber("x12")
+	) => {
+		mov w10, wzr
+		mov x12, $replacement
+		ldaxrb w9, [$location]
+		cmp x9, $wanted
+		b.ne 1f
+		stlxrb w11, w12, [$location]
+		cbnz w11, 1f
+		mov w10, #1
+		b 2f
+	1:
+		clrex
+	2:
+		strb w9, [$observed]
+		strb w10, [$stored]
+	}
+}
+
+exclusive_load_16(location: *u16) => u16 {
+	mut result: u16 = 0;
+	asm(reg(location), reg(&mut result), clobber("x9")) => {
+		ldarh w9, [$location]
+		strh w9, [$result]
+	}
+	result
+}
+
+exclusive_store_16(location: *mut u16, value: u16) => void {
+	wide := <u64>value;
+	asm(reg(location), reg(wide), clobber("x9")) => {
+		mov x9, $wide
+		stlrh w9, [$location]
+	}
+}
+
+try_exclusive_cas_16(location: *mut u16, expected: u16, desired: u16, observed: *mut u16, stored: *mut u8) => void {
+	wanted := <u64>expected;
+	replacement := <u64>desired;
+	asm(
+		reg(location), reg(wanted), reg(replacement), reg(observed), reg(stored),
+		clobber("x9"), clobber("x10"), clobber("x11"), clobber("x12")
+	) => {
+		mov w10, wzr
+		mov x12, $replacement
+		ldaxrh w9, [$location]
+		cmp x9, $wanted
+		b.ne 1f
+		stlxrh w11, w12, [$location]
+		cbnz w11, 1f
+		mov w10, #1
+		b 2f
+	1:
+		clrex
+	2:
+		strh w9, [$observed]
+		strb w10, [$stored]
+	}
+}
+
+exclusive_load_32(location: *u32) => u32 {
+	mut result: u32 = 0;
+	asm(reg(location), reg(&mut result), clobber("x9")) => {
+		ldar w9, [$location]
+		str w9, [$result]
+	}
+	result
+}
+
+exclusive_store_32(location: *mut u32, value: u32) => void {
+	wide := <u64>value;
+	asm(reg(location), reg(wide), clobber("x9")) => {
+		mov x9, $wide
+		stlr w9, [$location]
+	}
+}
+
+try_exclusive_cas_32(location: *mut u32, expected: u32, desired: u32, observed: *mut u32, stored: *mut u8) => void {
+	wanted := <u64>expected;
+	replacement := <u64>desired;
+	asm(
+		reg(location), reg(wanted), reg(replacement), reg(observed), reg(stored),
+		clobber("x9"), clobber("x10"), clobber("x11"), clobber("x12")
+	) => {
+		mov w10, wzr
+		mov x12, $replacement
+		ldaxr w9, [$location]
+		cmp x9, $wanted
+		b.ne 1f
+		stlxr w11, w12, [$location]
+		cbnz w11, 1f
+		mov w10, #1
+		b 2f
+	1:
+		clrex
+	2:
+		str w9, [$observed]
+		strb w10, [$stored]
+	}
+}
+
+exclusive_load_64(location: *u64) => u64 {
+	mut result: u64 = 0;
+	asm(reg(location), reg(&mut result), clobber("x9")) => {
+		ldar x9, [$location]
+		str x9, [$result]
+	}
+	result
+}
+
+exclusive_store_64(location: *mut u64, value: u64) => void {
+	wide := <u64>value;
+	asm(reg(location), reg(wide), clobber("x9")) => {
+		mov x9, $wide
+		stlr x9, [$location]
+	}
+}
+
+try_exclusive_cas_64(location: *mut u64, expected: u64, desired: u64, observed: *mut u64, stored: *mut u8) => void {
+	wanted := <u64>expected;
+	replacement := <u64>desired;
+	asm(
+		reg(location), reg(wanted), reg(replacement), reg(observed), reg(stored),
+		clobber("x9"), clobber("x10"), clobber("x11"), clobber("x12")
+	) => {
+		mov w10, wzr
+		mov x12, $replacement
+		ldaxr x9, [$location]
+		cmp x9, $wanted
+		b.ne 1f
+		stlxr w11, x12, [$location]
+		cbnz w11, 1f
+		mov w10, #1
+		b 2f
+	1:
+		clrex
+	2:
+		str x9, [$observed]
+		strb w10, [$stored]
+	}
+}
+
+# The strong compare-exchange the fallback lock itself needs; the generic
+# per-width form below is generated by `width_primitives`.
+exclusive_cas_32(location: *mut u32, expected: u32, desired: u32) => u32 {
+	mut observed: u32 = 0;
+	mut stored: u8 = 0;
+	loop {
+		try_exclusive_cas_32(location, expected, desired, &mut observed, &mut stored);
+		if stored != 0u8 { break; }
+		if observed != expected { break; }
+	}
+	observed
+}
+
+# --- alignment dispatch ----------------------------------------------------
+
+macro width_primitives(
+	$U: type,
+	$MISALIGNED: expr,
+	$exclusive_load: ident,
+	$exclusive_store: ident,
+	$try_exclusive: ident,
+	$load: ident,
+	$store: ident,
+	$weak_cas: ident,
+	$cas: ident
+) => {
+	$load(location: *$U) => $U {
+		if (<usize>location & $MISALIGNED) == 0usize {
+			$exclusive_load(location)
+		} else {
+			fallback_acquire();
+			value := *location;
+			fallback_release();
+			value
+		}
+	}
+
+	$store(location: *mut $U, value: $U) => void {
+		if (<usize>location & $MISALIGNED) == 0usize {
+			$exclusive_store(location, value);
+		} else {
+			fallback_acquire();
+			*location = value;
+			fallback_release();
+		}
+	}
+
+	# Reports whether the exchange happened and always writes what it saw.
+	$weak_cas(location: *mut $U, expected: $U, desired: $U, observed: *mut $U) => bool {
+		if (<usize>location & $MISALIGNED) == 0usize {
+			mut stored: u8 = 0;
+			$try_exclusive(location, expected, desired, observed, &mut stored);
+			stored != 0u8
+		} else {
+			fallback_acquire();
+			current := *location;
+			exchanged := current == expected;
+			if exchanged { *location = desired; }
+			fallback_release();
+			*observed = current;
+			exchanged
+		}
+	}
+
+	$cas(location: *mut $U, expected: $U, desired: $U) => $U {
+		mut observed := <$U>0;
+		loop {
+			if $weak_cas(location, expected, desired, &mut observed) { break; }
+			# A store-exclusive failure is retried; a real value change is not.
+			if observed != expected { break; }
+		}
+		observed
+	}
+}
+
+width_primitives$(u8, 0usize, exclusive_load_8, exclusive_store_8, try_exclusive_cas_8, load_8, store_8, weak_cas_8, cas_8);
+width_primitives$(u16, 1usize, exclusive_load_16, exclusive_store_16, try_exclusive_cas_16, load_16, store_16, weak_cas_16, cas_16);
+width_primitives$(u32, 3usize, exclusive_load_32, exclusive_store_32, try_exclusive_cas_32, load_32, store_32, weak_cas_32, cas_32);
+width_primitives$(u64, 7usize, exclusive_load_64, exclusive_store_64, try_exclusive_cas_64, load_64, store_64, weak_cas_64, cas_64);
+
+# --- the width gaps --------------------------------------------------------
+# Above the primitives everything is ordinary portable Omega: this
+# architecture has no single baseline instruction that both modifies a
+# location and reports its previous value, so every read-modify-write is a
+# compare-exchange retry loop.
+
+macro width_atomicity(
+	$Gap: path,
+	$U: type,
+	$I: type,
+	$load: ident,
+	$store: ident,
+	$weak_cas: ident,
+	$cas: ident
+) => {
+	glue $Gap {
+		load(location: *$U, order: AtomicLoadOrdering) => $U {
+			$load(location)
+		}
+
+		store(location: *mut $U, value: $U, order: AtomicStoreOrdering) => void {
+			$store(location, value);
+		}
+
+		exchange(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
+			mut observed := $load(location);
+			loop {
+				previous := $cas(location, observed, value);
+				if previous == observed { break; }
+				observed = previous;
+			}
+			observed
+		}
+
+		compare_exchange(location: *mut $U, expected: $U, desired: $U, success: AtomicRmwOrdering, failure: AtomicLoadOrdering) => Result<$U, $U> {
+			previous := $cas(location, expected, desired);
+			if previous == expected {
+				Result<$U, $U>::Ok { value = previous; }
+			} else {
+				Result<$U, $U>::Err { error = previous; }
+			}
+		}
+
+		compare_exchange_weak(location: *mut $U, expected: $U, desired: $U, success: AtomicRmwOrdering, failure: AtomicLoadOrdering) => Result<$U, $U> {
+			mut observed := <$U>0;
+			if $weak_cas(location, expected, desired, &mut observed) {
+				Result<$U, $U>::Ok { value = observed; }
+			} else {
+				Result<$U, $U>::Err { error = observed; }
+			}
+		}
+
+		fetch_add(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
+			mut observed := $load(location);
+			loop {
+				previous := $cas(location, observed, observed + value);
+				if previous == observed { break; }
+				observed = previous;
+			}
+			observed
+		}
+
+		fetch_sub(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
+			mut observed := $load(location);
+			loop {
+				previous := $cas(location, observed, observed - value);
+				if previous == observed { break; }
+				observed = previous;
+			}
+			observed
+		}
+
+		fetch_and(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
+			mut observed := $load(location);
+			loop {
+				previous := $cas(location, observed, observed & value);
+				if previous == observed { break; }
+				observed = previous;
+			}
+			observed
+		}
+
+		fetch_or(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
+			mut observed := $load(location);
+			loop {
+				previous := $cas(location, observed, observed | value);
+				if previous == observed { break; }
+				observed = previous;
+			}
+			observed
+		}
+
+		fetch_xor(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
+			mut observed := $load(location);
+			loop {
+				previous := $cas(location, observed, observed ^ value);
+				if previous == observed { break; }
+				observed = previous;
+			}
+			observed
+		}
+
+		fetch_min_unsigned(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
+			mut observed := $load(location);
+			loop {
+				chosen := if value < observed { value } else { observed };
+				previous := $cas(location, observed, chosen);
+				if previous == observed { break; }
+				observed = previous;
+			}
+			observed
+		}
+
+		fetch_max_unsigned(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
+			mut observed := $load(location);
+			loop {
+				chosen := if value > observed { value } else { observed };
+				previous := $cas(location, observed, chosen);
+				if previous == observed { break; }
+				observed = previous;
+			}
+			observed
+		}
+
+		# The signed views share the width's storage and its primitives; only
+		# the comparison differs, which is exactly why the gap declares them
+		# separately instead of inferring a sign from a bit pattern.
+		fetch_min_signed(location: *mut $I, value: $I, order: AtomicRmwOrdering) => $I {
+			storage := <*mut $U>(<usize>location);
+			mut observed := <$I>$load(storage);
+			loop {
+				chosen := if value < observed { value } else { observed };
+				previous := <$I>$cas(storage, <$U>observed, <$U>chosen);
+				if previous == observed { break; }
+				observed = previous;
+			}
+			observed
+		}
+
+		fetch_max_signed(location: *mut $I, value: $I, order: AtomicRmwOrdering) => $I {
+			storage := <*mut $U>(<usize>location);
+			mut observed := <$I>$load(storage);
+			loop {
+				chosen := if value > observed { value } else { observed };
+				previous := <$I>$cas(storage, <$U>observed, <$U>chosen);
+				if previous == observed { break; }
+				observed = previous;
+			}
+			observed
+		}
+	}
+}
+
+width_atomicity$(core::atomic::Atomicity8, u8, i8, load_8, store_8, weak_cas_8, cas_8);
+width_atomicity$(core::atomic::Atomicity16, u16, i16, load_16, store_16, weak_cas_16, cas_16);
+width_atomicity$(core::atomic::Atomicity32, u32, i32, load_32, store_32, weak_cas_32, cas_32);
+width_atomicity$(core::atomic::Atomicity64, u64, i64, load_64, store_64, weak_cas_64, cas_64);
