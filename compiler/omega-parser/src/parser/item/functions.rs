@@ -2,7 +2,7 @@ use super::annotations::reject_annotations;
 use crate::ast::annotation::AnnotationNode;
 use crate::ast::generics::{GenericParam, GenericParamKind};
 use crate::ast::item::Item;
-use crate::ast::statement::{FunctionDefinitionStmt, WalrusStmt};
+use crate::ast::statement::{DeclarationStmt, FunctionDefinitionStmt, WalrusStmt};
 use crate::ast::visibility::Visibility;
 use crate::diagnostics::{ParseErrorKind, Span};
 use crate::lexer::TokenKind;
@@ -21,31 +21,52 @@ pub(super) fn parse_declaration_or_function_definition(
             parse_function_definition(p, annotations, visibility, explicit_hidden_span)?,
         )),
         _ => {
-            reject_annotations(p, &annotations);
             let mut decl = parse_declaration(p)?;
             decl.visibility = visibility;
-            if p.eat(&TokenKind::Eq) {
-                let value = parse_expression(p)?;
-                p.expect_terminator(&TokenKind::Semi, "';'");
-                Some(Item::DeclarationWithInit(decl, value))
-            } else {
-                p.expect_terminator(&TokenKind::Semi, "';'");
-                Some(Item::Declaration(decl))
-            }
+            parse_global_initializer(p, decl, annotations)
         }
+    }
+}
+
+/// The tail shared by the typed global forms: an optional `= <expr>` and the
+/// terminator. `annotations` belong to the global itself, not to the
+/// `DeclarationStmt` that locals and fields also use.
+fn parse_global_initializer(
+    p: &mut Parser,
+    decl: DeclarationStmt,
+    annotations: Vec<AnnotationNode>,
+) -> Option<Item> {
+    if p.eat(&TokenKind::Eq) {
+        let value = parse_expression(p)?;
+        p.expect_terminator(&TokenKind::Semi, "';'");
+        Some(Item::DeclarationWithInit {
+            decl,
+            value,
+            annotations,
+        })
+    } else {
+        p.expect_terminator(&TokenKind::Semi, "';'");
+        Some(Item::Declaration { decl, annotations })
     }
 }
 
 pub(super) fn parse_item_declaration_or_walrus(
     p: &mut Parser,
+    annotations: Vec<AnnotationNode>,
     mutable: bool,
     comp: bool,
     visibility: Visibility,
 ) -> Option<Item> {
+    // A `comp` binding is a compile-time value with no storage and no linker
+    // symbol, so it never carries an annotation.
+    if comp {
+        reject_annotations(p, &annotations);
+    }
     match p.peek_at(1) {
-        TokenKind::ColonEq => Some(Item::Walrus(parse_item_walrus(
-            p, mutable, comp, visibility,
-        )?)),
+        TokenKind::ColonEq => Some(Item::Walrus {
+            walrus: parse_item_walrus(p, mutable, comp, visibility)?,
+            annotations: if comp { Vec::new() } else { annotations },
+        }),
         _ => {
             if comp {
                 p.error(ParseErrorKind::Expected {
@@ -57,14 +78,7 @@ pub(super) fn parse_item_declaration_or_walrus(
             let mut decl = parse_declaration(p)?;
             decl.mutable = mutable;
             decl.visibility = visibility;
-            if p.eat(&TokenKind::Eq) {
-                let value = parse_expression(p)?;
-                p.expect_terminator(&TokenKind::Semi, "';'");
-                Some(Item::DeclarationWithInit(decl, value))
-            } else {
-                p.expect_terminator(&TokenKind::Semi, "';'");
-                Some(Item::Declaration(decl))
-            }
+            parse_global_initializer(p, decl, annotations)
         }
     }
 }

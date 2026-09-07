@@ -13,7 +13,7 @@ fn every_contextual_keyword_stays_an_ordinary_identifier() {
         let module = SourceModule::parse(&source)
             .unwrap_or_else(|e| panic!("`{word}` must stay usable as an identifier: {e:?}"));
         assert!(
-            matches!(module.nodes[0].item, Item::Walrus(_)),
+            matches!(module.nodes[0].item, Item::Walrus { .. }),
             "`{word}` should have parsed as a top-level binding"
         );
         assert_eq!(module.nodes.len(), 3, "`{word}`: expected three items");

@@ -1,0 +1,64 @@
+import std::io::println;
+import self::other;
+
+# `@mangling` on an ordinary global selects the linker name of the storage the
+# declaration owns. `force` names it exactly, so C code compiled separately can
+# define or read the same object.
+@mangling(force = "symbol_from_outside")
+foreign outside_sym : i32;
+
+@mangling(force = "unmangled_symbol_with_default_value")
+my_symbol : i32 = 10;
+
+# A `mut` global under a forced name: C writes through the same storage.
+@mangling(force = "shared_counter")
+mut counter : i32 = 1;
+
+# An inferred global keeps its annotation too.
+@mangling(force = "inferred_scale")
+scale := 7;
+
+# `disabled` uses the written identifier verbatim as the symbol.
+@mangling(disabled)
+mut plain_flag : i32 = 0;
+
+# The default, and the same thing written explicitly: both keep the ordinary
+# module-qualified Omega symbol, which no C source can name by accident.
+default_total : i32 = 100;
+
+@mangling(enabled)
+explicit_total := 200;
+
+# Renamed for the linker, but still an ordinary Omega global to the rest of
+# the package.
+@mangling(force = "renamed_shared_value")
+exposed renamed_from_root : i32 = 21;
+
+foreign(c) {
+	gm_default_value() => i32;
+	gm_scale() => i32;
+	gm_counter() => i32;
+	gm_bump_counter(amount: i32) => void;
+	gm_flag() => i32;
+	gm_set_flag(value: i32) => void;
+}
+
+main() => void {
+	# A forced foreign binding reads storage that C owns.
+	println$("outside_sym: ", outside_sym);
+
+	# C reads storage that Omega owns and initialized.
+	println$("my_symbol: ", my_symbol, " ", gm_default_value());
+
+	gm_bump_counter(41);
+	println$("counter: ", counter, " ", gm_counter());
+
+	println$("scale: ", scale, " ", gm_scale());
+
+	gm_set_flag(9);
+	println$("plain_flag: ", plain_flag, " ", gm_flag());
+
+	println$("totals: ", default_total, " ", explicit_total);
+
+	println$("renamed: ", renamed_from_root, " ", other::doubled_from_other());
+}

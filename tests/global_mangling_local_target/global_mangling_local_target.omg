@@ -1,0 +1,8 @@
+# A local binding has no linker symbol either. Kept in its own package: the
+# rejection happens while parsing, and the recovery that follows would hide a
+# later diagnostic in the same file.
+
+main() => void {
+	@mangling(disabled)
+	local : i32 = 5;
+}

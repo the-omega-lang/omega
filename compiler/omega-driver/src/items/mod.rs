@@ -1,6 +1,5 @@
 use crate::{Driver, ModulePath};
 use indexmap::IndexMap;
-use omega_analyzer::DeclarationPolicy;
 use omega_analyzer::analysis::{AnalysisSite, Analyzer, item_site, item_visibility};
 use omega_analyzer::annotations::ResolvedAnnotations;
 use omega_analyzer::checked::{CheckedItem, Storage};
@@ -275,11 +274,28 @@ pub(crate) struct ItemQueries {
     checked_bodies: HashMap<ItemKey, CheckedBody>,
     pub decl_id_owner: HashMap<HirId, ItemKey>,
     pub comp_values: HashMap<HirId, omega_analyzer::resolved_type::ConstValue>,
-    pub global_initial_values: HashMap<HirId, omega_analyzer::resolved_type::ConstValue>,
+    /// Every ordinary global's checked declaration, kept from signature
+    /// analysis so body materialization reuses the resolved policy and
+    /// initializer instead of rebuilding a declaration without them.
+    checked_globals: HashMap<HirId, omega_analyzer::checked::CheckedDeclaration>,
     body_in_progress: std::collections::HashSet<ItemKey>,
 }
 
 impl ItemQueries {
+    pub fn cache_checked_global(
+        &mut self,
+        declaration: omega_analyzer::checked::CheckedDeclaration,
+    ) {
+        self.checked_globals.insert(declaration.id, declaration);
+    }
+
+    pub fn expect_checked_global(&self, id: HirId) -> &omega_analyzer::checked::CheckedDeclaration {
+        match self.checked_globals.get(&id) {
+            Some(declaration) => declaration,
+            None => panic!("every global is checked before its body is materialized"),
+        }
+    }
+
     pub fn fresh_synthetic_id(&mut self) -> HirId {
         let id = HirId {
             module: SYNTHETIC_MODULE,

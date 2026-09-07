@@ -96,7 +96,7 @@ Variadic foreign function *definitions* (a body that reads its own variadic tail
 
 ## Symbol naming
 
-Ordinary Omega functions default to `@mangling(enabled)`: Omega's deterministic mangling scheme, so module/type/generic identities do not collide across separately compiled packages.
+Ordinary Omega functions and ordinary module-level storage bindings default to `@mangling(enabled)`: Omega's deterministic mangling scheme, so module/type/generic identities do not collide across separately compiled packages.
 
 Foreign items (bindings and direct foreign functions/definitions alike) default to `@mangling(disabled)` instead: the bare source name is the linker symbol, matching how an external declaration usually needs to name an exact existing symbol. `@mangling(enabled)` opts back into ordinary Omega symbol construction (needed, for example, for a generic foreign definition, since a disabled bare name cannot distinguish instantiations); `@mangling(force = "...")` uses the given name exactly, foreign or not.
 
@@ -109,6 +109,18 @@ foreign(c) callback(a: i32, b: i32) => i32 { a * b }   # ordinary Omega symbol
 @mangling(force = "exact_symbol")
 foreign(c) entry(a: i32) => i32;                 # linker symbol: "exact_symbol"
 ```
+
+An ordinary global owns its storage rather than naming someone else's, so the same annotation is how C or a separately compiled object refers to that storage by an exact name:
+
+```omega
+@mangling(force = "symbol_from_outside")
+foreign outside_sym : i32;                       # storage another object owns
+
+@mangling(force = "unmangled_symbol_with_default_value")
+my_symbol : i32 = 10;                            # storage this declaration owns and initializes
+```
+
+A definition and a foreign declaration of the same symbol still belong in different compilations: within one compilation they are two items forcing one name, which is the collision below.
 
 - `disabled` uses the bare name. It is rejected on methods and on generic functions (foreign or ordinary).
 - `force = "..."` uses the non-empty string exactly. It may be used on methods but is rejected on generic functions.

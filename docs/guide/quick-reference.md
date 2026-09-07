@@ -481,6 +481,18 @@ struct Header {
 
 `align` is an address guarantee. A type containing `Header` inline inherits its alignment even without an annotation of its own, and `sizeof<Header>` rounds up to it.
 
+`@mangling` names the linker symbol of a function, a `foreign` item, or a module-level storage binding:
+
+```omega
+@mangling(force = "symbol_from_outside")
+foreign outside_sym : i32;
+
+@mangling(force = "unmangled_symbol_with_default_value")
+my_symbol : i32 = 10;
+```
+
+The first names storage another object owns; the second is an ordinary Omega global that owns and initializes its own storage under an exact external name. A `comp` binding and a local take no annotation.
+
 Other supported annotations are normative in [`../language/annotations-and-sizeof.md`](../language/annotations-and-sizeof.md).
 
 ## Macros

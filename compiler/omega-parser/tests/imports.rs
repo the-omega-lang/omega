@@ -103,7 +103,7 @@ fn root_self_and_super_remain_ordinary_identifiers_outside_import_anchor_positio
 fn parse_type(source: &str) -> omega_parser::prelude::Type {
     let wrapped = format!("x : {source};");
     let module = SourceModule::parse(&wrapped).expect("expected this type to parse");
-    let Item::Declaration(decl) = module.nodes.into_iter().next().unwrap().item else {
+    let Item::Declaration { decl, .. } = module.nodes.into_iter().next().unwrap().item else {
         panic!("expected a declaration item");
     };
     decl.r#type

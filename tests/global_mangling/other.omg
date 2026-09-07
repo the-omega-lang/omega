@@ -1,0 +1,7 @@
+import root::renamed_from_root;
+
+# The annotation renames the symbol, not the declaration: this module still
+# reaches the global through its ordinary Omega name and its own storage.
+exposed doubled_from_other() => i32 {
+	renamed_from_root * 2
+}

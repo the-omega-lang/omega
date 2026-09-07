@@ -1,0 +1,33 @@
+error: '@suppress' cannot be applied to a global binding
+ --> tests/global_mangling_invalid_target/global_mangling_invalid_target.omg:4:1
+  |
+4 | @suppress(unused_binding)
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^ cannot be used on a global binding
+  |
+  = note: '@suppress' only applies to structs, enums, unions, functions, imports, specs, foreign functions, and foreign bindings
+
+error: '@inline' cannot be applied to a global binding
+ --> tests/global_mangling_invalid_target/global_mangling_invalid_target.omg:7:1
+  |
+7 | @inline(always)
+  | ^^^^^^^^^^^^^^^ cannot be used on a global binding
+  |
+  = note: '@inline' only applies to functions
+
+error: '@layout' cannot be applied to a global binding
+  --> tests/global_mangling_invalid_target/global_mangling_invalid_target.omg:10:1
+   |
+10 | @layout(pack = 1)
+   | ^^^^^^^^^^^^^^^^^ cannot be used on a global binding
+   |
+   = note: '@layout' only applies to structs and enums
+
+error: '@naked' cannot be applied to a global binding
+  --> tests/global_mangling_invalid_target/global_mangling_invalid_target.omg:13:1
+   |
+13 | @naked
+   | ^^^^^^ cannot be used on a global binding
+   |
+   = note: '@naked' only applies to functions
+
+error: could not compile the program due to 4 previous errors

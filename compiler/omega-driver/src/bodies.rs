@@ -1,9 +1,7 @@
 use crate::Driver;
 use crate::items::{CheckedBody, ItemKey};
 use omega_analyzer::analysis::{AnalysisSite, Analyzer};
-use omega_analyzer::checked::{
-    CheckedDeclaration, CheckedEnumDef, CheckedItem, CheckedStructDef, CheckedUnionDef,
-};
+use omega_analyzer::checked::{CheckedEnumDef, CheckedItem, CheckedStructDef, CheckedUnionDef};
 use omega_analyzer::error::{AnalysisError, AnalysisErrorKind};
 use omega_analyzer::generics::GenericSubstitution;
 use omega_analyzer::resolved_type::{ResolvedFunctionType, ResolvedGenericArg, ResolvedType};
@@ -69,56 +67,12 @@ impl Driver {
 
     pub(crate) fn check_item_body(&mut self, key: &ItemKey, item: &HirItem) -> Option<CheckedBody> {
         match item {
-            HirItem::Declaration { decl, .. } => {
-                let r#type = self.resolved_value_type(key);
-                let checked = CheckedDeclaration {
-                    id: decl.id,
-                    span: decl.span,
-                    ident: decl.ident.clone(),
-                    r#type,
-                    mutable: decl.mutable,
-                    initial_value: None,
-                };
-                Some(CheckedBody {
-                    item: CheckedItem::Declaration(checked),
-                    warnings: vec![],
-                })
-            }
+            HirItem::Declaration { decl, .. } => Some(self.checked_global_body(decl.id)),
 
-            HirItem::DeclarationWithInit { decl, .. } => {
-                let r#type = self.resolved_value_type(key);
-                let initial_value = self.items.global_initial_values.get(&decl.id).cloned();
-                let checked = CheckedDeclaration {
-                    id: decl.id,
-                    span: decl.span,
-                    ident: decl.ident.clone(),
-                    r#type,
-                    mutable: decl.mutable,
-                    initial_value,
-                };
-                Some(CheckedBody {
-                    item: CheckedItem::Declaration(checked),
-                    warnings: vec![],
-                })
-            }
+            HirItem::DeclarationWithInit { decl, .. } => Some(self.checked_global_body(decl.id)),
 
             HirItem::Walrus { walrus: w, .. } if w.comp => None,
-            HirItem::Walrus { walrus: w, .. } => {
-                let r#type = self.resolved_value_type(key);
-                let initial_value = self.items.global_initial_values.get(&w.id).cloned();
-                let checked = CheckedDeclaration {
-                    id: w.id,
-                    span: w.span,
-                    ident: w.ident.clone(),
-                    r#type,
-                    mutable: w.mutable,
-                    initial_value,
-                };
-                Some(CheckedBody {
-                    item: CheckedItem::Declaration(checked),
-                    warnings: vec![],
-                })
-            }
+            HirItem::Walrus { walrus: w, .. } => Some(self.checked_global_body(w.id)),
 
             HirItem::ForeignBinding(binding) => {
                 let r#type = self.resolved_value_type(key);
@@ -307,6 +261,13 @@ impl Driver {
         let hir = self.modules.hir(&key.module);
         if let Some(body) = self.check_item_body(key, &hir.items[index]) {
             self.items.generic_instantiations.insert(key.clone(), body);
+        }
+    }
+
+    fn checked_global_body(&self, id: omega_hir::HirId) -> CheckedBody {
+        CheckedBody {
+            item: CheckedItem::Declaration(self.items.expect_checked_global(id).clone()),
+            warnings: vec![],
         }
     }
 

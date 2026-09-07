@@ -73,7 +73,7 @@ fn foreign_block_groups_multiple_items() {
 fn foreign_convention_type_parses_as_variable_type() {
     let module = SourceModule::parse("handler : foreign(c) (code: i32) => i32;")
         .expect("expected this declaration to parse");
-    let Item::Declaration(decl) = &module.nodes[0].item else {
+    let Item::Declaration { decl, .. } = &module.nodes[0].item else {
         panic!(
             "expected a declaration item, got {:?}",
             module.nodes[0].item
@@ -128,5 +128,5 @@ fn malformed_convention_token_is_rejected() {
 fn extern_is_now_an_ordinary_identifier() {
     let module =
         SourceModule::parse("extern := 1;").expect("`extern` must stay usable as an identifier");
-    assert!(matches!(module.nodes[0].item, Item::Walrus(_)));
+    assert!(matches!(module.nodes[0].item, Item::Walrus { .. }));
 }

@@ -141,8 +141,13 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
     }
 
     if let Some(prefix) = crate::parser::parse_binding_modifiers(p) {
-        reject_annotations(p, &annotations);
-        let item = parse_item_declaration_or_walrus(p, prefix.mutable, prefix.comp, visibility)?;
+        let item = parse_item_declaration_or_walrus(
+            p,
+            annotations,
+            prefix.mutable,
+            prefix.comp,
+            visibility,
+        )?;
         let span = start.to(p.last_span());
         return Some(ItemNode { item, span });
     }

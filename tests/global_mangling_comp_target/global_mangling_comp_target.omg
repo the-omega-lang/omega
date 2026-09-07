@@ -1,0 +1,8 @@
+# A `comp` binding is a compile-time value with no storage, so it has no
+# linker symbol for an annotation to name. Kept in its own package because
+# rejecting the annotation happens while parsing.
+
+@mangling(disabled)
+comp NO_SYMBOL := 4;
+
+main() => void {}

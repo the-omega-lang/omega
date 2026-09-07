@@ -15,7 +15,21 @@ pub enum ItemKind {
     Spec,
     ForeignFunction,
     ForeignBinding,
+    Global,
 }
+
+/// The item kinds `@suppress` scopes a warning over. A global binding has no
+/// body or members to scope one across, so it is deliberately absent.
+const SUPPRESS_TARGETS: [ItemKind; 8] = [
+    ItemKind::Struct,
+    ItemKind::Enum,
+    ItemKind::Union,
+    ItemKind::Function,
+    ItemKind::Import,
+    ItemKind::Spec,
+    ItemKind::ForeignFunction,
+    ItemKind::ForeignBinding,
+];
 
 impl ItemKind {
     fn article_name(self) -> &'static str {
@@ -28,6 +42,7 @@ impl ItemKind {
             Self::Spec => "a spec",
             Self::ForeignFunction => "a foreign function",
             Self::ForeignBinding => "a foreign binding",
+            Self::Global => "a global binding",
         }
     }
 
@@ -41,6 +56,7 @@ impl ItemKind {
             Self::Spec => "specs",
             Self::ForeignFunction => "foreign functions",
             Self::ForeignBinding => "foreign bindings",
+            Self::Global => "global bindings",
         }
     }
 }
@@ -211,7 +227,10 @@ pub fn resolve(
             "mangling" => {
                 if !matches!(
                     kind,
-                    ItemKind::Function | ItemKind::ForeignFunction | ItemKind::ForeignBinding
+                    ItemKind::Function
+                        | ItemKind::ForeignFunction
+                        | ItemKind::ForeignBinding
+                        | ItemKind::Global
                 ) {
                     analyzer.error(
                         node_id,
@@ -223,6 +242,7 @@ pub fn resolve(
                                 ItemKind::Function,
                                 ItemKind::ForeignFunction,
                                 ItemKind::ForeignBinding,
+                                ItemKind::Global,
                             ],
                         },
                     );
@@ -256,6 +276,18 @@ pub fn resolve(
                 }
             }
             "suppress" => {
+                if !SUPPRESS_TARGETS.contains(&kind) {
+                    analyzer.error(
+                        node_id,
+                        annotation.span,
+                        AnalysisErrorKind::AnnotationNotApplicable {
+                            name: annotation.name.clone(),
+                            found: kind,
+                            allowed: SUPPRESS_TARGETS.to_vec(),
+                        },
+                    );
+                    continue;
+                }
                 result.suppress = annotation
                     .args
                     .iter()

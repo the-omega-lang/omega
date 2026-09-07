@@ -108,7 +108,7 @@ impl<'a> Expander<'a> {
                         span: node.span,
                     });
                 }
-                other @ (Item::Declaration(_)
+                other @ (Item::Declaration { .. }
                 | Item::ForeignBinding(_)
                 | Item::Import(_)
                 | Item::Alias(_)) => {
@@ -132,15 +132,29 @@ impl<'a> Expander<'a> {
                         span: node.span,
                     });
                 }
-                Item::Walrus(w) => result.push(ItemNode {
-                    item: Item::Walrus(WalrusStmt {
-                        value: self.expand_expr(w.value)?,
-                        ..w
-                    }),
+                Item::Walrus {
+                    walrus: w,
+                    annotations,
+                } => result.push(ItemNode {
+                    item: Item::Walrus {
+                        walrus: WalrusStmt {
+                            value: self.expand_expr(w.value)?,
+                            ..w
+                        },
+                        annotations,
+                    },
                     span: node.span,
                 }),
-                Item::DeclarationWithInit(decl, value) => result.push(ItemNode {
-                    item: Item::DeclarationWithInit(decl, self.expand_expr(value)?),
+                Item::DeclarationWithInit {
+                    decl,
+                    value,
+                    annotations,
+                } => result.push(ItemNode {
+                    item: Item::DeclarationWithInit {
+                        decl,
+                        value: self.expand_expr(value)?,
+                        annotations,
+                    },
                     span: node.span,
                 }),
                 Item::MacroDefinition(def) => {

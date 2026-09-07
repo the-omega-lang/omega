@@ -67,6 +67,9 @@ pub struct CheckedDeclaration {
     pub r#type: ResolvedType,
     pub mutable: bool,
     pub initial_value: Option<ConstValue>,
+    /// Only a module-level binding owns a linker symbol; a local or
+    /// synthesized declaration keeps the inert `Enabled` default.
+    pub mangling: crate::annotations::ManglingMode,
 }
 
 #[derive(Debug, Clone)]

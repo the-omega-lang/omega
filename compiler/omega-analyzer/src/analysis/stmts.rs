@@ -145,6 +145,7 @@ impl<'r> Analyzer<'r> {
             r#type: resolved_type.clone(),
             mutable: decl.mutable,
             initial_value: None,
+            mangling: crate::annotations::ManglingMode::Enabled,
         };
 
         let declaration = CheckedStmt::Declaration(checked_decl);
@@ -209,6 +210,7 @@ impl<'r> Analyzer<'r> {
             r#type: r#type.clone(),
             mutable: w.mutable,
             initial_value: None,
+            mangling: crate::annotations::ManglingMode::Enabled,
         });
         let assignment = CheckedStmt::Expression(CheckedExprNode {
             id: self.resolver.fresh_synthetic_id(),
@@ -871,6 +873,7 @@ impl<'r> Analyzer<'r> {
             r#type: r#type.clone(),
             mutable: true,
             initial_value: None,
+            mangling: crate::annotations::ManglingMode::Enabled,
         });
         let assignment = CheckedStmt::Expression(CheckedExprNode {
             id: self.resolver.fresh_synthetic_id(),

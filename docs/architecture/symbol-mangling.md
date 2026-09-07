@@ -136,6 +136,8 @@ This exception is decided before codegen emission so it never needs re-deriving 
 
 Resolved `@mangling(...)` metadata travels from semantic analysis to checked/MIR items. The MIR adapter applies the final enabled/disabled/forced symbol policy.
 
+An ordinary module-level storage binding resolves its policy once, while its signature is analyzed, and the driver caches the whole `CheckedDeclaration` -- policy and initializer together -- keyed by `HirId`. Body materialization clones that cached declaration instead of rebuilding one from HIR, so there is no second place where a global could acquire a default policy. Every function-shaped mangling control still travels through the driver's function-annotation map; the checked-global cache is only for storage bindings.
+
 A forced/disabled policy can create a real duplicate linker name. Codegen maintains a symbol-collision guard and reports such collisions rather than allowing linker behavior to choose a winner silently.
 
 ## Linkage

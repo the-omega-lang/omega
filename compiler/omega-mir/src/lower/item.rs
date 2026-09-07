@@ -46,7 +46,7 @@ fn lower_item(item: CheckedItem, path: &[Ident], entry: &[Ident]) -> MirItem {
 }
 
 fn lower_declaration(declaration: CheckedDeclaration, path: &[Ident]) -> MirDeclaration {
-    let symbol = mangle::global_symbol_string(path, &declaration.ident);
+    let symbol = global_symbol(&declaration, path);
     MirDeclaration {
         id: declaration.id,
         span: declaration.span,
@@ -54,6 +54,20 @@ fn lower_declaration(declaration: CheckedDeclaration, path: &[Ident]) -> MirDecl
         r#type: declaration.r#type,
         initial_value: declaration.initial_value,
         symbol,
+    }
+}
+
+/// A definition owns storage, so its symbol is always a data symbol: a global
+/// whose type happens to be a function type still names its own storage, not
+/// the function it holds.
+fn global_symbol(declaration: &CheckedDeclaration, path: &[Ident]) -> String {
+    match &declaration.mangling {
+        ManglingMode::Enabled => mangle::global_symbol_string(path, &declaration.ident),
+        ManglingMode::Disabled => declaration.ident.as_ref().to_owned(),
+        ManglingMode::Forced(name) => name.clone(),
+        ManglingMode::Glued { .. } => {
+            unreachable!("only a gap declaration uses glued mangling")
+        }
     }
 }
 
@@ -463,6 +477,16 @@ mod tests {
     use omega_hir::{HirId, ModuleId};
     use omega_parser::prelude::Span;
 
+    fn function_type() -> ResolvedType {
+        ResolvedType::Function(omega_analyzer::resolved_type::ResolvedFunctionType {
+            params: Vec::new(),
+            return_type: Box::new(ResolvedType::Void),
+            is_variadic: false,
+            self_mode: None,
+            calling_convention: omega_analyzer::resolved_type::CallingConvention::Omega,
+        })
+    }
+
     fn declaration(name: &str) -> CheckedDeclaration {
         CheckedDeclaration {
             id: HirId {
@@ -474,6 +498,7 @@ mod tests {
             r#type: ResolvedType::I32,
             mutable: true,
             initial_value: None,
+            mangling: ManglingMode::Enabled,
         }
     }
 
@@ -497,6 +522,46 @@ mod tests {
             lower_declaration(declaration("TOTAL"), &counter).symbol,
             lower_declaration(declaration("TOTAL"), &other).symbol,
             "the declaring module distinguishes two same-named globals"
+        );
+    }
+
+    #[test]
+    fn a_globals_mangling_policy_selects_its_exact_symbol() {
+        let module = path(&["pkg", "counter"]);
+
+        let mut forced = declaration("TOTAL");
+        forced.mangling = ManglingMode::Forced("exact_external_name".to_string());
+        assert_eq!(
+            lower_declaration(forced, &module).symbol,
+            "exact_external_name"
+        );
+
+        let mut disabled = declaration("TOTAL");
+        disabled.mangling = ManglingMode::Disabled;
+        assert_eq!(lower_declaration(disabled, &module).symbol, "TOTAL");
+
+        let mut enabled = declaration("TOTAL");
+        enabled.mangling = ManglingMode::Enabled;
+        assert_eq!(
+            lower_declaration(enabled, &module).symbol,
+            mangle::global_symbol_string(&module, &Ident("TOTAL".to_string()))
+        );
+    }
+
+    /// A stored value is data even when its type is a function type: it names
+    /// its own storage, never the function symbol a foreign binding of the
+    /// same type would name.
+    #[test]
+    fn a_function_typed_global_still_uses_data_symbol_construction() {
+        let module = path(&["pkg", "counter"]);
+
+        let mut declaration = declaration("HANDLER");
+        declaration.r#type = function_type();
+        let ident = declaration.ident.clone();
+
+        assert_eq!(
+            lower_declaration(declaration, &module).symbol,
+            mangle::global_symbol_string(&module, &ident)
         );
     }
 }

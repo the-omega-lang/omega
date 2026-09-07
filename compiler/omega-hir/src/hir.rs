@@ -35,15 +35,18 @@ pub struct HirModule {
 pub enum HirItem {
     Declaration {
         decl: HirDeclaration,
+        annotations: Vec<HirAnnotation>,
         visibility: Visibility,
     },
     DeclarationWithInit {
         decl: HirDeclaration,
         value: HirExprNode,
+        annotations: Vec<HirAnnotation>,
         visibility: Visibility,
     },
     Walrus {
         walrus: HirWalrusDeclaration,
+        annotations: Vec<HirAnnotation>,
         visibility: Visibility,
     },
     ForeignBinding(HirForeignBinding),

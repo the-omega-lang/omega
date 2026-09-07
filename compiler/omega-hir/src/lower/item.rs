@@ -28,16 +28,26 @@ impl FunctionKind {
 impl Lowerer {
     pub(super) fn lower_item(&mut self, node: &ItemNode) -> Vec<HirItem> {
         let item = match &node.item {
-            Item::Declaration(decl) => HirItem::Declaration {
+            Item::Declaration { decl, annotations } => HirItem::Declaration {
                 decl: self.lower_declaration(decl),
+                annotations: Self::lower_annotations(annotations),
                 visibility: decl.visibility,
             },
-            Item::DeclarationWithInit(decl, value) => HirItem::DeclarationWithInit {
+            Item::DeclarationWithInit {
+                decl,
+                value,
+                annotations,
+            } => HirItem::DeclarationWithInit {
                 decl: self.lower_declaration(decl),
                 value: self.lower_expr(value),
+                annotations: Self::lower_annotations(annotations),
                 visibility: decl.visibility,
             },
-            Item::Walrus(w) => HirItem::Walrus {
+            Item::Walrus {
+                walrus: w,
+                annotations,
+            } => HirItem::Walrus {
+                annotations: Self::lower_annotations(annotations),
                 visibility: w.visibility,
                 walrus: HirWalrusDeclaration {
                     id: self.ids.next(),

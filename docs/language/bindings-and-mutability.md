@@ -16,6 +16,8 @@ A binding is immutable unless marked `mut`. `:=` infers the binding's type from 
 
 `mut` is contextual syntax. It does not make `mut` globally unavailable as an identifier outside positions where the grammar recognizes a mutability modifier.
 
+A module-level binding owns storage with a linker symbol, so it accepts `@mangling` to name that symbol; see [`annotations-and-sizeof.md`](annotations-and-sizeof.md#mangling). A local binding has no such symbol and accepts no annotation.
+
 ## Shadowing
 
 A local declaration always introduces a **fresh binding**. It never writes to an

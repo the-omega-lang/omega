@@ -1,4 +1,5 @@
 use super::*;
+use crate::annotations::ManglingMode;
 
 struct EnumHeader {
     tag_type: ResolvedType,
@@ -106,7 +107,39 @@ impl<'r> Analyzer<'r> {
             r#type: resolved_type,
             mutable: decl.mutable,
             initial_value: None,
+            mangling: ManglingMode::Enabled,
         })
+    }
+
+    /// A module-level `name : T;`. Separate from `analyze_declaration` because
+    /// only a global carries annotations and owns a linker symbol.
+    pub fn analyze_global_declaration(
+        &mut self,
+        decl: &HirDeclaration,
+        annotations: &[omega_hir::HirAnnotation],
+    ) -> Option<CheckedDeclaration> {
+        let mangling = self.global_mangling(decl.id, annotations);
+        let mut checked =
+            self.analyze_declaration(decl, Storage::Global, DeclarationPolicy::Unique)?;
+        checked.mangling = mangling;
+        Some(checked)
+    }
+
+    fn global_mangling(
+        &mut self,
+        id: HirId,
+        annotations: &[omega_hir::HirAnnotation],
+    ) -> ManglingMode {
+        crate::annotations::resolve(
+            self,
+            id,
+            annotations,
+            crate::annotations::ItemKind::Global,
+            false,
+            false,
+            ManglingMode::Enabled,
+        )
+        .mangling
     }
 
     pub fn analyze_comp_declaration(
@@ -126,16 +159,22 @@ impl<'r> Analyzer<'r> {
     pub fn analyze_global_walrus(
         &mut self,
         w: &HirWalrusDeclaration,
+        annotations: &[omega_hir::HirAnnotation],
     ) -> Option<CheckedDeclaration> {
+        let mangling = self.global_mangling(w.id, annotations);
         let checked = self.analyze_expr(&w.value, None)?;
-        self.finish_global_binding(w.id, w.span, &w.ident, w.mutable, &w.value, checked)
+        self.finish_global_binding(
+            w.id, w.span, &w.ident, w.mutable, mangling, &w.value, checked,
+        )
     }
 
     pub fn analyze_global_declaration_with_init(
         &mut self,
         decl: &HirDeclaration,
         value: &HirExprNode,
+        annotations: &[omega_hir::HirAnnotation],
     ) -> Option<CheckedDeclaration> {
+        let mangling = self.global_mangling(decl.id, annotations);
         let (_, checked_value) =
             self.resolve_typed_decl_init(decl.id, decl.span, &decl.r#type, value)?;
         self.finish_global_binding(
@@ -143,6 +182,7 @@ impl<'r> Analyzer<'r> {
             decl.span,
             &decl.ident,
             decl.mutable,
+            mangling,
             value,
             checked_value,
         )
@@ -195,6 +235,7 @@ impl<'r> Analyzer<'r> {
         span: Span,
         ident: &Ident,
         mutable: bool,
+        mangling: ManglingMode,
         raw_value: &HirExprNode,
         checked_value: CheckedExprNode,
     ) -> Option<CheckedDeclaration> {
@@ -220,6 +261,7 @@ impl<'r> Analyzer<'r> {
             r#type,
             mutable,
             initial_value: Some(const_value),
+            mangling,
         })
     }
 

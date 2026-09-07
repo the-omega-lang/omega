@@ -210,3 +210,92 @@ fn two_sources_forcing_one_linker_symbol_are_still_rejected() {
     assert!(error.contains("two different items"), "{error}");
     assert!(error.contains("collide"), "{error}");
 }
+
+/// The catalog consumes whatever name MIR settled on, so a forced global is
+/// defined once under exactly that name and referenced under it everywhere
+/// else.
+#[test]
+fn a_forced_global_is_defined_once_under_its_selected_name() {
+    let artifacts = artifacts(&[
+        (
+            "main.omg",
+            "import root::owner;\nmain() => void { owner::bump(1); }\n",
+        ),
+        (
+            "owner.omg",
+            "@mangling(force = \"unmangled_symbol_with_default_value\")\n\
+             exposed mut TOTAL: i32 = 10;\n\
+             exposed bump(amount: i32) => void { TOTAL += amount; }\n",
+        ),
+    ]);
+    let owner = ir_of(&artifacts, "owner.omg");
+    let user = ir_of(&artifacts, "main.omg");
+
+    assert!(
+        owner.contains(r#"@unmangled_symbol_with_default_value = global [4 x i8] c"\0A\00\00\00""#),
+        "the owning source defines the forced symbol with its initializer:\n{owner}"
+    );
+    assert!(
+        !owner.contains("@main.owner.TOTAL"),
+        "the module-qualified name must not also be emitted:\n{owner}"
+    );
+    assert!(
+        user.contains("@unmangled_symbol_with_default_value = external global"),
+        "a non-owning source references the same selected name:\n{user}"
+    );
+    for line in user.lines() {
+        assert!(
+            !line.starts_with("@unmangled_symbol_with_default_value = global "),
+            "the forced global must have exactly one definition:\n{user}"
+        );
+    }
+}
+
+#[test]
+fn a_disabled_global_uses_its_written_identifier() {
+    let artifacts = artifacts(&[(
+        "main.omg",
+        "@mangling(disabled)\nmut plain_flag: i32 = 3;\nmain() => void { plain_flag += 1; }\n",
+    )]);
+
+    assert!(
+        ir_of(&artifacts, "main.omg").contains(r#"@plain_flag = global [4 x i8] c"\03\00\00\00""#),
+        "{}",
+        ir_of(&artifacts, "main.omg")
+    );
+}
+
+#[test]
+fn globals_colliding_across_sources_are_rejected_by_their_symbol() {
+    let cases = [
+        (
+            "another global",
+            "@mangling(force = \"collide\")\nexposed other: i32 = 2;\n",
+        ),
+        (
+            "a function",
+            "@mangling(force = \"collide\")\nexposed other() => void { }\n",
+        ),
+        (
+            "a foreign data binding",
+            "@mangling(force = \"collide\")\nexposed foreign other: i32;\n",
+        ),
+    ];
+
+    for (what, other) in cases {
+        let error = generate(&[
+            (
+                "main.omg",
+                "@mangling(force = \"collide\")\nvalue: i32 = 1;\nmain() => void { }\n",
+            ),
+            ("other.omg", other),
+        ])
+        .unwrap_err();
+
+        assert!(
+            error.contains("two different items"),
+            "colliding with {what}: {error}"
+        );
+        assert!(error.contains("collide"), "colliding with {what}: {error}");
+    }
+}

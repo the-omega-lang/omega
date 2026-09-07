@@ -32,7 +32,7 @@ Recognized annotations are `layout`, `inline`, `mangling`, `naked`, and `suppres
 |---|---|
 | `@layout` | `struct`, `enum` |
 | `@inline` | functions/methods |
-| `@mangling` | functions/methods, `foreign` bindings/functions, subject to restrictions below |
+| `@mangling` | functions/methods, module-level storage bindings, `foreign` bindings/functions, subject to restrictions below |
 | `@naked` | functions/methods, subject to restrictions below |
 | `@suppress` | `struct`, `enum`, `union`, function/method, `import`, `spec` |
 
@@ -144,6 +144,21 @@ Accepted forms:
 - `enabled` uses normal Omega mangling.
 - `disabled` uses the bare function/binding name. It is rejected on methods and generic functions.
 - `force = "..."` uses the exact non-empty linker symbol. It is allowed on methods, but rejected on generic functions because all instantiations would otherwise collide.
+
+### On a module-level storage binding
+
+A module-level binding that owns storage -- `name : T;`, `name : T = value;`, or `name := value;`, with or without `mut` and under any visibility -- accepts `@mangling` to name the symbol of that storage:
+
+```omega
+@mangling(force = "unmangled_symbol_with_default_value")
+my_symbol : i32 = 10;
+```
+
+The default is `enabled`, so an unannotated global keeps its ordinary module-qualified Omega symbol. `disabled` uses the written identifier verbatim. The annotation selects a linker name only: source lookup, visibility, mutability, type, layout, alignment, and initialization are unchanged, and the declaration still owns and initializes its own storage.
+
+A stored value is data even when its type is a function type, so it always uses global symbol construction -- unlike a function-typed `foreign` binding, which names an external *function* symbol.
+
+A `comp` binding has no storage and no linker symbol, so it does not accept `@mangling`; neither do locals, parameters, fields, aliases, or types. `@mangling` is also the only annotation a module-level storage binding accepts.
 
 `@mangling` also applies to `foreign` bindings and direct foreign functions (see [`foreign-function-interface.md`](foreign-function-interface.md)), where the *default* -- with no explicit `@mangling(...)` written -- is `disabled` rather than the ordinary-function default of `enabled`. Writing `@mangling(enabled)` on a foreign item is how it opts back into normal Omega symbol construction; this is required for a generic foreign definition, since a bare disabled name cannot distinguish instantiations.
 

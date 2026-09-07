@@ -146,10 +146,10 @@ fn gap_and_glue_stay_ordinary_identifiers() {
          glue() => i32 { return 0; }",
     )
     .expect("`gap`/`glue` must stay usable as ordinary identifiers");
-    assert!(matches!(module.nodes[0].item, Item::Walrus(_)));
+    assert!(matches!(module.nodes[0].item, Item::Walrus { .. }));
     assert!(matches!(
         module.nodes[1].item,
-        Item::DeclarationWithInit(..)
+        Item::DeclarationWithInit { .. }
     ));
     assert!(matches!(module.nodes[2].item, Item::Gap(_)));
     assert!(matches!(module.nodes[3].item, Item::Glue(_)));
@@ -252,10 +252,10 @@ fn meet_and_primitive_stay_contextual_identifiers() {
          primitive() => i32 { return meet; }",
     )
     .expect("meet and primitive must remain usable as ordinary identifiers");
-    assert!(matches!(module.nodes[0].item, Item::Walrus(_)));
+    assert!(matches!(module.nodes[0].item, Item::Walrus { .. }));
     assert!(matches!(
         module.nodes[1].item,
-        Item::DeclarationWithInit(..)
+        Item::DeclarationWithInit { .. }
     ));
     assert!(matches!(module.nodes[2].item, Item::FunctionDefinition(_)));
     assert!(matches!(module.nodes[3].item, Item::FunctionDefinition(_)));

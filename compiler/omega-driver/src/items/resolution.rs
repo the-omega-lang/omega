@@ -289,6 +289,23 @@ impl Driver {
         Ok(())
     }
 
+    /// A global's checked declaration is the only place its resolved mangling
+    /// policy and initializer exist, so it is kept here for the body pass
+    /// rather than rebuilt from HIR later.
+    fn keep_checked_global(
+        &mut self,
+        checked: omega_analyzer::checked::CheckedDeclaration,
+    ) -> ResolvedItem {
+        let item = ResolvedItem::Value {
+            r#type: checked.r#type.clone(),
+            storage: Storage::Global,
+            decl_id: checked.id,
+            mutable: checked.mutable,
+        };
+        self.items.cache_checked_global(checked);
+        item
+    }
+
     fn compute_item(
         &mut self,
         key: &ItemKey,
@@ -305,38 +322,30 @@ impl Driver {
             .collect();
 
         let resolved = match item {
-            HirItem::Declaration { decl, .. } => self
+            HirItem::Declaration {
+                decl, annotations, ..
+            } => self
                 .analyze(
                     module,
                     &substitution,
                     AnalysisSite::new(decl.id, decl.span),
-                    |a| a.analyze_declaration(decl, Storage::Global, DeclarationPolicy::Unique),
+                    |a| a.analyze_global_declaration(decl, annotations),
                 )
-                .map(|c| ResolvedItem::Value {
-                    r#type: c.r#type,
-                    storage: Storage::Global,
-                    decl_id: c.id,
-                    mutable: c.mutable,
-                }),
+                .map(|c| self.keep_checked_global(c)),
 
-            HirItem::DeclarationWithInit { decl, value, .. } => self
+            HirItem::DeclarationWithInit {
+                decl,
+                value,
+                annotations,
+                ..
+            } => self
                 .analyze(
                     module,
                     &substitution,
                     AnalysisSite::new(decl.id, decl.span),
-                    |a| a.analyze_global_declaration_with_init(decl, value),
+                    |a| a.analyze_global_declaration_with_init(decl, value, annotations),
                 )
-                .map(|c| {
-                    if let Some(v) = c.initial_value {
-                        self.items.global_initial_values.insert(c.id, v);
-                    }
-                    ResolvedItem::Value {
-                        r#type: c.r#type,
-                        storage: Storage::Global,
-                        decl_id: c.id,
-                        mutable: c.mutable,
-                    }
-                }),
+                .map(|c| self.keep_checked_global(c)),
 
             // A top-level binding, `comp` or not -- evaluated right here
             // during signature resolution, since `comp <expr>` interprets
@@ -365,24 +374,18 @@ impl Driver {
                         mutable: false,
                     }
                 }),
-            HirItem::Walrus { walrus: w, .. } => self
+            HirItem::Walrus {
+                walrus: w,
+                annotations,
+                ..
+            } => self
                 .analyze(
                     module,
                     &substitution,
                     AnalysisSite::new(w.id, w.span),
-                    |a| a.analyze_global_walrus(w),
+                    |a| a.analyze_global_walrus(w, annotations),
                 )
-                .map(|c| {
-                    if let Some(value) = c.initial_value {
-                        self.items.global_initial_values.insert(c.id, value);
-                    }
-                    ResolvedItem::Value {
-                        r#type: c.r#type,
-                        storage: Storage::Global,
-                        decl_id: c.id,
-                        mutable: c.mutable,
-                    }
-                }),
+                .map(|c| self.keep_checked_global(c)),
 
             HirItem::ForeignBinding(binding) => self
                 .analyze(

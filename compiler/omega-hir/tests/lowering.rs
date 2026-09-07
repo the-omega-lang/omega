@@ -408,3 +408,58 @@ fn member_name_provenance_survives_lowering() {
     assert_eq!(authored.as_ref(), "tag");
     assert!(macro_origin.0.is_some());
 }
+
+/// HIR stores an annotation as written syntax; resolving what it means is the
+/// analyzer's job. What matters here is that every global form still carries
+/// one after lowering.
+#[test]
+fn global_annotations_survive_lowering_in_every_form() {
+    let cases = [
+        "@mangling(force = \"s\")\nvalue : i32;",
+        "@mangling(disabled)\nvalue : i32 = 1;",
+        "@mangling(enabled)\nexposed mut value := 1;",
+        "@mangling(disabled)\nexposed mut value : i32 = 1;",
+    ];
+
+    for source in cases {
+        let module = lower(source);
+        let annotations = match &module.items[0] {
+            HirItem::Declaration { annotations, .. }
+            | HirItem::DeclarationWithInit { annotations, .. }
+            | HirItem::Walrus { annotations, .. } => annotations,
+            other => panic!("expected a global binding, got {other:?}"),
+        };
+        assert_eq!(annotations.len(), 1, "in {source:?}");
+        assert_eq!(annotations[0].name.as_ref(), "mangling");
+        assert_eq!(annotations[0].args.len(), 1);
+    }
+}
+
+#[test]
+fn an_item_producing_macro_lowers_its_global_with_annotations() {
+    let ast = macros::expand(
+        SourceModule::parse(
+            r#"
+            macro global($name: ident) => {
+                @mangling(force = "forced_name")
+                $name : i32 = 1;
+            }
+            global$(value);
+            "#,
+        )
+        .expect("test source must parse"),
+        &HashMap::new(),
+    )
+    .expect("test macro must expand");
+    let module = lower_module(ModuleId(0), &ast);
+
+    let HirItem::DeclarationWithInit {
+        decl, annotations, ..
+    } = &module.items[0]
+    else {
+        panic!("expected the expanded global, got {:?}", module.items[0]);
+    };
+    assert_eq!(decl.ident.as_ref(), "value");
+    assert_eq!(annotations.len(), 1);
+    assert_eq!(annotations[0].name.as_ref(), "mangling");
+}

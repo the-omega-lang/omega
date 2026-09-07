@@ -1,0 +1,16 @@
+# `@mangling` is the only annotation a global binding accepts; adding an
+# annotation channel to globals did not open the others.
+
+@suppress(unused_binding)
+not_suppressible : i32 = 1;
+
+@inline(always)
+not_inlinable : i32 = 2;
+
+@layout(pack = 1)
+not_laid_out := 3;
+
+@naked
+mut not_naked : i32 = 4;
+
+main() => void {}

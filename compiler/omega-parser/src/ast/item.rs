@@ -11,8 +11,15 @@ use crate::lexer::Token;
 
 #[derive(Debug, Clone)]
 pub enum Item {
-    Declaration(DeclarationStmt),
-    DeclarationWithInit(DeclarationStmt, ExpressionNode),
+    Declaration {
+        decl: DeclarationStmt,
+        annotations: Vec<AnnotationNode>,
+    },
+    DeclarationWithInit {
+        decl: DeclarationStmt,
+        value: ExpressionNode,
+        annotations: Vec<AnnotationNode>,
+    },
     ForeignBinding(ForeignBindingItem),
     ForeignFunction(ForeignFunctionItem),
     ForeignBlock(ForeignBlockItem),
@@ -25,7 +32,10 @@ pub enum Item {
     Glue(GlueStmt),
     Conform(ConformStmt),
     Primitive(PrimitiveStmt),
-    Walrus(WalrusStmt),
+    Walrus {
+        walrus: WalrusStmt,
+        annotations: Vec<AnnotationNode>,
+    },
     Import(ImportStmt),
     MacroDefinition(MacroDefinitionStmt),
     MacroInvocation(MacroInvocationExpr),
