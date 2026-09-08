@@ -7,7 +7,7 @@
  */
 
 /* Defined here, bound in Omega as `outside_sym` through
- * `@mangling(force = "symbol_from_outside")`. */
+ * `@symbol(name = "symbol_from_outside")`. */
 int symbol_from_outside = 4;
 
 /* Defined in Omega, all named by the symbol its annotation selected. */

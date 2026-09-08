@@ -15,7 +15,7 @@ Use the root [`ARCHITECTURE.md`](../../ARCHITECTURE.md) as the compact map. Open
 | Where do semantic types, layouts, target widths, and compile-time values live? | [`types-layout-and-const-eval.md`](types-layout-and-const-eval.md) |
 | How are control flow, MIR, and LLVM codegen structured? | [`mir-and-codegen.md`](mir-and-codegen.md) |
 | What representation/calling-convention facts does codegen rely on? | [`abi-and-representation.md`](abi-and-representation.md) |
-| How are linker symbols constructed and where is linkage decided? | [`symbol-mangling.md`](symbol-mangling.md) |
+| How are linker symbols constructed and where are linkage and binary visibility decided? | [`symbol-mangling.md`](symbol-mangling.md) |
 | How do spans/errors/warnings become rendered diagnostics? | [`diagnostics.md`](diagnostics.md) |
 | How do `core`, `std`, and the platform packages relate to compiler packages? | [`runtime-and-platform.md`](runtime-and-platform.md) |
 | Which tests protect which architectural boundaries? | [`testing-and-validation.md`](testing-and-validation.md) |

@@ -108,20 +108,67 @@ pub enum ManglingMode {
     },
 }
 
+/// Binary visibility of a symbol in the linked image. This is independent of
+/// Omega's source visibility: `Hidden` still links across source files and
+/// separately compiled objects of one image, it only stops the symbol from
+/// being exported out of a shared image. An Omega-declared item is `Hidden`
+/// unless it asks otherwise; a `foreign` item is not, because naming an
+/// external symbol is the whole point of declaring one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SymbolVisibility {
+    #[default]
+    Hidden,
+    Default,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SymbolPolicy {
+    pub mangling: ManglingMode,
+    pub visibility: SymbolVisibility,
+}
+
+impl SymbolPolicy {
+    /// The policy an ordinary Omega item has without `@symbol(...)`.
+    pub fn ordinary() -> Self {
+        Self {
+            mangling: ManglingMode::Enabled,
+            visibility: SymbolVisibility::Hidden,
+        }
+    }
+
+    /// The policy a foreign item has without `@symbol(...)`. `foreign` is
+    /// already the declaration that a symbol is looked up in, or defined for,
+    /// something outside this compilation, so it forks both defaults: the
+    /// exact name written in source, and a symbol that crosses images.
+    pub fn foreign() -> Self {
+        Self {
+            mangling: ManglingMode::Disabled,
+            visibility: SymbolVisibility::Default,
+        }
+    }
+
+    pub fn mangled(mangling: ManglingMode) -> Self {
+        Self {
+            mangling,
+            visibility: SymbolVisibility::Hidden,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ResolvedAnnotations {
     pub layout: Layout,
     pub inline: Option<InlineMode>,
-    pub mangling: ManglingMode,
+    pub symbol: SymbolPolicy,
     pub suppress: Vec<Ident>,
     pub naked: bool,
 }
 
-/// Resolves an item's annotations. `default_mangling` supplies the mangling
-/// mode that applies when no `@mangling(...)` annotation is written --
-/// `Enabled` for ordinary functions, `Disabled` for foreign items -- so the
-/// caller decides the default deliberately instead of this function silently
-/// picking `ManglingMode`'s own `#[default]`.
+/// Resolves an item's annotations. `default_symbol` supplies the policy that
+/// applies when no `@symbol(...)` annotation is written -- `SymbolPolicy::ordinary`
+/// for ordinary items, `SymbolPolicy::foreign` for foreign ones -- so the caller
+/// decides the default deliberately instead of this function silently picking
+/// `SymbolPolicy`'s own `#[default]`.
 pub fn resolve(
     analyzer: &mut Analyzer,
     node_id: HirId,
@@ -129,10 +176,10 @@ pub fn resolve(
     kind: ItemKind,
     is_member_function: bool,
     is_generic: bool,
-    default_mangling: ManglingMode,
+    default_symbol: SymbolPolicy,
 ) -> ResolvedAnnotations {
     let mut result = ResolvedAnnotations {
-        mangling: default_mangling,
+        symbol: default_symbol.clone(),
         ..ResolvedAnnotations::default()
     };
     let mut seen: Vec<&str> = Vec::new();
@@ -224,7 +271,7 @@ pub fn resolve(
                 result.naked = true;
                 naked_span = Some(annotation.span);
             }
-            "mangling" => {
+            "symbol" => {
                 if !matches!(
                     kind,
                     ItemKind::Function
@@ -248,23 +295,25 @@ pub fn resolve(
                     );
                     continue;
                 }
-                match resolve_mangling(annotation) {
-                    Ok(ManglingMode::Disabled) if is_member_function => analyzer.error(
-                        node_id,
-                        annotation.span,
-                        AnalysisErrorKind::ManglingDisabledOnMethod,
-                    ),
-                    Ok(ManglingMode::Disabled) if is_generic => analyzer.error(
-                        node_id,
-                        annotation.span,
-                        AnalysisErrorKind::ManglingDisabledOnGeneric,
-                    ),
-                    Ok(ManglingMode::Forced(_)) if is_generic => analyzer.error(
-                        node_id,
-                        annotation.span,
-                        AnalysisErrorKind::ManglingForcedOnGeneric,
-                    ),
-                    Ok(mode) => result.mangling = mode,
+                match resolve_symbol(annotation, &default_symbol) {
+                    Ok(policy) => match policy.mangling {
+                        ManglingMode::Disabled if is_member_function => analyzer.error(
+                            node_id,
+                            annotation.span,
+                            AnalysisErrorKind::ManglingDisabledOnMethod,
+                        ),
+                        ManglingMode::Disabled if is_generic => analyzer.error(
+                            node_id,
+                            annotation.span,
+                            AnalysisErrorKind::ManglingDisabledOnGeneric,
+                        ),
+                        ManglingMode::Forced(_) if is_generic => analyzer.error(
+                            node_id,
+                            annotation.span,
+                            AnalysisErrorKind::ManglingForcedOnGeneric,
+                        ),
+                        _ => result.symbol = policy,
+                    },
                     Err(reason) => analyzer.error(
                         node_id,
                         annotation.span,
@@ -465,6 +514,9 @@ fn resolve_size_value(
         HirAnnotationValue::StrLiteral(_) => Some(Err(
             "expected a plain integer or 'sizeof<Type>', found a string literal".to_string(),
         )),
+        HirAnnotationValue::Ident(_) => Some(Err(
+            "expected a plain integer or 'sizeof<Type>', found an identifier".to_string(),
+        )),
     }
 }
 
@@ -477,22 +529,108 @@ fn resolve_inline(annotation: &HirAnnotation) -> Result<InlineMode, String> {
     }
 }
 
-fn resolve_mangling(annotation: &HirAnnotation) -> Result<ManglingMode, String> {
-    match annotation.args.as_slice() {
-        [HirAnnotationArg::Ident(mode)] if mode.as_ref() == "enabled" => Ok(ManglingMode::Enabled),
-        [HirAnnotationArg::Ident(mode)] if mode.as_ref() == "disabled" => {
+fn resolve_symbol(
+    annotation: &HirAnnotation,
+    default: &SymbolPolicy,
+) -> Result<SymbolPolicy, String> {
+    if annotation.args.is_empty() {
+        return Err(
+            "expected at least one of 'mangle = enabled|disabled', 'name = \"...\"', or 'export'"
+                .to_string(),
+        );
+    }
+
+    let mut mangle: Option<ManglingMode> = None;
+    let mut name: Option<String> = None;
+    let mut visibility: Option<SymbolVisibility> = None;
+    let mut seen_keys: Vec<&str> = Vec::new();
+
+    for arg in &annotation.args {
+        let key = match arg {
+            HirAnnotationArg::Ident(key) => key,
+            HirAnnotationArg::KeyValue(key, _) => key,
+        };
+        if seen_keys.contains(&key.as_ref()) {
+            return Err(format!("'{}' is already set", key.as_ref()));
+        }
+        seen_keys.push(key.as_ref());
+
+        match arg {
+            // Only `export` carries meaning on its own; a bare `mangle` or a
+            // bare mode identifier would silently pick a policy the source
+            // never states.
+            HirAnnotationArg::Ident(key) if key.as_ref() == "export" => {
+                visibility = Some(SymbolVisibility::Default);
+            }
+            HirAnnotationArg::Ident(key) => {
+                return Err(format!(
+                    "'{}' needs a value -- only 'export' can be written on its own",
+                    key.as_ref()
+                ));
+            }
+            HirAnnotationArg::KeyValue(key, value) => match key.as_ref() {
+                "mangle" => mangle = Some(mangling_mode(value)?),
+                "name" => name = Some(symbol_name(value)?),
+                "export" => visibility = Some(export_mode(value)?),
+                other => {
+                    return Err(format!(
+                        "unknown @symbol argument '{other}' -- expected 'mangle', 'name', or 'export'"
+                    ));
+                }
+            },
+        }
+    }
+
+    let mangling = match (name, mangle) {
+        (Some(_), Some(_)) => {
+            return Err(
+                "'name' already decides the exact symbol, so it cannot be combined with 'mangle'"
+                    .to_string(),
+            );
+        }
+        (Some(name), None) => ManglingMode::Forced(name),
+        (None, Some(mode)) => mode,
+        (None, None) => default.mangling.clone(),
+    };
+    Ok(SymbolPolicy {
+        mangling,
+        visibility: visibility.unwrap_or(default.visibility),
+    })
+}
+
+fn mangling_mode(value: &HirAnnotationValue) -> Result<ManglingMode, String> {
+    match value {
+        HirAnnotationValue::Ident(mode) if mode.as_ref() == "enabled" => Ok(ManglingMode::Enabled),
+        HirAnnotationValue::Ident(mode) if mode.as_ref() == "disabled" => {
             Ok(ManglingMode::Disabled)
         }
-        [HirAnnotationArg::KeyValue(key, HirAnnotationValue::StrLiteral(name))]
-            if key.as_ref() == "force" =>
-        {
-            if name.is_empty() {
-                return Err("'force' needs a non-empty symbol name".to_string());
-            }
-            Ok(ManglingMode::Forced(name.clone()))
-        }
-        _ => Err("expected 'enabled', 'disabled', or 'force = \"...\"'".to_string()),
+        _ => Err("'mangle' expects 'enabled' or 'disabled'".to_string()),
     }
+}
+
+fn export_mode(value: &HirAnnotationValue) -> Result<SymbolVisibility, String> {
+    match value {
+        HirAnnotationValue::Ident(mode) if mode.as_ref() == "enabled" => {
+            Ok(SymbolVisibility::Default)
+        }
+        HirAnnotationValue::Ident(mode) if mode.as_ref() == "disabled" => {
+            Ok(SymbolVisibility::Hidden)
+        }
+        _ => Err("'export' expects 'enabled' or 'disabled'".to_string()),
+    }
+}
+
+fn symbol_name(value: &HirAnnotationValue) -> Result<String, String> {
+    let HirAnnotationValue::StrLiteral(name) = value else {
+        return Err("'name' expects a string literal".to_string());
+    };
+    if name.is_empty() {
+        return Err("'name' needs a non-empty symbol name".to_string());
+    }
+    if name.contains('\0') {
+        return Err("'name' cannot contain a NUL byte".to_string());
+    }
+    Ok(name.clone())
 }
 
 pub const LARGE_STRUCT_BY_VALUE_THRESHOLD: u32 = 128;

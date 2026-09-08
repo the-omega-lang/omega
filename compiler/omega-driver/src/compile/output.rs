@@ -42,7 +42,7 @@ impl Driver {
                 module_path: key.module.clone(),
                 kind: ExternFunctionKind::Free(key.name.clone()),
                 fn_type: fn_type.clone(),
-                mangling: self.mangling_of(decl_id),
+                symbol: self.symbol_of(decl_id),
             });
         }
 
@@ -63,7 +63,7 @@ impl Driver {
                 module_path: module_path.clone(),
                 kind: ExternFunctionKind::Free(f.name.clone()),
                 fn_type: fn_type.clone(),
-                mangling: self.mangling_of(&f.id),
+                symbol: self.symbol_of(&f.id),
             });
         }
 
@@ -79,7 +79,7 @@ impl Driver {
                         type_name: key.name.clone(),
                         method_name,
                     },
-                    mangling: method.annotations.mangling,
+                    symbol: method.annotations.symbol,
                     fn_type: method.fn_type,
                 });
             }
@@ -95,11 +95,11 @@ impl Driver {
                     module_path: gap.module_path.clone(),
                     kind: ExternFunctionKind::Free(fn_name.clone()),
                     fn_type: gap_fn.fn_type.clone(),
-                    mangling: ManglingMode::Glued {
+                    symbol: SymbolPolicy::mangled(ManglingMode::Glued {
                         spec_module_path: gap.module_path.clone(),
                         spec_name: gap.name.clone(),
                         function_name: fn_name.clone(),
-                    },
+                    }),
                 });
             }
         }
@@ -117,7 +117,7 @@ impl Driver {
                         method_name: method_name.clone(),
                     },
                     fn_type: method.fn_type.clone(),
-                    mangling: method.annotations.mangling.clone(),
+                    symbol: method.annotations.symbol.clone(),
                 });
             }
         }
@@ -140,7 +140,7 @@ impl Driver {
                         method_name: method_name.clone(),
                     },
                     fn_type: method.fn_type.clone(),
-                    mangling: method.annotations.mangling.clone(),
+                    symbol: method.annotations.symbol.clone(),
                 });
             }
         }
@@ -148,12 +148,12 @@ impl Driver {
         functions
     }
 
-    fn mangling_of(&self, decl_id: &HirId) -> ManglingMode {
+    fn symbol_of(&self, decl_id: &HirId) -> SymbolPolicy {
         self.items
             .function_annotations
             .get(decl_id)
-            .map(|a| a.mangling.clone())
-            .unwrap_or_default()
+            .map(|a| a.symbol.clone())
+            .unwrap_or_else(SymbolPolicy::ordinary)
     }
 
     pub(super) fn sweep_dead_code(

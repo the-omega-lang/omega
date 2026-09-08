@@ -1,0 +1,13 @@
+error: 'symbol_visibility_access::hidden_source::exported_but_language_hidden' is not visible here
+ --> tests/symbol_visibility_access/symbol_visibility_access.omg:4:31
+  |
+4 | import self::hidden_source::{ exported_but_language_hidden, EXPORTED_LANGUAGE_HIDDEN_TOTAL };
+  |                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not visible from this module
+
+error: 'symbol_visibility_access::hidden_source::EXPORTED_LANGUAGE_HIDDEN_TOTAL' is not visible here
+ --> tests/symbol_visibility_access/symbol_visibility_access.omg:4:61
+  |
+4 | import self::hidden_source::{ exported_but_language_hidden, EXPORTED_LANGUAGE_HIDDEN_TOTAL };
+  |                                                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not visible from this module
+
+error: could not compile the program due to 2 previous errors

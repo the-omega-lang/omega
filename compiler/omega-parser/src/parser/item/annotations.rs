@@ -65,6 +65,13 @@ fn parse_annotation_arg(p: &mut Parser) -> Option<AnnotationArg> {
                 AnnotationValue::Sizeof(r#type),
             ))
         }
+        TokenKind::Ident(_) => {
+            let value = p.expect_ident()?;
+            Some(AnnotationArg::KeyValue(
+                ident,
+                AnnotationValue::Ident(value),
+            ))
+        }
         TokenKind::Str(_) => {
             let TokenKind::Str(s) = p.advance().kind else {
                 unreachable!()
@@ -76,7 +83,7 @@ fn parse_annotation_arg(p: &mut Parser) -> Option<AnnotationArg> {
         }
         _ => {
             p.error(ParseErrorKind::Expected {
-                expected: "a plain integer, 'sizeof<Type>', or a string literal",
+                expected: "a plain integer, 'sizeof<Type>', an identifier, or a string literal",
                 found: p.peek().describe(),
             });
             None

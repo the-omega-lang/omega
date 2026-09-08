@@ -1,0 +1,79 @@
+error: invalid arguments for '@symbol': expected at least one of 'mangle = enabled|disabled', 'name = "..."', or 'export'
+ --> tests/symbol_invalid_args/symbol_invalid_args.omg:4:1
+  |
+4 | @symbol
+  | ^^^^^^^ '@symbol' expected at least one of 'mangle = enabled|disabled', 'name = "..."', or 'export'
+
+error: invalid arguments for '@symbol': expected at least one of 'mangle = enabled|disabled', 'name = "..."', or 'export'
+ --> tests/symbol_invalid_args/symbol_invalid_args.omg:7:1
+  |
+7 | @symbol()
+  | ^^^^^^^^^ '@symbol' expected at least one of 'mangle = enabled|disabled', 'name = "..."', or 'export'
+
+error: invalid arguments for '@symbol': 'mangle' needs a value -- only 'export' can be written on its own
+  --> tests/symbol_invalid_args/symbol_invalid_args.omg:10:1
+   |
+10 | @symbol(mangle)
+   | ^^^^^^^^^^^^^^^ '@symbol' 'mangle' needs a value -- only 'export' can be written on its own
+
+error: invalid arguments for '@symbol': 'enabled' needs a value -- only 'export' can be written on its own
+  --> tests/symbol_invalid_args/symbol_invalid_args.omg:13:1
+   |
+13 | @symbol(enabled)
+   | ^^^^^^^^^^^^^^^^ '@symbol' 'enabled' needs a value -- only 'export' can be written on its own
+
+error: invalid arguments for '@symbol': 'mangle' expects 'enabled' or 'disabled'
+  --> tests/symbol_invalid_args/symbol_invalid_args.omg:16:1
+   |
+16 | @symbol(mangle = 3)
+   | ^^^^^^^^^^^^^^^^^^^ '@symbol' 'mangle' expects 'enabled' or 'disabled'
+
+error: invalid arguments for '@symbol': 'mangle' expects 'enabled' or 'disabled'
+  --> tests/symbol_invalid_args/symbol_invalid_args.omg:19:1
+   |
+19 | @symbol(mangle = sideways)
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^ '@symbol' 'mangle' expects 'enabled' or 'disabled'
+
+error: invalid arguments for '@symbol': 'name' expects a string literal
+  --> tests/symbol_invalid_args/symbol_invalid_args.omg:22:1
+   |
+22 | @symbol(name = 7)
+   | ^^^^^^^^^^^^^^^^^ '@symbol' 'name' expects a string literal
+
+error: invalid arguments for '@symbol': 'name' needs a non-empty symbol name
+  --> tests/symbol_invalid_args/symbol_invalid_args.omg:25:1
+   |
+25 | @symbol(name = "")
+   | ^^^^^^^^^^^^^^^^^^ '@symbol' 'name' needs a non-empty symbol name
+
+error: invalid arguments for '@symbol': 'name' cannot contain a NUL byte
+  --> tests/symbol_invalid_args/symbol_invalid_args.omg:28:1
+   |
+28 | @symbol(name = "with\0nul")
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ '@symbol' 'name' cannot contain a NUL byte
+
+error: invalid arguments for '@symbol': 'export' expects 'enabled' or 'disabled'
+  --> tests/symbol_invalid_args/symbol_invalid_args.omg:31:1
+   |
+31 | @symbol(export = maybe)
+   | ^^^^^^^^^^^^^^^^^^^^^^^ '@symbol' 'export' expects 'enabled' or 'disabled'
+
+error: invalid arguments for '@symbol': unknown @symbol argument 'nonsense' -- expected 'mangle', 'name', or 'export'
+  --> tests/symbol_invalid_args/symbol_invalid_args.omg:34:1
+   |
+34 | @symbol(nonsense = enabled)
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ '@symbol' unknown @symbol argument 'nonsense' -- expected 'mangle', 'name', or 'export'
+
+error: invalid arguments for '@symbol': 'export' is already set
+  --> tests/symbol_invalid_args/symbol_invalid_args.omg:37:1
+   |
+37 | @symbol(export, export = enabled)
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ '@symbol' 'export' is already set
+
+error: duplicate '@symbol' annotation
+  --> tests/symbol_invalid_args/symbol_invalid_args.omg:41:1
+   |
+41 | @symbol(export)
+   | ^^^^^^^^^^^^^^^ '@symbol' is already applied to this item
+
+error: could not compile the program due to 13 previous errors

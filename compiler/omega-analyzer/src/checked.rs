@@ -28,7 +28,7 @@ pub struct ExternFunctionRef {
     pub module_path: Vec<Ident>,
     pub kind: ExternFunctionKind,
     pub fn_type: ResolvedFunctionType,
-    pub mangling: crate::annotations::ManglingMode,
+    pub symbol: crate::annotations::SymbolPolicy,
 }
 
 #[derive(Debug, Clone)]
@@ -68,8 +68,8 @@ pub struct CheckedDeclaration {
     pub mutable: bool,
     pub initial_value: Option<ConstValue>,
     /// Only a module-level binding owns a linker symbol; a local or
-    /// synthesized declaration keeps the inert `Enabled` default.
-    pub mangling: crate::annotations::ManglingMode,
+    /// synthesized declaration keeps the inert default policy.
+    pub symbol: crate::annotations::SymbolPolicy,
 }
 
 #[derive(Debug, Clone)]
@@ -78,7 +78,7 @@ pub struct CheckedForeignBinding {
     pub span: Span,
     pub ident: Ident,
     pub r#type: ResolvedType,
-    pub mangling: crate::annotations::ManglingMode,
+    pub symbol: crate::annotations::SymbolPolicy,
 }
 
 /// A direct `foreign(cc) name(...) => T;`/`{ ... }` item. Kept separate from
@@ -95,7 +95,7 @@ pub struct CheckedForeignFunctionDef {
     pub params: Vec<CheckedParam>,
     pub return_type: ResolvedType,
     pub body: Option<CheckedBlock>,
-    pub mangling: crate::annotations::ManglingMode,
+    pub symbol: crate::annotations::SymbolPolicy,
 }
 
 impl CheckedForeignFunctionDef {
@@ -142,7 +142,7 @@ pub struct CheckedFunctionDef {
     pub return_type: ResolvedType,
     pub body: CheckedBlock,
     pub inline: Option<crate::annotations::InlineMode>,
-    pub mangling: crate::annotations::ManglingMode,
+    pub symbol: crate::annotations::SymbolPolicy,
     pub conformance_owner: Option<ConformanceOwner>,
     pub primitive_target: Option<ResolvedType>,
     /// Set on an instantiated generic method, which is emitted on its own

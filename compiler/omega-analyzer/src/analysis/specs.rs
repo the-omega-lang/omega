@@ -346,7 +346,7 @@ impl<'r> Analyzer<'r> {
             crate::annotations::ItemKind::Spec,
             false,
             false,
-            crate::annotations::ManglingMode::Enabled,
+            crate::annotations::SymbolPolicy::ordinary(),
         );
 
         let mut functions = Vec::new();

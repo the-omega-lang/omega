@@ -10,7 +10,7 @@ struct Header { ... }
 @suppress(inline_not_enforced)
 fast() => void { ... }
 
-@mangling(disabled)
+@symbol(mangle = disabled)
 raw_add(a: i32, b: i32) => i32 { a + b }
 ```
 
@@ -19,12 +19,14 @@ raw_add(a: i32, b: i32) => i32 { a + b }
 ```ebnf
 annotation = "@", identifier, [ "(", [ arg, { ",", arg } ], ")" ] ;
 arg        = identifier | identifier, "=", value ;
-value      = decimal-integer | "sizeof", "<", type, ">" | string-literal ;
+value      = decimal-integer | "sizeof", "<", type, ">" | string-literal | identifier ;
 ```
 
 Bare `@name` and `@name()` both carry zero arguments.
 
-Recognized annotations are `layout`, `inline`, `mangling`, `naked`, and `suppress`. Duplicate use of the same annotation on one declaration is an error. Unknown annotation names are errors.
+An identifier value is annotation syntax, not an expression and not a name lookup: it is the written word, and each annotation decides which words it accepts. `sizeof` followed by `<` is still the size form; anywhere else it is an ordinary identifier.
+
+Recognized annotations are `layout`, `inline`, `naked`, `suppress`, and `symbol`. Duplicate use of the same annotation on one declaration is an error. Unknown annotation names are errors.
 
 ## Applicability
 
@@ -32,9 +34,9 @@ Recognized annotations are `layout`, `inline`, `mangling`, `naked`, and `suppres
 |---|---|
 | `@layout` | `struct`, `enum` |
 | `@inline` | functions/methods |
-| `@mangling` | functions/methods, module-level storage bindings, `foreign` bindings/functions, subject to restrictions below |
 | `@naked` | functions/methods, subject to restrictions below |
 | `@suppress` | `struct`, `enum`, `union`, function/method, `import`, `spec` |
+| `@symbol` | functions/methods, module-level storage bindings, `foreign` bindings/functions, subject to restrictions below |
 
 Other item kinds do not acquire an annotation meaning merely because the generic `@...` syntax exists.
 
@@ -131,38 +133,78 @@ Accepted forms:
 
 `@inline` is a hint, not a semantic guarantee. A backend that cannot enforce the requested behavior may warn rather than changing program semantics. The current backend limitation is tracked in [`../issues/language-limitations.md`](../issues/language-limitations.md).
 
-## `@mangling`
+## `@symbol`
 
-Accepted forms:
+`@symbol` decides two things about the symbol an item owns or refers to: the linker **name**, and whether that symbol is **visible outside the linked image** it belongs to.
 
 ```omega
-@mangling(enabled)
-@mangling(disabled)
-@mangling(force = "exact_symbol")
+@symbol(mangle = enabled)
+@symbol(mangle = disabled)
+@symbol(name = "exact_symbol")
+@symbol(export)
+@symbol(export = enabled)
+@symbol(export = disabled)
+@symbol(name = "exact_symbol", export)
 ```
 
-- `enabled` uses normal Omega mangling.
-- `disabled` uses the bare function/binding name. It is rejected on methods and generic functions.
-- `force = "..."` uses the exact non-empty linker symbol. It is allowed on methods, but rejected on generic functions because all instantiations would otherwise collide.
+| Parameter | Accepted values | Omitted |
+|---|---|---|
+| `mangle` | `enabled`, `disabled` | the item's naming default: `enabled` for ordinary items, `disabled` for `foreign` ones |
+| `name` | a non-empty string without an embedded NUL | no exact name |
+| `export` | `enabled`, `disabled`; bare `export` means `enabled` | the item's visibility default: `disabled` for ordinary items, `enabled` for `foreign` ones |
+
+At least one parameter must be written: `@symbol` and `@symbol()` are errors. Only `export` may be written on its own; a bare `mangle`, `name`, `enabled`, or `disabled` is an error, as are unknown keys, a repeated key (including `export, export = enabled`), a value of the wrong kind, and a repeated `@symbol` on one declaration.
+
+### Naming
+
+- `mangle = enabled` uses normal Omega mangling.
+- `mangle = disabled` uses the bare function/binding name. It is rejected on methods and on generic declarations.
+- `name = "..."` uses that exact linker symbol. It is allowed on a nongeneric method, and rejected on a generic declaration -- including a method of a generic owner -- because every instantiation would otherwise collide on one symbol.
+
+`name` already decides the symbol, so writing it together with `mangle` is an error whichever order the two appear in and whatever value `mangle` carries.
+
+A compilation must diagnose duplicate final linker symbols rather than relying on linker/backend failure.
+
+### Export
+
+`export` decides binary visibility only. It never changes the linker name, and it is never Omega's source visibility: `exposed`, `shared`, `hidden`, and `reveal` decide what other Omega source may name, and they say nothing about the emitted symbol (see [`visibility.md`](visibility.md#binary-visibility-is-a-separate-decision)).
+
+An **Omega-declared** item is hidden by default. A hidden symbol still links across source files and separately compiled objects of one linked image; it is only absent from what that image exports to other images. `export` marks it visible to other images as well.
+
+A **`foreign`** item is the opposite, and needs no annotation to be so. Declaring an item `foreign` is already the statement that its symbol is looked up in, or defined for, something outside this compilation, so it defaults to crossing images just as it defaults to the exact name written in source:
+
+```omega
+shared foreign(c) malloc(size: usize) => *mut u8;   # resolved from libc; no annotation needed
+```
+
+`export = disabled` is what a `foreign` item writes when the opposite is true -- when the symbol it names really is resolved inside this image, and marking it hidden should be enforced.
+
+`export` is valid on a method and on a generic declaration, where it applies to whatever instantiations are emitted; it does not cause an otherwise unused generic to be instantiated.
+
+On a bodyless declaration, visibility describes the symbol being *referred to* rather than creating a definition. A reference to a definition Omega itself knows about -- including one in a separately compiled Omega package -- carries that definition's own visibility instead of a reference-site default.
+
+**Portability.** `export` means the emitted symbol takes the backend's default visibility rather than hidden visibility. It is not a promise that the final binary retains the symbol, nor that the symbol appears in every platform's dynamic export table; those remain decisions of the target and the linker.
 
 ### On a module-level storage binding
 
-A module-level binding that owns storage -- `name : T;`, `name : T = value;`, or `name := value;`, with or without `mut` and under any visibility -- accepts `@mangling` to name the symbol of that storage:
+A module-level binding that owns storage -- `name : T;`, `name : T = value;`, or `name := value;`, with or without `mut` and under any visibility -- accepts `@symbol` to name the symbol of that storage:
 
 ```omega
-@mangling(force = "unmangled_symbol_with_default_value")
+@symbol(name = "unmangled_symbol_with_default_value")
 my_symbol : i32 = 10;
 ```
 
-The default is `enabled`, so an unannotated global keeps its ordinary module-qualified Omega symbol. `disabled` uses the written identifier verbatim. The annotation selects a linker name only: source lookup, visibility, mutability, type, layout, alignment, and initialization are unchanged, and the declaration still owns and initializes its own storage.
+The naming default is `enabled`, so an unannotated global keeps its ordinary module-qualified Omega symbol. `mangle = disabled` uses the written identifier verbatim. The annotation selects a linker name and a binary visibility only: source lookup, visibility, mutability, type, layout, alignment, and initialization are unchanged, and the declaration still owns and initializes its own storage.
 
 A stored value is data even when its type is a function type, so it always uses global symbol construction -- unlike a function-typed `foreign` binding, which names an external *function* symbol.
 
-A `comp` binding has no storage and no linker symbol, so it does not accept `@mangling`; neither do locals, parameters, fields, aliases, or types. `@mangling` is also the only annotation a module-level storage binding accepts.
+A `comp` binding has no storage and no linker symbol, so it does not accept `@symbol`; neither do locals, parameters, fields, aliases, or types. `@symbol` is also the only annotation a module-level storage binding accepts.
 
-`@mangling` also applies to `foreign` bindings and direct foreign functions (see [`foreign-function-interface.md`](foreign-function-interface.md)), where the *default* -- with no explicit `@mangling(...)` written -- is `disabled` rather than the ordinary-function default of `enabled`. Writing `@mangling(enabled)` on a foreign item is how it opts back into normal Omega symbol construction; this is required for a generic foreign definition, since a bare disabled name cannot distinguish instantiations.
+### On a foreign item
 
-A compilation must diagnose duplicate final linker symbols rather than relying on linker/backend failure.
+`@symbol` also applies to `foreign` bindings and direct foreign functions (see [`foreign-function-interface.md`](foreign-function-interface.md)). `foreign` is where both defaults fork: naming is `disabled` rather than the ordinary-function `enabled`, and visibility is exported rather than hidden.
+
+Writing `@symbol(mangle = enabled)` on a foreign item is how it opts back into normal Omega symbol construction; this is required for a generic foreign definition, since a bare disabled name cannot distinguish instantiations. The two parameters stay independent: opting into mangling does not also opt out of crossing an image.
 
 ## `@naked`
 

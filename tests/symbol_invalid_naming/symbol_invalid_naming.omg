@@ -1,0 +1,42 @@
+# `name` and `mangle` both decide the linker name, so they conflict whichever
+# order they are written in. The rest are naming policies a generic cannot
+# honor: one symbol would have to name every instantiation. `export` is valid
+# on generics and methods and is proven in `symbol_visibility`.
+
+@symbol(name = "conflict_a", mangle = enabled)
+name_then_mangle : i32 = 1;
+
+@symbol(mangle = disabled, name = "conflict_b")
+mangle_then_name : i32 = 2;
+
+@symbol(mangle = disabled)
+generic_unmangled<T>(value: T) => T { value }
+
+@symbol(name = "generic_exact")
+generic_named<T>(value: T) => T { value }
+
+struct Owner {
+	exposed value: i32;
+
+	@symbol(mangle = disabled)
+	exposed unmangled_method(*self) => i32 { self.value }
+}
+
+# A method of a generic owner is itself emitted once per instantiation, so the
+# owner's parameters make an exact name just as unusable as the method's own
+# would.
+struct Holder<T> {
+	exposed value: T;
+
+	@symbol(name = "holder_exact")
+	exposed get(*self) => T { self.value }
+}
+
+main() => void {
+	generic_unmangled(1);
+	generic_named(2);
+	owner := Owner { value = 3; };
+	owner.unmangled_method();
+	holder := Holder<i32> { value = 4; };
+	holder.get();
+}

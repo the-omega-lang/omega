@@ -46,22 +46,22 @@ fast_double(x: i32) => i32 { x * 2 }
 slow_triple(x: i32) => i32 { x * 3 }
 
 # `disabled` uses the bare function name as its linker symbol.
-@mangling(disabled)
+@symbol(mangle = disabled)
 raw_add(a: i32, b: i32) => i32 { a + b }
 
-# Foreign items default to `@mangling(disabled)` (their bare source symbol,
-# unlike an ordinary function's default `enabled`); `@mangling(enabled)`
+# Foreign items default to `@symbol(mangle = disabled)` (their bare source symbol,
+# unlike an ordinary function's default `enabled`); `@symbol(mangle = enabled)`
 # opts back into normal Omega symbol construction.
 foreign(c) foreign_default_symbol(x: i32) => i32 { x + 1 }
 
-@mangling(enabled)
+@symbol(mangle = enabled)
 foreign(c) foreign_enabled_mangling(x: i32) => i32 { x + 2 }
 
 struct Adder {
 	exposed base: i32;
 
 	# `force = "..."` is allowed on methods and fixes the exact symbol.
-	@mangling(force = "adder_bump_exact_symbol")
+	@symbol(name = "adder_bump_exact_symbol")
 	exposed bump(*self, delta: i32) => i32 { self.base + delta }
 }
 
@@ -74,7 +74,7 @@ main() => void {
 	# `sizeof<Type>` is an ordinary usize expression outside annotations.
 	println$("sizeof-primitive: ", sizeof<usize>, " ", sizeof<*u8>);
 
-	# `@inline`/`@mangling` are hints/symbol control; program behavior is
+	# `@inline`/`@symbol` are hints/symbol control; program behavior is
 	# unaffected.
 	println$("inline-hints: ", fast_double(21), " ", slow_triple(7));
 	println$("mangling-disabled: ", raw_add(2, 3));

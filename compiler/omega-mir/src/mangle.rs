@@ -140,7 +140,7 @@ pub fn global_symbol_string(module: &[Ident], name: &Ident) -> String {
 }
 
 pub fn extern_function_ref_symbol(extern_fn: &ExternFunctionRef) -> String {
-    match (&extern_fn.mangling, &extern_fn.kind) {
+    match (&extern_fn.symbol.mangling, &extern_fn.kind) {
         (ManglingMode::Forced(name), _) => name.clone(),
         (
             ManglingMode::Glued {
@@ -161,7 +161,7 @@ pub fn extern_function_ref_symbol(extern_fn: &ExternFunctionRef) -> String {
             ExternFunctionKind::Method { .. }
             | ExternFunctionKind::Primitive { .. }
             | ExternFunctionKind::Conform { .. },
-        ) => unreachable!("'@mangling(disabled)' is rejected on methods during analysis"),
+        ) => unreachable!("'@symbol(mangle = disabled)' is rejected on methods during analysis"),
         (ManglingMode::Enabled, ExternFunctionKind::Free(name)) => encode(&free_function_symbol(
             &extern_fn.module_path,
             name,
@@ -246,6 +246,7 @@ fn nested_path(parent: ManglePath, namespace: Namespace, name: &str) -> ManglePa
 #[cfg(test)]
 mod tests {
     use super::*;
+    use omega_analyzer::annotations::SymbolPolicy;
     use omega_analyzer::resolved_type::ResolvedFunctionParam;
 
     fn ident(name: &str) -> Ident {
@@ -523,7 +524,7 @@ mod tests {
                 method_name: ident("same"),
             },
             fn_type,
-            mangling: ManglingMode::Enabled,
+            symbol: SymbolPolicy::ordinary(),
         });
         assert_eq!(definition, reference);
     }

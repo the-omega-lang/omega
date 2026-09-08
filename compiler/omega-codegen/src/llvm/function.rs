@@ -4,10 +4,12 @@ use crate::abi::{AbiReturn, AbiSignature};
 use crate::catalog::FunctionDecl;
 use crate::storage::{ParameterHome, parameter_storage_plan};
 
+use inkwell::GlobalVisibility;
 use inkwell::attributes::{Attribute, AttributeLoc};
 use inkwell::module::Linkage;
 use inkwell::types::{BasicType, BasicTypeEnum};
 use inkwell::values::{BasicValueEnum, PointerValue};
+use omega_analyzer::annotations::SymbolVisibility;
 use omega_analyzer::layout;
 use omega_analyzer::resolved_type::{ResolvedFunctionType, ResolvedType};
 use omega_mir::{
@@ -16,8 +18,15 @@ use omega_mir::{
 
 fn linkage_of(linkage: omega_mir::MirLinkage) -> Linkage {
     match linkage {
-        omega_mir::MirLinkage::Export => Linkage::External,
+        omega_mir::MirLinkage::External => Linkage::External,
         omega_mir::MirLinkage::Weak => Linkage::WeakODR,
+    }
+}
+
+pub(crate) fn visibility_of(visibility: SymbolVisibility) -> GlobalVisibility {
+    match visibility {
+        SymbolVisibility::Hidden => GlobalVisibility::Hidden,
+        SymbolVisibility::Default => GlobalVisibility::Default,
     }
 }
 
@@ -91,8 +100,15 @@ impl<'ctx> Codegen<'ctx> {
     pub(super) fn declare_function_reference(&mut self, declaration: &FunctionDecl) {
         let fn_type = self.llvm_function_type(&declaration.fn_type);
         let (function, created) = self.declare_or_reuse_function(&declaration.symbol, fn_type);
+        let global = function.as_global_value();
         if created {
             function.set_linkage(Linkage::External);
+            global.set_visibility(visibility_of(declaration.visibility));
+        } else if declaration.visibility == SymbolVisibility::Default {
+            // A gap declaration and its glue definition share one symbol under
+            // two catalog entries. Raising rather than overwriting keeps the
+            // result independent of which entry is declared first.
+            global.set_visibility(GlobalVisibility::Default);
         }
         function.set_call_conventions(crate::abi::llvm_calling_convention(
             declaration.fn_type.calling_convention,
@@ -106,6 +122,9 @@ impl<'ctx> Codegen<'ctx> {
     pub(super) fn configure_function_owner(&mut self, function_def: &MirFunctionDef) {
         let function = self.owned_function(function_def.id, &function_def.symbol);
         function.set_linkage(linkage_of(function_def.linkage));
+        function
+            .as_global_value()
+            .set_visibility(visibility_of(function_def.visibility));
         if self.target.os != omega_analyzer::Os::MacOs {
             function.set_section(Some(&format!(".text.{}", function_def.symbol)));
         }
@@ -125,6 +144,9 @@ impl<'ctx> Codegen<'ctx> {
     ) {
         let function = self.owned_function(function_def.id, &function_def.symbol);
         function.set_linkage(linkage_of(function_def.linkage));
+        function
+            .as_global_value()
+            .set_visibility(visibility_of(function_def.visibility));
         function.set_call_conventions(crate::abi::llvm_calling_convention(
             function_def.calling_convention,
         ));

@@ -20,4 +20,5 @@ pub enum AnnotationValue {
     IntLiteral(String),
     Sizeof(Type),
     StrLiteral(String),
+    Ident(Ident),
 }

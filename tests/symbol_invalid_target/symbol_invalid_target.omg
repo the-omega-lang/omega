@@ -1,4 +1,4 @@
-# `@mangling` is the only annotation a global binding accepts; adding an
+# `@symbol` is the only annotation a global binding accepts; adding an
 # annotation channel to globals did not open the others.
 
 @suppress(unused_binding)

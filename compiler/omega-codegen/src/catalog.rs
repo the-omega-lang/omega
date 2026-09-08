@@ -1,4 +1,5 @@
 use crate::symbol::SymbolRegistry;
+use omega_analyzer::annotations::SymbolVisibility;
 use omega_analyzer::checked::ExternFunctionRef;
 use omega_analyzer::resolved_type::{ResolvedFunctionType, ResolvedType};
 use omega_hir::HirId;
@@ -11,6 +12,10 @@ pub(crate) struct FunctionDecl {
     pub(crate) id: HirId,
     pub(crate) symbol: String,
     pub(crate) fn_type: ResolvedFunctionType,
+    /// The visibility the *definition* decided. A reference carries it too, so
+    /// a hidden reference in one object cannot demote an exported definition
+    /// when the linker takes the most restrictive visibility of all of them.
+    pub(crate) visibility: SymbolVisibility,
 }
 
 /// A data symbol any emitted object may reference. Only the source that
@@ -20,6 +25,7 @@ pub(crate) struct GlobalDecl {
     pub(crate) id: HirId,
     pub(crate) symbol: String,
     pub(crate) r#type: ResolvedType,
+    pub(crate) visibility: SymbolVisibility,
 }
 
 /// The compilation-wide set of names the emitted objects can refer to across
@@ -55,6 +61,7 @@ impl Catalog {
                 id: extern_fn.decl_id,
                 symbol: omega_mir::mangle::extern_function_ref_symbol(extern_fn),
                 fn_type: extern_fn.fn_type.clone(),
+                visibility: extern_fn.symbol.visibility,
             });
         }
         Ok(catalog)
@@ -80,6 +87,7 @@ impl Catalog {
                     id: declaration.id,
                     symbol: declaration.symbol.clone(),
                     r#type: declaration.r#type.clone(),
+                    visibility: declaration.visibility,
                 });
             }
             // A gap declaration and its glue definition intentionally mangle to
@@ -90,6 +98,7 @@ impl Catalog {
                     id: binding.id,
                     symbol: binding.symbol.clone(),
                     fn_type: fn_type.clone(),
+                    visibility: binding.visibility,
                 }),
                 r#type => {
                     symbols.register(&binding.symbol, binding.id)?;
@@ -97,6 +106,7 @@ impl Catalog {
                         id: binding.id,
                         symbol: binding.symbol.clone(),
                         r#type: r#type.clone(),
+                        visibility: binding.visibility,
                     });
                 }
             },
@@ -106,6 +116,7 @@ impl Catalog {
                     id: function.id,
                     symbol: function.symbol.clone(),
                     fn_type: function.fn_type(),
+                    visibility: function.visibility,
                 });
             }
             MirItem::FunctionDefinition(function) => self.collect_function(function, symbols)?,
@@ -138,6 +149,7 @@ impl Catalog {
             id: function.id,
             symbol: function.symbol.clone(),
             fn_type: function.fn_type(),
+            visibility: function.visibility,
         });
         Ok(())
     }

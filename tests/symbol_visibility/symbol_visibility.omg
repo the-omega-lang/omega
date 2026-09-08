@@ -1,0 +1,82 @@
+# `@symbol` decides the linker name and the binary visibility of a symbol.
+# Neither is Omega's source visibility: this file reaches a language-hidden
+# function only through `reveal`, and reaching it says nothing about whether
+# that function is exported from the linked image.
+import std::io::println;
+import self::hidden_source::{ reveal exported_but_language_hidden, reveal EXPORTED_LANGUAGE_HIDDEN_TOTAL, unexported_but_exposed };
+
+# The naming parameters, on their own and combined with `export`.
+@symbol(mangle = enabled)
+mangled_add(a: i32, b: i32) => i32 { a + b }
+
+@symbol(mangle = disabled)
+unmangled_add(a: i32, b: i32) => i32 { a - b }
+
+@symbol(name = "symbol_visibility_exact_add")
+exact_add(a: i32, b: i32) => i32 { a * b }
+
+@symbol(mangle = enabled, export)
+exported_mangled_add(a: i32, b: i32) => i32 { a + b + 1 }
+
+@symbol(name = "symbol_visibility_exact_export", export = enabled)
+exported_exact_add(a: i32, b: i32) => i32 { a + b + 2 }
+
+# `export = disabled` is the default written out; it must not change anything
+# else about the symbol.
+@symbol(mangle = disabled, export = disabled)
+unmangled_hidden_add(a: i32, b: i32) => i32 { a + b + 3 }
+
+# An exported definition nothing calls still has to be emitted.
+@symbol(name = "symbol_visibility_uncalled", export)
+uncalled_exported(value: i32) => i32 { value }
+
+# Storage, with and without a name of its own.
+mut PLAIN_TOTAL : i32 = 10;
+
+@symbol(name = "symbol_visibility_exact_total", export)
+mut EXACT_TOTAL : i32 = 20;
+
+@symbol(mangle = disabled)
+mut unmangled_total : i32 = 30;
+
+struct Counter {
+	exposed value: i32;
+
+	# `export` alone is valid on a method: it keeps the ordinary mangled name
+	# and only widens the emitted symbol's visibility.
+	@symbol(export)
+	exposed bump(*mut self, amount: i32) => void { self.value += amount; }
+
+	# An exact name is allowed on a nongeneric method.
+	@symbol(name = "symbol_visibility_counter_get")
+	exposed get(*self) => i32 { self.value }
+}
+
+# `export` on a generic applies to whatever instantiations are emitted; it does
+# not instantiate anything on its own.
+@symbol(export)
+exported_identity<T>(value: T) => T { value }
+
+main() => void {
+	println$("mangled: ", mangled_add(1, 2));
+	println$("unmangled: ", unmangled_add(5, 2));
+	println$("exact: ", exact_add(3, 4));
+	println$("exported-mangled: ", exported_mangled_add(1, 2));
+	println$("exported-exact: ", exported_exact_add(1, 2));
+	println$("unmangled-hidden: ", unmangled_hidden_add(1, 2));
+
+	PLAIN_TOTAL += 1;
+	EXACT_TOTAL += 2;
+	unmangled_total += 3;
+	println$("globals: ", PLAIN_TOTAL, " ", EXACT_TOTAL, " ", unmangled_total);
+
+	mut counter := Counter { value = 0; };
+	counter.bump(6);
+	println$("counter: ", counter.get());
+
+	println$("generic: ", exported_identity(9));
+
+	EXPORTED_LANGUAGE_HIDDEN_TOTAL += 1;
+	println$("revealed: ", exported_but_language_hidden(4), " ", EXPORTED_LANGUAGE_HIDDEN_TOTAL);
+	println$("exposed: ", unexported_but_exposed(41));
+}

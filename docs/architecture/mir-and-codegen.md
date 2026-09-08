@@ -99,10 +99,11 @@ Most item shapes mechanically mirror checked items:
 
 Only function bodies fundamentally change shape.
 
-`MirFunctionDef` also adds two facts computed once, upstream of codegen:
+`MirFunctionDef` also adds three facts computed once, upstream of codegen:
 
 - final linker `symbol`;
-- `MirLinkage`.
+- `MirLinkage`;
+- `SymbolVisibility`.
 
 See [`symbol-mangling.md`](symbol-mangling.md).
 
@@ -210,7 +211,7 @@ MIR reads the analyzer's decisions and makes none of its own: it does not discov
 
 Expressions typed `never` have no usable fallthrough result. MIR emits the expression for its effects and then terminates unreachable continuation rather than inventing a value for later blocks.
 
-## Final symbols and linkage in MIR
+## Final symbols, linkage, and visibility in MIR
 
 MIR lowering translates checked declaration provenance into final object identity before any backend runs.
 
@@ -218,10 +219,11 @@ A function definition therefore reaches codegen with:
 
 ```text
 symbol: String
-linkage: Export | Weak
+linkage: External | Weak
+visibility: Hidden | Default
 ```
 
-This guarantees codegen never has to decide names/duplicate-folding policy itself.
+This guarantees codegen never has to decide names, duplicate-folding policy, or binary visibility itself.
 
 ## Codegen shared layer
 

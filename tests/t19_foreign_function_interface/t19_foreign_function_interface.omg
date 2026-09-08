@@ -22,7 +22,7 @@ foreign(c) {
 	shared t19_abs(x: i32) => i32;
 }
 
-@mangling(disabled)
+@symbol(mangle = disabled)
 raw_add(a: i32, b: i32) => i32 { a + b }
 
 # --- Omega-convention foreign items ---------------------------------------
@@ -61,14 +61,14 @@ foreign(c) {
 # A mangled `foreign(c)` definition: a C-convention function Omega itself
 # defines and exports under its normal mangled symbol, callable both
 # directly and through a `foreign(c)` function-pointer type.
-@mangling(enabled)
+@symbol(mangle = enabled)
 foreign(c) c_callback(a: i32, b: i32) => i32 {
 	a * b + 1
 }
 
 # A `sysv64` definition on the default x86-64 target: a distinct convention
 # from `c`, even though both currently lower to the same machine ABI there.
-@mangling(enabled)
+@symbol(mangle = enabled)
 foreign(sysv64) sysv_add(a: i32, b: i32) => i32 {
 	a + b
 }

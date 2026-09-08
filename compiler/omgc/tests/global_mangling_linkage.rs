@@ -3,6 +3,9 @@
 //! definition and the consumer's foreign declaration meet at that name alone,
 //! under different Omega source names on each side.
 //!
+//! The same objects also carry the binding/visibility the symbol policy chose,
+//! which only the emitted ELF shows.
+//!
 //! This drives the real system toolchain (`cc`); if it is missing the case
 //! reports itself as skipped rather than failing.
 
@@ -16,35 +19,41 @@ static NEXT_DIR: AtomicUsize = AtomicUsize::new(0);
 /// Defines the storage. `forced_value` and `plain_value` are Omega names; the
 /// annotations are what decide the two symbols the linker sees.
 const PRODUCER: &str = "\
-@mangling(force = \"gm_forced_value\")\n\
+@symbol(name = \"gm_forced_value\")\n\
 exposed mut forced_value : i32 = 10;\n\
 \n\
-@mangling(disabled)\n\
+@symbol(mangle = disabled)\n\
 exposed mut plain_value : i32 = 20;\n\
 \n\
-@mangling(disabled)\n\
-exposed omega_producer_forced_address() => *i32 { &forced_value }\n";
+@symbol(mangle = disabled)\n\
+exposed omega_producer_forced_address() => *i32 { &forced_value }\n\
+\n\
+@symbol(name = \"gm_exported_value\", export)\n\
+exposed mut exported_value : i32 = 30;\n\
+\n\
+@symbol(name = \"gm_exported_function\", export)\n\
+exposed exported_function() => i32 { exported_value }\n";
 
 /// A separate compilation that owns none of that storage: it reaches both
 /// globals through foreign data bindings whose Omega names differ from the
 /// producer's.
 const CONSUMER: &str = "\
-@mangling(force = \"gm_forced_value\")\n\
+@symbol(name = \"gm_forced_value\")\n\
 foreign renamed_forced : i32;\n\
 \n\
-@mangling(force = \"plain_value\")\n\
+@symbol(name = \"plain_value\")\n\
 foreign renamed_plain : i32;\n\
 \n\
-@mangling(disabled)\n\
+@symbol(mangle = disabled)\n\
 exposed omega_forced_value() => i32 { renamed_forced }\n\
 \n\
-@mangling(disabled)\n\
+@symbol(mangle = disabled)\n\
 exposed omega_plain_value() => i32 { renamed_plain }\n\
 \n\
-@mangling(disabled)\n\
+@symbol(mangle = disabled)\n\
 exposed omega_forced_address() => *i32 { &renamed_forced }\n\
 \n\
-@mangling(disabled)\n\
+@symbol(mangle = disabled)\n\
 exposed omega_plain_address() => *i32 { &renamed_plain }\n";
 
 const HARNESS: &str = "\
@@ -55,6 +64,8 @@ int omega_plain_value(void);\n\
 const int *omega_forced_address(void);\n\
 const int *omega_plain_address(void);\n\
 const int *omega_producer_forced_address(void);\n\
+extern int gm_exported_value;\n\
+int gm_exported_function(void);\n\
 \n\
 int main(void) {\n\
     if (gm_forced_value != 10) return 1;\n\
@@ -66,6 +77,8 @@ int main(void) {\n\
     if (omega_producer_forced_address() != &gm_forced_value) return 7;\n\
     gm_forced_value = 33;\n\
     if (omega_forced_value() != 33) return 8;\n\
+    if (gm_exported_value != 30) return 9;\n\
+    if (gm_exported_function() != 30) return 10;\n\
     return 0;\n\
 }\n";
 
@@ -154,4 +167,37 @@ fn separately_compiled_packages_meet_on_a_globals_selected_symbol() {
          name one object; check {:?}",
         run.status.code()
     );
+
+    if !tool_available("readelf") {
+        eprintln!("skipping the symbol-table assertions: this needs 'readelf'");
+        return;
+    }
+    let symbols = String::from_utf8_lossy(
+        &workspace
+            .expect_ok("readelf", &["-sW", "producer-objects/producer.o"])
+            .stdout,
+    )
+    .into_owned();
+
+    for (symbol, kind, visibility) in [
+        ("gm_forced_value", "OBJECT", "HIDDEN"),
+        ("plain_value", "OBJECT", "HIDDEN"),
+        ("omega_producer_forced_address", "FUNC", "HIDDEN"),
+        ("gm_exported_value", "OBJECT", "DEFAULT"),
+        ("gm_exported_function", "FUNC", "DEFAULT"),
+    ] {
+        let entry = symbol_entry(&symbols, symbol);
+        assert!(
+            entry.contains(kind) && entry.contains(" GLOBAL ") && entry.contains(visibility),
+            "'{symbol}' must be a GLOBAL {visibility} {kind}, got:\n{entry}"
+        );
+    }
+}
+
+/// The `readelf -sW` line whose name column is exactly `symbol`.
+fn symbol_entry<'a>(symbols: &'a str, symbol: &str) -> &'a str {
+    symbols
+        .lines()
+        .find(|line| line.split_whitespace().next_back() == Some(symbol))
+        .unwrap_or_else(|| panic!("no symbol-table entry for '{symbol}' in:\n{symbols}"))
 }

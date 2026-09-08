@@ -4,7 +4,7 @@ Omega supports explicit references to externally defined functions/data and expl
 
 `foreign` is the keyword for all of this. It keeps two independent facts separate everywhere in the language:
 
-1. Whether a source item is a **foreign binding/definition** -- this controls default symbol mangling/linkage, not ABI.
+1. Whether a source item is a **foreign binding/definition** -- this controls the default symbol name and linkage, not ABI.
 2. The function type's **calling convention** -- this controls type identity and ABI lowering.
 
 An ordinary Omega function type always uses the implicit Omega convention, whether or not it happens to be named by a `foreign` binding.
@@ -41,13 +41,13 @@ shared foreign(c) printf(format: *u8, ...) => i32;
 A direct foreign function may have a body:
 
 ```omega
-@mangling(enabled)
+@symbol(mangle = enabled)
 foreign(c) callback(a: i32, b: i32) => i32 {
 	a * b
 }
 ```
 
-This is still a foreign item (its default mangling is `disabled`, not the ordinary-function default `enabled` -- see "Symbol naming" below); the body just makes it a definition Omega itself compiles and exports, rather than an external declaration.
+This is still a foreign item (its default naming is `mangle = disabled`, not the ordinary-function default `enabled` -- see "Symbol naming" below); the body just makes it a definition Omega itself compiles, rather than an external declaration.
 
 ## Foreign blocks
 
@@ -96,37 +96,49 @@ Variadic foreign function *definitions* (a body that reads its own variadic tail
 
 ## Symbol naming
 
-Ordinary Omega functions and ordinary module-level storage bindings default to `@mangling(enabled)`: Omega's deterministic mangling scheme, so module/type/generic identities do not collide across separately compiled packages.
+Ordinary Omega functions and ordinary module-level storage bindings default to `@symbol(mangle = enabled)`: Omega's deterministic mangling scheme, so module/type/generic identities do not collide across separately compiled packages.
 
-Foreign items (bindings and direct foreign functions/definitions alike) default to `@mangling(disabled)` instead: the bare source name is the linker symbol, matching how an external declaration usually needs to name an exact existing symbol. `@mangling(enabled)` opts back into ordinary Omega symbol construction (needed, for example, for a generic foreign definition, since a disabled bare name cannot distinguish instantiations); `@mangling(force = "...")` uses the given name exactly, foreign or not.
+Foreign items (bindings and direct foreign functions/definitions alike) default to `mangle = disabled` instead: the bare source name is the linker symbol, matching how an external declaration usually needs to name an exact existing symbol. `@symbol(mangle = enabled)` opts back into ordinary Omega symbol construction (needed, for example, for a generic foreign definition, since a disabled bare name cannot distinguish instantiations); `@symbol(name = "...")` uses the given name exactly, foreign or not.
 
 ```omega
 foreign(c) malloc(size: usize) => *mut u8;      # linker symbol: "malloc"
 
-@mangling(enabled)
+@symbol(mangle = enabled)
 foreign(c) callback(a: i32, b: i32) => i32 { a * b }   # ordinary Omega symbol
 
-@mangling(force = "exact_symbol")
+@symbol(name = "exact_symbol")
 foreign(c) entry(a: i32) => i32;                 # linker symbol: "exact_symbol"
 ```
 
 An ordinary global owns its storage rather than naming someone else's, so the same annotation is how C or a separately compiled object refers to that storage by an exact name:
 
 ```omega
-@mangling(force = "symbol_from_outside")
+@symbol(name = "symbol_from_outside")
 foreign outside_sym : i32;                       # storage another object owns
 
-@mangling(force = "unmangled_symbol_with_default_value")
+@symbol(name = "unmangled_symbol_with_default_value")
 my_symbol : i32 = 10;                            # storage this declaration owns and initializes
 ```
 
-A definition and a foreign declaration of the same symbol still belong in different compilations: within one compilation they are two items forcing one name, which is the collision below.
+A definition and a foreign declaration of the same symbol still belong in different compilations: within one compilation they are two items naming one symbol, which is the collision below.
 
-- `disabled` uses the bare name. It is rejected on methods and on generic functions (foreign or ordinary).
-- `force = "..."` uses the non-empty string exactly. It may be used on methods but is rejected on generic functions.
+- `mangle = disabled` uses the bare name. It is rejected on methods and on generic declarations (foreign or ordinary).
+- `name = "..."` uses the non-empty string exactly. It may be used on a nongeneric method but is rejected on a generic declaration.
 - Two declarations resolving to the same final symbol are a compile error, except the intentional gap/glue identity described in [`gaps-and-glue.md`](gaps-and-glue.md).
 
 See [`annotations-and-sizeof.md`](annotations-and-sizeof.md) for annotation syntax.
+
+## Foreign declarations and binary visibility
+
+An Omega-declared item's symbol is hidden by default: it links within the image it is compiled into and is not exported out of it. A `foreign` item is the opposite, because `foreign` is already the statement that the symbol is looked up in, or defined for, something outside this compilation. It therefore needs no annotation to resolve out of a different shared image:
+
+```omega
+shared foreign(c) malloc(size: usize) => *mut u8;   # resolved from libc
+```
+
+`@symbol(export = disabled)` is available for the narrower case: a foreign declaration whose symbol really is resolved inside this image, and which should be diagnosed if it ever is not.
+
+A reference to a definition Omega itself knows about, including one in a separately compiled Omega package, carries that definition's own visibility rather than a reference-site default. See [`annotations-and-sizeof.md`](annotations-and-sizeof.md#export) for the full contract, and [`visibility.md`](visibility.md#binary-visibility-is-a-separate-decision) for why this is not Omega's source visibility.
 
 ## Program entry point
 
@@ -134,7 +146,7 @@ A function named `main` in the **root module** is Omega's program entry point. A
 
 A root-module `main` must have the signature `main() => void` or `main() => never`: no parameters and no generics. This is enforced as a compile error. Command-line arguments and a return value doubling as a process exit code are both platform-dependent notions that do not hold on every target Omega runs on (embedded/freestanding targets in particular), so `main` stays a fixed, portable entry point. Reaching the end of a `void` `main` exits the program; a `never` `main` must diverge (for example by calling a platform-provided exit primitive).
 
-The root-module `main` is **not** itself emitted under the platform's native entry-point symbol (for example the C `main` a hosted linker expects). It is emitted under a fixed internal symbol, `_omg_main`, declared in the runtime as `foreign _omg_main : () => void;` -- an Omega-convention foreign binding, since it is Omega code calling Omega code across a compilation-unit boundary, not a C-ABI boundary. Producing a runnable native program is the responsibility of the `plat` implementation being linked: a `plat` that wants to support runnable programs provides its own adapter under the platform's real entry-point symbol. A libc-hosted `plat` forces a `foreign(c)` definition to the `main` symbol (`@mangling(force = "main")`), making its C-facing ABI explicit; a freestanding target's `_start` calls the internal entry symbol directly. A `plat` that supplies no such adapter still links fine as a library-mode dependency.
+The root-module `main` is **not** itself emitted under the platform's native entry-point symbol (for example the C `main` a hosted linker expects). It is emitted under a fixed internal symbol, `_omg_main`, declared in the runtime as `foreign _omg_main : () => void;` -- an Omega-convention foreign binding, since it is Omega code calling Omega code across a compilation-unit boundary, not a C-ABI boundary. Producing a runnable native program is the responsibility of the `plat` implementation being linked: a `plat` that wants to support runnable programs provides its own adapter under the platform's real entry-point symbol. A libc-hosted `plat` names a `foreign(c)` definition `main` (`@symbol(name = "main")`), making its C-facing ABI explicit; a freestanding target's `_start` calls the internal entry symbol directly. A `plat` that supplies no such adapter still links fine as a library-mode dependency.
 
 There is no language-level library/program mode. A separately compiled package with no root-module `main` simply exports/references whatever its declarations require; the final linker decides how the object is used.
 

@@ -43,6 +43,10 @@ impl Drop for TestPackage {
 }
 
 fn ir_for(source: &str, target: Target) -> String {
+    emit_for(source, target, omega_codegen::EmitKind::Ir)
+}
+
+fn emit_for(source: &str, target: Target, emit: omega_codegen::EmitKind) -> String {
     let package = TestPackage::new(source);
     let program = match package.compile(target) {
         Ok(program) => program,
@@ -55,7 +59,7 @@ fn ir_for(source: &str, target: Target) -> String {
     single_artifact_text(omega_codegen::CodegenRequest {
         target,
         opt_level: omega_codegen::OptLevel::O0,
-        emit: omega_codegen::EmitKind::Ir,
+        emit,
         units: omega_mir::plan_emission(modules, &sources),
         entry,
         extern_functions,
@@ -81,8 +85,10 @@ fn single_artifact_text(request: omega_codegen::CodegenRequest) -> String {
     let mut artifacts = omega_codegen::generate(request).expect("codegen succeeds");
     assert_eq!(artifacts.len(), 1, "a one-source package owns one artifact");
     match artifacts.remove(0).output {
+        // An object emit is requested only to prove the target backend accepts
+        // the module; its bytes are not what these assertions read.
+        omega_codegen::EmitOutput::Object(bytes) => format!("{} bytes", bytes.len()),
         omega_codegen::EmitOutput::Text(text) => text,
-        omega_codegen::EmitOutput::Object(_) => unreachable!("a text emit kind never emits bytes"),
     }
 }
 
@@ -137,7 +143,7 @@ fn pointer_sized_values_use_the_target_pointer_width() {
             .find(|line| line.starts_with("define") && line.contains("pointer_size"))
             .unwrap_or_else(|| panic!("no definition of 'pointer_size' in:\n{ir}"));
         assert!(
-            line.starts_with(&format!("define {size_type} ")),
+            line.starts_with(&format!("define hidden {size_type} ")),
             "`usize` must be {size_type} on {arch:?}:\n{line}"
         );
     }
@@ -234,4 +240,79 @@ save(slot: *mut u8, flags: u8) => void {\n\
         "a pointer operand must use AVR's pointer-pair class and a byte operand the \
          generic one:\n{constraints}"
     );
+}
+
+/// Symbol visibility is one LLVM concept, not a per-object-format branch: the
+/// same source must produce the same hidden/default decisions for ELF, Mach-O
+/// and PE, and each target's backend must accept the resulting module.
+#[test]
+fn every_target_lowers_the_same_visibility_decisions() {
+    const VISIBILITY_SMOKE: &str = "\
+exposed hidden_function(x: i32) => i32 { x }\n\
+\n\
+@symbol(export)\n\
+exposed exported_function(x: i32) => i32 { x }\n\
+\n\
+exposed mut HIDDEN_TOTAL : i32 = 1;\n\
+\n\
+@symbol(export)\n\
+exposed mut EXPORTED_TOTAL : i32 = 2;\n\
+\n\
+main() => void {\n\
+    HIDDEN_TOTAL += hidden_function(1);\n\
+    EXPORTED_TOTAL += exported_function(2);\n\
+}\n";
+
+    for (arch, os) in [
+        (Arch::X86_64, Os::Linux),
+        (Arch::X86_64, Os::MacOs),
+        (Arch::X86_64, Os::Windows),
+    ] {
+        let ir = ir_for(VISIBILITY_SMOKE, target(arch, os));
+        let line = |needle: &str| {
+            ir.lines()
+                .find(|line| {
+                    (line.starts_with('@') || line.starts_with("define ")) && line.contains(needle)
+                })
+                .unwrap_or_else(|| panic!("no definition of '{needle}' for {os:?}:\n{ir}"))
+                .to_string()
+        };
+
+        assert!(
+            line("hidden_function").contains(" hidden "),
+            "{os:?} keeps the default hidden visibility:\n{}",
+            line("hidden_function")
+        );
+        assert!(
+            line("HIDDEN_TOTAL").contains(" hidden "),
+            "{os:?} keeps hidden storage hidden:\n{}",
+            line("HIDDEN_TOTAL")
+        );
+        assert!(
+            !line("exported_function").contains(" hidden "),
+            "{os:?} emits an exported function with LLVM default visibility:\n{}",
+            line("exported_function")
+        );
+        assert!(
+            !line("EXPORTED_TOTAL").contains(" hidden "),
+            "{os:?} emits exported storage with LLVM default visibility:\n{}",
+            line("EXPORTED_TOTAL")
+        );
+        // Only LLVM visibility is used, never a DLL storage class, so a PE
+        // target promises emission under that contract and nothing more.
+        assert!(
+            !ir.contains("dllexport") && !ir.contains("dllimport"),
+            "{os:?} must not acquire a DLL storage class:\n{ir}"
+        );
+
+        assert!(
+            emit_for(
+                VISIBILITY_SMOKE,
+                target(arch, os),
+                omega_codegen::EmitKind::Obj
+            )
+            .ends_with(" bytes"),
+            "{os:?} must emit an object under the same visibility decisions"
+        );
+    }
 }

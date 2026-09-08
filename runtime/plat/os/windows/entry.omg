@@ -12,7 +12,7 @@ import root::os::api;
 # (docs/language/foreign-function-interface.md).
 foreign _omg_main : () => void;
 
-@mangling(force = "omg_start")
+@symbol(name = "omg_start")
 foreign(c) process_entry() => never {
 	_omg_main();
 	api::ExitProcess(0u32)

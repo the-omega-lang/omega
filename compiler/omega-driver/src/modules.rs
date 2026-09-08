@@ -832,7 +832,7 @@ impl Driver {
                                 ItemKind::Import,
                                 false,
                                 false,
-                                annotations::ManglingMode::Enabled,
+                                annotations::SymbolPolicy::ordinary(),
                             )
                             .suppress
                         },

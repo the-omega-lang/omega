@@ -54,6 +54,7 @@ fn lower_declaration(declaration: CheckedDeclaration, path: &[Ident]) -> MirDecl
         r#type: declaration.r#type,
         initial_value: declaration.initial_value,
         symbol,
+        visibility: declaration.symbol.visibility,
     }
 }
 
@@ -61,7 +62,7 @@ fn lower_declaration(declaration: CheckedDeclaration, path: &[Ident]) -> MirDecl
 /// whose type happens to be a function type still names its own storage, not
 /// the function it holds.
 fn global_symbol(declaration: &CheckedDeclaration, path: &[Ident]) -> String {
-    match &declaration.mangling {
+    match &declaration.symbol.mangling {
         ManglingMode::Enabled => mangle::global_symbol_string(path, &declaration.ident),
         ManglingMode::Disabled => declaration.ident.as_ref().to_owned(),
         ManglingMode::Forced(name) => name.clone(),
@@ -78,8 +79,8 @@ fn lower_foreign_binding(declaration: CheckedForeignBinding, path: &[Ident]) -> 
         span: declaration.span,
         ident: declaration.ident,
         r#type: declaration.r#type,
-        mangling: declaration.mangling,
         symbol,
+        visibility: declaration.symbol.visibility,
     }
 }
 
@@ -88,7 +89,7 @@ fn lower_foreign_binding(declaration: CheckedForeignBinding, path: &[Ident]) -> 
 /// name verbatim, forced/glued use their exact symbol, and enabled builds an
 /// ordinary Omega function/global symbol from module identity and type.
 fn foreign_binding_symbol(declaration: &CheckedForeignBinding, path: &[Ident]) -> String {
-    match (&declaration.mangling, &declaration.r#type) {
+    match (&declaration.symbol.mangling, &declaration.r#type) {
         (ManglingMode::Disabled, _) => declaration.ident.as_ref().to_owned(),
         (ManglingMode::Forced(name), _) => name.clone(),
         (
@@ -123,7 +124,7 @@ fn lower_foreign_function(
         params,
         return_type,
         body,
-        mangling,
+        symbol: policy,
     } = function;
     let body = body.map(|body| {
         MirFunctionBody::Normal(FunctionLowerer::lower(
@@ -142,15 +143,15 @@ fn lower_foreign_function(
         is_variadic,
         params,
         return_type,
-        mangling,
         symbol,
-        linkage: MirLinkage::Export,
+        visibility: policy.visibility,
+        linkage: MirLinkage::External,
         body,
     }
 }
 
 fn foreign_function_symbol(function: &CheckedForeignFunctionDef, path: &[Ident]) -> String {
-    match &function.mangling {
+    match &function.symbol.mangling {
         ManglingMode::Disabled => function.name.as_ref().to_owned(),
         ManglingMode::Forced(name) => name.clone(),
         ManglingMode::Glued {
@@ -190,7 +191,7 @@ fn lower_method(
 ) -> MirFunctionDef {
     let symbol = method_symbol(&function, path, owner_name, owner_generic_args);
     let linkage = if owner_generic_args.is_empty() {
-        MirLinkage::Export
+        MirLinkage::External
     } else {
         MirLinkage::Weak
     };
@@ -213,7 +214,7 @@ fn lower_function(
         return_type,
         body,
         inline,
-        mangling,
+        symbol: policy,
         conformance_owner,
         primitive_target,
         method_owner: _,
@@ -241,10 +242,10 @@ fn lower_function(
         params,
         return_type,
         inline,
-        mangling,
         conformance_owner,
         primitive_target,
         symbol,
+        visibility: policy.visibility,
         linkage,
         body,
     }
@@ -292,7 +293,7 @@ fn lower_naked_body(body: CheckedBlock) -> MirInlineAsm {
 /// primitive methods, and instantiated generic methods are all emitted
 /// outside their owner's definition and name their owner here.
 fn free_function_symbol(function: &CheckedFunctionDef, path: &[Ident], entry: &[Ident]) -> String {
-    if let ManglingMode::Enabled = &function.mangling
+    if let ManglingMode::Enabled = &function.symbol.mangling
         && let Some(owner) = &function.method_owner
     {
         return mangle::encode(&mangle::method_symbol(
@@ -305,7 +306,7 @@ fn free_function_symbol(function: &CheckedFunctionDef, path: &[Ident], entry: &[
         ));
     }
     match (
-        &function.mangling,
+        &function.symbol.mangling,
         &function.conformance_owner,
         &function.primitive_target,
     ) {
@@ -355,7 +356,7 @@ fn method_symbol(
     owner_name: &Ident,
     owner_generic_args: &[ResolvedGenericArg],
 ) -> String {
-    match &function.mangling {
+    match &function.symbol.mangling {
         ManglingMode::Forced(name) => name.clone(),
         ManglingMode::Glued {
             spec_module_path,
@@ -368,7 +369,7 @@ fn method_symbol(
             &function.fn_type(),
         ),
         ManglingMode::Disabled => {
-            unreachable!("'@mangling(disabled)' is rejected on methods during analysis")
+            unreachable!("'@symbol(mangle = disabled)' is rejected on methods during analysis")
         }
         ManglingMode::Enabled => mangle::encode(&mangle::method_symbol(
             path,
@@ -390,7 +391,7 @@ fn function_linkage(function: &CheckedFunctionDef) -> MirLinkage {
     {
         MirLinkage::Weak
     } else {
-        MirLinkage::Export
+        MirLinkage::External
     }
 }
 
@@ -474,6 +475,7 @@ fn lower_enum_def(definition: CheckedEnumDef, path: &[Ident]) -> MirEnumDef {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use omega_analyzer::annotations::SymbolPolicy;
     use omega_hir::{HirId, ModuleId};
     use omega_parser::prelude::Span;
 
@@ -498,7 +500,7 @@ mod tests {
             r#type: ResolvedType::I32,
             mutable: true,
             initial_value: None,
-            mangling: ManglingMode::Enabled,
+            symbol: SymbolPolicy::ordinary(),
         }
     }
 
@@ -526,22 +528,22 @@ mod tests {
     }
 
     #[test]
-    fn a_globals_mangling_policy_selects_its_exact_symbol() {
+    fn a_globals_naming_policy_selects_its_exact_symbol() {
         let module = path(&["pkg", "counter"]);
 
         let mut forced = declaration("TOTAL");
-        forced.mangling = ManglingMode::Forced("exact_external_name".to_string());
+        forced.symbol.mangling = ManglingMode::Forced("exact_external_name".to_string());
         assert_eq!(
             lower_declaration(forced, &module).symbol,
             "exact_external_name"
         );
 
         let mut disabled = declaration("TOTAL");
-        disabled.mangling = ManglingMode::Disabled;
+        disabled.symbol.mangling = ManglingMode::Disabled;
         assert_eq!(lower_declaration(disabled, &module).symbol, "TOTAL");
 
         let mut enabled = declaration("TOTAL");
-        enabled.mangling = ManglingMode::Enabled;
+        enabled.symbol.mangling = ManglingMode::Enabled;
         assert_eq!(
             lower_declaration(enabled, &module).symbol,
             mangle::global_symbol_string(&module, &Ident("TOTAL".to_string()))

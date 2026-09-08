@@ -53,7 +53,7 @@ glue core::platform::GlobalAllocator {
     }
 }
 
-@mangling(disabled)
+@symbol(mangle = disabled)
 exposed fixture_rounds_a_misaligned_raw_block() => i64 {
     block := alloc::alloc(32, 64);
     ok := <usize>block % 64 == 0 && last_raw % 64 == 8;
@@ -61,7 +61,7 @@ exposed fixture_rounds_a_misaligned_raw_block() => i64 {
     if ok { 1i64 } else { 0i64 }
 }
 
-@mangling(disabled)
+@symbol(mangle = disabled)
 exposed fixture_free_recovers_the_raw_pointer() => i64 {
     block := alloc::alloc(32, 64);
     expected := last_raw;
@@ -69,7 +69,7 @@ exposed fixture_free_recovers_the_raw_pointer() => i64 {
     if last_freed == expected { 1i64 } else { 0i64 }
 }
 
-@mangling(disabled)
+@symbol(mangle = disabled)
 exposed fixture_reports_allocation_failure() => i64 {
     fail_next = true;
     block := alloc::alloc(32, 64);
@@ -77,20 +77,20 @@ exposed fixture_reports_allocation_failure() => i64 {
     if <usize>block == 0 { 1i64 } else { 0i64 }
 }
 
-@mangling(disabled)
+@symbol(mangle = disabled)
 exposed fixture_rejects_invalid_alignment() => i64 {
     zero := alloc::alloc(32, 0);
     odd := alloc::alloc(32, 24);
     if <usize>zero == 0 && <usize>odd == 0 { 1i64 } else { 0i64 }
 }
 
-@mangling(disabled)
+@symbol(mangle = disabled)
 exposed fixture_rejects_size_overflow() => i64 {
     huge := alloc::alloc(<usize>0 - 1usize, 64);
     if <usize>huge == 0 { 1i64 } else { 0i64 }
 }
 
-@mangling(disabled)
+@symbol(mangle = disabled)
 exposed fixture_never_reaches_the_raw_realloc() => i64 {
     block := alloc::alloc(8, 64);
     grown := alloc::realloc(block, 4096, 64);
@@ -99,7 +99,7 @@ exposed fixture_never_reaches_the_raw_realloc() => i64 {
     if ok { 1i64 } else { 0i64 }
 }
 
-@mangling(disabled)
+@symbol(mangle = disabled)
 exposed fixture_failed_realloc_keeps_the_old_block() => i64 {
     block := alloc::alloc(8, 64);
     *<*mut u8>(<usize>block) = 42u8;

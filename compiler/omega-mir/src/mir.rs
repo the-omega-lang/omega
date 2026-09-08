@@ -1,5 +1,5 @@
 use crate::body::{MirBody, MirInlineAsm};
-use omega_analyzer::annotations::{InlineMode, ManglingMode};
+use omega_analyzer::annotations::{InlineMode, SymbolVisibility};
 use omega_analyzer::checked::{CheckedField, CheckedParam, ConformanceOwner};
 use omega_analyzer::resolved_type::{
     CallingConvention, ConstValue, ResolvedFunctionParam, ResolvedFunctionType, ResolvedGenericArg,
@@ -33,6 +33,7 @@ pub struct MirDeclaration {
     pub r#type: ResolvedType,
     pub initial_value: Option<ConstValue>,
     pub symbol: String,
+    pub visibility: SymbolVisibility,
 }
 
 #[derive(Debug, Clone)]
@@ -41,8 +42,8 @@ pub struct MirForeignBinding {
     pub span: Span,
     pub ident: Ident,
     pub r#type: ResolvedType,
-    pub mangling: ManglingMode,
     pub symbol: String,
+    pub visibility: SymbolVisibility,
 }
 
 #[derive(Debug, Clone)]
@@ -54,8 +55,8 @@ pub struct MirForeignFunctionDef {
     pub is_variadic: bool,
     pub params: Vec<CheckedParam>,
     pub return_type: ResolvedType,
-    pub mangling: ManglingMode,
     pub symbol: String,
+    pub visibility: SymbolVisibility,
     pub linkage: MirLinkage,
     pub body: Option<MirFunctionBody>,
 }
@@ -78,7 +79,7 @@ impl MirForeignFunctionDef {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MirLinkage {
-    Export,
+    External,
     Weak,
 }
 
@@ -93,10 +94,10 @@ pub struct MirFunctionDef {
     pub params: Vec<CheckedParam>,
     pub return_type: ResolvedType,
     pub inline: Option<InlineMode>,
-    pub mangling: ManglingMode,
     pub conformance_owner: Option<ConformanceOwner>,
     pub primitive_target: Option<ResolvedType>,
     pub symbol: String,
+    pub visibility: SymbolVisibility,
     pub linkage: MirLinkage,
     pub body: MirFunctionBody,
 }

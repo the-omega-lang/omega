@@ -5,7 +5,7 @@ use crate::{Driver, ModulePath};
 use indexmap::IndexMap;
 use omega_analyzer::Target;
 use omega_analyzer::analysis::AnalysisSite;
-use omega_analyzer::annotations::ManglingMode;
+use omega_analyzer::annotations::{ManglingMode, SymbolPolicy};
 use omega_analyzer::checked::{
     CheckedForeignBinding, CheckedItem, CheckedModule, ExternFunctionKind, ExternFunctionRef,
     Storage,

@@ -1,0 +1,6 @@
+# Exported into the linked image, still language-hidden in source.
+@symbol(export)
+exported_but_language_hidden(value: i32) => i32 { value * 2 }
+
+@symbol(export)
+mut EXPORTED_LANGUAGE_HIDDEN_TOTAL : i32 = 7;

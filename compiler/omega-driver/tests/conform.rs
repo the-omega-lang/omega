@@ -2359,7 +2359,7 @@ fn lowered_mir_carries_symbols_and_linkage() {
         .find(|f| f.name.as_ref() == "main")
         .expect("the entry function is present");
     assert_eq!(main.symbol, "_omg_main");
-    assert_eq!(main.linkage, omega_mir::MirLinkage::Export);
+    assert_eq!(main.linkage, omega_mir::MirLinkage::External);
 
     let add = functions
         .iter()

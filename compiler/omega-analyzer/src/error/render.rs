@@ -701,10 +701,10 @@ impl AnalysisErrorKind {
                 ),
             Self::ManglingDisabledOnMethod => d
                 .with_label(span, "cannot disable mangling on a struct/enum/union method")
-                .with_help("only top-level functions can disable mangling for now"),
+                .with_help("only top-level functions can use '@symbol(mangle = disabled)' for now"),
             Self::ManglingForcedOnGeneric => d
-                .with_label(span, "cannot force a mangled symbol name on a generic function")
-                .with_note("every instantiation would share the exact same hardcoded symbol -- a guaranteed multiple-definition error"),
+                .with_label(span, "cannot set an exact symbol name on a generic declaration")
+                .with_note("every instantiation -- of this declaration or of its owner -- would share the exact same hardcoded symbol, a guaranteed multiple-definition error"),
             Self::GlueTargetNotGap { .. } => d.with_label(span, "this path must name a 'gap' declaration"),
             Self::GlueMissingFunction { function, .. } => d
                 .with_label(span, format!("missing required function '{}'", function.as_ref())),

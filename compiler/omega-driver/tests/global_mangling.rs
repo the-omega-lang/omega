@@ -1,9 +1,9 @@
-//! Mangling policy on ordinary module-level storage: the analyzer resolves it
+//! Symbol policy on ordinary module-level storage: the analyzer resolves it
 //! once at signature time and the driver hands the same checked declaration to
 //! the body pass, so nothing downstream has to re-derive it.
 
 use omega_analyzer::Target;
-use omega_analyzer::annotations::{ItemKind, ManglingMode};
+use omega_analyzer::annotations::{ItemKind, ManglingMode, SymbolPolicy, SymbolVisibility};
 use omega_analyzer::checked::{CheckedDeclaration, CheckedItem, NumberValue};
 use omega_analyzer::error::{AnalysisError, AnalysisErrorKind};
 use omega_analyzer::resolved_type::ConstValue;
@@ -82,14 +82,14 @@ fn global(program: &CompiledProgram, name: &str) -> CheckedDeclaration {
         .unwrap_or_else(|| panic!("expected a checked global named '{name}'"))
 }
 
-fn foreign_mangling(program: &CompiledProgram, name: &str) -> ManglingMode {
+fn foreign_symbol(program: &CompiledProgram, name: &str) -> SymbolPolicy {
     program
         .modules
         .iter()
         .flat_map(|(_, module)| module.items.iter())
         .find_map(|item| match item {
             CheckedItem::ForeignBinding(binding) if binding.ident.as_ref() == name => {
-                Some(binding.mangling.clone())
+                Some(binding.symbol.clone())
             }
             _ => None,
         })
@@ -104,19 +104,25 @@ fn unsigned(value: u64) -> Option<ConstValue> {
 fn every_global_form_keeps_its_resolved_policy_and_initializer() {
     let package = TestPackage::new(
         r#"
-        @mangling(force = "forced_typed")
+        @symbol(name = "forced_typed")
         typed : u32 = 1;
 
-        @mangling(disabled)
+        @symbol(mangle = disabled)
         mut bare : u32;
 
-        @mangling(force = "forced_inferred")
+        @symbol(name = "forced_inferred")
         mut inferred := 3u32;
 
-        @mangling(enabled)
+        @symbol(mangle = enabled)
         explicit : u32 = 4;
 
         implicit : u32 = 5;
+
+        @symbol(export)
+        exported : u32 = 6;
+
+        @symbol(export = enabled, name = "exported_exact")
+        mut exported_exact : u32 = 7;
 
         main() => void {}
         "#,
@@ -125,13 +131,13 @@ fn every_global_form_keeps_its_resolved_policy_and_initializer() {
 
     let typed = global(&program, "typed");
     assert_eq!(
-        typed.mangling,
-        ManglingMode::Forced("forced_typed".to_string())
+        typed.symbol,
+        SymbolPolicy::mangled(ManglingMode::Forced("forced_typed".to_string()))
     );
     assert_eq!(typed.initial_value, unsigned(1));
 
     let bare = global(&program, "bare");
-    assert_eq!(bare.mangling, ManglingMode::Disabled);
+    assert_eq!(bare.symbol, SymbolPolicy::mangled(ManglingMode::Disabled));
     assert_eq!(
         bare.initial_value, None,
         "a declaration without an initializer still has none"
@@ -140,29 +146,58 @@ fn every_global_form_keeps_its_resolved_policy_and_initializer() {
 
     let inferred = global(&program, "inferred");
     assert_eq!(
-        inferred.mangling,
-        ManglingMode::Forced("forced_inferred".to_string())
+        inferred.symbol,
+        SymbolPolicy::mangled(ManglingMode::Forced("forced_inferred".to_string()))
     );
     assert_eq!(inferred.initial_value, unsigned(3));
 
-    assert_eq!(global(&program, "explicit").mangling, ManglingMode::Enabled);
-    assert_eq!(global(&program, "implicit").mangling, ManglingMode::Enabled);
+    assert_eq!(
+        global(&program, "explicit").symbol,
+        SymbolPolicy::ordinary()
+    );
+    assert_eq!(
+        global(&program, "implicit").symbol,
+        SymbolPolicy::ordinary()
+    );
     assert_eq!(global(&program, "implicit").initial_value, unsigned(5));
+
+    // `export` on its own leaves the naming default alone, and combines with
+    // an exact name without changing it.
+    assert_eq!(
+        global(&program, "exported").symbol,
+        SymbolPolicy {
+            mangling: ManglingMode::Enabled,
+            visibility: SymbolVisibility::Default,
+        }
+    );
+    let exported_exact = global(&program, "exported_exact");
+    assert_eq!(
+        exported_exact.symbol,
+        SymbolPolicy {
+            mangling: ManglingMode::Forced("exported_exact".to_string()),
+            visibility: SymbolVisibility::Default,
+        }
+    );
+    assert_eq!(exported_exact.initial_value, unsigned(7));
 }
 
-/// A foreign binding names storage another object owns, so its default is the
-/// opposite of an ordinary global's.
+/// A foreign binding names storage another object owns, so both of its defaults
+/// are the opposite of an ordinary global's: the written name, and a symbol
+/// that may cross an image boundary.
 #[test]
 fn foreign_data_keeps_its_own_default_and_overrides() {
     let package = TestPackage::new(
         r#"
         foreign defaulted : u32;
 
-        @mangling(force = "forced_external")
+        @symbol(name = "forced_external")
         foreign forced : u32;
 
-        @mangling(enabled)
+        @symbol(mangle = enabled)
         foreign mangled : u32;
+
+        @symbol(export = disabled)
+        foreign in_image : u32;
 
         main() => void {}
         "#,
@@ -170,14 +205,30 @@ fn foreign_data_keeps_its_own_default_and_overrides() {
     let program = package.expect_ok();
 
     assert_eq!(
-        foreign_mangling(&program, "defaulted"),
-        ManglingMode::Disabled
+        foreign_symbol(&program, "defaulted"),
+        SymbolPolicy::foreign()
     );
     assert_eq!(
-        foreign_mangling(&program, "forced"),
-        ManglingMode::Forced("forced_external".to_string())
+        foreign_symbol(&program, "forced"),
+        SymbolPolicy {
+            mangling: ManglingMode::Forced("forced_external".to_string()),
+            visibility: SymbolVisibility::Default,
+        }
     );
-    assert_eq!(foreign_mangling(&program, "mangled"), ManglingMode::Enabled);
+    assert_eq!(
+        foreign_symbol(&program, "mangled"),
+        SymbolPolicy {
+            mangling: ManglingMode::Enabled,
+            visibility: SymbolVisibility::Default,
+        },
+        "opting into mangling does not also opt out of crossing an image"
+    );
+    // The one thing `export` still decides here: a declaration that is in fact
+    // resolved inside this image can say so.
+    assert_eq!(
+        foreign_symbol(&program, "in_image"),
+        SymbolPolicy::mangled(ManglingMode::Disabled)
+    );
 }
 
 /// Annotations are resolved while the signature is, so a global nothing reads
@@ -186,7 +237,7 @@ fn foreign_data_keeps_its_own_default_and_overrides() {
 fn an_unused_globals_annotation_is_still_diagnosed() {
     let package = TestPackage::new(
         r#"
-        @mangling(force = "")
+        @symbol(name = "")
         never_read : u32 = 1;
 
         main() => void {}
@@ -198,7 +249,7 @@ fn an_unused_globals_annotation_is_still_diagnosed() {
     assert_eq!(analysis.len(), 1, "got: {analysis:#?}");
     assert!(matches!(
         &analysis[0].kind,
-        AnalysisErrorKind::InvalidAnnotationArgs { name, .. } if name.as_ref() == "mangling"
+        AnalysisErrorKind::InvalidAnnotationArgs { name, .. } if name.as_ref() == "symbol"
     ));
 }
 
@@ -206,14 +257,22 @@ type ErrorPredicate = fn(&AnalysisErrorKind) -> bool;
 
 #[test]
 fn invalid_global_annotations_report_their_own_kind() {
-    let cases: [(&str, ErrorPredicate); 4] = [
+    let cases: [(&str, ErrorPredicate); 6] = [
         (
-            "@mangling(sideways)\nvalue : u32 = 1;",
-            |kind| matches!(kind, AnalysisErrorKind::InvalidAnnotationArgs { name, .. } if name.as_ref() == "mangling"),
+            "@symbol(mangle = sideways)\nvalue : u32 = 1;",
+            |kind| matches!(kind, AnalysisErrorKind::InvalidAnnotationArgs { name, .. } if name.as_ref() == "symbol"),
         ),
         (
-            "@mangling(disabled)\n@mangling(enabled)\nvalue : u32 = 1;",
-            |kind| matches!(kind, AnalysisErrorKind::DuplicateAnnotation { name } if name.as_ref() == "mangling"),
+            "@symbol(mangle = disabled)\n@symbol(export)\nvalue : u32 = 1;",
+            |kind| matches!(kind, AnalysisErrorKind::DuplicateAnnotation { name } if name.as_ref() == "symbol"),
+        ),
+        (
+            "@symbol(name = \"exact\", mangle = enabled)\nvalue : u32 = 1;",
+            |kind| matches!(kind, AnalysisErrorKind::InvalidAnnotationArgs { name, .. } if name.as_ref() == "symbol"),
+        ),
+        (
+            "@mangling(disabled)\nvalue : u32 = 1;",
+            |kind| matches!(kind, AnalysisErrorKind::UnknownAnnotation { name } if name.as_ref() == "mangling"),
         ),
         ("@suppress(unused_binding)\nvalue : u32 = 1;", |kind| {
             matches!(

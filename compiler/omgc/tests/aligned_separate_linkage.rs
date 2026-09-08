@@ -44,27 +44,27 @@ exposed constant_address() => usize { <usize>&WIDE_CONST }\n";
 const CONSUMER: &str = "\
 import root::producer;\n\
 \n\
-@mangling(disabled)\n\
+@symbol(mangle = disabled)\n\
 exposed omega_roundtrip(value: i64) => i64 {\n\
     producer::sum(producer::make(value))\n\
 }\n\
 \n\
-@mangling(disabled)\n\
+@symbol(mangle = disabled)\n\
 exposed omega_shared_address(value: i64) => usize {\n\
     producer::SHARED = producer::make(value);\n\
     <usize>&producer::SHARED.inner\n\
 }\n\
 \n\
-@mangling(disabled)\n\
+@symbol(mangle = disabled)\n\
 exposed omega_shared_value() => i64 { producer::SHARED.inner.value }\n\
 \n\
-@mangling(disabled)\n\
+@symbol(mangle = disabled)\n\
 exposed omega_producer_constant() => usize { producer::constant_address() }\n\
 \n\
-@mangling(disabled)\n\
+@symbol(mangle = disabled)\n\
 exposed omega_consumer_constant() => usize { <usize>&producer::WIDE_CONST }\n\
 \n\
-@mangling(disabled)\n\
+@symbol(mangle = disabled)\n\
 exposed omega_constant_value() => i64 { producer::WIDE_CONST.value }\n";
 
 const MAIN: &str = "\

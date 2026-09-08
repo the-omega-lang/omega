@@ -47,6 +47,7 @@ impl<'ctx> Codegen<'ctx> {
 
         let global = self.module.add_global(array_type, None, &symbol);
         global.set_linkage(Linkage::WeakODR);
+        global.set_visibility(inkwell::GlobalVisibility::Hidden);
         global.set_initializer(&init);
         global.set_constant(true);
         global.set_alignment(self.pointer_bytes());

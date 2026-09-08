@@ -1,0 +1,44 @@
+# Every item here is unused: an annotation is validated when the signature is
+# resolved, not when something reads the storage.
+
+@symbol
+no_arguments : i32 = 1;
+
+@symbol()
+empty_arguments : i32 = 2;
+
+@symbol(mangle)
+bare_mangle : i32 = 3;
+
+@symbol(enabled)
+bare_mode : i32 = 4;
+
+@symbol(mangle = 3)
+non_identifier_mode : i32 = 5;
+
+@symbol(mangle = sideways)
+unknown_mode : i32 = 6;
+
+@symbol(name = 7)
+non_string_name : i32 = 7;
+
+@symbol(name = "")
+empty_name : i32 = 8;
+
+@symbol(name = "with\0nul")
+nul_name : i32 = 9;
+
+@symbol(export = maybe)
+unknown_export_mode : i32 = 10;
+
+@symbol(nonsense = enabled)
+unknown_key : i32 = 11;
+
+@symbol(export, export = enabled)
+repeated_key : i32 = 12;
+
+@symbol(mangle = disabled)
+@symbol(export)
+mut repeated_annotation : i32 = 13;
+
+main() => void {}

@@ -123,13 +123,11 @@ reaching one of those objects — which `std::fmt` means is most of them, not
 only programs that use floats themselves. `aarch64-windows` is unaffected;
 `_fltused` is an x86 MSVC convention.
 
-It cannot currently be fixed in Omega source. `@mangling` is rejected on a
-`global-declaration` (*"this item can't carry annotations"*), and a `foreign`
-binding is a declaration that takes no initializer, so neither of the two ways
-to name an exact linker symbol can also *define* one holding data. Resolving it
-means picking one of: allowing `@mangling(force = "...")` on globals, defining
-`_fltused` in the backend for MSVC x86 targets the way the CRT would, or
-shipping a hand-written object in the Windows platform.
+A module-level storage binding now accepts `@symbol(name = "...")`, so the
+Windows platform can define the symbol in Omega source; that has not been done
+yet. The alternatives remain defining `_fltused` in the backend for MSVC x86
+targets the way the CRT would, or shipping a hand-written object in the Windows
+platform.
 
 `bin/check-platform` does not catch it because its Windows checks scan only
 `<target>/plat` objects, never `core` or `std`.

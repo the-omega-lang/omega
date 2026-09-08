@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 static NEXT_DIR: AtomicUsize = AtomicUsize::new(0);
 
 const ANSWER: &str = "\
-@mangling(disabled)\n\
+@symbol(mangle = disabled)\n\
 exposed omega_answer() => i32 { 42 }\n";
 
 /// This source depends on a capability nothing in the link provides. Its
@@ -22,7 +22,7 @@ exposed omega_answer() => i32 { 42 }\n";
 const UNAVAILABLE: &str = "\
 foreign(c) omega_absent_capability() => i32;\n\
 \n\
-@mangling(disabled)\n\
+@symbol(mangle = disabled)\n\
 exposed omega_needs_absent() => i32 { omega_absent_capability() }\n";
 
 const CONSUMER: &str = "\

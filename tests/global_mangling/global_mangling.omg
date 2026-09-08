@@ -1,37 +1,37 @@
 import std::io::println;
 import self::other;
 
-# `@mangling` on an ordinary global selects the linker name of the storage the
+# `@symbol` on an ordinary global selects the linker name of the storage the
 # declaration owns. `force` names it exactly, so C code compiled separately can
 # define or read the same object.
-@mangling(force = "symbol_from_outside")
+@symbol(name = "symbol_from_outside")
 foreign outside_sym : i32;
 
-@mangling(force = "unmangled_symbol_with_default_value")
+@symbol(name = "unmangled_symbol_with_default_value")
 my_symbol : i32 = 10;
 
 # A `mut` global under a forced name: C writes through the same storage.
-@mangling(force = "shared_counter")
+@symbol(name = "shared_counter")
 mut counter : i32 = 1;
 
 # An inferred global keeps its annotation too.
-@mangling(force = "inferred_scale")
+@symbol(name = "inferred_scale")
 scale := 7;
 
 # `disabled` uses the written identifier verbatim as the symbol.
-@mangling(disabled)
+@symbol(mangle = disabled)
 mut plain_flag : i32 = 0;
 
 # The default, and the same thing written explicitly: both keep the ordinary
 # module-qualified Omega symbol, which no C source can name by accident.
 default_total : i32 = 100;
 
-@mangling(enabled)
+@symbol(mangle = enabled)
 explicit_total := 200;
 
 # Renamed for the linker, but still an ordinary Omega global to the rest of
 # the package.
-@mangling(force = "renamed_shared_value")
+@symbol(name = "renamed_shared_value")
 exposed renamed_from_root : i32 = 21;
 
 foreign(c) {

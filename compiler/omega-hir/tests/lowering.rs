@@ -1,5 +1,6 @@
 use omega_hir::{
-    HirExpr, HirItem, HirPlaceRoot, HirProjection, HirRangeEnd, HirStmt, ModuleId, lower_module,
+    HirAnnotationArg, HirAnnotationValue, HirExpr, HirItem, HirPlaceRoot, HirProjection,
+    HirRangeEnd, HirStmt, ModuleId, lower_module,
 };
 use omega_parser::SourceModule;
 use omega_parser::macros;
@@ -415,13 +416,16 @@ fn member_name_provenance_survives_lowering() {
 #[test]
 fn global_annotations_survive_lowering_in_every_form() {
     let cases = [
-        "@mangling(force = \"s\")\nvalue : i32;",
-        "@mangling(disabled)\nvalue : i32 = 1;",
-        "@mangling(enabled)\nexposed mut value := 1;",
-        "@mangling(disabled)\nexposed mut value : i32 = 1;",
+        ("@symbol(name = \"s\")\nvalue : i32;", 1),
+        ("@symbol(mangle = disabled)\nvalue : i32 = 1;", 1),
+        ("@symbol(mangle = enabled)\nexposed mut value := 1;", 1),
+        (
+            "@symbol(mangle = disabled, export)\nexposed mut value : i32 = 1;",
+            2,
+        ),
     ];
 
-    for source in cases {
+    for (source, args) in cases {
         let module = lower(source);
         let annotations = match &module.items[0] {
             HirItem::Declaration { annotations, .. }
@@ -430,8 +434,8 @@ fn global_annotations_survive_lowering_in_every_form() {
             other => panic!("expected a global binding, got {other:?}"),
         };
         assert_eq!(annotations.len(), 1, "in {source:?}");
-        assert_eq!(annotations[0].name.as_ref(), "mangling");
-        assert_eq!(annotations[0].args.len(), 1);
+        assert_eq!(annotations[0].name.as_ref(), "symbol");
+        assert_eq!(annotations[0].args.len(), args, "in {source:?}");
     }
 }
 
@@ -441,7 +445,7 @@ fn an_item_producing_macro_lowers_its_global_with_annotations() {
         SourceModule::parse(
             r#"
             macro global($name: ident) => {
-                @mangling(force = "forced_name")
+                @symbol(mangle = disabled, export)
                 $name : i32 = 1;
             }
             global$(value);
@@ -461,5 +465,19 @@ fn an_item_producing_macro_lowers_its_global_with_annotations() {
     };
     assert_eq!(decl.ident.as_ref(), "value");
     assert_eq!(annotations.len(), 1);
-    assert_eq!(annotations[0].name.as_ref(), "mangling");
+    assert_eq!(annotations[0].name.as_ref(), "symbol");
+
+    // An identifier value survives macro expansion as the written word, not as
+    // a name the expander tried to resolve or substitute.
+    let [mangle, export] = annotations[0].args.as_slice() else {
+        panic!("expected two arguments, got {:?}", annotations[0].args);
+    };
+    let HirAnnotationArg::KeyValue(key, HirAnnotationValue::Ident(value)) = mangle else {
+        panic!("expected an identifier value, got {mangle:?}");
+    };
+    assert_eq!((key.as_ref(), value.as_ref()), ("mangle", "disabled"));
+    let HirAnnotationArg::Ident(name) = export else {
+        panic!("expected a bare identifier argument, got {export:?}");
+    };
+    assert_eq!(name.as_ref(), "export");
 }

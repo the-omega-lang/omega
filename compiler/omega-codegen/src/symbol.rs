@@ -18,8 +18,8 @@ impl SymbolRegistry {
             }
             return Err(format!(
                 "two different items both produce the linker symbol '{symbol}' -- this can \
-                 happen when '@mangling(disabled)' is used on more than one item with the same name, \
-                 or when '@mangling(force = \"...\")' gives two different items the same forced name; \
+                 happen when '@symbol(mangle = disabled)' is used on more than one item with the same name, \
+                 or when '@symbol(name = \"...\")' gives two different items the same exact name; \
                  give one of them a different name, or re-enable mangling"
             ));
         }

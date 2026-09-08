@@ -95,11 +95,11 @@ impl Driver {
                     continue;
                 }
                 let annotations = omega_analyzer::annotations::ResolvedAnnotations {
-                    mangling: ManglingMode::Glued {
+                    symbol: SymbolPolicy::mangled(ManglingMode::Glued {
                         spec_module_path: gap.module_path.clone(),
                         spec_name: gap.name.clone(),
                         function_name: function.name.clone(),
-                    },
+                    }),
                     ..Default::default()
                 };
                 let run = self.with_analyzer(
@@ -356,11 +356,11 @@ impl Driver {
                         span: gap_fn.span,
                         ident: fn_name.clone(),
                         r#type: ResolvedType::Function(gap_fn.fn_type.clone()),
-                        mangling: ManglingMode::Glued {
+                        symbol: SymbolPolicy::mangled(ManglingMode::Glued {
                             spec_module_path: gap.module_path.clone(),
                             spec_name: gap.name.clone(),
                             function_name: fn_name.clone(),
-                        },
+                        }),
                     }));
                 }
                 continue;

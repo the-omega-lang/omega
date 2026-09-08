@@ -1,0 +1,10 @@
+# `@mangling` was replaced by `@symbol`; nothing recognizes the old spelling,
+# so it is an ordinary unknown annotation now.
+
+@mangling(disabled)
+old_spelling : i32 = 1;
+
+@mangling(force = "old_exact_name")
+old_exact_name : i32 = 2;
+
+main() => void {}

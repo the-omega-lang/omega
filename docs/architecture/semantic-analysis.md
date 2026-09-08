@@ -145,7 +145,7 @@ Signature analysis establishes facts later users must be able to reference indep
 - annotations whose semantic meaning is needed later;
 - spec declaration/member information;
 - declaration visibility;
-- mangling/inline/layout-related resolved annotations.
+- symbol-policy/inline/layout-related resolved annotations.
 
 The project pattern is **resolve once at signature time, read back later**. Do not re-parse/re-resolve an annotation or method identity independently during body checking/codegen.
 

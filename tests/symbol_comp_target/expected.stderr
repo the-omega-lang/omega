@@ -1,0 +1,7 @@
+error: annotations are not allowed on this item
+ --> tests/symbol_comp_target/symbol_comp_target.omg:5:1
+  |
+5 | @symbol(mangle = disabled)
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^ this item can't carry annotations
+
+error: could not compile the program due to 1 previous error

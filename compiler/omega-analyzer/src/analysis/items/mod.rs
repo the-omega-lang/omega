@@ -1,5 +1,5 @@
 use super::*;
-use crate::annotations::ManglingMode;
+use crate::annotations::SymbolPolicy;
 
 struct EnumHeader {
     tag_type: ResolvedType,
@@ -107,7 +107,7 @@ impl<'r> Analyzer<'r> {
             r#type: resolved_type,
             mutable: decl.mutable,
             initial_value: None,
-            mangling: ManglingMode::Enabled,
+            symbol: SymbolPolicy::ordinary(),
         })
     }
 
@@ -118,18 +118,18 @@ impl<'r> Analyzer<'r> {
         decl: &HirDeclaration,
         annotations: &[omega_hir::HirAnnotation],
     ) -> Option<CheckedDeclaration> {
-        let mangling = self.global_mangling(decl.id, annotations);
+        let symbol = self.global_symbol(decl.id, annotations);
         let mut checked =
             self.analyze_declaration(decl, Storage::Global, DeclarationPolicy::Unique)?;
-        checked.mangling = mangling;
+        checked.symbol = symbol;
         Some(checked)
     }
 
-    fn global_mangling(
+    fn global_symbol(
         &mut self,
         id: HirId,
         annotations: &[omega_hir::HirAnnotation],
-    ) -> ManglingMode {
+    ) -> SymbolPolicy {
         crate::annotations::resolve(
             self,
             id,
@@ -137,9 +137,9 @@ impl<'r> Analyzer<'r> {
             crate::annotations::ItemKind::Global,
             false,
             false,
-            ManglingMode::Enabled,
+            SymbolPolicy::ordinary(),
         )
-        .mangling
+        .symbol
     }
 
     pub fn analyze_comp_declaration(
@@ -161,11 +161,9 @@ impl<'r> Analyzer<'r> {
         w: &HirWalrusDeclaration,
         annotations: &[omega_hir::HirAnnotation],
     ) -> Option<CheckedDeclaration> {
-        let mangling = self.global_mangling(w.id, annotations);
+        let symbol = self.global_symbol(w.id, annotations);
         let checked = self.analyze_expr(&w.value, None)?;
-        self.finish_global_binding(
-            w.id, w.span, &w.ident, w.mutable, mangling, &w.value, checked,
-        )
+        self.finish_global_binding(w.id, w.span, &w.ident, w.mutable, symbol, &w.value, checked)
     }
 
     pub fn analyze_global_declaration_with_init(
@@ -174,7 +172,7 @@ impl<'r> Analyzer<'r> {
         value: &HirExprNode,
         annotations: &[omega_hir::HirAnnotation],
     ) -> Option<CheckedDeclaration> {
-        let mangling = self.global_mangling(decl.id, annotations);
+        let symbol = self.global_symbol(decl.id, annotations);
         let (_, checked_value) =
             self.resolve_typed_decl_init(decl.id, decl.span, &decl.r#type, value)?;
         self.finish_global_binding(
@@ -182,7 +180,7 @@ impl<'r> Analyzer<'r> {
             decl.span,
             &decl.ident,
             decl.mutable,
-            mangling,
+            symbol,
             value,
             checked_value,
         )
@@ -235,7 +233,7 @@ impl<'r> Analyzer<'r> {
         span: Span,
         ident: &Ident,
         mutable: bool,
-        mangling: ManglingMode,
+        symbol: SymbolPolicy,
         raw_value: &HirExprNode,
         checked_value: CheckedExprNode,
     ) -> Option<CheckedDeclaration> {
@@ -261,7 +259,7 @@ impl<'r> Analyzer<'r> {
             r#type,
             mutable,
             initial_value: Some(const_value),
-            mangling,
+            symbol,
         })
     }
 
@@ -351,7 +349,7 @@ impl<'r> Analyzer<'r> {
             crate::annotations::ItemKind::ForeignBinding,
             false,
             false,
-            crate::annotations::ManglingMode::Disabled,
+            SymbolPolicy::foreign(),
         );
         let storage = if matches!(resolved_type, ResolvedType::Function(_)) {
             Storage::Function
@@ -431,7 +429,7 @@ impl<'r> Analyzer<'r> {
             crate::annotations::ItemKind::ForeignFunction,
             false,
             !f.generics.is_empty(),
-            crate::annotations::ManglingMode::Disabled,
+            SymbolPolicy::foreign(),
         );
         Some((fn_type, annotations))
     }
@@ -462,7 +460,7 @@ impl<'r> Analyzer<'r> {
                     .collect(),
                 return_type: (*fn_type.return_type).clone(),
                 body: None,
-                mangling: annotations.mangling.clone(),
+                symbol: annotations.symbol.clone(),
             });
         };
         let ((params, checked_body), scope) = self.with_scope(|this| {
@@ -489,7 +487,7 @@ impl<'r> Analyzer<'r> {
             params,
             return_type: (*fn_type.return_type).clone(),
             body: Some(checked_body),
-            mangling: annotations.mangling.clone(),
+            symbol: annotations.symbol.clone(),
         })
     }
 
@@ -575,6 +573,31 @@ impl<'r> Analyzer<'r> {
         ResolvedFunctionType,
         crate::annotations::ResolvedAnnotations,
     )> {
+        self.collect_signature(f, false)
+    }
+
+    /// A method of a generic owner is emitted once per owner instantiation, so
+    /// an exact/unmangled name would name every one of them. The owner's
+    /// parameters therefore count as this declaration's own for naming.
+    pub fn collect_method_signature(
+        &mut self,
+        f: &HirFunctionDef,
+        owner_is_generic: bool,
+    ) -> Option<(
+        ResolvedFunctionType,
+        crate::annotations::ResolvedAnnotations,
+    )> {
+        self.collect_signature(f, owner_is_generic)
+    }
+
+    fn collect_signature(
+        &mut self,
+        f: &HirFunctionDef,
+        owner_is_generic: bool,
+    ) -> Option<(
+        ResolvedFunctionType,
+        crate::annotations::ResolvedAnnotations,
+    )> {
         let f = &self.normalized_function(f)?;
         self.check_redundant_hidden(f.id, f.explicit_hidden_span);
         let params = self.analyze_all(&f.params, |this, p| {
@@ -615,8 +638,8 @@ impl<'r> Analyzer<'r> {
             &f.annotations,
             crate::annotations::ItemKind::Function,
             f.self_mode.is_some(),
-            !f.generics.is_empty(),
-            crate::annotations::ManglingMode::Enabled,
+            owner_is_generic || !f.generics.is_empty(),
+            SymbolPolicy::ordinary(),
         );
         Some((
             ResolvedFunctionType {
@@ -700,7 +723,7 @@ impl<'r> Analyzer<'r> {
             kind,
             false,
             false,
-            crate::annotations::ManglingMode::Enabled,
+            SymbolPolicy::ordinary(),
         )
     }
 
@@ -741,6 +764,7 @@ impl<'r> Analyzer<'r> {
         &mut self,
         functions: &[omega_hir::HirFunctionDef],
         method_ids: &[HirId],
+        owner_is_generic: bool,
     ) -> Option<Vec<(Ident, ResolvedMethod)>> {
         let mut concrete = Vec::with_capacity(functions.len());
         let mut ids = Vec::with_capacity(functions.len());
@@ -753,7 +777,9 @@ impl<'r> Analyzer<'r> {
         }
         let (functions, method_ids) = (concrete, ids);
         let (signatures, _) = self.with_scope(|this| {
-            this.analyze_all(&functions, |this, f| this.collect_function_signature(f))
+            this.analyze_all(&functions, |this, f| {
+                this.collect_method_signature(f, owner_is_generic)
+            })
         });
         let signatures = signatures?;
         self.check_overload_duplicates(&functions, &signatures);
@@ -807,7 +833,7 @@ impl<'r> Analyzer<'r> {
             );
         }
 
-        let functions = self.collect_methods(&s.functions, method_ids)?;
+        let functions = self.collect_methods(&s.functions, method_ids, !s.generics.is_empty())?;
         cell.borrow_mut().functions = functions;
         Some(())
     }
@@ -838,7 +864,7 @@ impl<'r> Analyzer<'r> {
             );
         }
 
-        let functions = self.collect_methods(&u.functions, method_ids)?;
+        let functions = self.collect_methods(&u.functions, method_ids, !u.generics.is_empty())?;
         cell.borrow_mut().functions = functions;
         Some(())
     }
@@ -1210,7 +1236,7 @@ impl<'r> Analyzer<'r> {
             resolved.variants = variants;
         }
 
-        let functions = self.collect_methods(&e.functions, method_ids)?;
+        let functions = self.collect_methods(&e.functions, method_ids, !e.generics.is_empty())?;
         cell.borrow_mut().functions = functions;
         Some(())
     }

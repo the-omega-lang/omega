@@ -1295,7 +1295,7 @@ impl fmt::Display for AnalysisErrorKind {
             Self::ManglingDisabledOnMethod => write!(f, "cannot disable mangling on a method"),
             Self::ManglingForcedOnGeneric => write!(
                 f,
-                "cannot force a mangled symbol name on a generic function"
+                "cannot set an exact symbol name on a generic declaration"
             ),
             Self::GlueTargetNotGap { target } => write!(f, "'{}' is not a gap", target.as_ref()),
             Self::GlueMissingFunction { gap, function } => {

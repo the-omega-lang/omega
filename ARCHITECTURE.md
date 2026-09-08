@@ -85,7 +85,7 @@ Deep overview: [`docs/architecture/compiler-overview.md`](docs/architecture/comp
 | semantic rules, checked representation | `omega-analyzer` | [`semantic-analysis.md`](docs/architecture/semantic-analysis.md) |
 | semantic type graph, layout, const-eval, shared target vocabulary | `omega-analyzer` | [`types-layout-and-const-eval.md`](docs/architecture/types-layout-and-const-eval.md) |
 | package/module discovery, query caches, cross-module resolver | `omega-driver` | [`module-driver-and-linkage.md`](docs/architecture/module-driver-and-linkage.md) |
-| CFG lowering and final linker symbol/linkage assignment | `omega-mir` | [`mir-and-codegen.md`](docs/architecture/mir-and-codegen.md), [`symbol-mangling.md`](docs/architecture/symbol-mangling.md) |
+| CFG lowering and final linker symbol/linkage/visibility assignment | `omega-mir` | [`mir-and-codegen.md`](docs/architecture/mir-and-codegen.md), [`symbol-mangling.md`](docs/architecture/symbol-mangling.md) |
 | shared Omega calling convention | `omega-codegen::abi` | [`abi-and-representation.md`](docs/architecture/abi-and-representation.md) |
 | native emission | `omega-codegen` | [`mir-and-codegen.md`](docs/architecture/mir-and-codegen.md) |
 | symbol grammar/encoding/decoding | `omega-mangle` | [`symbol-mangling.md`](docs/architecture/symbol-mangling.md) |
@@ -245,7 +245,7 @@ Start with semantic type + [`types-layout-and-const-eval.md`](docs/architecture/
 
 Start with `omega-codegen::llvm`.
 
-### Symbols / linkage / duplicate monomorphizations
+### Symbols / linkage / binary visibility / duplicate monomorphizations
 
 Start with [`symbol-mangling.md`](docs/architecture/symbol-mangling.md), then `omega-mir` and `omega-mangle`; include driver only when ownership/provenance changes.
 

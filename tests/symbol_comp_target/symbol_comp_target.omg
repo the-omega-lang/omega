@@ -2,7 +2,7 @@
 # linker symbol for an annotation to name. Kept in its own package because
 # rejecting the annotation happens while parsing.
 
-@mangling(disabled)
+@symbol(mangle = disabled)
 comp NO_SYMBOL := 4;
 
 main() => void {}

@@ -1,0 +1,19 @@
+error: expected an expression, found '@'
+ --> tests/symbol_local_target/symbol_local_target.omg:6:5
+  |
+6 |     @symbol(mangle = disabled)
+  |     ^ expected an expression
+
+error: expected ';', found identifier 'local'
+ --> tests/symbol_local_target/symbol_local_target.omg:6:31
+  |
+6 |     @symbol(mangle = disabled)
+  |                               ^ expected ';'
+
+error: expected an expression, found ':'
+ --> tests/symbol_local_target/symbol_local_target.omg:7:11
+  |
+7 |     local : i32 = 5;
+  |           ^ expected an expression
+
+error: could not compile the program due to 3 previous errors

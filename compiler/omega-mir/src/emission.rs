@@ -102,6 +102,7 @@ mod tests {
                         r#type: omega_analyzer::resolved_type::ResolvedType::I32,
                         initial_value: None,
                         symbol: format!("g{index}"),
+                        visibility: omega_analyzer::annotations::SymbolVisibility::Hidden,
                     })
                 })
                 .collect(),

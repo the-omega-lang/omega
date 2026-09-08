@@ -1,7 +1,13 @@
 use super::Codegen;
 use crate::catalog::{Catalog, GlobalDecl};
+use crate::llvm::function::visibility_of;
 use inkwell::module::Linkage;
+use inkwell::values::{BasicValue, GlobalValue};
 use omega_mir::{EmissionUnit, MirDeclaration, MirItem};
+
+fn is_unused_declaration(value: GlobalValue<'_>) -> bool {
+    value.is_declaration() && value.as_pointer_value().get_first_use().is_none()
+}
 
 impl<'ctx> Codegen<'ctx> {
     pub(super) fn emit_unit(&mut self, catalog: &Catalog, unit: EmissionUnit) {
@@ -20,6 +26,39 @@ impl<'ctx> Codegen<'ctx> {
         }
         for item in unit.items {
             self.define_item(item);
+        }
+
+        self.prune_unused_declarations();
+    }
+
+    /// A catalog declaration is only a name this unit *may* refer to, and the
+    /// declaration pass runs before anything knows which ones a body reaches.
+    /// One nothing referred to must not survive into the object: a hidden
+    /// undefined symbol is a link requirement even with no relocation against
+    /// it, so leaving them behind would make an object demand every capability
+    /// its package can name rather than the ones it actually uses.
+    fn prune_unused_declarations(&mut self) {
+        let mut functions = Vec::new();
+        let mut next = self.module.get_first_function();
+        while let Some(function) = next {
+            next = function.get_next_function();
+            if is_unused_declaration(function.as_global_value()) {
+                functions.push(function);
+            }
+        }
+        let globals: Vec<GlobalValue<'ctx>> = self
+            .module
+            .get_globals()
+            .filter(|global| is_unused_declaration(*global))
+            .collect();
+
+        // Safe because nothing in this module refers to these values, and the
+        // per-unit `functions`/`globals` maps are not read after emission.
+        for function in functions {
+            unsafe { function.delete() };
+        }
+        for global in globals {
+            unsafe { global.delete() };
         }
     }
 
@@ -82,6 +121,7 @@ impl<'ctx> Codegen<'ctx> {
         let byte_array = self.context.i8_type().array_type(total.max(1));
         let value = self.module.add_global(byte_array, None, &global.symbol);
         value.set_linkage(Linkage::External);
+        value.set_visibility(visibility_of(global.visibility));
         value.set_alignment(omega_analyzer::layout::type_alignment(&global.r#type));
         self.globals.insert(global.id, value);
     }
@@ -105,6 +145,7 @@ impl<'ctx> Codegen<'ctx> {
 
         let global = self.module.add_global(r#type, None, symbol);
         global.set_linkage(Linkage::External);
+        global.set_visibility(visibility_of(declaration.visibility));
         global.set_alignment(omega_analyzer::layout::type_alignment(&declaration.r#type));
         if self.target.os != omega_analyzer::Os::MacOs {
             global.set_section(Some(&format!(".data.{symbol}")));

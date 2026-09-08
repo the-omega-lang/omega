@@ -44,7 +44,7 @@ impl<'r> Analyzer<'r> {
                     r#type: scrutinee_type.clone(),
                     mutable: true,
                     initial_value: None,
-                    mangling: crate::annotations::ManglingMode::Enabled,
+                    symbol: crate::annotations::SymbolPolicy::ordinary(),
                 });
                 let assign = CheckedStmt::Expression(CheckedExprNode {
                     id: self.resolver.fresh_synthetic_id(),

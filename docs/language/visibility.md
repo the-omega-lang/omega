@@ -23,6 +23,14 @@ Omega has three declaration visibility levels plus a use-site bypass:
 
 `hidden` is written out only where it changes something -- most declarations already default to hidden, so writing it there is redundant and an implementation may warn (see "Spec member visibility" below for the one case where it is not redundant).
 
+## Binary visibility is a separate decision
+
+Everything in this chapter is **source** visibility: which Omega source may name a declaration. It says nothing about the symbol the compiler emits.
+
+Whether an emitted symbol is visible outside the linked image it belongs to is decided by `@symbol(export)` and by whether the item is `foreign` (see [`annotations-and-sizeof.md`](annotations-and-sizeof.md#export)). The two kinds of visibility are independent in both directions: an `exposed` Omega item is not exported from a shared image unless it says `export`, and an exported item that is `hidden` in source is still unreachable from other Omega source without `reveal`.
+
+`reveal` bypasses an Omega access check. It is not a linkage mechanism and cannot reach a symbol that a different shared image did not export.
+
 ## Hidden items and hidden members
 
 A hidden top-level item is visible throughout its exact declaring module.

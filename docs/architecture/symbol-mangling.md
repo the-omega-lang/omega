@@ -1,4 +1,4 @@
-# Symbol mangling and linkage
+# Symbol mangling, visibility, and linkage
 
 Omega separates **symbol grammar** from **compiler-to-symbol adaptation**.
 
@@ -13,9 +13,9 @@ omega_mangle::Symbol
    v
 final linker string
    |
-   + MirLinkage decided during MIR lowering
+   + MirLinkage and SymbolVisibility decided during MIR lowering
    v
-codegen consumes the finished symbol + linkage
+codegen consumes the finished symbol + linkage + visibility
 ```
 
 ## `omega-mangle` is standalone
@@ -71,7 +71,7 @@ A receiver-bearing function's path carries an extra nested `self` **value** segm
 
 The signature still carries the real ABI parameter types, receiver included. The path segment is *in addition to* that, not a replacement: it is what keeps a static and a member of the same owner, name, and ABI signature separately linkable, which the leading receiver type alone cannot do when a static declares that same pointer explicitly.
 
-Changing this changed every normally mangled receiver-bearing function's linker name -- an ABI/separate-compilation migration. Definitions, extern references, generic weak instantiations, and conformance/primitive references all moved together; no compatibility alias or dual export was added. `@mangling(force = "...")` remains an intentional user override and can still collide.
+Changing this changed every normally mangled receiver-bearing function's linker name -- an ABI/separate-compilation migration. Definitions, extern references, generic weak instantiations, and conformance/primitive references all moved together; no compatibility alias or dual export was added. `@symbol(name = "...")` remains an intentional user override and can still collide.
 
 ## Compiler adapter: `omega-mir::mangle`
 
@@ -132,21 +132,21 @@ The allowed root entry `main` receives a fixed internal symbol, `_omg_main`, ins
 
 This exception is decided before codegen emission so it never needs re-deriving there.
 
-## Mangling controls
+## Symbol policy
 
-Resolved `@mangling(...)` metadata travels from semantic analysis to checked/MIR items. The MIR adapter applies the final enabled/disabled/forced symbol policy.
+`@symbol(...)` resolves once, in semantic analysis, into a `SymbolPolicy { mangling, visibility }`. Naming and binary visibility are decided together and travel together: analysis -> checked items -> driver caches -> MIR. The MIR adapter applies the naming half to produce the final symbol string, and carries the visibility half beside it. Visibility is deliberately not part of mangled identity -- exporting a definition must not rename it.
 
 An ordinary module-level storage binding resolves its policy once, while its signature is analyzed, and the driver caches the whole `CheckedDeclaration` -- policy and initializer together -- keyed by `HirId`. Body materialization clones that cached declaration instead of rebuilding one from HIR, so there is no second place where a global could acquire a default policy. Every function-shaped mangling control still travels through the driver's function-annotation map; the checked-global cache is only for storage bindings.
 
-A forced/disabled policy can create a real duplicate linker name. Codegen maintains a symbol-collision guard and reports such collisions rather than allowing linker behavior to choose a winner silently.
+An exact/disabled naming policy can create a real duplicate linker name. Codegen maintains a symbol-collision guard and reports such collisions rather than allowing linker behavior to choose a winner silently.
 
 ## Linkage
 
 `MirLinkage` currently distinguishes:
 
 ```text
-Export   strong definition
-Weak     independently regenerable definition; duplicates may be folded
+External   strong definition
+Weak       independently regenerable definition; duplicates may be folded
 ```
 
 Weak linkage is used when separate compilations can legitimately generate byte-equivalent definitions under the same symbol, especially concrete generic/template instantiations and monomorphized conform methods.
@@ -154,6 +154,18 @@ Weak linkage is used when separate compilations can legitimately generate byte-e
 A hand-written concrete declaration that should exist exactly once remains strong so a duplicate is diagnosed by the link model rather than silently folded.
 
 The driver provides the ownership/provenance facts; MIR lowering converts them to final linkage.
+
+## Binary visibility
+
+Linkage says how duplicate definitions of one symbol combine; visibility says which images can see it. They are decided independently and both survive to LLVM.
+
+`SymbolVisibility` has exactly two states, mapped to LLVM's `Hidden` and `Default` visibility with no object-format branch and no DLL storage class. A hidden symbol still links across source files and separately compiled objects of one image.
+
+The default forks at exactly the place the *naming* default already forks: `SymbolPolicy::ordinary` is Hidden, `SymbolPolicy::foreign` is Default. `foreign` is the declaration that a symbol is looked up in, or defined for, something outside this compilation, so it needs no annotation to cross an image; an Omega-declared item does. Compiler-generated gap/glue symbols, vtables, and content-addressed constants are Hidden regardless -- a gap binding is an internal representation choice, not a user-written foreign contract.
+
+The catalog carries the *definition's* decided visibility, so every unit's declaration of a symbol agrees with the object that defines it. That matters because a linker takes the most restrictive visibility among all references and definitions: a hidden reference emitted by one object would otherwise demote an exported definition in another.
+
+The declaration pass names everything in the catalog before any body exists, so codegen prunes declarations nothing in the finished module referred to. A hidden undefined symbol is a link requirement even without a relocation against it, so leaving them behind would make every object demand every capability its package can name.
 
 ## Extern-owned functions
 

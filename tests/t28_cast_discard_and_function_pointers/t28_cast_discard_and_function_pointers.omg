@@ -16,7 +16,7 @@ add(a: i32, b: i32) => i32 {
 # A C-convention definition Omega itself provides, so the indirect call below
 # proves the destination function type -- not the raw address -- is what
 # selects the convention.
-@mangling(enabled)
+@symbol(mangle = enabled)
 foreign(c) c_mul(a: i32, b: i32) => i32 {
 	a * b
 }

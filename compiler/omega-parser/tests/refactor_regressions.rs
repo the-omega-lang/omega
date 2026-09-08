@@ -1,4 +1,5 @@
 use omega_parser::SourceModule;
+use omega_parser::ast::annotation::{AnnotationArg, AnnotationValue};
 use omega_parser::ast::expression::Expression;
 use omega_parser::ast::item::Item;
 use omega_parser::diagnostics::ParseErrorKind;
@@ -14,16 +15,48 @@ fn classic_for_uses_the_same_comp_binding_grammar_as_statements() {
     }
 }
 
+/// `sizeof<Type>` is a special form the annotation grammar recognizes before a
+/// plain identifier value, so `sizeof` without its argument list is an ordinary
+/// identifier and the type that follows it has nowhere to go.
 #[test]
 fn annotation_sizeof_requires_an_opening_angle() {
     let errors = SourceModule::parse("@layout(pack = sizeof usize) struct S { }")
         .expect_err("sizeof without '<' must not parse as an annotation value");
 
-    assert!(errors.iter().any(|error| matches!(
-        &error.kind,
-        ParseErrorKind::Expected { expected, .. }
-            if *expected == "a plain integer, 'sizeof<Type>', or a string literal"
-    )));
+    assert!(!errors.is_empty());
+
+    let module = SourceModule::parse("@layout(pack = sizeof<usize>)\nstruct S { x: i32; }")
+        .expect("the special form still parses");
+    let Item::Struct(definition) = &module.nodes[0].item else {
+        panic!("expected a struct, got {:?}", module.nodes[0].item);
+    };
+    assert!(matches!(
+        definition.annotations[0].args[0],
+        AnnotationArg::KeyValue(_, AnnotationValue::Sizeof(_))
+    ));
+}
+
+/// An identifier-valued argument is annotation syntax, not an expression or a
+/// name lookup: the parser records the written identifier and each annotation
+/// decides on its own whether one is meaningful.
+#[test]
+fn an_identifier_valued_argument_parses_as_written() {
+    let module = SourceModule::parse("@symbol(mangle = disabled, export)\nvalue : i32 = 1;")
+        .expect("an identifier-valued annotation argument must parse");
+    let Item::DeclarationWithInit { annotations, .. } = &module.nodes[0].item else {
+        panic!("expected a global binding, got {:?}", module.nodes[0].item);
+    };
+    let [mangle, export] = annotations[0].args.as_slice() else {
+        panic!("expected two arguments, got {:?}", annotations[0].args);
+    };
+    let AnnotationArg::KeyValue(key, AnnotationValue::Ident(value)) = mangle else {
+        panic!("expected an identifier value, got {mangle:?}");
+    };
+    assert_eq!((key.as_ref(), value.as_ref()), ("mangle", "disabled"));
+    let AnnotationArg::Ident(name) = export else {
+        panic!("expected a bare identifier argument, got {export:?}");
+    };
+    assert_eq!(name.as_ref(), "export");
 }
 
 #[test]
@@ -111,20 +144,20 @@ fn gap_and_glue_shape_errors_point_at_the_offending_member() {
 fn a_global_binding_keeps_its_annotations_in_every_written_form() {
     let cases = [
         (
-            "@mangling(force = \"s\")\nvalue : i32;",
-            "@mangling(force = \"s\")",
+            "@symbol(name = \"s\")\nvalue : i32;",
+            "@symbol(name = \"s\")",
         ),
         (
-            "@mangling(disabled)\nvalue : i32 = 1;",
-            "@mangling(disabled)",
+            "@symbol(mangle = disabled)\nvalue : i32 = 1;",
+            "@symbol(mangle = disabled)",
         ),
         (
-            "@mangling(enabled)\nexposed mut value := 1;",
-            "@mangling(enabled)",
+            "@symbol(mangle = enabled)\nexposed mut value := 1;",
+            "@symbol(mangle = enabled)",
         ),
         (
-            "@mangling(disabled)\nexposed mut value : i32 = 1;",
-            "@mangling(disabled)",
+            "@symbol(mangle = disabled)\nexposed mut value : i32 = 1;",
+            "@symbol(mangle = disabled)",
         ),
     ];
 
@@ -137,7 +170,7 @@ fn a_global_binding_keeps_its_annotations_in_every_written_form() {
             other => panic!("expected a global binding, got {other:?}"),
         };
         assert_eq!(annotations.len(), 1, "in {source:?}");
-        assert_eq!(annotations[0].name.as_ref(), "mangling");
+        assert_eq!(annotations[0].name.as_ref(), "symbol");
         assert_eq!(
             &source[annotations[0].span.start..annotations[0].span.end],
             written,
@@ -148,7 +181,7 @@ fn a_global_binding_keeps_its_annotations_in_every_written_form() {
 
 #[test]
 fn an_annotated_comp_binding_is_still_rejected() {
-    let errors = SourceModule::parse("@mangling(disabled)\ncomp N := 1;")
+    let errors = SourceModule::parse("@symbol(mangle = disabled)\ncomp N := 1;")
         .expect_err("a comp binding has no linker symbol to name");
 
     assert!(
@@ -165,7 +198,7 @@ fn macro_expansion_preserves_a_global_annotation() {
             r#"
             macro ten() => { 10 }
             macro global($name: ident) => {
-                @mangling(disabled)
+                @symbol(mangle = disabled)
                 $name : i32 = ten$();
             }
             global$(value);
@@ -186,7 +219,7 @@ fn macro_expansion_preserves_a_global_annotation() {
     };
     assert_eq!(decl.ident.as_ref(), "value");
     assert_eq!(annotations.len(), 1);
-    assert_eq!(annotations[0].name.as_ref(), "mangling");
+    assert_eq!(annotations[0].name.as_ref(), "symbol");
     let Expression::Number(number) = &value.expression else {
         panic!("the initializer must be expanded in place, got {value:?}");
     };

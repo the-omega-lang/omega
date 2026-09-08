@@ -1,0 +1,12 @@
+# Language-hidden items. `@symbol(export)` changes only the binary visibility
+# of the emitted symbol; it does not make either of these importable without
+# `reveal`.
+@symbol(export)
+exported_but_language_hidden(value: i32) => i32 { value * 2 }
+
+@symbol(export)
+mut EXPORTED_LANGUAGE_HIDDEN_TOTAL : i32 = 7;
+
+# `exposed` is the opposite pairing: importable from anywhere in source, and
+# still hidden in the linked image because nothing asked for an export.
+exposed unexported_but_exposed(value: i32) => i32 { value + 1 }

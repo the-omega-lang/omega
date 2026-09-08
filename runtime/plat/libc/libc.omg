@@ -23,7 +23,7 @@ shared foreign(c) read(fd: i32, buf: *mut u8, count: usize) => isize;
 # it.
 foreign _omg_main : () => void;
 
-@mangling(force = "main")
+@symbol(name = "main")
 foreign(c) platform_main() => i32 {
 	_omg_main();
 	return 0;

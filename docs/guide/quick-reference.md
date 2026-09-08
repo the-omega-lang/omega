@@ -481,17 +481,22 @@ struct Header {
 
 `align` is an address guarantee. A type containing `Header` inline inherits its alignment even without an annotation of its own, and `sizeof<Header>` rounds up to it.
 
-`@mangling` names the linker symbol of a function, a `foreign` item, or a module-level storage binding:
+`@symbol` decides the linker name and the binary visibility of a function, a `foreign` item, or a module-level storage binding:
 
 ```omega
-@mangling(force = "symbol_from_outside")
+@symbol(name = "symbol_from_outside")
 foreign outside_sym : i32;
 
-@mangling(force = "unmangled_symbol_with_default_value")
+@symbol(name = "unmangled_symbol_with_default_value")
 my_symbol : i32 = 10;
+
+@symbol(export)
+exposed exported_api() => void { }
 ```
 
 The first names storage another object owns; the second is an ordinary Omega global that owns and initializes its own storage under an exact external name. A `comp` binding and a local take no annotation.
+
+An Omega-declared symbol is hidden by default -- still linkable across source files and separately compiled objects of one program, but not exported out of a shared library; `export` is what changes that. A `foreign` item defaults the other way, since declaring one already says the symbol crosses a boundary. None of this is `exposed`/`shared`/`hidden`, which decide what Omega *source* may name.
 
 Other supported annotations are normative in [`../language/annotations-and-sizeof.md`](../language/annotations-and-sizeof.md).
 

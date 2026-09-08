@@ -10,7 +10,7 @@
 # spelled out rather than routed through `root::os::syscall` because a naked
 # body cannot contain an Omega call.
 @naked
-@mangling(force = "_start")
+@symbol(name = "_start")
 process_entry() => never {
 	asm() => {
 		mov x29, xzr

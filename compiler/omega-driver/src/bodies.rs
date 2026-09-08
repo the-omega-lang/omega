@@ -76,18 +76,18 @@ impl Driver {
 
             HirItem::ForeignBinding(binding) => {
                 let r#type = self.resolved_value_type(key);
-                let mangling = self
+                let symbol = self
                     .items
                     .function_annotations
                     .get(&binding.id)
-                    .map(|a| a.mangling.clone())
-                    .unwrap_or(omega_analyzer::annotations::ManglingMode::Disabled);
+                    .map(|a| a.symbol.clone())
+                    .unwrap_or_else(omega_analyzer::annotations::SymbolPolicy::foreign);
                 let checked = omega_analyzer::checked::CheckedForeignBinding {
                     id: binding.id,
                     span: binding.span,
                     ident: binding.ident.clone(),
                     r#type,
-                    mangling,
+                    symbol,
                 };
                 Some(CheckedBody {
                     item: CheckedItem::ForeignBinding(checked),
@@ -111,7 +111,10 @@ impl Driver {
                     .function_annotations
                     .get(&decl_id)
                     .cloned()
-                    .unwrap_or_default();
+                    .unwrap_or_else(|| omega_analyzer::annotations::ResolvedAnnotations {
+                        symbol: omega_analyzer::annotations::SymbolPolicy::foreign(),
+                        ..Default::default()
+                    });
                 let run = self.with_analyzer(
                     &key.module,
                     &GenericSubstitution::new(),

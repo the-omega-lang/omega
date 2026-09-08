@@ -3,6 +3,6 @@
 # later diagnostic in the same file.
 
 main() => void {
-	@mangling(disabled)
+	@symbol(mangle = disabled)
 	local : i32 = 5;
 }

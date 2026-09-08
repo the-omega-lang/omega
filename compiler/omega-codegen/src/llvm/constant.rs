@@ -38,6 +38,7 @@ impl<'ctx> Codegen<'ctx> {
         let array_ty = self.context.i8_type().array_type(bytes.len() as u32);
         let global = self.module.add_global(array_ty, None, &symbol);
         global.set_linkage(inkwell::module::Linkage::WeakODR);
+        global.set_visibility(inkwell::GlobalVisibility::Hidden);
         global.set_constant(true);
         let elems: Vec<inkwell::values::IntValue> = bytes
             .iter()
@@ -190,6 +191,7 @@ impl<'ctx> Codegen<'ctx> {
         let (ty, init) = self.materialize_blob(blob);
         let global = self.module.add_global(ty, None, symbol);
         global.set_linkage(inkwell::module::Linkage::WeakODR);
+        global.set_visibility(inkwell::GlobalVisibility::Hidden);
         global.set_constant(true);
         global.set_initializer(&init);
         global.set_alignment(align);

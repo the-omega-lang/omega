@@ -1,0 +1,11 @@
+mangled: 3
+unmangled: 3
+exact: 12
+exported-mangled: 4
+exported-exact: 5
+unmangled-hidden: 6
+globals: 11 22 33
+counter: 6
+generic: 9
+revealed: 8 8
+exposed: 42
