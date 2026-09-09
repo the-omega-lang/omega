@@ -1,5 +1,5 @@
 error: '@suppress' cannot be applied to a global binding
- --> tests/symbol_invalid_target/symbol_invalid_target.omg:4:1
+ --> tests/t40e_symbol_invalid_target/t40e_symbol_invalid_target.omg:4:1
   |
 4 | @suppress(unused_binding)
   | ^^^^^^^^^^^^^^^^^^^^^^^^^ cannot be used on a global binding
@@ -7,7 +7,7 @@ error: '@suppress' cannot be applied to a global binding
   = note: '@suppress' only applies to structs, enums, unions, functions, imports, specs, foreign functions, and foreign bindings
 
 error: '@inline' cannot be applied to a global binding
- --> tests/symbol_invalid_target/symbol_invalid_target.omg:7:1
+ --> tests/t40e_symbol_invalid_target/t40e_symbol_invalid_target.omg:7:1
   |
 7 | @inline(always)
   | ^^^^^^^^^^^^^^^ cannot be used on a global binding
@@ -15,7 +15,7 @@ error: '@inline' cannot be applied to a global binding
   = note: '@inline' only applies to functions
 
 error: '@layout' cannot be applied to a global binding
-  --> tests/symbol_invalid_target/symbol_invalid_target.omg:10:1
+  --> tests/t40e_symbol_invalid_target/t40e_symbol_invalid_target.omg:10:1
    |
 10 | @layout(pack = 1)
    | ^^^^^^^^^^^^^^^^^ cannot be used on a global binding
@@ -23,7 +23,7 @@ error: '@layout' cannot be applied to a global binding
    = note: '@layout' only applies to structs and enums
 
 error: '@naked' cannot be applied to a global binding
-  --> tests/symbol_invalid_target/symbol_invalid_target.omg:13:1
+  --> tests/t40e_symbol_invalid_target/t40e_symbol_invalid_target.omg:13:1
    |
 13 | @naked
    | ^^^^^^ cannot be used on a global binding

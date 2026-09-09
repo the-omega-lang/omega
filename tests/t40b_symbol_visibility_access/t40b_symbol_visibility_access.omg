@@ -1,4 +1,4 @@
-# The negative half of `symbol_visibility`'s `reveal` case: `@symbol(export)`
+# The negative half of `t40_symbol_visibility`'s `reveal` case: `@symbol(export)`
 # is a binary-visibility decision and grants no source access, so importing
 # these without `reveal` is the same error it would be without the annotation.
 import self::hidden_source::{ exported_but_language_hidden, EXPORTED_LANGUAGE_HIDDEN_TOTAL };

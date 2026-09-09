@@ -1,11 +1,11 @@
 error: unknown annotation '@mangling'
- --> tests/symbol_legacy_annotation/symbol_legacy_annotation.omg:4:1
+ --> tests/t40h_symbol_legacy_annotation/t40h_symbol_legacy_annotation.omg:4:1
   |
 4 | @mangling(disabled)
   | ^^^^^^^^^^^^^^^^^^^ '@mangling' is not a recognized annotation
 
 error: unknown annotation '@mangling'
- --> tests/symbol_legacy_annotation/symbol_legacy_annotation.omg:7:1
+ --> tests/t40h_symbol_legacy_annotation/t40h_symbol_legacy_annotation.omg:7:1
   |
 7 | @mangling(force = "old_exact_name")
   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ '@mangling' is not a recognized annotation

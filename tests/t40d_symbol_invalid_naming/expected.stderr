@@ -1,17 +1,17 @@
 error: invalid arguments for '@symbol': 'name' already decides the exact symbol, so it cannot be combined with 'mangle'
- --> tests/symbol_invalid_naming/symbol_invalid_naming.omg:6:1
+ --> tests/t40d_symbol_invalid_naming/t40d_symbol_invalid_naming.omg:6:1
   |
 6 | @symbol(name = "conflict_a", mangle = enabled)
   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ '@symbol' 'name' already decides the exact symbol, so it cannot be combined with 'mangle'
 
 error: invalid arguments for '@symbol': 'name' already decides the exact symbol, so it cannot be combined with 'mangle'
- --> tests/symbol_invalid_naming/symbol_invalid_naming.omg:9:1
+ --> tests/t40d_symbol_invalid_naming/t40d_symbol_invalid_naming.omg:9:1
   |
 9 | @symbol(mangle = disabled, name = "conflict_b")
   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ '@symbol' 'name' already decides the exact symbol, so it cannot be combined with 'mangle'
 
 error: cannot disable mangling on a method
-  --> tests/symbol_invalid_naming/symbol_invalid_naming.omg:21:5
+  --> tests/t40d_symbol_invalid_naming/t40d_symbol_invalid_naming.omg:21:5
    |
 21 |     @symbol(mangle = disabled)
    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^ cannot disable mangling on a struct/enum/union method
@@ -19,7 +19,7 @@ error: cannot disable mangling on a method
    = help: only top-level functions can use '@symbol(mangle = disabled)' for now
 
 error: cannot disable mangling on a generic function
-  --> tests/symbol_invalid_naming/symbol_invalid_naming.omg:12:1
+  --> tests/t40d_symbol_invalid_naming/t40d_symbol_invalid_naming.omg:12:1
    |
 12 | @symbol(mangle = disabled)
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^ cannot disable mangling on a generic function
@@ -27,7 +27,7 @@ error: cannot disable mangling on a generic function
    = note: the compiler-generated instantiation suffix is the only thing keeping distinct instantiations from colliding on one symbol
 
 error: cannot set an exact symbol name on a generic declaration
-  --> tests/symbol_invalid_naming/symbol_invalid_naming.omg:15:1
+  --> tests/t40d_symbol_invalid_naming/t40d_symbol_invalid_naming.omg:15:1
    |
 15 | @symbol(name = "generic_exact")
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ cannot set an exact symbol name on a generic declaration
@@ -35,7 +35,7 @@ error: cannot set an exact symbol name on a generic declaration
    = note: every instantiation -- of this declaration or of its owner -- would share the exact same hardcoded symbol, a guaranteed multiple-definition error
 
 error: cannot set an exact symbol name on a generic declaration
-  --> tests/symbol_invalid_naming/symbol_invalid_naming.omg:31:5
+  --> tests/t40d_symbol_invalid_naming/t40d_symbol_invalid_naming.omg:31:5
    |
 31 |     @symbol(name = "holder_exact")
    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ cannot set an exact symbol name on a generic declaration

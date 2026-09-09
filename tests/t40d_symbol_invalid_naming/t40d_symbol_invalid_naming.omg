@@ -1,7 +1,7 @@
 # `name` and `mangle` both decide the linker name, so they conflict whichever
 # order they are written in. The rest are naming policies a generic cannot
 # honor: one symbol would have to name every instantiation. `export` is valid
-# on generics and methods and is proven in `symbol_visibility`.
+# on generics and methods and is proven in `t40_symbol_visibility`.
 
 @symbol(name = "conflict_a", mangle = enabled)
 name_then_mangle : i32 = 1;

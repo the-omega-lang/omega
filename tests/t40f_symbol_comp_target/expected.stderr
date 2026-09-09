@@ -1,5 +1,5 @@
 error: annotations are not allowed on this item
- --> tests/symbol_comp_target/symbol_comp_target.omg:5:1
+ --> tests/t40f_symbol_comp_target/t40f_symbol_comp_target.omg:5:1
   |
 5 | @symbol(mangle = disabled)
   | ^^^^^^^^^^^^^^^^^^^^^^^^^^ this item can't carry annotations
