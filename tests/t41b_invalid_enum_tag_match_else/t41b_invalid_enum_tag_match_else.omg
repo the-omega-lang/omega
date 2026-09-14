@@ -1,0 +1,35 @@
+# An `else` on an enum `match` covers the variants the arms left, not every
+# bit pattern the storage can hold: an unmatched raw tag still reports the
+# violated invariant rather than entering the user's block. The scrutinee is
+# a pointer, so the rule holds for a match that proves the pointee's variant
+# too.
+import std::io::println;
+
+enum Signal {
+	Ready,
+	Busy,
+	Draining,
+}
+
+foreign(c) corrupt_signal_tag(slot: *mut Signal) => void;
+
+# `Draining` is the one variant the arms leave, so this `else` is reachable
+# and is checked for exactly that tag.
+classify(signal: *Signal) => *str {
+	match signal {
+		Signal::Ready => "ready",
+		Signal::Busy => "busy",
+	} else {
+		"else-ran"
+	}
+}
+
+main() => void {
+	mut signal: Signal = Signal::Ready;
+	println$("arm: ", classify(&signal));
+	signal = Signal::Draining;
+	println$("else: ", classify(&signal));
+	corrupt_signal_tag(&mut signal);
+	println$("before-match");
+	println$("never: ", classify(&signal));
+}

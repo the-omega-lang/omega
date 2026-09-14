@@ -125,6 +125,7 @@ fn lower_foreign_function(
         return_type,
         body,
         symbol: policy,
+        runtime_checks,
     } = function;
     let body = body.map(|body| {
         MirFunctionBody::Normal(FunctionLowerer::lower(
@@ -133,6 +134,7 @@ fn lower_foreign_function(
             &return_type,
             id,
             span,
+            runtime_checks,
         ))
     });
     MirForeignFunctionDef {
@@ -219,6 +221,7 @@ fn lower_function(
         primitive_target,
         method_owner: _,
         naked,
+        runtime_checks,
     } = function;
     let body = if naked {
         MirFunctionBody::Naked(lower_naked_body(body))
@@ -229,6 +232,7 @@ fn lower_function(
             &return_type,
             id,
             span,
+            runtime_checks,
         ))
     };
 

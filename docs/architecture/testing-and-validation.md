@@ -87,7 +87,7 @@ Give a `println$` call a short kebab-case label as its first argument (for examp
 just test-all
 ```
 
-This is the normal repository entry point. The `justfile` builds the compiler/runtime artifacts required by the conformance runner, then invokes `bin/test-runner`.
+This is the normal repository entry point. The `justfile` builds the compiler/runtime artifacts required by the conformance runner, then invokes `bin/test-runner` -- once over every case, and once more at `-O3` over the cases whose subject is a compiler-generated check that a program is not in an invalid state (`RUNTIME_CHECK_CASES` in the `justfile`). Those are re-run because an optimizer may delete such a check only when it can prove the state unreachable, and a check that survives `-O0` alone has not been shown to survive at all. Each one's invalid value arrives from a separately compiled C helper the optimizer cannot see through, and the set includes a legal-paths case so an optimized build that "passed" by panicking everywhere would fail.
 
 ### Focused conformance cases
 
@@ -99,6 +99,12 @@ When `omgc` and the runtime objects are already built:
 ```
 
 With no names, the runner executes every direct test package under `tests/`.
+
+A case's observable behavior is the same at every optimization level, so the level is a runner option rather than a property of a case:
+
+```text
+./bin/test-runner --opt=3 hello_world
+```
 
 If runtime objects live outside the default `target/` directory:
 

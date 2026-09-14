@@ -15,7 +15,7 @@ use omega_analyzer::error::{
     AnalysisError, AnalysisErrorKind, AnalysisWarning, AnalysisWarningKind,
 };
 use omega_analyzer::resolved_type::{ResolvedBound, ResolvedFunctionType, ResolvedType};
-use omega_analyzer::resolver::{ResolveError, ResolveItemOptions, ResolvedItem};
+use omega_analyzer::resolver::{ModuleResolver, ResolveError, ResolveItemOptions, ResolvedItem};
 use omega_hir::{
     HirEnumDef, HirField, HirGenericParam, HirGlueDef, HirId, HirItem, HirStructDef, HirUnionDef,
 };
@@ -62,6 +62,7 @@ impl CompilationModules {
 
 mod bodies;
 mod output;
+mod runtime_checks;
 mod signatures;
 
 impl Driver {
@@ -131,6 +132,17 @@ impl Driver {
         if !errors.is_empty() {
             return Err(errors);
         }
+
+        // Past the barrier, so the bodies below are final and no unrelated
+        // failure can be mistaken for missing panic support -- and before the
+        // extern catalog, which is where the generated reference to the panic
+        // gap has to be visible.
+        self.bind_runtime_checks(&mut modules);
+        let errors = self.diagnostics.drain(&diagnostic_surface);
+        if !errors.is_empty() {
+            return Err(errors);
+        }
+
         warnings.extend(self.diagnostics.drain_warnings(compilation.emitted()));
 
         // Whole-program absence warnings only: a skipped module would make

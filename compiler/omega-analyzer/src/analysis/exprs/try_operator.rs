@@ -21,6 +21,7 @@ struct FallibleFacts {
     success_field: usize,
     success_type: ResolvedType,
     failure_variant: usize,
+    failure_tag: NumberValue,
     /// The failure payload's field index and type. `None` for
     /// `Option::None`, which carries no payload.
     failure_payload: Option<(usize, ResolvedType)>,
@@ -146,6 +147,7 @@ impl<'r> Analyzer<'r> {
                     success_tag: source.success_tag,
                     success_field: source.success_field,
                     failure_variant: source.failure_variant,
+                    failure_tag: source.failure_tag,
                     failure_payload: source.failure_payload,
                 },
                 destination: CheckedTryDestination {
@@ -201,6 +203,7 @@ fn fallible_facts(
         success_field,
         success_type,
         failure_variant,
+        failure_tag: failure.tag,
         failure_payload,
     })
 }

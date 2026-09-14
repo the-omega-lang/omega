@@ -351,6 +351,7 @@ fn calling_another_function_interprets_its_own_body() {
         primitive_target: None,
         method_owner: None,
         naked: false,
+        runtime_checks: None,
     };
 
     struct OneFunction(CheckedFunctionDef);
@@ -491,6 +492,7 @@ fn try_node(
                 success_tag: NumberValue::Unsigned(0),
                 success_field: 0,
                 failure_variant: 1,
+                failure_tag: NumberValue::Unsigned(1),
                 failure_payload: payload.clone(),
             },
             destination: crate::checked::CheckedTryDestination {
@@ -523,6 +525,7 @@ fn call_returning(body: CheckedBlock, return_type: ResolvedType) -> (CheckedExpr
         primitive_target: None,
         method_owner: None,
         naked: false,
+        runtime_checks: None,
     };
     let fn_type = crate::resolved_type::ResolvedFunctionType {
         params: vec![],

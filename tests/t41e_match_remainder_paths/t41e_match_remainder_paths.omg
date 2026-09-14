@@ -1,0 +1,93 @@
+# The legal side of the same rules, so nothing here can be satisfied by a
+# program that simply panics:
+#
+#   * an `else` that still has variants left runs for exactly those;
+#   * an `else` with nothing left is dead -- it is still checked as source,
+#     but its result joins nothing and its body never runs;
+#   * a widening between two anonymous shapes remaps a real tag;
+#   * a legal `?` failure leaves through the ordinary return path, so an
+#     already-registered `defer` still runs.
+import std::io::println;
+
+enum Signal {
+	Ready,
+	Busy,
+	Draining,
+}
+
+alias Narrow = enum i32 | bool;
+alias Wide = enum bool | *str | i32;
+
+classify(signal: Signal) => *str {
+	match signal {
+		Signal::Ready => "ready",
+	} else {
+		"else-ran"
+	}
+}
+
+# Every variant is covered, so the `else` below can never run. It is dead
+# code, not a fallthrough: its `*str` result does not have to agree with this
+# function's `i32`, and its side effect never happens.
+@suppress(unreachable_code)
+rank(signal: Signal) => i32 {
+	match signal {
+		Signal::Ready => 1,
+		Signal::Busy => 2,
+		Signal::Draining => 3,
+	} else {
+		println$("dead-else-ran");
+		"not an i32 at all"
+	}
+}
+
+widen(value: Narrow) => *str {
+	wide: Wide = value;
+	match wide {
+		i32 => "wide-int",
+		bool => "wide-bool",
+		*str => "wide-str",
+	}
+}
+
+fail() => Result<i32, *str> {
+	Result<i32, *str>::Err { error = "denied"; }
+}
+
+propagate() => Result<i32, *str> {
+	defer { println$("defer-ran"); }
+	value := fail()?;
+	Result<i32, *str>::Ok { value = value; }
+}
+
+first(a: i32, b: i32) => i32 { a }
+
+preserve_operand(flag: bool) => i32 {
+    mut value := 7;
+    first(value, if flag { value = 9; 0 } else { 0 })
+}
+
+@suppress(unreachable_code)
+byte_rank(signal: Signal) => u8 {
+    match signal {
+        Signal::Ready => 1,
+        Signal::Busy => 2,
+        Signal::Draining => 3,
+    } else { 1000 }
+}
+
+main() => void {
+    println$("saved-operand: ", preserve_operand(true));
+    println$("byte-rank: ", byte_rank(Signal::Ready));
+	println$("arm: ", classify(Signal::Ready));
+	println$("else: ", classify(Signal::Busy));
+	println$("else: ", classify(Signal::Draining));
+	println$("rank: ", rank(Signal::Draining));
+	println$("widen-int: ", widen(<Narrow>5));
+	println$("widen-bool: ", widen(<Narrow>true));
+	outcome := propagate();
+	match outcome {
+		Result::Ok => { println$("ok"); },
+		Result::Err => { println$("err: ", outcome.error); },
+	}
+}

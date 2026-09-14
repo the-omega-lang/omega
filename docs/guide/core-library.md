@@ -210,8 +210,16 @@ glue core::panic::PanicHandler {
 }
 ```
 
-A program that never reaches a `panic$` emits no reference to the handler and
-therefore needs no panic glue, exactly as for the allocator and console gaps.
+`panic$` is not the only thing that reaches the handler. The compiler reports
+through the same gap when a program is found in a state its own declarations
+said could not exist -- an enum tag outside the declared variants reaching a
+`match`, an anonymous-enum widening or a `?`, or a call declared `=> never`
+that returns. So a function that dispatches on an enum tag or uses `?` does
+reference the handler, even with no `panic$` anywhere in the program, and a
+link that retains such a function needs panic glue. Nothing checks that at
+compile time: missing glue is an ordinary undefined symbol at link, exactly as
+for the allocator and console gaps. A program whose objects reach none of those
+operations still needs no panic glue at all.
 
 The message is meant to be optional, but Omega has no optional macro parameter
 yet, so `panic$` declares a trailing variadic instead. Pass zero or one message;

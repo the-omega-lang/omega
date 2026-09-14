@@ -1,0 +1,31 @@
+# The same for `Result`, with a `defer` registered before the operator: a
+# legal failure still leaves through the ordinary return path and runs it,
+# while an invalid tag reports the violated invariant instead -- taking no
+# payload, no error conversion and none of the caller's deferred work with it.
+import std::io::println;
+
+foreign(c) set_result_tag(slot: *mut Result<i32, *str>, tag: u32) => void;
+
+double(value: Result<i32, *str>) => Result<i32, *str> {
+	defer { println$("defer-ran"); }
+	inner := value?;
+	Result<i32, *str>::Ok { value = inner * 2; }
+}
+
+report(outcome: Result<i32, *str>, label: *str) => void {
+	match outcome {
+		Result::Ok => { println$(label, ": ", outcome.value); },
+		Result::Err => { println$(label, ": ", outcome.error); },
+	}
+}
+
+main() => void {
+	ok: Result<i32, *str> = Result<i32, *str>::Ok { value = 21; };
+	report(double(ok), "ok");
+	mut err: Result<i32, *str> = Result<i32, *str>::Err { error = "denied"; };
+	report(double(err), "err");
+	# `Ok` is 0 and `Err` is 1, so 7 belongs to neither.
+	set_result_tag(&mut err, 7u32);
+	println$("before-try");
+	report(double(err), "never");
+}

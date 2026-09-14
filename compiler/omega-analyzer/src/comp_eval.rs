@@ -378,6 +378,15 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
                 .nth(r#try.source.success_field)
                 .expect("analysis resolved the success payload's field index"));
         }
+        // Compile-time values are built by this interpreter, so a third
+        // variant is a broken checked tree rather than a program in an
+        // invalid state: it is reported, never panicked on.
+        if variant_index != r#try.source.failure_variant {
+            return Err(self.err(
+                span,
+                CompErrorKind::Unsupported("a try on neither the success nor the failure variant"),
+            ));
+        }
 
         let destination = &r#try.destination;
         let mut slots: Vec<Option<ConstValue>> = Vec::new();

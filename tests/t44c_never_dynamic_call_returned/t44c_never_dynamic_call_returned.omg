@@ -1,0 +1,34 @@
+# A spec's dynamic call reaches its implementation through a vtable slot, so
+# the callee is not known at the call site at all. The `never` contract is
+# still the one the spec declared, and the guard that reports an unexpected
+# return belongs to the caller.
+#
+# The conformance method is `@naked`, so its body is exactly the target's own
+# return instruction under the ordinary Omega call ABI -- a real vtable slot
+# holding a real function that really returns, not a fabricated address.
+import std::io::println;
+
+exposed spec Terminator {
+	stop(*self) => never;
+}
+
+struct Sloppy {
+	exposed marker: i32;
+}
+
+meet Terminator for Sloppy {
+	@naked
+	stop(*self) => never {
+		asm() => {
+			ret
+		}
+	}
+}
+
+main() => void {
+	value := Sloppy { marker = 1; };
+	obj := <*spec Terminator>&value;
+	println$("before-call");
+	obj.stop();
+	println$("after-call");
+}

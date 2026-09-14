@@ -1,0 +1,1 @@
+panicked at tests/t44b_never_function_pointer_returned/t44b_never_function_pointer_returned.omg:19:5: never-returning call returned

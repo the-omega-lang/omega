@@ -1,0 +1,1 @@
+panicked at tests/t43b_invalid_result_try/t43b_invalid_result_try.omg:11:14: invalid enum tag in try operator

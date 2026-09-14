@@ -75,6 +75,7 @@ impl<'ctx> Codegen<'ctx> {
                 call.set_call_convention(crate::abi::llvm_calling_convention(
                     fn_type.calling_convention,
                 ));
+                self.mark_guarded_call(call, fn_type);
 
                 if matches!(
                     *fn_type.return_type,
@@ -171,6 +172,7 @@ impl<'ctx> Codegen<'ctx> {
                     .builder
                     .build_indirect_call(call_type, fnaddr, &metadata_args, "")
                     .expect("call always succeeds");
+                self.mark_guarded_call(call, fn_type);
 
                 if matches!(
                     *fn_type.return_type,
@@ -1031,6 +1033,26 @@ impl<'ctx> Codegen<'ctx> {
                 .as_basic_value_enum(),
             None => value,
         }
+    }
+
+    /// A call whose Omega result is `never` is followed by a guard that
+    /// reports an unexpected return. `nobuiltin` stops the optimizer from
+    /// substituting library knowledge for the callee -- which would delete
+    /// the guard on the strength of a name rather than on anything proven
+    /// about this program.
+    fn mark_guarded_call(
+        &self,
+        call: inkwell::values::CallSiteValue<'ctx>,
+        fn_type: &omega_analyzer::resolved_type::ResolvedFunctionType,
+    ) {
+        if *fn_type.return_type != ResolvedType::Never {
+            return;
+        }
+        let kind_id = inkwell::attributes::Attribute::get_named_enum_kind_id("nobuiltin");
+        call.add_attribute(
+            inkwell::attributes::AttributeLoc::Function,
+            self.context.create_enum_attribute(kind_id, 0),
+        );
     }
 
     pub(super) fn get_place_value(

@@ -99,6 +99,14 @@ platform can honestly provide, including its panic policy; a program wanting a
 different one is built without that package rather than adding a second glue.
 A platform may fill only some of the gaps -- `avr-none` fills the panic
 handler and the atomic widths but no allocator or console -- and a program
-that references an unfilled one fails at link.
+that references an unfilled one fails at link. `PanicHandler` is the one gap a
+program can reference without naming it: the compiler reports the runtime
+invariants it checks through it (see
+[`types-and-primitives.md`](types-and-primitives.md#never) and
+[`enums-and-pattern-matching.md`](enums-and-pattern-matching.md)), so a
+function that dispatches on an enum tag, uses `?`, widens an anonymous enum, or
+calls a `never` function needs that glue. It is an ordinary reference with the
+ordinary consequence: nothing is enforced at compile time, and missing glue is
+a link error like any other.
 See [`plat`](../guide/platform-glue.md) for that implementation and
 [the core library](../guide/core-library.md) for the public core layout.

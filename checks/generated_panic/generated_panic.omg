@@ -1,0 +1,17 @@
+# A package whose only notable property is that it dispatches on an enum tag,
+# which is what makes the compiler generate a check that reports an invalid
+# one through `core::panic::PanicHandler`. It imports nothing but `core` and
+# supplies no glue, so the reference the check emits is an ordinary undefined
+# symbol -- not a compile-time requirement, and not a fabricated one either.
+enum Signal {
+	Ready,
+	Busy,
+}
+
+@symbol(name = "omega_generated_panic_classify")
+foreign(c) classify(signal: *Signal) => i32 {
+	match signal {
+		Signal::Ready => 0,
+		Signal::Busy => 1,
+	}
+}

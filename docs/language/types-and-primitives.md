@@ -73,7 +73,9 @@ A block expression that cannot complete normally -- because its tail expression 
 
 `never` is not a storable value type: it is invalid as a local/field/parameter type, generic argument, or aggregate member type.
 
-A `foreign` declaration returning `never` is a contract with foreign code. If that foreign function returns, program behavior is invalid.
+A `foreign` declaration returning `never` is a contract with foreign code, and a `never` returned by a gap function, a function pointer, or a spec's dynamic call is the same contract with whatever supplies the implementation. A call whose declared result is `never` is therefore checked rather than assumed: if it returns, the call site reports `never-returning call returned` through `core::panic::PanicHandler` and the program stops there, rather than continuing into a state the declaration said could not exist. The check is on the call, not on every expression whose type is `never`.
+
+The one call exempt from it is the panic handler's own: it is the operation the check reports *through*, so guarding it would make every generated panic instrument itself. That exemption is by resolved declaration — a function a program merely named `panic` is an ordinary call and is checked like any other — and it does not extend to the rest of a handler's implementation. A handler that returns is outside what the language can report.
 
 ## Pointer, array, and slice type forms
 

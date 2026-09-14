@@ -1,0 +1,29 @@
+# Conformance for the `?` section of
+# `docs/language/control-flow-and-operators.md`: the operator branches on both
+# of `Option`'s tags. A value that is neither `Some` nor `None` is not quietly
+# treated as the failure it is not, and neither payload is read.
+import std::io::println;
+
+foreign(c) set_option_tag(slot: *mut Option<i32>, tag: u32) => void;
+
+halve(value: Option<i32>) => Option<i32> {
+	inner := value?;
+	Option<i32>::Some { value = inner / 2; }
+}
+
+main() => void {
+	mut value: Option<i32> = Option<i32>::Some { value = 8; };
+	legal := halve(value);
+	match legal {
+		Option::Some => { println$("legal: ", legal.value); },
+		Option::None => { println$("legal: none"); },
+	}
+	# `None` is 0 and `Some` is 1, so 2 is one past the declared domain.
+	set_option_tag(&mut value, 2u32);
+	println$("before-try");
+	broken := halve(value);
+	match broken {
+		Option::Some => { println$("never: ", broken.value); },
+		Option::None => { println$("never: none"); },
+	}
+}

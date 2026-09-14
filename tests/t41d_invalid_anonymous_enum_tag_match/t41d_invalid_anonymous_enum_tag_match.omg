@@ -1,0 +1,28 @@
+# The same rule for an anonymous enum: an arm names a member type, an `else`
+# covers the members the arms left, and a tag outside the canonical member
+# list belongs to neither.
+import std::io::println;
+
+alias Reading = enum i32 | bool | *str;
+
+foreign(c) set_reading_tag(slot: *mut Reading, tag: u32) => void;
+
+describe(reading: Reading) => *str {
+	match reading {
+		i32 => "int",
+		bool => "bool",
+	} else {
+		"else-ran"
+	}
+}
+
+main() => void {
+	mut reading: Reading = <Reading>7;
+	println$("arm: ", describe(reading));
+	reading = <Reading>"text";
+	println$("else: ", describe(reading));
+	# The canonical list has three members, so 3 is one past the last tag.
+	set_reading_tag(&mut reading, 3u32);
+	println$("before-match");
+	println$("never: ", describe(reading));
+}

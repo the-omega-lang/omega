@@ -1,0 +1,35 @@
+# A bare `..` covers the *declared* variants the other arms left, and it is
+# built from their tag values -- not from their positions in the variant list.
+# The tags here are sparse, signed and narrower than the implicit `u32`, so a
+# check that confused an index for a tag would take the wrong branch long
+# before it ever reached an invalid value.
+import std::io::println;
+
+enum Level(tag: i16, exposed label: *str) {
+	Low(-7, "low"),
+	Mid(40, "mid"),
+	High(1000, "high"),
+}
+
+foreign(c) set_level_tag(slot: *mut Level, tag: i16) => void;
+
+describe(level: Level) => *str {
+	match level {
+		Level::Low => "arm-low",
+		.. => "catch-all",
+	}
+}
+
+main() => void {
+	mut level: Level = Level::Low;
+	println$("arm: ", describe(level));
+	set_level_tag(&mut level, 40i16);
+	println$("catch-all-mid: ", describe(level));
+	set_level_tag(&mut level, 1000i16);
+	println$("catch-all-high: ", describe(level));
+	# 41 sits between two declared tags: an index-shaped check would accept
+	# it, and a domain-shaped one rejects it.
+	set_level_tag(&mut level, 41i16);
+	println$("before-match");
+	println$("never: ", describe(level));
+}

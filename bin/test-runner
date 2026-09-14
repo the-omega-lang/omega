@@ -126,8 +126,9 @@ class TestRunner
   FAIL_ICON = "✗"
   RUN_ICON  = "•"
 
-  def initialize(tests)
+  def initialize(tests, opt_level: 0)
     @tests = tests
+    @opt_level = opt_level
     @name_width = tests.map { |test| test.name.length }.max || 0
   end
 
@@ -244,6 +245,7 @@ class TestRunner
       test.path.relative_path_from(ROOT_DIR).to_s,
       *OMGC_IMPORTS,
       "--target=#{HOST_TARGET}",
+      "-O#{@opt_level}",
       "-o", objects_dir.to_s
     )
 
@@ -504,24 +506,41 @@ def get_available_test_modules
     .map { |path| TestModule.new(path) }
 end
 
+# A case's observable behavior is the same at every optimization level, so the
+# level is a runner option rather than a property of a case. It exists because
+# some of what the language promises -- a compiler-generated check that a
+# program is not in an invalid state -- is only proven by running the
+# optimized build too. See docs/architecture/testing-and-validation.md.
+opt_level = 0
+names = []
+ARGV.each do |argument|
+  case argument
+  when /\A--opt=([0-3])\z/ then opt_level = Regexp.last_match(1).to_i
+  when /\A--/ then abort "Unknown option: #{argument}"
+  else names << argument
+  end
+end
+
 available_tests = get_available_test_modules
 tests_by_name = available_tests.to_h { |test| [test.name, test] }
 
 tests_to_run =
-  if ARGV.empty?
+  if names.empty?
     available_tests
   else
-    unknown = ARGV.reject { |name| tests_by_name.key?(name) }
+    unknown = names.reject { |name| tests_by_name.key?(name) }
 
     abort "Unknown test(s): #{unknown.join(", ")}" unless unknown.empty?
 
-    ARGV.map { |name| tests_by_name.fetch(name) }
+    names.map { |name| tests_by_name.fetch(name) }
   end
 
 abort "No tests found in #{TESTS_DIR}" if tests_to_run.empty?
 
 puts Color.bold(Color.cyan("Omega Test Runner"))
-puts Color.gray("#{tests_to_run.length} test(s): #{tests_to_run.map(&:name).join(", ")}")
+puts Color.gray(
+  "#{tests_to_run.length} test(s) at -O#{opt_level}: #{tests_to_run.map(&:name).join(", ")}"
+)
 puts
 
-exit(TestRunner.new(tests_to_run).run ? 0 : 1)
+exit(TestRunner.new(tests_to_run, opt_level: opt_level).run ? 0 : 1)

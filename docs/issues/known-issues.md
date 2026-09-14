@@ -118,6 +118,18 @@ Concrete current compiler/library bugs and unsupported cases. Resolved issues ar
   `char` is always valid — the true statement is that the supported path
   always produces a valid one. [primitives.md](../language/types-and-primitives.md)
 
+- **Only enum tags and `never` calls are checked at runtime; `bool` and `char`
+  validity are not.** The compiler reports an invalid enum tag reaching a
+  `match`, an anonymous-enum widening or `?`, and a `never`-declared call that
+  returns (see
+  [enums-and-pattern-matching.md](../language/enums-and-pattern-matching.md) and
+  [types-and-primitives.md](../language/types-and-primitives.md)). Nothing
+  equivalent exists for a `bool` holding a byte other than `0`/`1` or a `char`
+  holding a non-scalar value: a `match` on one is an integer match over its
+  domain, and the bit patterns outside that domain reach no check. This is
+  deliberately deferred rather than fixed, and it is recorded so the enum-tag
+  checks are not read as a general validity guarantee.
+
 - **`std::fmt`'s float output is fixed-precision, not round-trip** — six
   fractional digits, with a scientific fallback below `1e-6` and at or above
   `1e19` whose normalization loop (repeated multiply/divide by ten) is itself
@@ -391,6 +403,36 @@ Shape problems in `omega-driver` and `omega-analyzer` that still need a delibera
   [macros.md](../language/macros.md)
 
 ## Control flow
+
+- **Assignment-target evaluation can be skipped by a panic in the right-hand
+  side.** Reproduced with
+  `*select_target(&mut value) = if true { panic$("rhs"); } else { 1 };`,
+  where `select_target` prints a marker and returns its pointer argument:
+  compilation/linking succeed, but execution prints only the panic diagnostic
+  and exits `134`; the target's marker is missing. Ordinary assignment emission
+  evaluates the target before its value, but
+  [`lower_assignment_stmt`](../../compiler/omega-mir/src/lower/function.rs)
+  leaves the target as an expression tree while lowering the RHS control flow
+  immediately. The operand-sequencing helper in
+  [`lower/function/expr.rs`](../../compiler/omega-mir/src/lower/function/expr.rs)
+  protects call, binary, and aggregate operands, not assignment targets.
+  Follow up by preserving target evaluation/address computation before RHS
+  control flow. Inspect the analogous sequencing of slice bounds and dynamic
+  place components as part of that bounded work; those are related candidates,
+  not independently reproduced failures here. Test preceding side effects,
+  address stability, and no store or later effect after panic at `-O0`/`-O3`.
+
+- **`never` is rejected in some expected-value positions.** A direct
+  `consume(stop())`, with `consume` taking `i32` and `stop` returning `never`,
+  is rejected with `ArgumentTypeMismatch` (`I32` versus `Never`). Supplying the
+  same call to an exposed `i32` struct field is rejected with
+  `FieldTypeMismatch`. Both conflict with the general rule that a diverging
+  expression is compatible with any expected expression type in
+  [`types-and-primitives.md`](../language/types-and-primitives.md#never).
+  An `if` expression with one diverging arm and one value-producing arm is
+  accepted in these positions. Fix the expected-type checks without making
+  `never` a storable type; retain runtime guards and verify that earlier
+  operands execute but later operands and the enclosing operation do not.
 
 - **`&&`/`||` reject a `never`-typed operand, but the `if` form they desugar
   to accepts one.** `flag && exit(1)` fails with `'&&' requires 'bool'

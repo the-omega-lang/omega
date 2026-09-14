@@ -1,0 +1,1 @@
+panicked at tests/t44c_never_dynamic_call_returned/t44c_never_dynamic_call_returned.omg:32:5: never-returning call returned

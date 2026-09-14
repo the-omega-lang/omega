@@ -1,0 +1,47 @@
+# A legal `Result::Err` whose error payload is itself a malformed anonymous
+# enum. The propagation is the one `?` is supposed to perform -- the failure
+# tag is valid -- but converting the error to the enclosing function's wider
+# failure type is an anonymous-enum widening, and that widening checks the
+# payload's own tag before rebuilding it.
+import std::io::println;
+
+struct NotFound { exposed key: i32; }
+struct Denied { exposed code: i32; }
+
+alias Narrow = enum NotFound | Denied;
+alias Wide = enum NotFound | Denied | *str;
+
+foreign(c) set_error_tag(slot: *mut Result<i32, Narrow>, tag: u32) => void;
+
+lookup(value: Result<i32, Narrow>) => Result<i32, Wide> {
+	defer { println$("defer-ran"); }
+	inner := value?;
+	Result<i32, Wide>::Ok { value = inner; }
+}
+
+report(outcome: Result<i32, Wide>, label: *str) => void {
+	match outcome {
+		Result::Ok => { println$(label, ": ", outcome.value); },
+		Result::Err => {
+			match outcome.error {
+				NotFound => { println$(label, ": not-found"); },
+				Denied => { println$(label, ": denied"); },
+				*str => { println$(label, ": text"); },
+			}
+		},
+	}
+}
+
+main() => void {
+	ok: Result<i32, Narrow> = Result<i32, Narrow>::Ok { value = 3; };
+	report(lookup(ok), "ok");
+	mut err: Result<i32, Narrow> = Result<i32, Narrow>::Err {
+		error = <Narrow>Denied { code = 4; };
+	};
+	report(lookup(err), "err");
+	# The narrow error shape has two members, so this leaves the `Err`
+	# variant intact and only the payload's own tag invalid.
+	set_error_tag(&mut err, 2u32);
+	println$("before-try");
+	report(lookup(err), "never");
+}

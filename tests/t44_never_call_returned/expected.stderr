@@ -1,0 +1,1 @@
+panicked at tests/t44_never_call_returned/t44_never_call_returned.omg:28:33: never-returning call returned

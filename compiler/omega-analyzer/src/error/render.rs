@@ -870,6 +870,9 @@ impl AnalysisErrorKind {
             Self::AsmRegInNakedFunction => d
                 .with_label(span, "'reg' materializes a runtime value, which is not allowed here")
                 .with_help("use 'comp(...)' for compile-time text or 'clobber(...)' for register metadata instead"),
+            Self::RuntimeCheckSupportUnavailable { .. } => d
+                .with_label(span, "this body dispatches on an enum tag or calls a 'never' function")
+                .with_help("register the 'core' package this compilation was built against -- an invalid tag or an unexpected return is reported through 'core::panic::PanicHandler'"),
         }
     }
 }

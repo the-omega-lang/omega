@@ -1,0 +1,1 @@
+panicked at tests/t41c_invalid_enum_tag_catch_all/t41c_invalid_enum_tag_catch_all.omg:17:5: invalid enum tag in match

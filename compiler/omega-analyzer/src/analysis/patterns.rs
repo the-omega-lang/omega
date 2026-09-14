@@ -1,5 +1,13 @@
 use super::*;
 
+/// One analyzed `match`, before it becomes an expression node.
+struct MatchShape {
+    arms: Vec<CheckedMatchArm>,
+    else_branch: Option<CheckedBlock>,
+    remainder: CheckedMatchRemainder,
+    result_type: ResolvedType,
+}
+
 impl<'r> Analyzer<'r> {
     /// `expected` is the surrounding expected type of the whole `match`, and
     /// it reaches every arm body, catch-all, and `else` exactly as it reaches
@@ -60,7 +68,7 @@ impl<'r> Analyzer<'r> {
 
         let matched = Self::matched_through_pointer(&scrutinee_type);
 
-        let (arms, else_branch, result_type) = if matches!(matched, ResolvedType::Enum { .. }) {
+        let shape = if matches!(matched, ResolvedType::Enum { .. }) {
             self.analyze_enum_match(
                 node_id,
                 span,
@@ -105,19 +113,31 @@ impl<'r> Analyzer<'r> {
             return None;
         };
 
+        let MatchShape {
+            arms,
+            else_branch,
+            remainder,
+            result_type,
+        } = shape;
+        let checked_match = CheckedMatch {
+            arms,
+            else_branch,
+            remainder,
+        };
+
         if prelude_stmts.is_empty() {
             Some(CheckedExprNode {
                 id: node_id,
                 span,
                 r#type: result_type,
-                kind: CheckedExpr::Match(CheckedMatch { arms, else_branch }),
+                kind: CheckedExpr::Match(checked_match),
             })
         } else {
             let checked_match = CheckedExprNode {
                 id: self.resolver.fresh_synthetic_id(),
                 span,
                 r#type: result_type.clone(),
-                kind: CheckedExpr::Match(CheckedMatch { arms, else_branch }),
+                kind: CheckedExpr::Match(checked_match),
             };
             Some(CheckedExprNode {
                 id: node_id,
@@ -191,7 +211,7 @@ impl<'r> Analyzer<'r> {
         scrutinee_place: &CheckedPlace,
         narrow_binding: Option<(Ident, Origin, HirId, Storage, bool)>,
         expected: Option<&ResolvedType>,
-    ) -> Option<(Vec<CheckedMatchArm>, Option<CheckedBlock>, ResolvedType)> {
+    ) -> Option<MatchShape> {
         let (cell, through_pointer) = match scrutinee_type {
             ResolvedType::Enum { cell, .. } => (cell.clone(), None),
             ResolvedType::Pointer { pointee, mutable } => match &**pointee {
@@ -320,8 +340,26 @@ impl<'r> Analyzer<'r> {
             checked_arms.push(CheckedMatchArm { conditions, body });
         }
 
-        let else_branch = match &m.else_branch {
-            Some(b) => Some(self.analyze_block(b, expected)?),
+        // Whatever the arms above left is what an `else` still has to mean; a
+        // `..` arm already consumed all of it.
+        let uncovered: &[usize] = if catch_all.is_some() { &[] } else { &missing };
+        match &m.else_branch {
+            Some(block) => {
+                let conditions: Vec<_> =
+                    uncovered
+                        .iter()
+                        .map(|&idx| {
+                            vec![self.tag_variant_condition(
+                                &tag_place, &tag_type, &cell, idx, block.span,
+                            )]
+                        })
+                        .collect();
+                if let Some(body) =
+                    self.analyze_else_arm(node_id, block, expected, !conditions.is_empty())
+                {
+                    checked_arms.push(CheckedMatchArm { conditions, body });
+                }
+            }
             None if catch_all.is_none() && !missing.is_empty() => {
                 let missing_names = missing
                     .iter()
@@ -337,11 +375,39 @@ impl<'r> Analyzer<'r> {
                 );
                 return None;
             }
-            None => None,
-        };
+            None => {}
+        }
 
-        let result_type = self.unify_match_arm_types(node_id, span, &checked_arms, &else_branch)?;
-        Some((checked_arms, else_branch, result_type))
+        let result_type = self.unify_match_arm_types(node_id, span, &checked_arms, &None)?;
+        Some(MatchShape {
+            arms: checked_arms,
+            else_branch: None,
+            remainder: CheckedMatchRemainder::IllegalEnumTag,
+            result_type,
+        })
+    }
+
+    /// A `match` `else` on an enum scrutinee is an arm over the variants the
+    /// other arms left, never an unconditional fallthrough: a tag outside the
+    /// declared domain is a violated invariant, not one more alternative the
+    /// user agreed to handle.
+    ///
+    /// With nothing left for it to mean, the block is dead. It is still
+    /// checked for ordinary errors -- dead code is source the programmer
+    /// wrote -- but its result joins nothing and its body is not emitted.
+    fn analyze_else_arm(
+        &mut self,
+        node_id: HirId,
+        block: &HirBlock,
+        expected: Option<&ResolvedType>,
+        reachable: bool,
+    ) -> Option<CheckedBlock> {
+        let checked = self.analyze_block(block, if reachable { expected } else { None });
+        if !reachable {
+            self.warn(node_id, block.span, AnalysisWarningKind::UnreachableCode);
+            return None;
+        }
+        checked
     }
 
     /// The type a `match` actually discriminates on: matching through a
@@ -364,7 +430,7 @@ impl<'r> Analyzer<'r> {
         scrutinee_place: &CheckedPlace,
         narrow_binding: Option<(Ident, Origin, HirId, Storage, bool)>,
         expected: Option<&ResolvedType>,
-    ) -> Option<(Vec<CheckedMatchArm>, Option<CheckedBlock>, ResolvedType)> {
+    ) -> Option<MatchShape> {
         let through_pointer = match scrutinee_type {
             ResolvedType::Pointer { mutable, .. } => Some(*mutable),
             _ => None,
@@ -484,8 +550,21 @@ impl<'r> Analyzer<'r> {
             checked_arms.push(CheckedMatchArm { conditions, body });
         }
 
-        let else_branch = match &m.else_branch {
-            Some(b) => Some(self.analyze_block(b, expected)?),
+        let uncovered: &[usize] = if catch_all.is_some() { &[] } else { &missing };
+        match &m.else_branch {
+            Some(block) => {
+                let conditions: Vec<_> = uncovered
+                    .iter()
+                    .map(|&index| {
+                        vec![self.member_tag_condition(&tag_place, &tag_type, index, block.span)]
+                    })
+                    .collect();
+                if let Some(body) =
+                    self.analyze_else_arm(node_id, block, expected, !conditions.is_empty())
+                {
+                    checked_arms.push(CheckedMatchArm { conditions, body });
+                }
+            }
             None if catch_all.is_none() && !missing.is_empty() => {
                 self.error(
                     node_id,
@@ -500,11 +579,16 @@ impl<'r> Analyzer<'r> {
                 );
                 return None;
             }
-            None => None,
-        };
+            None => {}
+        }
 
-        let result_type = self.unify_match_arm_types(node_id, span, &checked_arms, &else_branch)?;
-        Some((checked_arms, else_branch, result_type))
+        let result_type = self.unify_match_arm_types(node_id, span, &checked_arms, &None)?;
+        Some(MatchShape {
+            arms: checked_arms,
+            else_branch: None,
+            remainder: CheckedMatchRemainder::IllegalEnumTag,
+            result_type,
+        })
     }
 
     /// An anonymous-enum arm names a member type. The parser kept a type
@@ -689,7 +773,7 @@ impl<'r> Analyzer<'r> {
         scrutinee_type: &ResolvedType,
         scrutinee_place: &CheckedPlace,
         expected: Option<&ResolvedType>,
-    ) -> Option<(Vec<CheckedMatchArm>, Option<CheckedBlock>, ResolvedType)> {
+    ) -> Option<MatchShape> {
         let domain = scrutinee_type
             .integer_domain(self.target.pointer_bits())
             .expect("caller already confirmed this type has an integer domain");
@@ -812,7 +896,12 @@ impl<'r> Analyzer<'r> {
         };
 
         let result_type = self.unify_match_arm_types(node_id, span, &checked_arms, &else_branch)?;
-        Some((checked_arms, else_branch, result_type))
+        Some(MatchShape {
+            arms: checked_arms,
+            else_branch,
+            remainder: CheckedMatchRemainder::Covered,
+            result_type,
+        })
     }
 
     fn analyze_value_pattern(

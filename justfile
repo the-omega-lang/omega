@@ -10,6 +10,18 @@ ARTIFACTS := "target"
 test-all: build-omgc build-runtime
     @echo "[*] Starting test-runner..."
     ./bin/test-runner
+    @echo "[*] Re-running the compiler-generated runtime checks at -O3..."
+    ./bin/test-runner --opt=3 {{RUNTIME_CHECK_CASES}}
+
+# The cases whose subject is a compiler-generated check that a program is not
+# in an invalid state. An optimizer is allowed to delete such a check only
+# when it can prove the state unreachable, so these run again optimized --
+# each one's invalid value arrives from a separately compiled C helper the
+# optimizer cannot see through. The last is the legal-paths case, so an
+# optimized build that "passed" by panicking everywhere would fail it.
+RUNTIME_CHECK_CASES := "t41_invalid_enum_tag_match t42_invalid_anonymous_enum_widen " + \
+    "t43_invalid_option_try t43b_invalid_result_try t44_never_call_returned " + \
+    "t41e_match_remainder_paths"
 
 playground: build-omgc build-runtime
     @echo "[*] Running playground..."

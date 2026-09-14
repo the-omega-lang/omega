@@ -1,0 +1,10 @@
+saved-operand: 7
+byte-rank: 1
+arm: ready
+else: else-ran
+else: else-ran
+rank: 3
+widen-int: wide-int
+widen-bool: wide-bool
+defer-ran
+err: denied

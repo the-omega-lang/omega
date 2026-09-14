@@ -14,6 +14,7 @@ pub mod generics;
 pub mod layout;
 pub mod resolved_type;
 pub mod resolver;
+pub mod runtime_checks;
 pub mod similarity;
 pub mod target;
 pub mod type_key;

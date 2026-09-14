@@ -1,0 +1,21 @@
+# The guard belongs to the call, not to the name: a `never` function reached
+# through a function pointer is checked the same way a directly named one is.
+#
+# The callee is `@naked`, so its body is exactly the target's own return
+# instruction: nothing is inserted into it, and the guard that reports the
+# unexpected return lives in the *caller*.
+import std::io::println;
+
+@naked
+returns_anyway() => never {
+	asm() => {
+		ret
+	}
+}
+
+main() => void {
+	indirect: () => never = returns_anyway;
+	println$("before-call");
+	indirect();
+	println$("after-call");
+}

@@ -2,6 +2,29 @@
 
 Unresolved design/architecture inconsistencies migrated from the former monolithic design-review document. Resolved review findings are intentionally omitted.
 
+### Enum match dispatch re-reads the tag for each condition
+
+Named and anonymous enum matches currently carry a separate tag-place read in
+each arm condition, including the conditions for `..` and a reachable `else`.
+This does not repeat evaluation of the scrutinee expression, but dispatch can
+load its tag repeatedly. The conditions are built by `tag_variant_condition`
+and `member_tag_condition` in
+[`analysis/patterns.rs`](../../compiler/omega-analyzer/src/analysis/patterns.rs)
+and lowered independently by
+[`lower_match_chain`](../../compiler/omega-mir/src/lower/function/control_flow.rs).
+
+This is an optimization follow-up, not a known failure of the invalid-tag panic
+check: these are ordinary field loads with no intervening user code during
+dispatch. Redundant loads may survive without optimization; the current
+representation leaves their elimination to the backend.
+
+Follow up by sampling the tag once before dispatch and sharing that value
+across all conditions. Preserve binding refinement, legal-variant-only `else`,
+and the separate invalid-tag panic path. Verify one tag read in MIR for named
+and anonymous enums (including pointer scrutinees and sparse explicit tags),
+and retain executable coverage of valid arms and invalid-tag panics at `-O0`
+and `-O3`.
+
 ### Enum-variant matching and enum-tag matching are two unrelated exhaustiveness engines with very different practical requirements
 
 The docs describe one unified exhaustiveness mechanism (`exhaustiveness.rs`)

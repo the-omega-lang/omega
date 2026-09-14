@@ -84,3 +84,17 @@ foreign(c) load_u8(slot: *u8) => u8 {
 foreign(c) load_i32(slot: *i32) => i32 {
 	<i32>Atomicity32::load(<*u32>(<usize>slot), AtomicLoadOrdering::SeqConsistent)
 }
+
+# The `match` on `compare_exchange_weak`'s result above dispatches on an enum
+# tag, so its object references `core`'s panic gap. This link deliberately
+# excludes the platform's own handler, so the package supplies a minimal one
+# of its own: the check stays live rather than being compiled away, and no
+# further platform object is pulled in. The harness already links the host C
+# runtime, which is where `abort` comes from.
+foreign(c) abort() => never;
+
+glue core::panic::PanicHandler {
+	panic(info: *PanicInfo) => never {
+		abort()
+	}
+}

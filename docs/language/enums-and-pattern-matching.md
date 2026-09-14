@@ -284,6 +284,13 @@ tags in the two shapes, and the payload can move; the value is rebuilt, never
 reinterpreted. A destination member may sort *before* a source member, so
 appending a member in the source text does not append it to the layout.
 
+Because the source tag selects which destination member to build, widening
+dispatches on that tag the way a `match` does, and it is checked the same way: a
+source tag outside its own canonical member list reports `invalid enum tag in
+anonymous-enum widening` before the destination value is constructed and before
+the payload behind the tag is read. Widening a *refined* member is not a tag
+dispatch — the member is already proven — and is unaffected.
+
 The destination must be written down — by an expected type, or by a cast (see
 [`strings-casts-arrays-and-slices.md`](strings-casts-arrays-and-slices.md)).
 Conversion never manufactures the destination, so the inference rule above is
@@ -409,6 +416,8 @@ The analogous refinement applies through a pointer-to-enum scrutinee to the prov
 
 For enum matches, explicit variant arms may cover all variants. If they do not, coverage must be completed by either an `else` block or a single bare `..` catch-all arm. For an anonymous enum the same rule applies to its canonical members, with each arm naming a member type.
 
+An enum `match`'s `else` covers the variants the arms left, exactly as a bare `..` does — it is not an unconditional fallthrough. If the arms already cover every declared variant (a `..` among them counts), the `else` can never run: it is reported as unreachable code. A dead `else` is still ordinary source and is checked for ordinary errors, but its result does not participate in the match's type and its body is not emitted. Giving it a different result type is therefore not a type error in the surrounding match.
+
 For value matches, Omega supports finite ordered integral domains: integer types, `bool`, and `char`. Literal and range patterns denote sets of values. Arms must partition the covered domain: two arms may not overlap. There is no first-match-wins rule for overlapping patterns.
 
 ```omega
@@ -422,6 +431,14 @@ message := match n {
 Floating-point values are not supported as `match` scrutinees.
 
 A `match` used as an expression must produce a value on every reachable arm. When static coverage proves a match exhaustive, the impossible runtime remainder is not a normal fallthrough path.
+
+### Invalid tags
+
+Coverage is over the variants an enum *declares*, not over every bit pattern its tag field can hold. A `match` on an enum value whose tag is none of the declared ones has reached a state the declaration says cannot exist. That is not resolved by picking a variant, by taking the `else` block, or by continuing: it reports `invalid enum tag in match` through `core::panic::PanicHandler` at the `match`, and the program stops. No arm body, no `else` block, and no `defer` registered by the surrounding function runs.
+
+The same rule covers a `match` through a pointer to an enum, and a `match` on an anonymous enum whose tag is outside its canonical member list.
+
+This is a check on the operation that relies on the tag, not a promise that every enum value is validated. Reaching a `match` with an invalid tag requires having produced one — through a pointer reinterpretation, foreign code, or uninitialized storage — and nothing here makes such a value safe to hold, copy, or pass around. Values whose validity is not checked at all are listed in [`../issues/known-issues.md`](../issues/known-issues.md).
 
 ## Range patterns
 
@@ -458,7 +475,7 @@ Standalone ranges are ordinary `core::range::Range<T>` values. Whether a `Range<
 
 A bare `..` arm means the portion of the scrutinee domain not covered by the other arms.
 
-For enum matches, it denotes the non-empty set of unmatched variants; for an anonymous enum, the non-empty set of unmatched members.
+For enum matches, it denotes the non-empty set of unmatched variants; for an anonymous enum, the non-empty set of unmatched members. Like an `else`, it covers declared variants only — a tag outside the declared set reaches the panic described under [Invalid tags](#invalid-tags) instead.
 
 For numeric, `bool`, and `char` matches, the uncovered remainder must form one contiguous range. For example, removing only `0` from an integer domain leaves two disjoint ranges, so a bare `..` cannot infer a single range for that remainder:
 

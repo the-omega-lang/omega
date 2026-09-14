@@ -105,9 +105,13 @@ Unrecoverable failure uses the same seam. `core::panic` declares `PanicHandler`,
 
 Nothing in the compiler or `core` picks a panic policy. Panic policy is a platform decision like any other capability, so it lives with the platform package, and it is where the layering earns its keep. `common/hosted/panic.omg` owns the message shape for every hosted target and reaches the console only through `core::platform::StandardError` and termination only through one target-private `root::os::process::panic_exit`; Linux implements that with `exit_group(134)` and Windows with `ExitProcess(134)`. `avr-none` composes none of that and supplies its own handler instead -- interrupts off, then an endless loop -- because a part with no identified serial port has nothing to report on. One gap still takes exactly one glue, so a target chooses by which files it composes, never by a conditional inside a handler.
 
-Deliberately keeping the construction inside the macro rather than behind a core helper function is what keeps `core`'s objects free of any reference to the handler symbol, so a program that never panics needs no panic glue and no extra linkage.
+Deliberately keeping the construction inside the macro rather than behind a core helper function is what keeps `core`'s objects free of any reference to the handler symbol from `panic$` alone.
 
 No allocation, formatting, unwinding, backtrace machinery, runtime registry, or backend intrinsic is involved: the location macros become ordinary literals during macro expansion, and the handler call is an ordinary gap call.
+
+The compiler emits handler calls of its own, for the four runtime invariants described in [`mir-and-codegen.md`](mir-and-codegen.md#runtime-checks). They are built the same way -- a stack-local `PanicInfo`, one gap call, no allocation and no formatting -- and they are ordinary references, so the ordinary consequences apply: an object whose functions dispatch on an enum tag, use `?`, widen an anonymous enum, or call a `never` function references the handler symbol, and a link that retains such a function needs panic glue. Nothing validates that at compile time and nothing fabricates a reference to force it; missing glue is an ordinary undefined symbol at link. A program whose objects reach none of those operations still links with no panic glue at all.
+
+That is a real widening of what references the handler: most of `std` dispatches on `Option`/`Result` tags somewhere. `--gc-sections` is what keeps it from reaching every program, which is one more reason every link line in this repository passes it. A link that deliberately selects only part of a platform -- as `bin/check-platform`'s atomic stress does -- has to supply a handler of its own or exclude the functions that reference one.
 
 ### Atomics as a width capability
 

@@ -3,8 +3,16 @@
 # one `PanicHandler` glue that decides what that means -- print and exit, trap,
 # reset the board, and so on. Core neither allocates, formats, nor terminates.
 #
+# The compiler also reports through this gap, for the runtime invariants it
+# checks (docs/architecture/mir-and-codegen.md). Those calls are built exactly
+# like `panic$`'s and resolve this declaration by identity, so the shapes below
+# are a compiler-facing contract as well as a source-facing one: renaming a
+# field, changing one's type, or changing the handler's signature is a breaking
+# change on both sides.
+#
 # As with every gap, a program that emits no reference to the handler needs no
-# glue for it.
+# glue for it -- but a function that dispatches on an enum tag, uses `?`, widens
+# an anonymous enum, or calls a `never` function does emit one.
 
 # Aliased, not imported: a nested invocation inside `panic$` below resolves in
 # the environment registered for this module, which an `alias` contributes to

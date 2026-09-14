@@ -7,11 +7,12 @@ use crate::ids::{BlockId, LocalId};
 use crate::lower::place::place_align;
 use omega_analyzer::checked::{
     CheckedAnonymousEnumWiden, CheckedBlock, CheckedCoercion, CheckedCoercionStep, CheckedExpr,
-    CheckedExprNode, CheckedMatchArm, CheckedStmt, CheckedTry, CheckedTryDestination,
-    CheckedTrySource, NumberValue,
+    CheckedExprNode, CheckedMatchArm, CheckedMatchRemainder, CheckedStmt, CheckedTry,
+    CheckedTryDestination, CheckedTrySource, NumberValue,
 };
 use omega_analyzer::layout::ANONYMOUS_ENUM_TAG_TYPE;
 use omega_analyzer::resolved_type::ResolvedType;
+use omega_analyzer::runtime_checks::RuntimeCheck;
 use omega_hir::HirId;
 use omega_parser::prelude::{BinaryOp, Span};
 
@@ -21,6 +22,9 @@ impl FunctionLowerer {
         expr: CheckedExprNode,
         destination: BlockDestination,
     ) -> bool {
+        if self.is_current_terminated() {
+            return false;
+        }
         let CheckedExprNode {
             id,
             span,
@@ -34,8 +38,11 @@ impl FunctionLowerer {
                 destination,
             ),
             CheckedExpr::Match(match_expr) => self.lower_match_chain(
+                id,
+                span,
                 match_expr.arms.into_iter(),
                 match_expr.else_branch,
+                match_expr.remainder,
                 destination,
             ),
             CheckedExpr::Codeblock(block) => self.lower_block_into(block, destination),
@@ -51,6 +58,9 @@ impl FunctionLowerer {
         expr: CheckedExprNode,
         result: Option<LocalId>,
     ) {
+        if self.is_current_terminated() {
+            return;
+        }
         let merge = self.new_block();
         let reached = self.lower_control_flow_into(expr, BlockDestination::new(merge, result));
         self.current = merge;
@@ -60,6 +70,9 @@ impl FunctionLowerer {
     }
 
     fn lower_block_into(&mut self, block: CheckedBlock, destination: BlockDestination) -> bool {
+        if self.is_current_terminated() {
+            return false;
+        }
         self.lower_stmts(block.stmts);
         if self.is_current_terminated() {
             return false;
@@ -291,25 +304,49 @@ impl FunctionLowerer {
         r#type: ResolvedType,
         arms: Vec<CheckedMatchArm>,
         else_branch: Option<CheckedBlock>,
+        remainder: CheckedMatchRemainder,
     ) -> MirExprNode {
         let merge = self.new_block();
         let result = self.declare_local(None, r#type);
         let destination = BlockDestination::new(merge, Some(result));
-        let reached = self.lower_match_chain(arms.into_iter(), else_branch, destination);
+        let reached = self.lower_match_chain(
+            id,
+            span,
+            arms.into_iter(),
+            else_branch,
+            remainder,
+            destination,
+        );
         self.finish_merge(merge, reached, result, id, span)
     }
 
+    /// The tail of the arm chain is where a `match` decides what "none of
+    /// these" means. A value match's arms partition their whole domain, so
+    /// nothing representable is left; an enum match's arms cover every
+    /// declared variant, so what is left is a tag the declaration never gave
+    /// a meaning -- a violated invariant the program is asked to report
+    /// rather than to guess a variant for.
     fn lower_match_chain(
         &mut self,
+        id: HirId,
+        span: Span,
         mut arms: std::vec::IntoIter<CheckedMatchArm>,
         else_branch: Option<CheckedBlock>,
+        remainder: CheckedMatchRemainder,
         destination: BlockDestination,
     ) -> bool {
         let Some(arm) = arms.next() else {
             return match else_branch {
                 Some(block) => self.lower_block_into(block, destination),
                 None => {
-                    self.terminate(MirTerminator::Unreachable);
+                    match remainder {
+                        CheckedMatchRemainder::Covered => {
+                            self.terminate(MirTerminator::Unreachable)
+                        }
+                        CheckedMatchRemainder::IllegalEnumTag => {
+                            self.emit_runtime_panic(id, span, RuntimeCheck::EnumTagInMatch)
+                        }
+                    }
                     false
                 }
             };
@@ -359,7 +396,8 @@ impl FunctionLowerer {
         let body_reached = self.lower_block_into(arm.body, destination);
 
         self.current = fail_block;
-        let fail_reached = self.lower_match_chain(arms, else_branch, destination);
+        let fail_reached =
+            self.lower_match_chain(id, span, arms, else_branch, remainder, destination);
         body_reached || fail_reached
     }
 
@@ -386,6 +424,9 @@ impl FunctionLowerer {
         source: MirExprNode,
         variant_map: Vec<usize>,
     ) -> MirExprNode {
+        if self.is_current_terminated() {
+            return self.unreachable_value(id, span, r#type);
+        }
         let ResolvedType::AnonymousEnum {
             shape: source_shape,
             ..
@@ -470,8 +511,7 @@ impl FunctionLowerer {
             self.terminate(MirTerminator::Goto(merge));
             self.current = next;
         }
-        // The source tag is always one of its own canonical indices.
-        self.terminate(MirTerminator::Unreachable);
+        self.emit_runtime_panic(id, span, RuntimeCheck::EnumTagInWiden);
         self.current = merge;
         self.local_expr(result, id, span)
     }
@@ -491,11 +531,12 @@ impl FunctionLowerer {
     }
 
     /// Turns `operand?` into ordinary control flow. The operand is stored
-    /// once and then read for both its tag and its payload; the failure
-    /// variant builds the enclosing function's failure value and enters the
-    /// existing return/defer exit chain; the success variant's payload
-    /// continues into `destination`. Every semantic fact used here was
-    /// already resolved by the analyzer.
+    /// once and its tag read once; the success variant's payload continues
+    /// into `destination`, the failure variant builds the enclosing
+    /// function's failure value and enters the existing return/defer exit
+    /// chain, and a tag that is neither reports the violated invariant before
+    /// either payload is projected. Every semantic fact used here was already
+    /// resolved by the analyzer.
     fn lower_try_into(
         &mut self,
         id: HirId,
@@ -527,28 +568,44 @@ impl FunctionLowerer {
                 tag_type.clone(),
             )),
         };
-        let condition = MirExprNode {
+        let tag = self.materialize_once(tag);
+        let tag_is = |value: NumberValue| MirExprNode {
             id,
             span,
             r#type: ResolvedType::Bool,
             kind: MirExpr::BinaryOp(MirBinaryOp {
                 op: BinaryOp::Eq,
-                left: Box::new(tag),
+                left: Box::new(tag.clone()),
                 right: Box::new(MirExprNode {
                     id,
                     span,
-                    r#type: tag_type,
-                    kind: MirExpr::Number(source.success_tag),
+                    r#type: tag_type.clone(),
+                    kind: MirExpr::Number(value),
                 }),
             }),
         };
+
         let success_block = self.new_block();
-        let failure_block = self.new_block();
+        let not_success = self.new_block();
+        let condition = tag_is(source.success_tag);
         self.terminate(MirTerminator::Branch {
             condition,
             then_block: success_block,
-            else_block: failure_block,
+            else_block: not_success,
         });
+
+        self.current = not_success;
+        let failure_block = self.new_block();
+        let invalid_tag = self.new_block();
+        let condition = tag_is(source.failure_tag);
+        self.terminate(MirTerminator::Branch {
+            condition,
+            then_block: failure_block,
+            else_block: invalid_tag,
+        });
+
+        self.current = invalid_tag;
+        self.emit_runtime_panic(id, span, RuntimeCheck::EnumTagInTry);
 
         self.current = failure_block;
         self.lower_try_failure(id, span, &operand_place, &source, r#try.destination);

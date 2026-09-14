@@ -1,0 +1,26 @@
+# Conformance for `docs/language/enums-and-pattern-matching.md`: a `match`
+# whose arms cover every declared variant still reaches a tag the declaration
+# never gave a meaning. That tag is not silently read as one of the variants;
+# it reports the violated invariant and the program stops.
+import std::io::println;
+
+enum Signal {
+	Ready,
+	Busy,
+}
+
+# An ordinary `void` C function in its own compilation: what is under test is
+# the tag it writes, so it carries no non-return annotation and makes no claim
+# about the enum beyond overwriting one byte of initialized storage.
+foreign(c) corrupt_signal_tag(slot: *mut Signal) => void;
+
+main() => void {
+	mut signal: Signal = Signal::Ready;
+	corrupt_signal_tag(&mut signal);
+	println$("before-match");
+	match signal {
+		Signal::Ready => { println$("ready"); },
+		Signal::Busy => { println$("busy"); },
+	}
+	println$("after-match");
+}

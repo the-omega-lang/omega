@@ -121,6 +121,17 @@ the function exactly as an explicit `return` does, so any already-registered
 `defer` runs. For the same reason `?` is rejected inside a `defer` body, matching
 the existing prohibition on `return` there.
 
+`?` reads the operand's tag once and tests it against both of the two variants
+the type declares. A tag that is neither is not the failure it resembles: it
+reports `invalid enum tag in try operator` through
+`core::panic::PanicHandler` at the operator and the program stops, before either
+payload is projected, before any error conversion, and without running the
+enclosing function's `defer`s. That is the opposite of a legal failure, which is
+an ordinary return and does run them. Converting the error payload can itself be
+an anonymous-enum widening, which carries its own tag check (see
+[`enums-and-pattern-matching.md`](enums-and-pattern-matching.md)) and reports at
+the `?` that consumes it.
+
 ## Boolean operators
 
 `bool` supports eager `&`, `|`, `^`, logical negation `!`, and short-circuit `&&`/`||`:

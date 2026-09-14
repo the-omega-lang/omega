@@ -1,0 +1,31 @@
+# Widening between two anonymous shapes is a real reconstruction: the two
+# canonical member orders are independent, so the source tag selects which
+# destination member to build. A source tag outside its own canonical list
+# selects nothing, and it is rejected before the destination value is built
+# or the payload behind the tag is read.
+import std::io::println;
+
+alias Narrow = enum i32 | bool;
+alias Wide = enum bool | *str | i32;
+
+foreign(c) set_narrow_tag(slot: *mut Narrow, tag: u32) => void;
+
+widen(value: Narrow) => *str {
+	wide: Wide = value;
+	match wide {
+		i32 => "wide-int",
+		bool => "wide-bool",
+		*str => "wide-str",
+	}
+}
+
+main() => void {
+	mut narrow: Narrow = <Narrow>5;
+	println$("legal: ", widen(narrow));
+	# The source shape has two members, so 2 is one past its last tag --
+	# and it is a tag the *destination* shape does have, which a widening
+	# that trusted the incoming value could pass straight through.
+	set_narrow_tag(&mut narrow, 2u32);
+	println$("before-widen");
+	println$("never: ", widen(narrow));
+}

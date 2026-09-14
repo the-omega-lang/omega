@@ -461,6 +461,7 @@ impl<'r> Analyzer<'r> {
                 return_type: (*fn_type.return_type).clone(),
                 body: None,
                 symbol: annotations.symbol.clone(),
+                runtime_checks: None,
             });
         };
         let ((params, checked_body), scope) = self.with_scope(|this| {
@@ -488,6 +489,7 @@ impl<'r> Analyzer<'r> {
             return_type: (*fn_type.return_type).clone(),
             body: Some(checked_body),
             symbol: annotations.symbol.clone(),
+            runtime_checks: None,
         })
     }
 

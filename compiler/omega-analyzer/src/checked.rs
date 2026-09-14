@@ -96,6 +96,9 @@ pub struct CheckedForeignFunctionDef {
     pub return_type: ResolvedType,
     pub body: Option<CheckedBlock>,
     pub symbol: crate::annotations::SymbolPolicy,
+    /// As on [`CheckedFunctionDef`]: a `foreign` *definition* has an ordinary
+    /// Omega body and is checked exactly like one.
+    pub runtime_checks: Option<crate::runtime_checks::FunctionRuntimeChecks>,
 }
 
 impl CheckedForeignFunctionDef {
@@ -150,6 +153,10 @@ pub struct CheckedFunctionDef {
     /// the owner identity its symbol is built from.
     pub method_owner: Option<CheckedMethodOwner>,
     pub naked: bool,
+    /// Present when this body reaches an operation whose runtime invariant is
+    /// checked, and carries the resolved panic support those checks call. See
+    /// [`crate::runtime_checks`].
+    pub runtime_checks: Option<crate::runtime_checks::FunctionRuntimeChecks>,
 }
 
 #[derive(Debug, Clone)]
@@ -394,8 +401,9 @@ impl CheckedTryKind {
     }
 }
 
-/// The operand's resolved shape. `tag_type`/`success_tag` say how to tell the
-/// two variants apart, so no consumer re-derives them from the declaration.
+/// The operand's resolved shape. `tag_type`/`success_tag`/`failure_tag` say
+/// how to tell the two variants apart -- and how to tell either of them from a
+/// tag that is neither -- so no consumer re-derives them from the declaration.
 #[derive(Debug, Clone)]
 pub struct CheckedTrySource {
     pub tag_type: ResolvedType,
@@ -403,6 +411,7 @@ pub struct CheckedTrySource {
     pub success_tag: NumberValue,
     pub success_field: usize,
     pub failure_variant: usize,
+    pub failure_tag: NumberValue,
     /// `Err.error`'s field index and type. `None` for `Option::None`, which
     /// carries no payload.
     pub failure_payload: Option<(usize, ResolvedType)>,
@@ -645,6 +654,21 @@ pub struct CheckedIf {
 pub struct CheckedMatch {
     pub arms: Vec<CheckedMatchArm>,
     pub else_branch: Option<CheckedBlock>,
+    pub remainder: CheckedMatchRemainder,
+}
+
+/// What reaching none of a `match`'s arms means, once analysis has proven
+/// coverage. A value match's arms partition the scrutinee's whole domain, so
+/// nothing representable is left; an enum match's arms cover every declared
+/// variant, so what is left is a tag the declaration gave no meaning. Only
+/// the latter is a violated invariant a running program can still be in.
+///
+/// Consulted only when `else_branch` is `None`: an `else` covers whatever the
+/// arms did not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckedMatchRemainder {
+    Covered,
+    IllegalEnumTag,
 }
 
 #[derive(Debug, Clone)]

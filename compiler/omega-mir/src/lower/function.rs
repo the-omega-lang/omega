@@ -1,6 +1,7 @@
 mod control_flow;
 mod defer;
 mod expr;
+mod panic;
 
 use super::place::place_align;
 use crate::body::{
@@ -14,6 +15,7 @@ use omega_analyzer::checked::{
     CheckedParam, CheckedPlace, CheckedStmt, CheckedWhile,
 };
 use omega_analyzer::resolved_type::ResolvedType;
+use omega_analyzer::runtime_checks::FunctionRuntimeChecks;
 use omega_hir::HirId;
 use omega_parser::prelude::Span;
 use std::collections::HashMap;
@@ -67,6 +69,7 @@ pub(crate) struct FunctionLowerer {
     exit_chain_start: BlockId,
     defer_bodies: HashMap<HirId, CheckedBlock>,
     defer_flag_of: HashMap<HirId, LocalId>,
+    runtime_checks: Option<FunctionRuntimeChecks>,
 }
 
 impl FunctionLowerer {
@@ -76,8 +79,10 @@ impl FunctionLowerer {
         return_type: &ResolvedType,
         fn_id: HirId,
         fn_span: Span,
+        runtime_checks: Option<FunctionRuntimeChecks>,
     ) -> MirBody {
         let mut lowerer = Self::new();
+        lowerer.runtime_checks = runtime_checks;
 
         for param in params {
             lowerer.declare_local(Some(param.id), param.r#type.clone());
@@ -173,6 +178,7 @@ impl FunctionLowerer {
             exit_chain_start: BlockId::from_index(0),
             defer_bodies: HashMap::new(),
             defer_flag_of: HashMap::new(),
+            runtime_checks: None,
         }
     }
 
@@ -263,7 +269,34 @@ impl FunctionLowerer {
         let id = value.id;
         let span = value.span;
         let local = self.declare_local(None, value.r#type.clone());
-        self.assign_local(id, span, local, value);
+        // A terminated block takes no more statements, so the store is
+        // dropped; the read is still returned, because every caller's next
+        // step is to project through it.
+        if !self.is_current_terminated() {
+            self.assign_local(id, span, local, value);
+        }
+        self.local_expr(local, id, span)
+    }
+
+    /// `materialize_once`, but keeping the storage rather than a read of it,
+    /// for a caller that needs the value's address.
+    pub(super) fn materialize_place(&mut self, value: MirExprNode) -> MirPlace {
+        let local = self.declare_local(None, value.r#type.clone());
+        self.assign_local(value.id, value.span, local, value);
+        self.local_place(local)
+    }
+
+    /// A stand-in for an expression in a region the block terminator already
+    /// made unreachable. It is a fresh local of the right type, so it stays
+    /// well-formed wherever a value was expected; every statement boundary
+    /// drops the surrounding expression before it can be emitted.
+    pub(super) fn unreachable_value(
+        &mut self,
+        id: HirId,
+        span: Span,
+        r#type: ResolvedType,
+    ) -> MirExprNode {
+        let local = self.declare_local(None, r#type);
         self.local_expr(local, id, span)
     }
 
@@ -425,6 +458,9 @@ impl FunctionLowerer {
                 CheckedAsmDescriptorKind::Clobber { register } => clobbers.push(register),
             }
         }
+        if self.is_current_terminated() {
+            return;
+        }
         self.push_stmt(MirExprNode {
             id: asm.id,
             span: asm.span,
@@ -505,6 +541,9 @@ impl FunctionLowerer {
         assignment: CheckedAssignment,
     ) {
         let target = self.lower_place(assignment.target);
+        if self.is_current_terminated() {
+            return;
+        }
         if is_control_flow_expr(&assignment.value.kind)
             && let Some(local) = bare_local(&target)
         {
@@ -691,7 +730,14 @@ mod tests {
     }
 
     fn lower_void_body(body: CheckedBlock) -> MirBody {
-        FunctionLowerer::lower(&[], body, &ResolvedType::Void, hir_id(100), Span::default())
+        FunctionLowerer::lower(
+            &[],
+            body,
+            &ResolvedType::Void,
+            hir_id(100),
+            Span::default(),
+            None,
+        )
     }
 
     fn assert_entry_emits_call(body: &MirBody) {

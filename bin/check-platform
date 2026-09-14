@@ -175,8 +175,11 @@ stress_objects = WORK.join("stress-objects")
 stress_binary = WORK.join("atomic-stress")
 stress_built = false
 
+# `core` only: the package reaches the atomic gaps through `core`'s own
+# declarations, and it supplies the one glue its generated panic check needs
+# itself, so registering the platform here would give that gap two glues.
 check "the stress package compiles" do
-  imports = { "core" => ROOT.join("runtime", "core"), "plat" => ROOT.join("runtime", "plat", "target", HOST) }
+  imports = { "core" => ROOT.join("runtime", "core") }
   output, status = compile(ROOT.join("checks", "atomic_stress"), HOST, stress_objects, imports: imports)
   status.success? ? nil : output
 end
@@ -217,6 +220,43 @@ check "eight threads agree on every width's final value" do
   next "exited with #{status.exitstatus}: #{err}" unless status.success?
 
   out == expected ? nil : "stdout was:\n#{out}"
+end
+puts
+
+# --- a generated runtime check is ordinary linkage --------------------------
+
+puts "#{HOST}: the panic gap a generated check references"
+panic_objects = WORK.join("generated-panic-objects")
+panic_compiled = false
+
+# No glue anywhere in this compilation, and it still compiles: nothing was
+# added that requires a platform to be present before an object can be built.
+check "a package whose check references the panic gap compiles with no glue" do
+  imports = { "core" => ROOT.join("runtime", "core") }
+  output, status = compile(ROOT.join("checks", "generated_panic"), HOST, panic_objects, imports: imports)
+  panic_compiled = status.success?
+  status.success? ? nil : output
+end
+
+check "the reference it emits is an ordinary undefined symbol" do
+  next "not compiled" unless panic_compiled
+
+  undefined = symbols(*objects(panic_objects)).lines.select { |line| line.match?(/^\s*U /) }
+  handler = undefined.select { |line| line.include?("PanicHandler") }
+  handler.empty? ? "no undefined PanicHandler reference:\n#{undefined.join}" : nil
+end
+
+check "linking it without glue fails at the handler symbol" do
+  next "not compiled" unless panic_compiled
+
+  _out, err, status = run(
+    "cc", "-nostdlib", "-static", "-no-pie", "-e", "omega_generated_panic_classify",
+    *objects(panic_objects), *objects(ARTIFACTS.join(HOST, "core")),
+    "-o", WORK.join("generated-panic").to_s
+  )
+  next "the link unexpectedly succeeded" if status.success?
+
+  err.include?("PanicHandler") ? nil : "the failure did not name the handler:\n#{err}"
 end
 puts
 

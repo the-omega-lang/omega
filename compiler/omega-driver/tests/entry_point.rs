@@ -38,6 +38,26 @@ impl TestPackage {
         .expect("construct driver")
         .compile(&[Ident("main".to_string())], Target::DEFAULT)
     }
+
+    /// The same compilation with the real `core` registered, for a case whose
+    /// body reaches a compiler-generated runtime check and therefore needs
+    /// `core`'s panic contract.
+    fn compile_with_core(&self) -> Result<omega_driver::CompiledProgram, Vec<CompileError>> {
+        Driver::new(
+            self.0.clone(),
+            None,
+            vec![ExternRoot {
+                name: Ident("core".to_string()),
+                dir: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../runtime/core")
+                    .canonicalize()
+                    .expect("runtime/core exists"),
+            }],
+            Target::DEFAULT,
+        )
+        .expect("construct driver with the real core extern")
+        .compile(&[Ident("main".to_string())], Target::DEFAULT)
+    }
 }
 
 impl Drop for TestPackage {
@@ -80,7 +100,7 @@ fn never_main_is_accepted() {
         "#,
     );
     package
-        .compile()
+        .compile_with_core()
         .expect("`main() => never` must be accepted");
 }
 

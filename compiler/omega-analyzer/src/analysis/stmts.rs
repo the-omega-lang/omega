@@ -624,6 +624,10 @@ impl<'r> Analyzer<'r> {
                     kind: CheckedExpr::Match(CheckedMatch {
                         arms: vec![none_arm, some_arm],
                         else_branch: None,
+                        // The desugaring dispatches on a real `Option` tag, so
+                        // an invalid one is exactly the same violation a
+                        // written `match` on it would find.
+                        remainder: CheckedMatchRemainder::IllegalEnumTag,
                     }),
                 });
 

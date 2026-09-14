@@ -113,6 +113,17 @@ impl<'ctx> Codegen<'ctx> {
         function.set_call_conventions(crate::abi::llvm_calling_convention(
             declaration.fn_type.calling_convention,
         ));
+        if *declaration.fn_type.return_type == ResolvedType::Never {
+            // A call to this function is followed by a guard that reports an
+            // unexpected return (see `guard_never_call` in omega-mir). LLVM
+            // recognizes some C library names as non-returning and would
+            // delete that guard on the strength of the name alone, which is
+            // an assumption about the callee rather than a fact about this
+            // program. `nobuiltin` keeps the guard a real check. Nothing here
+            // adds `noreturn`: the Omega declaration is the contract under
+            // test, not evidence.
+            self.add_function_enum_attribute(function, "nobuiltin");
+        }
         self.functions.insert(declaration.id, function);
     }
 

@@ -1,0 +1,1 @@
+panicked at tests/t42_invalid_anonymous_enum_widen/t42_invalid_anonymous_enum_widen.omg:14:18: invalid enum tag in anonymous-enum widening

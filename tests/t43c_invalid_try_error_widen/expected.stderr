@@ -1,0 +1,1 @@
+panicked at tests/t43c_invalid_try_error_widen/t43c_invalid_try_error_widen.omg:18:14: invalid enum tag in anonymous-enum widening

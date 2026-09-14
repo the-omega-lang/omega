@@ -199,7 +199,7 @@ The language restrictions on where defer is currently allowed are semantic-analy
 
 ### try (`?`)
 
-`CheckedExpr::Try` is where a source-semantic construct becomes CFG, and MIR is the only stage that does it: there is no `MirExpr::Try` and no try terminator. The operand is lowered and materialized into a local so its tag and its payload are two reads of one evaluation, the analyzer-selected success tag drives an ordinary `Branch`, the success arm projects the payload into the current or a fresh `BlockDestination`, and the failure arm builds the enclosing function's failure value and enters the same return/exit chain `return` uses — which is what makes a failing `?` run registered defers.
+`CheckedExpr::Try` is where a source-semantic construct becomes CFG, and MIR is the only stage that does it: there is no `MirExpr::Try` and no try terminator. The operand is lowered and materialized into a local so its tag and its payload are two reads of one evaluation, the analyzer-selected success and failure tags drive two ordinary `Branch`es, the success arm projects the payload into the current or a fresh `BlockDestination`, and the failure arm builds the enclosing function's failure value and enters the same return/exit chain `return` uses — which is what makes a failing `?` run registered defers. A tag that is neither reaches the generated panic described under [Runtime checks](#runtime-checks), before either projection.
 
 MIR reads the analyzer's decisions and makes none of its own: it does not discover `Option`/`Result` by spelling, re-derive variant order, or type-check the propagated error. A `Result` error conversion is replayed from the stored `CheckedCoercion` steps.
 
@@ -209,7 +209,20 @@ MIR reads the analyzer's decisions and makes none of its own: it does not discov
 
 ### `never`
 
-Expressions typed `never` have no usable fallthrough result. MIR emits the expression for its effects and then terminates unreachable continuation rather than inventing a value for later blocks.
+Expressions typed `never` have no usable fallthrough result. MIR emits the expression for its effects and then terminates unreachable continuation rather than inventing a value for later blocks. A *call* whose declared result is `never` is stronger than that: it is emitted, and the block ends immediately after it with the generated panic below, so nothing the surrounding expression would have done with the value it never produced is emitted either.
+
+## Runtime checks
+
+Four operations depend on a runtime invariant a program can still violate: an enum or anonymous-enum `match` whose tag is outside the declared domain, an anonymous-enum widening whose source tag is, a `?` whose operand tag is neither of the two the type declares, and a call whose declared result is `never` that returns anyway. Each of those reports through `core::panic::PanicHandler` instead of falling into an LLVM `unreachable`, which is an assumption rather than a check.
+
+Ownership is split so that no phase re-derives another's decision:
+
+- **`omega-analyzer`** decides *which* operations are checked. `CheckedMatch::remainder` distinguishes a value match's genuinely covered remainder from an enum match's illegal-tag remainder; `CheckedTrySource` carries both tags; `runtime_checks::scan_block` finds the candidate sites in a final checked body.
+- **`omega-driver`** binds them to `core`. `compile/runtime_checks.rs` resolves `core::panic::PanicInfo` and the `PanicHandler::panic` gap once per compilation through the ordinary resolver — by declaration identity, never by symbol or spelling — validates the field names/types and the `*PanicInfo` / `=> never` signature, and attaches the result to each affected `CheckedFunctionDef` as `FunctionRuntimeChecks`, together with the source file its spans index. Missing or incompatible support is a normal source-located diagnostic. This runs after the diagnostic barrier and before `collect_extern_functions`, so the generated reference to the gap is in the declaration catalog like any other.
+- **`omega-mir`** emits. `lower/function/panic.rs` builds a stack-local `PanicInfo`, takes its address, calls the resolved gap function, and terminates `Unreachable`. There is no new `MirExpr`, no platform intrinsic, and no backend-specific panic lowering; the reported file/line/column come from the attached source, so MIR resolves no names and reads no source of its own.
+- **`omega-codegen`** translates an ordinary call. It adds no `noreturn` — a `never` declaration is the contract under test, not evidence — and marks guarded calls `nobuiltin` so a recognized C library name cannot delete the guard on the strength of the name.
+
+`MirTerminator::Unreachable` therefore means one of four structural things, never "an invalid enum tag or an unexpected return is assumed not to happen": a merge block with no predecessor, the exit of a loop with no reachable break, the remainder of a value `match` whose arms partition the scrutinee's whole domain, or the continuation after a call that is trusted to terminate — the panic handler's own. The handler is identified by the resolved gap declaration, so a program's own function named `panic` is an ordinary guarded call. (The value-match remainder still rests on a `bool`/`char` holding a value of its own type, which is [not itself checked](../issues/known-issues.md).)
 
 ## Final symbols, linkage, and visibility in MIR
 

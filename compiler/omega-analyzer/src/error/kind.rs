@@ -574,6 +574,12 @@ pub enum AnalysisErrorKind {
     NakedInlineConflict,
     InvalidNakedBody,
     AsmRegInNakedFunction,
+    /// A body reaches an operation whose runtime invariant is checked, but
+    /// `core`'s panic contract is missing or does not match what the
+    /// generated call needs.
+    RuntimeCheckSupportUnavailable {
+        detail: String,
+    },
 }
 
 impl fmt::Display for AnalysisErrorKind {
@@ -1442,6 +1448,9 @@ impl fmt::Display for AnalysisErrorKind {
             ),
             Self::AsmRegInNakedFunction => {
                 write!(f, "'reg' is not allowed in a '@naked' function's 'asm'")
+            }
+            Self::RuntimeCheckSupportUnavailable { detail } => {
+                write!(f, "cannot emit this function's runtime checks: {detail}")
             }
         }
     }

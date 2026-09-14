@@ -56,6 +56,7 @@ impl<'r> Analyzer<'r> {
             primitive_target: None,
             method_owner: None,
             naked: annotations.naked,
+            runtime_checks: None,
         })
     }
 
@@ -104,6 +105,7 @@ impl<'r> Analyzer<'r> {
             primitive_target: None,
             method_owner: None,
             naked: true,
+            runtime_checks: None,
         })
     }
 

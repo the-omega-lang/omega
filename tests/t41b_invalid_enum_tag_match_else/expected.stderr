@@ -1,0 +1,1 @@
+panicked at tests/t41b_invalid_enum_tag_match_else/t41b_invalid_enum_tag_match_else.omg:19:5: invalid enum tag in match
