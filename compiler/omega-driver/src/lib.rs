@@ -21,6 +21,7 @@ use diagnostics::Diagnostics;
 use items::ItemQueries;
 use modules::ModuleStore;
 use omega_analyzer::Target;
+use omega_analyzer::compiler_definitions::CompilerDefinitions;
 use omega_parser::prelude::Ident;
 use omega_parser::prelude::MacroDefinitionStmt;
 use primitives::Primitives;
@@ -46,15 +47,29 @@ pub struct Driver {
     /// concrete generic instantiation reads the enclosing entry to name the
     /// use that demanded it.
     analysis_stack: Vec<(ModulePath, omega_analyzer::analysis::AnalysisSite)>,
-    target: Target,
+    /// The target and compiler definitions every source of this compilation
+    /// is read with. It is fixed at construction: a cache populated under one
+    /// configuration would be wrong under any other.
+    definitions: CompilerDefinitions,
 }
 
 impl Driver {
+    /// A driver with no compiler definitions, for a compilation that selects
+    /// nothing beyond its target.
     pub fn new(
         root: PathBuf,
         root_name: Option<Ident>,
         externs: Vec<ExternRoot>,
         target: Target,
+    ) -> Result<Self, Vec<CompileError>> {
+        Self::new_with_definitions(root, root_name, externs, CompilerDefinitions::new(target))
+    }
+
+    pub fn new_with_definitions(
+        root: PathBuf,
+        root_name: Option<Ident>,
+        externs: Vec<ExternRoot>,
+        definitions: CompilerDefinitions,
     ) -> Result<Self, Vec<CompileError>> {
         Ok(Self {
             roots: ModuleRoots::new(root, root_name, externs)?,
@@ -67,7 +82,11 @@ impl Driver {
             conformances: Conformances::default(),
             prelude_macros: None,
             analysis_stack: Vec::new(),
-            target,
+            definitions,
         })
+    }
+
+    pub(crate) fn target(&self) -> Target {
+        self.definitions.target()
     }
 }

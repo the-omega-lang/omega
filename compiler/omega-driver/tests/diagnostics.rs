@@ -38,7 +38,7 @@ impl TestPackage {
     fn result(&self) -> Result<CompiledProgram, Vec<CompileError>> {
         Driver::new(self.0.clone(), None, vec![], Target::DEFAULT)
             .expect("construct driver")
-            .compile(&[Ident("main".into())], Target::DEFAULT)
+            .compile(&[Ident("main".into())])
     }
 
     fn expect_errors(&self) -> Vec<CompileError> {

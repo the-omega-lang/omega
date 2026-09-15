@@ -105,6 +105,23 @@ class TestModule
   def expected_status_path
     @path.join("expected.status")
   end
+
+  def definitions_path
+    @path.join("compiler.definitions")
+  end
+
+  # One raw `name[=literal]` per non-empty line, passed to this case's own
+  # compilation as `-D` options in the order written. There is no shell
+  # parsing and no comment syntax: a line is exactly one definition, and a
+  # repeated name stays repeated so a case can assert the diagnostic.
+  def compiler_definitions
+    return [] unless definitions_path.file?
+
+    definitions_path.read
+      .split("\n")
+      .reject { |line| line.strip.empty? }
+      .map { |line| "-D#{line}" }
+  end
 end
 
 class TestResult
@@ -246,6 +263,7 @@ class TestRunner
       *OMGC_IMPORTS,
       "--target=#{HOST_TARGET}",
       "-O#{@opt_level}",
+      *test.compiler_definitions,
       "-o", objects_dir.to_s
     )
 

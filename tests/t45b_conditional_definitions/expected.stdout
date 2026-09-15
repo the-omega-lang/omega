@@ -1,0 +1,5 @@
+bare: bare
+numbers: number wide low
+text: string char bytes
+other: float mask default
+rounding: rounded

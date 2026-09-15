@@ -67,6 +67,23 @@ pub enum AliasTarget {
 pub struct ItemNode {
     pub item: Item,
     pub span: Span,
+    /// `@cond(...)` annotations written on this item, still unevaluated. They
+    /// decide whether the item exists at all, so whoever evaluates them
+    /// removes the item or consumes the conditions before publishing the
+    /// syntax tree; nothing downstream of that ever sees a non-empty vector.
+    pub conditions: Vec<AnnotationNode>,
+}
+
+impl ItemNode {
+    /// An item that carries no condition of its own -- syntax produced by a
+    /// transformation of an already-evaluated tree.
+    pub fn unconditional(item: Item, span: Span) -> Self {
+        Self {
+            item,
+            span,
+            conditions: Vec::new(),
+        }
+    }
 }
 
 /// `foreign name : Type;` -- binds an external symbol. Any function

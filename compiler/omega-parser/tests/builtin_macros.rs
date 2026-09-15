@@ -29,7 +29,12 @@ fn expand_at(
         &module_path(path),
         file,
         &mut macros::ExpansionState::default(),
+        &mut |_: &mut omega_parser::prelude::ItemNode| Ok::<bool, std::convert::Infallible>(true),
     )
+    .map_err(|failure| match failure {
+        macros::ExpansionFailure::Macro(error) => error,
+        macros::ExpansionFailure::Filter(never) => match never {},
+    })
 }
 
 fn expand_builtins(source: &str) -> (SourceFile, SourceModule) {

@@ -14,8 +14,22 @@ fn symbol_annotation(args: Vec<omega_hir::HirAnnotationArg>) -> omega_hir::HirAn
     annotation("symbol", args)
 }
 
+fn expr(kind: omega_hir::AnnotationExprKind) -> omega_hir::HirAnnotationValue {
+    omega_hir::HirAnnotationValue {
+        kind,
+        span: sp(),
+        origin: Default::default(),
+    }
+}
+
 fn ident_value(name: &str) -> omega_hir::HirAnnotationValue {
-    omega_hir::HirAnnotationValue::Ident(Ident(name.into()))
+    expr(omega_hir::AnnotationExprKind::Name(Ident(name.into())))
+}
+
+fn string_value(text: &str) -> omega_hir::HirAnnotationValue {
+    expr(omega_hir::AnnotationExprKind::Literal(
+        omega_hir::AnnotationLiteral::Str(text.into()),
+    ))
 }
 
 /// `foreign` is already the statement that a symbol comes from, or is meant
@@ -83,7 +97,7 @@ fn an_explicit_symbol_annotation_overrides_the_foreign_default() {
 
     let named = symbol_annotation(vec![omega_hir::HirAnnotationArg::KeyValue(
         Ident("name".into()),
-        omega_hir::HirAnnotationValue::StrLiteral("raw_symbol".into()),
+        string_value("raw_symbol"),
     )]);
     let resolved = crate::annotations::resolve(
         &mut a,
@@ -109,8 +123,8 @@ fn an_explicit_symbol_annotation_overrides_the_foreign_default() {
 fn export_alone_keeps_the_item_naming_default() {
     let mut resolver = NoResolver;
     let mut a = analyzer(&mut resolver);
-    let exported = symbol_annotation(vec![omega_hir::HirAnnotationArg::Ident(Ident(
-        "export".into(),
+    let exported = symbol_annotation(vec![omega_hir::HirAnnotationArg::Positional(ident_value(
+        "export",
     ))]);
     let resolved = crate::annotations::resolve(
         &mut a,

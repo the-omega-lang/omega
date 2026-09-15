@@ -49,7 +49,7 @@ fn artifacts_for(files: &[(&str, &str)], target: Target) -> Vec<(String, String)
     let package = TestPackage::new(files);
     let program = match Driver::new(package.0.clone(), None, Vec::<ExternRoot>::new(), target)
         .expect("construct driver")
-        .compile(&[Ident("main".to_string())], target)
+        .compile(&[Ident("main".to_string())])
     {
         Ok(program) => program,
         Err(errors) => panic!("expected this to compile, got: {errors:#?}"),

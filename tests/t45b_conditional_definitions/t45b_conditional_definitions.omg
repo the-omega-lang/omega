@@ -1,0 +1,60 @@
+import std::io::println;
+
+# `-Denabled` with no value defines a boolean truth.
+@cond(def::enabled)
+bare_label() => *str { return "bare"; }
+
+@cond(not(def::enabled))
+bare_label() => *str { return "missing"; }
+
+# An unsuffixed literal takes the definition's established type, so this
+# comparison is exact even though `count` is an `i32` and `wide` a `u64`.
+@cond(equals(def::count, 123))
+number_label() => *str { return "number"; }
+
+@cond(equals(def::wide, 18446744073709551615))
+wide_label() => *str { return "wide"; }
+
+@cond(equals(def::low, -128))
+low_label() => *str { return "low"; }
+
+# A value keeps the kind it was written with: a string is not a character,
+# and a byte string is neither.
+@cond(equals(def::label, "release build"))
+string_label() => *str { return "string"; }
+
+@cond(equals(def::letter, 'x'))
+char_label() => *str { return "char"; }
+
+@cond(equals(def::raw, b"bytes"))
+bytes_label() => *str { return "bytes"; }
+
+@cond(all(greater(def::ratio, 1.0), less_equal(def::ratio, 1.5)))
+float_label() => *str { return "float"; }
+
+# This decimal lies just above an f32 midpoint; rounding through f64 loses it.
+@cond(all(
+    greater(def::midpoint, 1.0f32),
+    greater(1.000000059604644775390626f32, 1.0f32),
+    equals(def::midpoint, 1.00000011920928955078125f32),
+))
+rounded_label() => *str { return "rounded"; }
+
+# A base and a suffix survive the command line unchanged.
+@cond(in(def::mask, &[0, 255]))
+mask_label() => *str { return "mask"; }
+
+# A definition that was never supplied is false where a boolean is expected.
+@cond(def::never_supplied)
+absent_label() => *str { return "absent"; }
+
+@cond(not(def::never_supplied))
+absent_label() => *str { return "default"; }
+
+main() => void {
+	println$("bare: ", bare_label());
+	println$("numbers: ", number_label(), " ", wide_label(), " ", low_label());
+	println$("text: ", string_label(), " ", char_label(), " ", bytes_label());
+	println$("other: ", float_label(), " ", mask_label(), " ", absent_label());
+	println$("rounding: ", rounded_label());
+}

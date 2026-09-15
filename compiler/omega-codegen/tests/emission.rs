@@ -47,7 +47,7 @@ impl TestPackage {
             Target::DEFAULT,
         )
         .expect("construct driver")
-        .compile(&[Ident("main".to_string())], Target::DEFAULT)
+        .compile(&[Ident("main".to_string())])
         {
             Ok(program) => program,
             Err(errors) => panic!("expected this to compile, got: {errors:#?}"),

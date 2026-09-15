@@ -3,13 +3,14 @@ use crate::{Driver, ModulePath};
 use indexmap::IndexMap;
 use indexmap::map::Entry;
 use omega_analyzer::analysis::{AnalysisSite, item_id_span, item_name};
+use omega_analyzer::annotation_eval::{ConditionError, item_is_enabled};
 use omega_analyzer::annotations::{self, ItemKind};
 use omega_analyzer::error::{AnalysisError, AnalysisErrorKind};
 use omega_analyzer::generics::GenericSubstitution;
 use omega_analyzer::resolver::ResolveError;
 use omega_diagnostics::{SourceFile, SourceId, SourceRegistry, Span};
 use omega_hir::{HirGenericParam, HirId, HirItem, HirModule, ModuleId};
-use omega_parser::macros::MacroError;
+use omega_parser::macros::{ExpansionFailure, MacroError};
 use omega_parser::prelude::{
     AliasItem, AliasTarget, Ident, ImportLeaf, Item, ParseError, Path, PathAnchor, SourceModule,
 };
@@ -58,6 +59,7 @@ pub(crate) struct ImportEntry {
 pub(crate) enum LoadFailure {
     Parse(Vec<ParseError>),
     MacroExpansion(MacroError),
+    Condition(ConditionError),
     Compile(CompileError),
 }
 
@@ -207,7 +209,26 @@ impl Driver {
                 message: "the module has syntax errors".into(),
             }
         })?;
-        let ast = Rc::new(ast);
+        // Conditions are evaluated before the tree is published, so macro
+        // binding, name claiming, and every later phase only ever see the
+        // declarations this configuration selected.
+        let mut nodes = Vec::with_capacity(ast.nodes.len());
+        for mut node in ast.nodes {
+            match item_is_enabled(&self.definitions, &mut node) {
+                Ok(true) => nodes.push(node),
+                Ok(false) => {}
+                Err(error) => {
+                    self.modules
+                        .failures
+                        .insert(path.to_vec(), LoadFailure::Condition(error));
+                    return Err(ResolveError::LoadFailed {
+                        path: path.to_vec(),
+                        message: "a condition could not be evaluated".into(),
+                    });
+                }
+            }
+        }
+        let ast = Rc::new(SourceModule { nodes });
         self.modules.asts.insert(path.to_vec(), ast.clone());
         Ok(ast)
     }
@@ -591,17 +612,26 @@ impl Driver {
                     }
                 })?;
                 let source = self.modules.source_text(path);
+                let definitions = &self.definitions;
+                // Generated items are filtered as they appear, so a false one
+                // never has its body expanded, its macros looked up, or its
+                // name claimed.
+                let mut filter =
+                    |node: &mut omega_parser::prelude::ItemNode| item_is_enabled(definitions, node);
                 let ast = omega_parser::macros::expand_with_origins(
                     (*ast).clone(),
                     &macros,
                     path,
                     source.as_deref(),
                     &mut self.modules.macro_expansions,
+                    &mut filter,
                 )
                 .map_err(|e| {
-                    self.modules
-                        .failures
-                        .insert(path.to_vec(), LoadFailure::MacroExpansion(e));
+                    let failure = match e {
+                        ExpansionFailure::Macro(error) => LoadFailure::MacroExpansion(error),
+                        ExpansionFailure::Filter(error) => LoadFailure::Condition(error),
+                    };
+                    self.modules.failures.insert(path.to_vec(), failure);
                     ResolveError::LoadFailed {
                         path: path.to_vec(),
                         message: "macro expansion failed".into(),
@@ -647,9 +677,26 @@ impl Driver {
                     definition,
                 }
             }
+            Some(LoadFailure::Condition(error)) => {
+                let definition = self.condition_macro_definition(&error);
+                CompileError::Condition {
+                    module: module.to_vec(),
+                    error,
+                    definition,
+                }
+            }
             Some(LoadFailure::Compile(error)) => error,
             None => CompileError::Resolve { error, importer },
         }
+    }
+
+    /// The declaration of the macro that authored a condition, when one did.
+    fn condition_macro_definition(
+        &self,
+        error: &ConditionError,
+    ) -> Option<omega_diagnostics::SourceSpan> {
+        let authorship = self.modules.authorship(error.origin)?;
+        self.site(&authorship.defining_module, authorship.definition)
     }
 
     pub fn source_id(&self, module: &[Ident]) -> Option<SourceId> {

@@ -18,20 +18,27 @@ raw_add(a: i32, b: i32) => i32 { a + b }
 
 ```ebnf
 annotation = "@", identifier, [ "(", [ arg, { ",", arg } ], ")" ] ;
-arg        = identifier | identifier, "=", value ;
-value      = decimal-integer | "sizeof", "<", type, ">" | string-literal | identifier ;
+arg        = value | identifier, "=", value ;
+value      = literal
+           | identifier
+           | identifier, "::", identifier
+           | identifier, "(", [ value, { ",", value }, [ "," ] ], ")"
+           | "&", "[", [ value, { ",", value }, [ "," ] ], "]"
+           | "sizeof", "<", type, ">" ;
+literal    = boolean | [ "-" ], number | character | string | byte-string ;
 ```
 
 Bare `@name` and `@name()` both carry zero arguments.
 
-An identifier value is annotation syntax, not an expression and not a name lookup: it is the written word, and each annotation decides which words it accepts. `sizeof` followed by `<` is still the size form; anywhere else it is an ordinary identifier.
+One grammar serves every annotation; which forms carry meaning is each annotation's own decision, and an annotation rejects the forms it has no meaning for. An identifier value is annotation syntax, not an expression and not a name lookup: it is the written word. A nested call or list is likewise not an Omega call or array -- no ordinary Omega call, array, or argument list gains a trailing comma from this grammar. `sizeof` followed by `<` is still the size form; anywhere else it is an ordinary identifier.
 
-Recognized annotations are `layout`, `inline`, `naked`, `suppress`, and `symbol`. Duplicate use of the same annotation on one declaration is an error. Unknown annotation names are errors.
+Recognized annotations are `cond`, `layout`, `inline`, `naked`, `suppress`, and `symbol`. Duplicate use of the same annotation on one declaration is an error. Unknown annotation names are errors.
 
 ## Applicability
 
 | Annotation | Allowed declarations |
 |---|---|
+| `@cond` | every top-level declaration, and only a top-level one |
 | `@layout` | `struct`, `enum` |
 | `@inline` | functions/methods |
 | `@naked` | functions/methods, subject to restrictions below |
@@ -39,6 +46,90 @@ Recognized annotations are `layout`, `inline`, `naked`, `suppress`, and `symbol`
 | `@symbol` | functions/methods, module-level storage bindings, `foreign` bindings/functions, subject to restrictions below |
 
 Other item kinds do not acquire an annotation meaning merely because the generic `@...` syntax exists.
+
+## `@cond(condition)`
+
+`@cond` decides whether a top-level declaration exists at all in this compilation.
+
+```omega
+@cond(def::small_build)
+exposed buffer_bytes : usize = 256;
+
+@cond(not(def::small_build))
+exposed buffer_bytes : usize = 65536;
+
+@cond(all(target_freestanding, in(target_arch, &["thumbv7em", "riscv32"])))
+exposed reset_handler() => never { ... }
+```
+
+A false condition removes the declaration before anything else looks at it. A removed declaration claims no name, adds no overload, resolves no import or alias, registers no primitive, conformance, or glue, is never signature- or body-checked, is never instantiated, and reaches no emitted artifact. Two declarations of one name are therefore allowed when their conditions are mutually exclusive; two *enabled* declarations of one name collide exactly as they always would.
+
+This is a selection, not an escape from the grammar. The whole physical source is still lexed and parsed, so disabled source must be well formed, and a declaration's own place in the grammar still applies.
+
+`@cond` takes exactly one positional condition. Bare `@cond`, `@cond()`, a named argument, more than one argument, and a second `@cond` on one declaration are all errors, whatever the conditions evaluate to.
+
+### Where a condition is allowed
+
+A condition selects a whole declaration, so it is written on one. A condition on a container selects the container and everything it contains.
+
+It is **not** accepted on a member function, field, enum variant, parameter, entry of a `foreign` block, statement, or expression, and a misplaced one is rejected by the grammar -- including inside a generic declaration that is never instantiated.
+
+### Compiler definitions
+
+A condition reads two namespaces of values, and no others:
+
+- `def::name` -- a definition supplied to this compilation, typically by `omgc -Dname[=literal]` (see [`../guide/compiler-cli.md`](../guide/compiler-cli.md)).
+- a bare `name` -- a compiler builtin describing the compilation itself.
+
+| Builtin | Type | Value |
+|---|---|---|
+| `target_os` | string | `none`, `linux`, `macos`, `windows` |
+| `target_arch` | string | `x86_64`, `x86`, `armv7`, `thumbv7em`, `aarch64`, `riscv32`, `riscv64`, `avr` |
+| `target_pointer_width` | `u32` | `16`, `32`, `64` |
+| `target_freestanding` | boolean | whether the target has no operating system |
+
+Builtins describe the **selected target**, never the host. They are their own namespace: a definition of the same spelling defines `def::target_os` and never replaces `target_os`. An unknown bare name is an error -- a misspelled builtin is not silently false.
+
+Neither namespace takes part in ordinary name resolution: a definition is not a binding, not a `comp` value, not importable, not aliasable, not shadowable, and not visible to any expression. `def::` is the only qualification a condition accepts; any other path is an error.
+
+One configuration applies to every source one invocation reads, including external packages. Separate invocations that share declarations or an ABI must be given compatible definitions; nothing in the emitted artifact records which configuration produced it.
+
+### Operators
+
+| Form | Contract |
+|---|---|
+| `true`, `false`, a boolean builtin, `def::flag` | a boolean condition on its own |
+| `not(condition)` | exactly one boolean operand |
+| `all(condition, ...)` | zero or more boolean operands; empty `all()` is true |
+| `any(condition, ...)` | zero or more boolean operands; empty `any()` is false |
+| `equals(value, value)` | exactly two comparable values; inequality is `not(equals(...))` |
+| `less`, `less_equal`, `greater`, `greater_equal` | exactly two numbers of the same family |
+| `in(value, &[value, ...])` | a value and a literal list; an empty list is false |
+
+Every operator yields a boolean, so a call is also usable as a comparison or membership operand. `&[...]` is a membership-list spelling with no allocation, address, or slice meaning; there is no other list spelling, no indexing, no nested list, and no list-valued definition. Unknown operator names are errors.
+
+### Absence, and where it means false
+
+A **boolean-expected position** is the argument of `@cond`, `not`, `all`, or `any`. Only there does a definition that was never supplied read as `false`. A definition that *was* supplied with a value of another kind is an error there: nothing converts a value to a truth.
+
+Every other operand is a **value position**, and a definition named there must exist -- including in `equals(def::flag, false)`. Using a definition as a boolean somewhere does not establish a type for it anywhere else; there is no cross-declaration inference and no presence operator.
+
+### Evaluation
+
+Operands are checked left to right, and **every** operand is checked, even one that could not change the answer: `any(true, equals(def::missing, 123))` and `all(false, bad_call())` are both errors. Once an outer condition is valid and false, the declaration is discarded without any further inspection of what it contains.
+
+Comparison is by kind:
+
+- Booleans, characters, strings, and byte strings compare by value within their own kind; strings and byte strings compare decoded contents, and a string is never equal to a byte string.
+- Integers compare mathematical values across widths and signedness, without wrapping and without converting through a float.
+- Floats compare values rounded to their declared width, with an `f32` promoted exactly to `f64`; `0.0` and `-0.0` are equal.
+- An integer never compares to a float, and no other mixed-kind comparison is allowed.
+
+An unsuffixed number takes its counterpart's established numeric type when the two are compatible, in either operand order, and otherwise Omega's ordinary literal defaults (`i32`, `f32`). In a membership test the checked value supplies that context to the list; the list never supplies it to the value. A supplied definition keeps the type it was defined with. These rules govern condition evaluation only -- they are not Omega's expression coercions.
+
+### Ordering
+
+A condition is evaluated before macro definitions are bound and before any semantic registration. A macro may generate conditions, and a generated declaration is filtered before its own body or invocations are expanded, so a false generated declaration never resolves a macro name of its own. A condition cannot invoke a macro, and no phase after filtering can observe that a declaration was ever written.
 
 ## `@layout(pack = n, align = n)`
 

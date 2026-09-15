@@ -1,4 +1,5 @@
 use omega_analyzer::Target;
+use omega_analyzer::compiler_definitions::RawDefinition;
 use omega_codegen::{EmitKind, OptLevel};
 use omega_diagnostics::{BOLD, CYAN, paint};
 use omega_driver::{ExternRoot, basename};
@@ -13,6 +14,10 @@ pub(crate) enum Command {
 
 pub(crate) struct Args {
     pub(crate) entry_dir: PathBuf,
+    /// Every `-D` option in the order it was written, still undecoded: the
+    /// values are validated against the final target, not against whichever
+    /// target had been selected when the option was read.
+    pub(crate) definitions: Vec<RawDefinition>,
     pub(crate) output_dir: PathBuf,
     pub(crate) externs: Vec<ExternRoot>,
     pub(crate) name: Option<Ident>,
@@ -32,6 +37,7 @@ pub(crate) fn parse(args: &[String]) -> Result<Command, String> {
 
 fn parse_compile(args: &[String]) -> Result<Args, String> {
     let mut entry_dir = None;
+    let mut definitions = Vec::new();
     let mut output_dir = None;
     let mut externs = Vec::new();
     let mut name = None;
@@ -44,6 +50,13 @@ fn parse_compile(args: &[String]) -> Result<Args, String> {
     while let Some(arg) = iter.next() {
         if let Some(value) = arg.strip_prefix("--import=") {
             externs.push(parse_import(arg, value)?);
+        } else if arg == "-D" {
+            let definition = iter
+                .next()
+                .ok_or_else(|| "expected a definition after '-D'".to_string())?;
+            definitions.push(parse_definition(&format!("-D {definition}"), definition));
+        } else if let Some(value) = arg.strip_prefix("-D") {
+            definitions.push(parse_definition(arg, value));
         } else if arg == "-o" {
             let dir = iter
                 .next()
@@ -77,6 +90,7 @@ fn parse_compile(args: &[String]) -> Result<Args, String> {
 
     Ok(Args {
         entry_dir,
+        definitions,
         output_dir,
         externs,
         name,
@@ -85,6 +99,20 @@ fn parse_compile(args: &[String]) -> Result<Args, String> {
         emit,
         verbose,
     })
+}
+
+/// `name` or `name=<literal>`. Only the first `=` separates them, so a value
+/// may contain one; the value itself stays undecoded here.
+fn parse_definition(spelling: &str, value: &str) -> RawDefinition {
+    let (name, value) = match value.split_once('=') {
+        Some((name, value)) => (name, Some(value.to_string())),
+        None => (value, None),
+    };
+    RawDefinition {
+        spelling: spelling.to_string(),
+        name: name.to_string(),
+        value,
+    }
 }
 
 /// The compiled package is written like an import: an optional declared
@@ -205,6 +233,11 @@ pub(crate) fn print_help() {
         colors,
         "--emit=<obj|ir|asm>",
         "What to emit: object file (default), backend IR, or assembly",
+    );
+    help_option(
+        colors,
+        "-D<name>[=<literal>]",
+        "Define a compiler definition read as 'def::<name>' (repeatable; no value means 'true')",
     );
     help_option(
         colors,
@@ -382,6 +415,73 @@ mod tests {
         };
         assert!(parsed.name.is_none());
         assert_eq!(parsed.entry_dir, PathBuf::from("deps/core"));
+    }
+
+    fn definitions(values: &[&str]) -> Vec<RawDefinition> {
+        let Ok(Command::Compile(parsed)) = parse(&args(&[&["src", "-o", "out"], values].concat()))
+        else {
+            panic!("expected compile command for {values:?}");
+        };
+        parsed.definitions
+    }
+
+    #[test]
+    fn a_definition_is_collected_attached_or_separated() {
+        let collected = definitions(&["-Dflag", "-Dcount=12", "-D", "other=1", "-D", "bare"]);
+        let spelled: Vec<(&str, Option<&str>)> = collected
+            .iter()
+            .map(|entry| (entry.name.as_str(), entry.value.as_deref()))
+            .collect();
+        assert_eq!(
+            spelled,
+            [
+                ("flag", None),
+                ("count", Some("12")),
+                ("other", Some("1")),
+                ("bare", None),
+            ]
+        );
+    }
+
+    /// Only the first `=` separates a definition, so a value may contain one.
+    #[test]
+    fn a_value_keeps_everything_after_the_first_equals() {
+        let collected = definitions(&["-Dexpr=\"a=b\""]);
+        assert_eq!(collected[0].name, "expr");
+        assert_eq!(collected[0].value.as_deref(), Some("\"a=b\""));
+    }
+
+    /// The CLI only splits; every repeated name reaches definition
+    /// validation, which is where one invocation's configuration is settled.
+    #[test]
+    fn repeated_definitions_are_preserved_in_input_order() {
+        let collected = definitions(&["-Dflag=1", "-Dflag=2"]);
+        assert_eq!(collected.len(), 2);
+        assert_eq!(collected[0].value.as_deref(), Some("1"));
+        assert_eq!(collected[1].value.as_deref(), Some("2"));
+    }
+
+    #[test]
+    fn an_empty_definition_name_or_a_missing_argument_is_rejected() {
+        assert_eq!(definitions(&["-D=1"])[0].name, "");
+        assert!(parse(&args(&["src", "-o", "out", "-D"])).is_err());
+    }
+
+    #[test]
+    fn a_definition_does_not_collide_with_other_flags() {
+        let Ok(Command::Compile(parsed)) = parse(&args(&[
+            "src",
+            "-o",
+            "out",
+            "-Dflag",
+            "--target=avr-none",
+            "-O2",
+        ])) else {
+            panic!("expected compile command");
+        };
+        assert_eq!(parsed.definitions.len(), 1);
+        assert_eq!(parsed.target, Target::parse("avr-none").expect("valid"));
+        assert_eq!(parsed.opt_level, OptLevel::O2);
     }
 
     #[test]

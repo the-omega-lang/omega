@@ -1,0 +1,62 @@
+import std::io::println;
+
+# None of the declarations below exist, so nothing they name has to: a
+# removed item is never resolved, registered, or checked.
+@cond(false)
+import no::such::package::thing;
+
+@cond(false)
+alias Missing = NoSuchType;
+
+@cond(false)
+exposed broken : NoSuchType = missing_call();
+
+@cond(false)
+broken_body() => void {
+	undefined_function(no_such_name);
+}
+
+@cond(false)
+@inline(nonsense)
+@suppress(not_a_real_warning)
+invalid_annotations() => void { }
+
+@cond(false)
+struct BrokenFields {
+	exposed field: NoSuchType;
+}
+
+@cond(false)
+meet NoSuchSpec for NoSuchType { }
+
+@cond(false)
+glue NoSuchGap {
+	missing() => i32 { return 1; }
+}
+
+@cond(false)
+primitive NoSuchPrimitive { }
+
+@cond(false)
+macro never_defined() => { exposed generated : i32 = 1; }
+
+# A false macro invocation is discarded before the macro name is looked up.
+@cond(false)
+no_such_macro$();
+
+# A macro may generate conditions of its own. The generated item that is
+# false disappears before its body is expanded, so the invocation inside it
+# is never resolved either.
+macro pair($name: ident) => {
+	@cond(not(def::prune_more))
+	exposed $name : i32 = 7;
+
+	@cond(def::prune_more)
+	also_no_such_macro$();
+}
+
+pair$(generated_value);
+
+main() => void {
+	println$("pruned: ", generated_value);
+}

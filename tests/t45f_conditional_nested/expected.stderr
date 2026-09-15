@@ -1,0 +1,9 @@
+error: '@cond' is only allowed on a top-level item
+ --> tests/t45f_conditional_nested/t45f_conditional_nested.omg:8:5
+  |
+8 |     @cond(true)
+  |     ^^^^^^^^^^^ this is not a top-level item
+  |
+  = help: a condition selects a whole declaration, so put it on the declaration this belongs to
+
+error: could not compile the program due to 1 previous error

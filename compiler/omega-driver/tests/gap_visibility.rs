@@ -65,7 +65,7 @@ impl TestPackages {
             Target::DEFAULT,
         )
         .expect("construct driver")
-        .compile(&[Ident("main".to_string())], Target::DEFAULT)
+        .compile(&[Ident("main".to_string())])
     }
 
     fn expect_ok(&self) {

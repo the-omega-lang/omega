@@ -44,11 +44,12 @@ tests/
     expected.stdout
     expected.stderr
     expected.status
+    compiler.definitions
 ```
 
 `bin/test-runner` discovers those directories and, for each selected case:
 
-1. invokes `bin/omgc-debug` on the test package for the host target, registering the current `core`, `std`, and `plat` source packages as externs;
+1. invokes `bin/omgc-debug` on the test package for the host target, registering the current `core`, `std`, and `plat` source packages as externs, and passing the case's own compiler definitions if it declares any;
 2. if compilation succeeds, compiles any `*.c` sources the case ships (freestanding, no C runtime), gathers the case's per-source objects in sorted path order, and links them with the prebuilt runtime objects;
 3. executes the resulting program;
 4. compares any present `expected.stdout` and `expected.stderr` files byte-for-byte with the relevant captured output, and any present `expected.status` file with the program's termination status.
@@ -60,6 +61,30 @@ The runner keeps captured output in memory. Per-test artifacts live under `<arti
 These cases are **language conformance tests implemented end-to-end**. They should be derived from observable rules in `docs/language/`. A compiler bug must not be encoded as the expected language behavior merely because the current implementation happens to do it.
 
 Use this layer when the claim is about accepted/rejected Omega source or observable execution semantics, especially when correctness depends on multiple compiler stages, native code generation, linking, or runtime/library behavior.
+
+### Per-case compiler definitions
+
+A case that exercises `@cond` supplies its configuration in an optional
+`compiler.definitions` file: one raw `name[=literal]` per non-empty line, in
+the order written.
+
+```text
+enabled
+count=123
+label="release build"
+```
+
+Each line becomes one `-D` argv element for **that case's compilation only**.
+There is no shell parsing and no comment syntax -- a line is exactly one
+definition, quotes included -- and a repeated name stays repeated so a case can
+assert the diagnostic for one. The file cannot pass arbitrary flags, override
+the target or output directory, or change the prebuilt runtime packages, which
+are compiled once with no definitions: a fixture here must not need different
+runtime declarations.
+
+A build that really needs several differently configured compilations belongs
+in the CLI integration tests (`compiler/omgc/tests/`), which drive `omgc`
+directly.
 
 ## Expected-output conventions
 

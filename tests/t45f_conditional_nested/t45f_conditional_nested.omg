@@ -1,0 +1,17 @@
+import std::io::println;
+
+# A condition selects a whole declaration, so it cannot be written on one
+# member of one.
+struct Counter {
+	exposed value: i32;
+
+	@cond(true)
+	exposed bump(*self) => i32 {
+		return self.value + 1;
+	}
+}
+
+main() => void {
+	counter := Counter { value = 1; };
+	println$("unreachable: ", counter.bump());
+}

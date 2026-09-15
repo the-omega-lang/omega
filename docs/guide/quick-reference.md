@@ -494,9 +494,24 @@ my_symbol : i32 = 10;
 exposed exported_api() => void { }
 ```
 
-The first names storage another object owns; the second is an ordinary Omega global that owns and initializes its own storage under an exact external name. A `comp` binding and a local take no annotation.
+The first names storage another object owns; the second is an ordinary Omega global that owns and initializes its own storage under an exact external name. A `comp` binding and a local take no `@symbol`; a top-level `comp` binding still takes `@cond`, and a local takes no annotation at all.
 
 An Omega-declared symbol is hidden by default -- still linkable across source files and separately compiled objects of one program, but not exported out of a shared library; `export` is what changes that. A `foreign` item defaults the other way, since declaring one already says the symbol crosses a boundary. None of this is `exposed`/`shared`/`hidden`, which decide what Omega *source* may name.
+
+`@cond` selects whether a top-level declaration exists in this compilation at all, reading the definitions the command line supplied and builtins describing the target:
+
+```omega
+@cond(def::small_build)
+exposed buffer_bytes : usize = 256;
+
+@cond(not(def::small_build))
+exposed buffer_bytes : usize = 65536;
+
+@cond(all(target_freestanding, in(target_arch, &["thumbv7em", "riscv32"])))
+exposed reset_handler() => never { ... }
+```
+
+Definitions come from `omgc -Dname[=literal]` (see [`compiler-cli.md`](compiler-cli.md#compiler-definitions)). A definition that was never supplied reads as `false` where a boolean is expected, and is an error where a value is compared. `@cond` goes on a whole top-level declaration -- never on a member, field, variant, or statement.
 
 Other supported annotations are normative in [`../language/annotations-and-sizeof.md`](../language/annotations-and-sizeof.md).
 

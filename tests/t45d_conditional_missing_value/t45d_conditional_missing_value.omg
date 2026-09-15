@@ -1,0 +1,10 @@
+import std::io::println;
+
+# A boolean position reads an absent definition as false, but a value
+# position has no answer for one that was never supplied.
+@cond(equals(def::never_supplied, 1))
+selected() => *str { return "selected"; }
+
+main() => void {
+	println$("unreachable: ", selected());
+}

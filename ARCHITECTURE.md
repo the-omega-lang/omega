@@ -26,11 +26,11 @@ Compilation is initiated by the CLI and semantically orchestrated by the driver:
 ```text
 omgc
   |
-  | constructs Driver
+  | constructs Driver with a frozen target + compiler definitions
   v
 omega-driver
   |  package/module discovery
-  |  parse + HIR loading
+  |  parse + conditional item filtering + HIR loading
   |  per-item semantic queries
   v
 CompiledProgram
@@ -52,7 +52,7 @@ object / LLVM IR / assembly
 source text
    |
    v
-omega-parser       tokens -> AST -> macro-expanded AST
+omega-parser       tokens -> AST -> selected, macro-expanded AST
    |
    v
 omega-hir          stable post-expansion HIR
@@ -70,6 +70,8 @@ omega-codegen      LLVM
    v
 native output
 ```
+
+`@cond` filtering happens inside that first stage: the driver evaluates each top-level item's conditions against the frozen configuration before publishing the AST, and hands the same evaluator to macro expansion for generated items. Nothing after it can observe a declaration the configuration did not select.
 
 The parser is the first source transformation stage, not the whole-compilation orchestrator.
 
@@ -123,7 +125,7 @@ Owns the first stable post-macro-expansion representation and `HirId` identity. 
 
 Owns semantic analysis. A short-lived `analysis::Analyzer` checks a focused top-level signature/body and obtains cross-module facts through `ModuleResolver`.
 
-Important areas: `analysis/items/`, `analysis/stmts.rs`, `analysis/places/`, `analysis/paths.rs`, `analysis/calls/`, `analysis/exprs/`, `analysis/specs.rs`, `checked.rs`, `resolved_type.rs`, `resolver.rs`, `generics.rs`, `comp_eval.rs`, `layout.rs`, `target.rs`, `error/`. Item signature work and body checking are separated inside `analysis/items/`; place roots, field/index projection, and slicing are separated inside `analysis/places/`.
+Important areas: `analysis/items/`, `analysis/stmts.rs`, `analysis/places/`, `analysis/paths.rs`, `analysis/calls/`, `analysis/exprs/`, `analysis/specs.rs`, `checked.rs`, `resolved_type.rs`, `resolver.rs`, `generics.rs`, `comp_eval.rs`, `layout.rs`, `target.rs`, `error/`. `compiler_definitions.rs` and `annotation_eval.rs` are the exception to the "short-lived analyzer" shape: they are pure functions of syntax plus configuration, used before any HIR exists to decide which declarations a compilation has. Item signature work and body checking are separated inside `analysis/items/`; place roots, field/index projection, and slicing are separated inside `analysis/places/`.
 
 **Boundary:** semantic algorithms live here; filesystem/module/query lifetime does not.
 

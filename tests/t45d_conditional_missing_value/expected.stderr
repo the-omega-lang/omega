@@ -1,0 +1,7 @@
+error: compiler definition 'never_supplied' is not defined, so it has no value to compare
+ --> tests/t45d_conditional_missing_value/t45d_conditional_missing_value.omg:5:14
+  |
+5 | @cond(equals(def::never_supplied, 1))
+  |              ^^^^^^^^^^^^^^^^^^^ in this condition
+
+error: could not compile the program due to 1 previous error

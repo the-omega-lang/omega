@@ -1,5 +1,11 @@
 use crate::ids::HirId;
 pub use omega_parser::prelude::{AliasTarget, BinaryOp, LogicalOp};
+/// Annotation arguments keep their written syntax through lowering: HIR adds
+/// identity to declarations, and an annotation argument has none of its own.
+pub use omega_parser::prelude::{
+    AnnotationArg as HirAnnotationArg, AnnotationExpr as HirAnnotationValue, AnnotationExprKind,
+    AnnotationLiteral,
+};
 use omega_parser::prelude::{
     ByteStringExpr, ExprPath, FunctionType, FunctionTypeParam, GenericArg, GenericParamKind, Ident,
     NumberExpr, Origin, Path, RawConvention, SelfMode, Span, StringExpr, Type, Visibility,
@@ -10,20 +16,6 @@ pub struct HirAnnotation {
     pub name: Ident,
     pub args: Vec<HirAnnotationArg>,
     pub span: Span,
-}
-
-#[derive(Debug, Clone)]
-pub enum HirAnnotationArg {
-    Ident(Ident),
-    KeyValue(Ident, HirAnnotationValue),
-}
-
-#[derive(Debug, Clone)]
-pub enum HirAnnotationValue {
-    IntLiteral(String),
-    Sizeof(Type),
-    StrLiteral(String),
-    Ident(Ident),
 }
 
 #[derive(Debug, Clone)]

@@ -1,8 +1,11 @@
 use crate::analysis::Analyzer;
 use crate::error::AnalysisErrorKind;
 use crate::error::AnalysisWarningKind;
-use omega_hir::{HirAnnotation, HirAnnotationArg, HirAnnotationValue, HirId};
-use omega_parser::prelude::{Ident, Span};
+use omega_hir::{
+    AnnotationExprKind, AnnotationLiteral, HirAnnotation, HirAnnotationArg, HirAnnotationValue,
+    HirId,
+};
+use omega_parser::prelude::{Ident, NumberBase, Span};
 use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -340,18 +343,25 @@ pub fn resolve(
                 result.suppress = annotation
                     .args
                     .iter()
-                    .filter_map(|arg| match arg {
-                        HirAnnotationArg::Ident(warning) => Some(warning.clone()),
-                        HirAnnotationArg::KeyValue(key, _) => {
+                    .filter_map(|arg| match arg.bare_name() {
+                        Some(warning) => Some(warning.clone()),
+                        None => {
+                            let reason = match arg {
+                                HirAnnotationArg::KeyValue(key, _) => format!(
+                                    "'{}' should be a bare warning name, not a key = value pair",
+                                    key.as_ref()
+                                ),
+                                HirAnnotationArg::Positional(expr) => format!(
+                                    "expected a bare warning name, found {}",
+                                    expr.describe()
+                                ),
+                            };
                             analyzer.error(
                                 node_id,
                                 annotation.span,
                                 AnalysisErrorKind::InvalidAnnotationArgs {
                                     name: annotation.name.clone(),
-                                    reason: format!(
-                                        "'{}' should be a bare warning name, not a key = value pair",
-                                        key.as_ref()
-                                    ),
+                                    reason,
                                 },
                             );
                             None
@@ -495,12 +505,22 @@ fn resolve_size_value(
     span: Span,
     value: &HirAnnotationValue,
 ) -> Option<Result<u32, String>> {
-    match value {
-        HirAnnotationValue::IntLiteral(s) => Some(
-            s.parse::<u32>()
-                .map_err(|_| format!("'{s}' does not fit a u32")),
-        ),
-        HirAnnotationValue::Sizeof(ty) => {
+    match &value.kind {
+        AnnotationExprKind::Literal(AnnotationLiteral::Number {
+            negative: false,
+            value: number,
+        }) if number.base == NumberBase::Decimal
+            && number.fractional_part.is_none()
+            && number.explicit_type.is_none() =>
+        {
+            let digits = &number.integer_part;
+            Some(
+                digits
+                    .parse::<u32>()
+                    .map_err(|_| format!("'{digits}' does not fit a u32")),
+            )
+        }
+        AnnotationExprKind::Sizeof(ty) => {
             let resolved = analyzer.resolve_type_or_error(node_id, span, ty, false)?;
             Some(
                 match resolved.primitive_byte_size(analyzer.pointer_bytes()) {
@@ -511,20 +531,22 @@ fn resolve_size_value(
                 },
             )
         }
-        HirAnnotationValue::StrLiteral(_) => Some(Err(
-            "expected a plain integer or 'sizeof<Type>', found a string literal".to_string(),
-        )),
-        HirAnnotationValue::Ident(_) => Some(Err(
-            "expected a plain integer or 'sizeof<Type>', found an identifier".to_string(),
-        )),
+        _ => Some(Err(format!(
+            "expected a plain integer or 'sizeof<Type>', found {}",
+            value.describe()
+        ))),
     }
 }
 
 fn resolve_inline(annotation: &HirAnnotation) -> Result<InlineMode, String> {
-    match annotation.args.as_slice() {
-        [] => Ok(InlineMode::Always),
-        [HirAnnotationArg::Ident(mode)] if mode.as_ref() == "always" => Ok(InlineMode::Always),
-        [HirAnnotationArg::Ident(mode)] if mode.as_ref() == "never" => Ok(InlineMode::Never),
+    let mode = match annotation.args.as_slice() {
+        [] => return Ok(InlineMode::Always),
+        [arg] => arg.bare_name().map(Ident::as_ref),
+        _ => None,
+    };
+    match mode {
+        Some("always") => Ok(InlineMode::Always),
+        Some("never") => Ok(InlineMode::Never),
         _ => Err("expected 'always' or 'never'".to_string()),
     }
 }
@@ -547,8 +569,16 @@ fn resolve_symbol(
 
     for arg in &annotation.args {
         let key = match arg {
-            HirAnnotationArg::Ident(key) => key,
             HirAnnotationArg::KeyValue(key, _) => key,
+            HirAnnotationArg::Positional(expr) => {
+                let AnnotationExprKind::Name(key) = &expr.kind else {
+                    return Err(format!(
+                        "expected 'mangle = ...', 'name = \"...\"', or 'export', found {}",
+                        expr.describe()
+                    ));
+                };
+                key
+            }
         };
         if seen_keys.contains(&key.as_ref()) {
             return Err(format!("'{}' is already set", key.as_ref()));
@@ -559,10 +589,10 @@ fn resolve_symbol(
             // Only `export` carries meaning on its own; a bare `mangle` or a
             // bare mode identifier would silently pick a policy the source
             // never states.
-            HirAnnotationArg::Ident(key) if key.as_ref() == "export" => {
+            HirAnnotationArg::Positional(_) if key.as_ref() == "export" => {
                 visibility = Some(SymbolVisibility::Default);
             }
-            HirAnnotationArg::Ident(key) => {
+            HirAnnotationArg::Positional(_) => {
                 return Err(format!(
                     "'{}' needs a value -- only 'export' can be written on its own",
                     key.as_ref()
@@ -599,29 +629,23 @@ fn resolve_symbol(
 }
 
 fn mangling_mode(value: &HirAnnotationValue) -> Result<ManglingMode, String> {
-    match value {
-        HirAnnotationValue::Ident(mode) if mode.as_ref() == "enabled" => Ok(ManglingMode::Enabled),
-        HirAnnotationValue::Ident(mode) if mode.as_ref() == "disabled" => {
-            Ok(ManglingMode::Disabled)
-        }
+    match value.name().map(Ident::as_ref) {
+        Some("enabled") => Ok(ManglingMode::Enabled),
+        Some("disabled") => Ok(ManglingMode::Disabled),
         _ => Err("'mangle' expects 'enabled' or 'disabled'".to_string()),
     }
 }
 
 fn export_mode(value: &HirAnnotationValue) -> Result<SymbolVisibility, String> {
-    match value {
-        HirAnnotationValue::Ident(mode) if mode.as_ref() == "enabled" => {
-            Ok(SymbolVisibility::Default)
-        }
-        HirAnnotationValue::Ident(mode) if mode.as_ref() == "disabled" => {
-            Ok(SymbolVisibility::Hidden)
-        }
+    match value.name().map(Ident::as_ref) {
+        Some("enabled") => Ok(SymbolVisibility::Default),
+        Some("disabled") => Ok(SymbolVisibility::Hidden),
         _ => Err("'export' expects 'enabled' or 'disabled'".to_string()),
     }
 }
 
 fn symbol_name(value: &HirAnnotationValue) -> Result<String, String> {
-    let HirAnnotationValue::StrLiteral(name) = value else {
+    let AnnotationExprKind::Literal(AnnotationLiteral::Str(name)) = &value.kind else {
         return Err("'name' expects a string literal".to_string());
     };
     if name.is_empty() {

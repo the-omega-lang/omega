@@ -36,14 +36,14 @@ impl TestPackage {
     fn compile_program(&self) -> omega_driver::CompiledProgram {
         Driver::new(self.0.clone(), None, vec![], Target::DEFAULT)
             .expect("construct driver")
-            .compile(&[Ident("main".into())], Target::DEFAULT)
+            .compile(&[Ident("main".into())])
             .expect("package should compile")
     }
 
     fn compile_errors(&self, expectation: &str) -> Vec<CompileError> {
         match Driver::new(self.0.clone(), None, vec![], Target::DEFAULT)
             .expect("construct driver")
-            .compile(&[Ident("main".into())], Target::DEFAULT)
+            .compile(&[Ident("main".into())])
         {
             Ok(_) => panic!("{expectation}"),
             Err(errors) => errors,

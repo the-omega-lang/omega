@@ -41,7 +41,7 @@ global-declaration = [ visibility ], [ "mut" ], identifier, ":", type, [ "=", ex
 global-binding = [ visibility ], [ "mut" ], [ "comp" ], identifier, ":=", expression ;
 ```
 
-Annotations are syntactically accepted only before supported item kinds; semantic applicability is defined in [`annotations-and-sizeof.md`](annotations-and-sizeof.md).
+Annotations are syntactically accepted only before supported item kinds; semantic applicability is defined in [`annotations-and-sizeof.md`](annotations-and-sizeof.md). `@cond` is the one annotation every `item` above accepts, and it is accepted nowhere else in this grammar: a condition selects a whole item, so an `annotation-list` attached to a member, field, variant, or statement rejects it.
 
 Top-level source may contain imports, foreign bindings/functions/blocks, aggregate/spec/gap/glue/conformance/primitive declarations, macro definitions/invocations, global bindings/declarations, and function definitions. Local aggregate/spec declarations -- and local `foreign` items of any shape -- are not permitted inside function bodies.
 
@@ -364,8 +364,9 @@ alias-declaration = [ visibility ], "alias", identifier,
                     [ "<", generic-parameter-list, ">" ], "=", type, ";" ;
 ```
 
-An alias is a top-level item only; it is not a statement, takes no annotations,
-and its right-hand side is type syntax, never an expression. A right-hand side
+An alias is a top-level item only; it is not a statement, takes no annotations
+other than `@cond`, and its right-hand side is type syntax, never an
+expression. A right-hand side
 that is a bare `type-path` may name any namespace (module, type, spec, function
 or overload set, macro, or another alias); the parser does not classify it. See
 [`aliases.md`](aliases.md).
@@ -387,11 +388,19 @@ Macro parameter kinds and repetition are specified in [`macros.md`](macros.md); 
 annotation-list = { annotation } ;
 annotation = "@", identifier, [ "(", [ annotation-args ], ")" ] ;
 annotation-args = annotation-arg, { ",", annotation-arg } ;
-annotation-arg = identifier | identifier, "=", annotation-value ;
-annotation-value = decimal-integer | string-literal | "sizeof", "<", type, ">" ;
+annotation-arg = annotation-value | identifier, "=", annotation-value ;
+annotation-value = annotation-literal
+                 | identifier
+                 | identifier, "::", identifier
+                 | identifier, "(", [ annotation-value-list ], ")"
+                 | "&", "[", [ annotation-value-list ], "]"
+                 | "sizeof", "<", type, ">" ;
+annotation-value-list = annotation-value, { ",", annotation-value }, [ "," ] ;
+annotation-literal = "true" | "false" | [ "-" ], number-literal
+                   | char-literal | string-literal | byte-string-literal ;
 ```
 
-Exact recognized names and applicability are in [`annotations-and-sizeof.md`](annotations-and-sizeof.md).
+A nested annotation call or list is annotation syntax only: it shares no production with `call-expression` or `array-literal`, and the trailing comma it allows belongs to this grammar alone. Exact recognized names and applicability are in [`annotations-and-sizeof.md`](annotations-and-sizeof.md).
 
 ## Statements and blocks
 

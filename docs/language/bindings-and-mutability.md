@@ -18,6 +18,8 @@ A binding is immutable unless marked `mut`. `:=` infers the binding's type from 
 
 A module-level binding owns storage with a linker symbol, so it accepts `@symbol` to name that symbol and decide its binary visibility; see [`annotations-and-sizeof.md`](annotations-and-sizeof.md#symbol). A local binding has no such symbol and accepts no annotation.
 
+Every top-level binding, including a `comp` one, also accepts `@cond` to select whether it is declared at all; a local binding does not, because a condition selects whole declarations rather than statements.
+
 ## Shadowing
 
 A local declaration always introduces a **fresh binding**. It never writes to an

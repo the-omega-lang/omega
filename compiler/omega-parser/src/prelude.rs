@@ -1,5 +1,7 @@
 pub use crate::SourceModule;
-pub use crate::ast::annotation::{AnnotationArg, AnnotationNode, AnnotationValue};
+pub use crate::ast::annotation::{
+    AnnotationArg, AnnotationExpr, AnnotationExprKind, AnnotationLiteral, AnnotationNode,
+};
 pub use crate::ast::expression::{
     AddressOfExpr, AlignofExpr, ArrayLiteralExpr, AssignmentExpr, BinaryOp, BinaryOpExpr,
     BitNotExpr, BoolExpr, ByteStringExpr, CastExpr, CharExpr, CodeblockExpr, CompExpr,
@@ -33,3 +35,6 @@ pub use crate::ast::r#type::{
 };
 pub use crate::ast::visibility::Visibility;
 pub use crate::diagnostics::{ParseError, ParseErrorKind, Span};
+pub use crate::parser::item::annotations::{
+    CONDITION as CONDITION_ANNOTATION, LiteralError, parse_literal,
+};

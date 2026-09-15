@@ -1,0 +1,9 @@
+error: this item already has a '@cond' annotation
+ --> tests/t45e_conditional_duplicate/t45e_conditional_duplicate.omg:6:1
+  |
+5 | @cond(false)
+  | ------------ the first condition is here
+6 | @cond(true)
+  | ^^^^^^^^^^^ duplicate condition
+
+error: could not compile the program due to 1 previous error

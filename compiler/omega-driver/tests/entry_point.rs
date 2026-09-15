@@ -36,7 +36,7 @@ impl TestPackage {
             Target::DEFAULT,
         )
         .expect("construct driver")
-        .compile(&[Ident("main".to_string())], Target::DEFAULT)
+        .compile(&[Ident("main".to_string())])
     }
 
     /// The same compilation with the real `core` registered, for a case whose
@@ -56,7 +56,7 @@ impl TestPackage {
             Target::DEFAULT,
         )
         .expect("construct driver with the real core extern")
-        .compile(&[Ident("main".to_string())], Target::DEFAULT)
+        .compile(&[Ident("main".to_string())])
     }
 }
 

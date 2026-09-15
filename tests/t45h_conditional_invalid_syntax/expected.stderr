@@ -1,0 +1,7 @@
+error: expected an expression, found ';'
+ --> tests/t45h_conditional_invalid_syntax/t45h_conditional_invalid_syntax.omg:6:24
+  |
+6 | exposed broken : i32 = ;
+  |                        ^ expected an expression
+
+error: could not compile the program due to 1 previous error

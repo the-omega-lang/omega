@@ -1,0 +1,10 @@
+enabled
+count=123
+label="release build"
+letter='x'
+ratio=1.5
+midpoint=1.000000059604644775390626f32
+mask=0xff_u8
+wide=18446744073709551615u64
+low=-128i8
+raw=b"bytes"

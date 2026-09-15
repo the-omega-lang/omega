@@ -55,7 +55,7 @@ impl TestWorkspace {
     fn compile(&self) -> Result<omega_driver::CompiledProgram, Vec<CompileError>> {
         Driver::new(self.main.clone(), None, self.externs(), Target::DEFAULT)
             .expect("construct driver")
-            .compile(&[Ident("main".to_string())], Target::DEFAULT)
+            .compile(&[Ident("main".to_string())])
     }
 
     /// Compiles the provider on its own, exactly as a separate invocation
@@ -64,7 +64,7 @@ impl TestWorkspace {
         let dir = self.provider.clone().expect("workspace has a provider");
         let program = Driver::new(dir, None, Vec::new(), Target::DEFAULT)
             .expect("construct provider driver")
-            .compile(&[Ident("provider".to_string())], Target::DEFAULT)
+            .compile(&[Ident("provider".to_string())])
             .expect("provider compiles on its own");
         let entry = program.entry.clone();
         omega_mir::lower_program(program.modules, &entry)

@@ -1,6 +1,6 @@
 use omega_hir::{
-    HirAnnotationArg, HirAnnotationValue, HirExpr, HirItem, HirPlaceRoot, HirProjection,
-    HirRangeEnd, HirStmt, ModuleId, lower_module,
+    HirAnnotationArg, HirExpr, HirItem, HirPlaceRoot, HirProjection, HirRangeEnd, HirStmt,
+    ModuleId, lower_module,
 };
 use omega_parser::SourceModule;
 use omega_parser::macros;
@@ -472,11 +472,14 @@ fn an_item_producing_macro_lowers_its_global_with_annotations() {
     let [mangle, export] = annotations[0].args.as_slice() else {
         panic!("expected two arguments, got {:?}", annotations[0].args);
     };
-    let HirAnnotationArg::KeyValue(key, HirAnnotationValue::Ident(value)) = mangle else {
+    let HirAnnotationArg::KeyValue(key, value) = mangle else {
+        panic!("expected a key = value argument, got {mangle:?}");
+    };
+    let Some(value) = value.name() else {
         panic!("expected an identifier value, got {mangle:?}");
     };
     assert_eq!((key.as_ref(), value.as_ref()), ("mangle", "disabled"));
-    let HirAnnotationArg::Ident(name) = export else {
+    let Some(name) = export.bare_name() else {
         panic!("expected a bare identifier argument, got {export:?}");
     };
     assert_eq!(name.as_ref(), "export");

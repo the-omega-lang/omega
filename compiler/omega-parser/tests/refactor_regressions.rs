@@ -1,5 +1,5 @@
 use omega_parser::SourceModule;
-use omega_parser::ast::annotation::{AnnotationArg, AnnotationValue};
+use omega_parser::ast::annotation::{AnnotationArg, AnnotationExprKind};
 use omega_parser::ast::expression::Expression;
 use omega_parser::ast::item::Item;
 use omega_parser::diagnostics::ParseErrorKind;
@@ -30,10 +30,10 @@ fn annotation_sizeof_requires_an_opening_angle() {
     let Item::Struct(definition) = &module.nodes[0].item else {
         panic!("expected a struct, got {:?}", module.nodes[0].item);
     };
-    assert!(matches!(
-        definition.annotations[0].args[0],
-        AnnotationArg::KeyValue(_, AnnotationValue::Sizeof(_))
-    ));
+    let AnnotationArg::KeyValue(_, value) = &definition.annotations[0].args[0] else {
+        panic!("expected a key = value argument");
+    };
+    assert!(matches!(value.kind, AnnotationExprKind::Sizeof(_)));
 }
 
 /// An identifier-valued argument is annotation syntax, not an expression or a
@@ -49,11 +49,14 @@ fn an_identifier_valued_argument_parses_as_written() {
     let [mangle, export] = annotations[0].args.as_slice() else {
         panic!("expected two arguments, got {:?}", annotations[0].args);
     };
-    let AnnotationArg::KeyValue(key, AnnotationValue::Ident(value)) = mangle else {
+    let AnnotationArg::KeyValue(key, value) = mangle else {
+        panic!("expected a key = value argument, got {mangle:?}");
+    };
+    let AnnotationExprKind::Name(value) = &value.kind else {
         panic!("expected an identifier value, got {mangle:?}");
     };
     assert_eq!((key.as_ref(), value.as_ref()), ("mangle", "disabled"));
-    let AnnotationArg::Ident(name) = export else {
+    let Some(name) = export.bare_name() else {
         panic!("expected a bare identifier argument, got {export:?}");
     };
     assert_eq!(name.as_ref(), "export");

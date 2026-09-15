@@ -56,6 +56,12 @@ Normative chapter: [`../language/types-and-primitives.md`](../language/types-and
   `core` bakes in a `min_value`/`max_value` bound for them, since any
   literal bound would silently be wrong on a target this toolchain wasn't
   built assuming.
+- **A signed minimum cannot be written as a literal in an expression.**
+  `-128i8` is negation applied to `128i8`, and the magnitude is range-checked
+  on its own, so it is rejected even though the value is representable.
+  `@cond` conditions and `-D` definitions decode a written sign together with
+  its magnitude and therefore do accept `-128i8`; the two rules differ until
+  ordinary literal decoding is revisited.
 
 
 ## Control flow

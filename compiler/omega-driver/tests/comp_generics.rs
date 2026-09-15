@@ -39,7 +39,7 @@ impl TestPackage {
             Target::DEFAULT,
         )
         .expect("construct driver with the real core extern")
-        .compile(&[Ident("main".to_string())], Target::DEFAULT)
+        .compile(&[Ident("main".to_string())])
     }
 
     /// Reports failures through each finding's own message: a resolved type

@@ -17,15 +17,22 @@ This document also explains where package identity and emission ownership feed l
 - local package root;
 - optional declared-name override;
 - registered `--import` roots;
-- compilation target.
+- the compilation's configuration: its target and its compiler definitions.
 
 It then calls:
 
 ```text
-Driver::compile(entry_module, target) -> CompiledProgram
+Driver::compile(entry_module) -> CompiledProgram
 ```
 
 `Driver::compile` is the main semantic-compilation entry point.
+
+The configuration is frozen at construction (`Driver::new` for an empty one,
+`Driver::new_with_definitions` for a supplied one) and there is no setter for
+it. Every cache below -- source text, AST, macro environment, HIR, index --
+is populated under that one configuration, so a compilation under a different
+one needs a different `Driver`, and `compile` cannot take a target that
+disagrees with the trees it is about to read.
 
 ## `Driver` state
 
@@ -41,7 +48,7 @@ AliasState      declared-`alias` resolution + ordered resolution stack
 Primitives      primitive declarations/templates/instantiations
 Conformances    concrete + generic conformance registrations and solver goals
 prelude_macros  cached ambient exposed core macros
-Target          target used by semantic/layout questions
+CompilerDefinitions  frozen target + `-D` definitions every source is read with
 ```
 
 The analyzer borrows this state only through `ModuleResolver` queries or focused driver-owned orchestration calls.
@@ -85,18 +92,34 @@ Extern packages are separate compilation units. Their discovered inventories are
 
 ### Parse once
 
-`ensure_ast` reads and parses a physical source file once.
+`ensure_ast` reads and parses a physical source file once, then evaluates and
+removes conditioned-out top-level items **before the AST is published to any
+consumer**. Every consumer -- raw macro-definition collection, macro aliases,
+imports, the macro-namespace collision pass, and HIR lowering -- therefore sees
+the same filtered tree, and no consumer can observe an item this configuration
+did not select. Evaluating an item's conditions also consumes them, so the
+decision is made exactly once.
+
+A condition that cannot be evaluated is a module **load failure**
+(`LoadFailure::Condition`, surfaced as `CompileError::Condition`), never a
+silently false item: a configuration mistake must not turn into an empty
+module that compiles.
 
 `parse_module` is the memoized module-level pipeline:
 
 ```text
 locate module
-  -> obtain raw AST (cached)
+  -> obtain filtered AST (cached)
   -> construct visible macro environment
-  -> expand macros with provenance
+  -> expand macros with provenance, filtering generated items as they appear
   -> lower expanded AST to HIR
   -> cache ParsedModule
 ```
+
+Only surviving items reach infallible HIR lowering; nothing downstream carries
+a "disabled" flag, because nothing downstream ever receives the item. The
+physical source inventory is unaffected -- every local file still parses and
+still owns its output slot, including one whose items were all removed.
 
 A namespace-only directory module has a valid empty `HirModule` and no own source file.
 

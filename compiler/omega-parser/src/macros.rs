@@ -411,6 +411,31 @@ impl fmt::Display for MacroErrorKind {
     }
 }
 
+/// Why an expansion stopped: the macro system itself, or the caller's item
+/// filter. Expansion owns traversal, not what a filter means, so a filter's
+/// error type stays the caller's.
+#[derive(Debug)]
+pub enum ExpansionFailure<E> {
+    Macro(MacroError),
+    Filter(E),
+}
+
+impl<E> From<MacroError> for ExpansionFailure<E> {
+    fn from(error: MacroError) -> Self {
+        Self::Macro(error)
+    }
+}
+
+/// Decides whether an item survives, and may consume what it evaluated.
+/// Expansion applies it to source items before macro definitions are
+/// collected and to generated items before their bodies are expanded, so a
+/// removed item never binds a macro, nor has its contents looked at.
+pub type ItemFilter<'a, E> = &'a mut dyn FnMut(&mut ItemNode) -> Result<bool, E>;
+
+fn keep_every_item(_: &mut ItemNode) -> Result<bool, std::convert::Infallible> {
+    Ok(true)
+}
+
 /// Template-only expansion with no module identity or source text. A
 /// compiler-backed builtin invoked through this path fails rather than
 /// inventing a source location.
@@ -419,28 +444,46 @@ pub fn expand(
     imported: &HashMap<Ident, MacroDefinitionStmt>,
 ) -> Result<SourceModule, MacroError> {
     let mut state = ExpansionState::default();
-    expand_with_origins(module, imported, &[], None, &mut state)
+    expand_with_origins(
+        module,
+        imported,
+        &[],
+        None,
+        &mut state,
+        &mut keep_every_item,
+    )
+    .map_err(|failure| match failure {
+        ExpansionFailure::Macro(error) => error,
+        ExpansionFailure::Filter(never) => match never {},
+    })
 }
 
 /// `source` is the file being expanded, not the file a macro was defined in:
 /// `file$`/`line$`/`column$` describe the invocation site even when the
 /// invocation was written inside another macro's body.
-pub fn expand_with_origins(
+pub fn expand_with_origins<E>(
     module: SourceModule,
     imported: &HashMap<Ident, MacroDefinitionStmt>,
     module_path: &[Ident],
     source: Option<&SourceFile>,
     state: &mut ExpansionState,
-) -> Result<SourceModule, MacroError> {
-    let (own, items) = collect_definitions(module.nodes, module_path)?;
+    filter: ItemFilter<'_, E>,
+) -> Result<SourceModule, ExpansionFailure<E>> {
+    let mut nodes = Vec::with_capacity(module.nodes.len());
+    for mut node in module.nodes {
+        if filter(&mut node).map_err(ExpansionFailure::Filter)? {
+            nodes.push(node);
+        }
+    }
+    let (own, items) = collect_definitions(nodes, module_path)?;
     let mut defs = imported.clone();
     defs.extend(own);
     state.register_environment(module_path, &defs);
     for def in defs.values() {
         validate_definition(def)?;
     }
-    let nodes =
-        expander::Expander::new(&defs, module_path, source, state).expand_item_list(items)?;
+    let nodes = expander::Expander::new(&defs, module_path, source, state, filter)
+        .expand_item_list(items)?;
     Ok(SourceModule { nodes })
 }
 
@@ -494,6 +537,7 @@ fn collect_definitions(
             other => items.push(ItemNode {
                 item: other,
                 span: node.span,
+                conditions: node.conditions,
             }),
         }
     }

@@ -1,0 +1,9 @@
+import std::io::println;
+
+# Every operand is checked, even one that could not change the answer.
+@cond(any(true, no_such_operator()))
+selected() => *str { return "selected"; }
+
+main() => void {
+	println$("unreachable: ", selected());
+}

@@ -1,19 +1,21 @@
 use super::*;
 
-pub(super) struct Expander<'a> {
+pub(super) struct Expander<'a, E> {
     defs: &'a HashMap<Ident, MacroDefinitionStmt>,
     module: &'a [Ident],
     source: Option<&'a SourceFile>,
     budget: u32,
     state: &'a mut ExpansionState,
+    filter: ItemFilter<'a, E>,
 }
 
-impl<'a> Expander<'a> {
+impl<'a, E> Expander<'a, E> {
     pub(super) fn new(
         defs: &'a HashMap<Ident, MacroDefinitionStmt>,
         module: &'a [Ident],
         source: Option<&'a SourceFile>,
         state: &'a mut ExpansionState,
+        filter: ItemFilter<'a, E>,
     ) -> Self {
         Self {
             defs,
@@ -21,6 +23,7 @@ impl<'a> Expander<'a> {
             source,
             budget: MAX_EXPANSIONS,
             state,
+            filter,
         }
     }
 
@@ -44,47 +47,38 @@ impl<'a> Expander<'a> {
     pub(super) fn expand_item_list(
         &mut self,
         nodes: Vec<ItemNode>,
-    ) -> Result<Vec<ItemNode>, MacroError> {
+    ) -> Result<Vec<ItemNode>, ExpansionFailure<E>> {
         let mut result = Vec::with_capacity(nodes.len());
-        for node in nodes {
-            match node.item {
+        for mut node in nodes {
+            if !(self.filter)(&mut node).map_err(ExpansionFailure::Filter)? {
+                continue;
+            }
+            let ItemNode {
+                item,
+                span,
+                conditions,
+            } = node;
+            let expanded = match item {
                 Item::MacroInvocation(inv) => {
-                    result.extend(self.expand_items_invocation(&inv, node.span)?);
+                    let items = self.expand_items_invocation(&inv, span)?;
+                    result.extend(items);
+                    continue;
                 }
-                Item::FunctionDefinition(f) => result.push(ItemNode {
-                    item: Item::FunctionDefinition(self.expand_function_def(f)?),
-                    span: node.span,
-                }),
-                Item::Struct(s) => result.push(ItemNode {
-                    item: Item::Struct(self.expand_struct_def(s)?),
-                    span: node.span,
-                }),
-                Item::Enum(e) => result.push(ItemNode {
-                    item: Item::Enum(self.expand_enum_def(e)?),
-                    span: node.span,
-                }),
-                Item::Union(u) => result.push(ItemNode {
-                    item: Item::Union(self.expand_union_def(u)?),
-                    span: node.span,
-                }),
-                Item::Spec(sp) => result.push(ItemNode {
-                    item: Item::Spec(self.expand_spec_def(sp)?),
-                    span: node.span,
-                }),
-                Item::Gap(gap) => result.push(ItemNode {
-                    item: Item::Gap(gap),
-                    span: node.span,
-                }),
+                Item::FunctionDefinition(f) => {
+                    Item::FunctionDefinition(self.expand_function_def(f)?)
+                }
+                Item::Struct(s) => Item::Struct(self.expand_struct_def(s)?),
+                Item::Enum(e) => Item::Enum(self.expand_enum_def(e)?),
+                Item::Union(u) => Item::Union(self.expand_union_def(u)?),
+                Item::Spec(sp) => Item::Spec(self.expand_spec_def(sp)?),
+                Item::Gap(gap) => Item::Gap(gap),
                 Item::Glue(mut glue) => {
                     glue.functions = glue
                         .functions
                         .into_iter()
                         .map(|f| self.expand_function_def(f))
                         .collect::<Result<_, _>>()?;
-                    result.push(ItemNode {
-                        item: Item::Glue(glue),
-                        span: node.span,
-                    });
+                    Item::Glue(glue)
                 }
                 Item::Conform(mut conform) => {
                     conform.functions = conform
@@ -92,10 +86,7 @@ impl<'a> Expander<'a> {
                         .into_iter()
                         .map(|f| self.expand_function_def(f))
                         .collect::<Result<_, _>>()?;
-                    result.push(ItemNode {
-                        item: Item::Conform(conform),
-                        span: node.span,
-                    });
+                    Item::Conform(conform)
                 }
                 Item::Primitive(mut primitive) => {
                     primitive.functions = primitive
@@ -103,67 +94,53 @@ impl<'a> Expander<'a> {
                         .into_iter()
                         .map(|f| self.expand_function_def(f))
                         .collect::<Result<_, _>>()?;
-                    result.push(ItemNode {
-                        item: Item::Primitive(primitive),
-                        span: node.span,
-                    });
+                    Item::Primitive(primitive)
                 }
                 other @ (Item::Declaration { .. }
                 | Item::ForeignBinding(_)
                 | Item::Import(_)
-                | Item::Alias(_)) => {
-                    result.push(ItemNode {
-                        item: other,
-                        span: node.span,
-                    });
-                }
-                Item::ForeignFunction(f) => result.push(ItemNode {
-                    item: Item::ForeignFunction(self.expand_foreign_function(f)?),
-                    span: node.span,
-                }),
+                | Item::Alias(_)) => other,
+                Item::ForeignFunction(f) => Item::ForeignFunction(self.expand_foreign_function(f)?),
                 Item::ForeignBlock(mut block) => {
                     block.entries = block
                         .entries
                         .into_iter()
                         .map(|entry| self.expand_foreign_block_entry(entry))
                         .collect::<Result<_, _>>()?;
-                    result.push(ItemNode {
-                        item: Item::ForeignBlock(block),
-                        span: node.span,
-                    });
+                    Item::ForeignBlock(block)
                 }
                 Item::Walrus {
                     walrus: w,
                     annotations,
-                } => result.push(ItemNode {
-                    item: Item::Walrus {
-                        walrus: WalrusStmt {
-                            value: self.expand_expr(w.value)?,
-                            ..w
-                        },
-                        annotations,
+                } => Item::Walrus {
+                    walrus: WalrusStmt {
+                        value: self.expand_expr(w.value)?,
+                        ..w
                     },
-                    span: node.span,
-                }),
+                    annotations,
+                },
                 Item::DeclarationWithInit {
                     decl,
                     value,
                     annotations,
-                } => result.push(ItemNode {
-                    item: Item::DeclarationWithInit {
-                        decl,
-                        value: self.expand_expr(value)?,
-                        annotations,
-                    },
-                    span: node.span,
-                }),
+                } => Item::DeclarationWithInit {
+                    decl,
+                    value: self.expand_expr(value)?,
+                    annotations,
+                },
                 Item::MacroDefinition(def) => {
                     return Err(MacroError::new(MacroErrorKind::MacroDefinitionInExpansion {
                         macro_name: def.name,
                     })
-                    .at_definition(self.module, def.span));
+                    .at_definition(self.module, def.span)
+                    .into());
                 }
-            }
+            };
+            result.push(ItemNode {
+                item: expanded,
+                span,
+                conditions,
+            });
         }
         Ok(result)
     }
@@ -172,7 +149,7 @@ impl<'a> Expander<'a> {
         &mut self,
         inv: &MacroInvocationExpr,
         call_span: Span,
-    ) -> Result<Vec<ItemNode>, MacroError> {
+    ) -> Result<Vec<ItemNode>, ExpansionFailure<E>> {
         let def = self.macro_definition(inv, call_span)?;
         let tokens = self.substitute_invocation(&def, inv, call_span)?;
         let padded = with_eof(&tokens);
@@ -186,7 +163,8 @@ impl<'a> Expander<'a> {
                 errors: join_errors(&errors),
             })
             .at_invocation(call_span)
-            .at_definition(&def.defining_module, def.span));
+            .at_definition(&def.defining_module, def.span)
+            .into());
         }
         self.expand_item_list(nodes)
     }

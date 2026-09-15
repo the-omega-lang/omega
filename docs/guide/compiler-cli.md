@@ -4,7 +4,7 @@ Typical shape:
 
 ```text
 omgc [<name>:]<entry-dir> -o <output-dir> [--import=[<name>:]<dir>]...
-     [-O<0-3>] [--target=<arch>-<os>]
+     [-D<name>[=<literal>]]... [-O<0-3>] [--target=<arch>-<os>]
      [--emit=<obj|ir|asm>] [-v]
 ```
 
@@ -79,6 +79,58 @@ A malformed, unknown, or unsupported target is rejected while parsing arguments.
 
 Selecting a target never introduces a libc, CRT, sysroot, linker or runtime object, and `omgc` emits objects only — it does not invoke a cross linker.
 
+## Compiler definitions
+
+`-D` supplies the values `@cond(...)` conditions select declarations with (the
+language rule is in
+[`../language/annotations-and-sizeof.md`](../language/annotations-and-sizeof.md#condcondition)).
+A definition is read in source as `def::<name>`:
+
+```sh
+omgc src/ -o target/objects -Dcount=123 '-Dlabel="release build"' -Denabled
+```
+
+Both `-Dname=value` and `-D name=value` are accepted, and the option splits at
+its **first** `=`, so a value may contain one. A name with no value defines the
+boolean `true`; an explicitly empty value (`-Dname=`) is an error. A name is a
+single Omega identifier, and defining the same name twice is an error however
+the two are spelled -- one invocation has one value per definition.
+
+A value is exactly one Omega literal, with the same bases, digit separators,
+type suffixes, and escapes the language has:
+
+| Written | Value |
+|---|---|
+| `-Dflag` | boolean `true` |
+| `-Dflag=false` | boolean `false` |
+| `-Dcount=123`, `-Dmask=0xff_u8`, `-Dsmall=-128i8` | integers, `i32` by default |
+| `-Dratio=1.5`, `-Dratio=1.5f64` | floats, `f32` by default |
+| `"-Dletter='x'"` | a character |
+| `'-Dlabel="release build"'` | a string |
+| `'-Draw=b"bytes"'` | a byte string |
+
+**Quoting matters.** The quotes are part of the literal, so the shell must be
+stopped from eating them -- `'-Dlabel="release build"'` defines a string, while
+`-Dlabel=release` is an error rather than an implicit string. A character and a
+byte string keep their own kinds and never compare equal to a string.
+
+Every definition is decoded against the **final** target, whatever order the
+options appear in, and an unused definition is validated exactly like a used
+one: `-Dn=65536usize --target=avr-none` is rejected because `usize` is 16 bits
+there. The builtin names (`target_os`, `target_arch`, `target_pointer_width`,
+`target_freestanding`) describe that target and cannot be overridden --
+`-Dtarget_os='"custom"'` defines `def::target_os`, which is a different value.
+
+One configuration applies to every source the invocation reads, its imported
+packages included. Definitions are not recorded in the emitted objects or in
+any linker name, so separately compiled packages that share declarations or an
+ABI must be given compatible definitions by the build recipe:
+
+```sh
+omgc runtime/core/ -o target/core -Dsmall_build
+omgc app/ --import=core:runtime/core/ -o target/app -Dsmall_build
+```
+
 ## Emit modes
 
 ```text
@@ -104,6 +156,10 @@ cc -Wl,--gc-sections \
     $(find target/main target/mathlib target/core -name '*.o' | sort) \
     -o example
 ```
+
+A build that uses `-D` must pass a compatible configuration to every
+invocation whose declarations meet in the link; see
+[Compiler definitions](#compiler-definitions).
 
 Each package contributes the objects of its own source files, so a consumer
 can also select them: archiving a package's objects (`ar rcs libmathlib.a

@@ -200,7 +200,7 @@ impl Driver {
         owner: AnalysisSite,
         f: impl FnOnce(&mut Analyzer) -> R,
     ) -> AnalyzerRun<R> {
-        let target = self.target;
+        let target = self.target();
         // A substitution means this run is one concrete instantiation, not the
         // declaration itself: what is true here need not be true of the
         // written source.

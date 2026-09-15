@@ -1,5 +1,6 @@
 use crate::cli::{self, Args, Command};
 use omega_analyzer::Target;
+use omega_analyzer::compiler_definitions::CompilerDefinitions;
 use omega_codegen::{CodegenRequest, EmitKind, EmitOutput, EmittedArtifact};
 use omega_diagnostics::{GREEN, Renderer, SourceRegistry, paint};
 use omega_driver::{Driver, basename};
@@ -33,6 +34,7 @@ pub(crate) fn run(raw_args: Vec<String>) -> Result<(), AppError> {
 fn compile(args: Args) -> Result<(), AppError> {
     let Args {
         entry_dir,
+        definitions,
         output_dir,
         externs,
         name,
@@ -72,17 +74,28 @@ fn compile(args: Args) -> Result<(), AppError> {
         );
     }
 
-    let mut driver = Driver::new(entry_dir, name, externs, target).map_err(|errors| {
-        render_driver_errors(&renderer, &errors);
-        AppError::Reported
+    // Definitions are decoded against the selected target, so an option's
+    // meaning never depends on where it sits relative to '--target'.
+    let definitions = CompilerDefinitions::from_raw(target, &definitions).map_err(|errors| {
+        AppError::Message(
+            errors
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
     })?;
 
-    let program = driver
-        .compile(&[entry_name.clone()], target)
-        .map_err(|errors| {
-            render_compile_errors(&renderer, &driver, &errors);
+    let mut driver =
+        Driver::new_with_definitions(entry_dir, name, externs, definitions).map_err(|errors| {
+            render_driver_errors(&renderer, &errors);
             AppError::Reported
         })?;
+
+    let program = driver.compile(&[entry_name.clone()]).map_err(|errors| {
+        render_compile_errors(&renderer, &driver, &errors);
+        AppError::Reported
+    })?;
 
     for (module, warning) in &program.warnings {
         let source = driver.source_id(module);

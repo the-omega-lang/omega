@@ -1,0 +1,11 @@
+import std::io::println;
+
+# Two conditions on one item contradict each other whatever they evaluate
+# to, so the first being false does not make the second harmless.
+@cond(false)
+@cond(true)
+selected() => *str { return "selected"; }
+
+main() => void {
+	println$("unreachable: ", selected());
+}

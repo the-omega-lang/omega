@@ -47,7 +47,7 @@ impl TestPackage {
     fn compile(&self) -> Result<omega_driver::CompiledProgram, Vec<CompileError>> {
         Driver::new(self.0.clone(), None, Vec::new(), Target::DEFAULT)
             .expect("construct driver")
-            .compile(&[Ident("main".to_string())], Target::DEFAULT)
+            .compile(&[Ident("main".to_string())])
     }
 }
 
@@ -700,7 +700,7 @@ fn external_non_generic_primitive_is_imported_not_redefined() {
     )
     .expect("construct driver with core extern");
     let program = driver
-        .compile(&[Ident("main".to_string())], Target::DEFAULT)
+        .compile(&[Ident("main".to_string())])
         .expect("external primitive use should compile");
 
     let definitions = program
@@ -741,7 +741,7 @@ fn extern_generic_instantiation_keeps_its_declaring_module() {
         Target::DEFAULT,
     )
     .expect("construct driver with generic library extern")
-    .compile(&[Ident("main".to_string())], Target::DEFAULT)
+    .compile(&[Ident("main".to_string())])
     .expect("using an extern-owned generic should compile");
 
     let library_path = vec![Ident("lib".to_string())];
@@ -788,7 +788,7 @@ fn extern_owned_concrete_conform_is_imported_not_reemitted() {
         Target::DEFAULT,
     )
     .expect("construct driver with library extern")
-    .compile(&[Ident("main".to_string())], Target::DEFAULT)
+    .compile(&[Ident("main".to_string())])
     .expect("calling an extern-owned concrete conformance should compile");
 
     let definitions = program
@@ -826,7 +826,7 @@ fn blanket_conforms_require_a_package_local_spec() {
         Target::DEFAULT,
     )
     .expect("construct consumer")
-    .compile(&[Ident("main".to_string())], Target::DEFAULT);
+    .compile(&[Ident("main".to_string())]);
     let errors = match result {
         Ok(_) => panic!("a blanket conforming a foreign spec must be rejected"),
         Err(errors) => errors,
@@ -880,7 +880,7 @@ fn externally_owned_stdout_cannot_conform_to_externally_owned_write() {
         Target::DEFAULT,
     )
     .expect("construct driver with I/O library extern");
-    let errors = match driver.compile(&[Ident("main".to_string())], Target::DEFAULT) {
+    let errors = match driver.compile(&[Ident("main".to_string())]) {
         Ok(_) => panic!("a consumer must not conform two foreign I/O items"),
         Err(errors) => errors,
     };
@@ -915,7 +915,7 @@ fn old_boolean_console_glue_signature_is_rejected() {
         Target::DEFAULT,
     )
     .expect("construct driver with Option core extern");
-    let errors = match driver.compile(&[Ident("main".to_string())], Target::DEFAULT) {
+    let errors = match driver.compile(&[Ident("main".to_string())]) {
         Ok(_) => panic!("an old console glue signature must fail"),
         Err(errors) => errors,
     };
@@ -959,7 +959,7 @@ fn formatting_is_not_available_from_core() {
         Target::DEFAULT,
     )
     .expect("construct driver with core extern");
-    let errors = match driver.compile(&[Ident("main".to_string())], Target::DEFAULT) {
+    let errors = match driver.compile(&[Ident("main".to_string())]) {
         Ok(_) => panic!("core must not provide a formatting module"),
         Err(errors) => errors,
     };
@@ -1775,7 +1775,7 @@ fn a_mismatched_for_loop_element_annotation_reports_what_is_available() {
         Target::DEFAULT,
     )
     .expect("construct driver with core extern")
-    .compile(&[Ident("main".to_string())], Target::DEFAULT)
+    .compile(&[Ident("main".to_string())])
     {
         Ok(_) => panic!("a mismatched element annotation must be rejected"),
         Err(errors) => errors,
@@ -1802,7 +1802,7 @@ fn primitive_method_symbols_stay_within_the_mangling_charset() {
         Target::DEFAULT,
     )
     .expect("construct driver")
-    .compile(&[Ident("core".to_string())], Target::DEFAULT);
+    .compile(&[Ident("core".to_string())]);
     let program = match program {
         Ok(program) => program,
         Err(errors) => panic!("core-shaped primitive package must compile: {errors:?}"),
@@ -1834,7 +1834,7 @@ fn a_package_root_with_no_modules_is_a_reportable_error() {
 
     let result = Driver::new(root.clone(), None, Vec::new(), Target::DEFAULT)
         .expect("construct driver")
-        .compile(&[Ident("main".to_string())], Target::DEFAULT);
+        .compile(&[Ident("main".to_string())]);
     let _ = fs::remove_dir_all(&root);
 
     let errors = result
@@ -1861,7 +1861,7 @@ fn compile_as_core(core_source: &str) -> Result<omega_driver::CompiledProgram, V
         Target::DEFAULT,
     )
     .expect("construct driver with core extern")
-    .compile(&[Ident("main".to_string())], Target::DEFAULT);
+    .compile(&[Ident("main".to_string())]);
     drop(core);
     result
 }
@@ -2271,7 +2271,7 @@ fn a_32_bit_target_sizes_usize_at_four_bytes() {
     );
     let program = Driver::new(package.0.clone(), None, Vec::new(), target)
         .expect("construct driver")
-        .compile(&[Ident("main".to_string())], target)
+        .compile(&[Ident("main".to_string())])
         .expect("compiles for riscv32-none");
     let width_of = |name: &str| -> Option<ConstValue> {
         program
@@ -2313,7 +2313,7 @@ fn a_usize_literal_above_u32_max_is_rejected_on_a_32_bit_target() {
     let package32 = TestPackage::new(source);
     let errors32 = match Driver::new(package32.0.clone(), None, Vec::new(), target32)
         .expect("construct driver")
-        .compile(&[Ident("main".to_string())], target32)
+        .compile(&[Ident("main".to_string())])
     {
         Ok(_) => panic!("the out-of-range usize literal must be rejected on a 32-bit target"),
         Err(errors) => errors,
@@ -2342,7 +2342,7 @@ fn lowered_mir_carries_symbols_and_linkage() {
     );
     let program = Driver::new(package.0.clone(), None, Vec::new(), Target::DEFAULT)
         .expect("construct driver")
-        .compile(&[Ident("main".to_string())], Target::DEFAULT)
+        .compile(&[Ident("main".to_string())])
         .expect("compiles");
     let mir = omega_mir::lower_program(program.modules, &program.entry);
     let functions: Vec<&omega_mir::MirFunctionDef> = mir

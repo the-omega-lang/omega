@@ -25,7 +25,9 @@ An alias declaration is:
 
 An alias is a **top-level item only**. It shall not appear inside a function
 body, a block, an aggregate body, or any other nested position. It carries no
-annotations.
+annotations other than `@cond`, which selects whether the alias exists at all
+(see
+[`annotations-and-sizeof.md`](annotations-and-sizeof.md#condcondition)).
 
 `AliasTarget` is written with the ordinary type grammar. Two shapes are
 distinguished:

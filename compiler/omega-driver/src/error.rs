@@ -1,5 +1,6 @@
 use crate::ModulePath;
 use crate::roots::LocalSource;
+use omega_analyzer::annotation_eval::{ConditionError, ConditionErrorKind};
 use omega_analyzer::checked::{CheckedModule, ExternFunctionRef};
 use omega_analyzer::error::{AnalysisError, AnalysisWarning};
 use omega_analyzer::resolver::ResolveError;
@@ -30,6 +31,16 @@ pub enum CompileError {
     Analysis {
         module: ModulePath,
         errors: Vec<AnalysisError>,
+    },
+    /// A `@cond(...)` condition that could not be evaluated. It is reported
+    /// before HIR exists, so it carries its own spans rather than an item id.
+    Condition {
+        module: ModulePath,
+        error: ConditionError,
+        /// The declaration of the macro that authored the condition, when one
+        /// did. Macro-generated syntax carries its invocation's span, so the
+        /// condition itself is always located in `module`.
+        definition: Option<SourceSpan>,
     },
     DuplicateModuleIdentity {
         name: Ident,
@@ -65,6 +76,7 @@ impl CompileError {
             }
             Self::Parse { module, .. }
             | Self::MacroExpansion { module, .. }
+            | Self::Condition { module, .. }
             | Self::Analysis { module, .. } => Some(module),
             Self::MacroNameCollision { module, .. } => Some(module),
             Self::DuplicateModuleIdentity { .. }
@@ -100,6 +112,20 @@ impl CompileError {
             }
             Self::Analysis { errors, .. } => {
                 errors.iter().map(AnalysisError::to_diagnostic).collect()
+            }
+            Self::Condition {
+                error, definition, ..
+            } => {
+                let mut diagnostic =
+                    Diagnostic::error(error.to_string()).with_label(error.span, error.label());
+                if let ConditionErrorKind::DuplicateCondition { first } = error.kind {
+                    diagnostic =
+                        diagnostic.with_secondary_label(first, "the first condition is here");
+                }
+                if let Some(at) = definition {
+                    diagnostic = diagnostic.with_secondary_label_in(*at, "macro defined here");
+                }
+                vec![diagnostic]
             }
             Self::DuplicateModuleIdentity {
                 name,

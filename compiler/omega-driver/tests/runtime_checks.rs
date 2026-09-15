@@ -50,7 +50,7 @@ impl TestPackage {
     ) -> Result<omega_driver::CompiledProgram, Vec<CompileError>> {
         Driver::new(self.0.clone(), None, externs, Target::DEFAULT)
             .expect("construct driver")
-            .compile(&[Ident("main".to_string())], Target::DEFAULT)
+            .compile(&[Ident("main".to_string())])
     }
 
     fn compile(&self) -> Result<omega_driver::CompiledProgram, Vec<CompileError>> {

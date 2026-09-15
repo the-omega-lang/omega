@@ -1,4 +1,5 @@
 use super::*;
+use omega_parser::prelude::NumberExpr;
 
 fn annotation(args: Vec<HirAnnotationArg>) -> HirAnnotation {
     HirAnnotation {
@@ -8,21 +9,43 @@ fn annotation(args: Vec<HirAnnotationArg>) -> HirAnnotation {
     }
 }
 
+fn number(text: &str) -> HirAnnotationValue {
+    expr(AnnotationExprKind::Literal(AnnotationLiteral::Number {
+        negative: false,
+        value: NumberExpr {
+            base: NumberBase::Decimal,
+            integer_part: text.into(),
+            fractional_part: None,
+            explicit_type: None,
+        },
+    }))
+}
+
+fn expr(kind: AnnotationExprKind) -> HirAnnotationValue {
+    HirAnnotationValue {
+        kind,
+        span: Span::new(0, 0),
+        origin: Default::default(),
+    }
+}
+
 fn ident_arg(name: &str) -> HirAnnotationArg {
-    HirAnnotationArg::Ident(Ident(name.into()))
+    HirAnnotationArg::Positional(expr(AnnotationExprKind::Name(Ident(name.into()))))
 }
 
 fn key_ident(key: &str, value: &str) -> HirAnnotationArg {
     HirAnnotationArg::KeyValue(
         Ident(key.into()),
-        HirAnnotationValue::Ident(Ident(value.into())),
+        expr(AnnotationExprKind::Name(Ident(value.into()))),
     )
 }
 
 fn key_str(key: &str, value: &str) -> HirAnnotationArg {
     HirAnnotationArg::KeyValue(
         Ident(key.into()),
-        HirAnnotationValue::StrLiteral(value.into()),
+        expr(AnnotationExprKind::Literal(AnnotationLiteral::Str(
+            value.into(),
+        ))),
     )
 }
 
@@ -145,7 +168,7 @@ fn malformed_arguments_are_rejected() {
     assert!(
         resolve(vec![HirAnnotationArg::KeyValue(
             Ident("mangle".into()),
-            HirAnnotationValue::IntLiteral("3".into())
+            number("3")
         )])
         .is_err()
     );
@@ -159,6 +182,33 @@ fn a_repeated_key_is_rejected_however_it_is_spelled() {
             key_ident("mangle", "enabled"),
             key_ident("mangle", "disabled")
         ])
+        .is_err()
+    );
+}
+
+/// The argument grammar is shared with conditions, so every annotation that
+/// takes plain words still has to reject the forms it has no meaning for.
+#[test]
+fn an_ordinary_annotation_rejects_condition_syntax() {
+    let call = expr(AnnotationExprKind::Call {
+        name: Ident("equals".into()),
+        args: vec![number("1"), number("1")],
+    });
+    let inline = HirAnnotation {
+        name: Ident("inline".into()),
+        args: vec![HirAnnotationArg::Positional(call.clone())],
+        span: Span::new(0, 0),
+    };
+    assert!(resolve_inline(&inline).is_err());
+    assert!(resolve(vec![HirAnnotationArg::Positional(call)]).is_err());
+    assert!(
+        resolve(vec![HirAnnotationArg::KeyValue(
+            Ident("name".into()),
+            expr(AnnotationExprKind::Qualified {
+                namespace: Ident("def".into()),
+                name: Ident("symbol".into()),
+            })
+        )])
         .is_err()
     );
 }

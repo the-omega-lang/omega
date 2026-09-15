@@ -87,6 +87,9 @@ impl ParseError {
                 .with_help("this is far past anything hand-written; if the source is generated, emit intermediate bindings instead of one deeply nested expression"),
             ParseErrorKind::AnnotationNotAllowedHere => Diagnostic::error("annotations are not allowed on this item")
                 .with_label(self.span, "this item can't carry annotations"),
+            ParseErrorKind::ConditionNotAllowedHere => Diagnostic::error("'@cond' is only allowed on a top-level item")
+                .with_label(self.span, "this is not a top-level item")
+                .with_help("a condition selects a whole declaration, so put it on the declaration this belongs to"),
             ParseErrorKind::AnnotationWithoutItem => Diagnostic::error("annotation is not attached to an item")
                 .with_label(self.span, "this annotation has no item")
                 .with_help("add an item after the annotation or remove it"),
@@ -204,6 +207,7 @@ pub enum ParseErrorKind {
         limit: usize,
     },
     AnnotationNotAllowedHere,
+    ConditionNotAllowedHere,
     AnnotationWithoutItem,
     VisibilityNotAllowedHere,
     GapOrGlueVisibility,

@@ -1,0 +1,55 @@
+import std::io::println;
+
+# An absent definition is false where a boolean is expected, so the two
+# declarations below are mutually exclusive without either naming the other.
+@cond(def::fast_path)
+mode() => *str { return "fast"; }
+
+@cond(not(def::fast_path))
+mode() => *str { return "slow"; }
+
+# A condition selects any top-level declaration, not only functions.
+@cond(not(def::fast_path))
+exposed budget : i32 = 10;
+
+@cond(def::fast_path)
+exposed budget : i32 = 99;
+
+@cond(all(target_freestanding, def::fast_path))
+exposed unreachable_here : i32 = 1;
+
+@cond(any(equals(target_os, "linux"), equals(target_os, "macos")))
+hosted_label() => *str { return "hosted"; }
+
+@cond(in(target_arch, &["x86_64", "aarch64", "riscv64"]))
+width_label() => *str { return "wide"; }
+
+@cond(equals(target_pointer_width, 64))
+pointer_label() => *str { return "64-bit"; }
+
+# `all` with no operands is true and `any` with no operands is false, so a
+# generated condition list decides the same way an empty one would.
+@cond(all())
+always() => *str { return "always"; }
+
+@cond(not(any()))
+never_absent() => *str { return "present"; }
+
+# A struct, its methods, and a conformance are all selected together.
+@cond(not(def::fast_path))
+struct Counter {
+	exposed value: i32;
+
+	exposed bump(*self) => i32 {
+		return self.value + 1;
+	}
+}
+
+main() => void {
+	println$("mode: ", mode());
+	println$("budget: ", budget);
+	println$("target: ", hosted_label(), " ", width_label(), " ", pointer_label());
+	println$("identities: ", always(), " ", never_absent());
+	counter := Counter { value = 41; };
+	println$("counter: ", counter.bump());
+}

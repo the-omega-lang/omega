@@ -42,12 +42,12 @@ impl ParsedVisibility {
     }
 }
 
-mod annotations;
+pub mod annotations;
 mod definitions;
 mod foreign;
 mod functions;
 
-use annotations::{parse_annotations, reject_annotations};
+use annotations::{ItemAnnotations, parse_item_annotations, reject_annotations};
 use definitions::{parse_conform_def, parse_gap_def, parse_glue_def, parse_primitive_def};
 pub use definitions::{
     parse_enum_def, parse_marker_def, parse_spec_def, parse_struct_def, parse_union_def,
@@ -130,15 +130,21 @@ pub fn parse_source_module(p: &mut Parser) -> Vec<ItemNode> {
 }
 
 pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
-    let annotations = parse_annotations(p);
+    let parsed_annotations = parse_item_annotations(p);
     let parsed_visibility = parse_optional_visibility(p);
     let visibility = parsed_visibility.value();
     let start = p.peek_span();
 
-    if p.is_eof() && !annotations.is_empty() {
-        p.error_at(annotations[0].span, ParseErrorKind::AnnotationWithoutItem);
+    if p.is_eof()
+        && let Some(span) = parsed_annotations.first_span()
+    {
+        p.error_at(span, ParseErrorKind::AnnotationWithoutItem);
         return None;
     }
+    let ItemAnnotations {
+        conditions,
+        annotations,
+    } = parsed_annotations;
 
     if let Some(prefix) = crate::parser::parse_binding_modifiers(p) {
         let item = parse_item_declaration_or_walrus(
@@ -149,7 +155,11 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
             visibility,
         )?;
         let span = start.to(p.last_span());
-        return Some(ItemNode { item, span });
+        return Some(ItemNode {
+            item,
+            span,
+            conditions,
+        });
     }
 
     let item = match p.peek() {
@@ -276,7 +286,11 @@ pub fn parse_item(p: &mut Parser) -> Option<ItemNode> {
         }
     };
     let span = start.to(p.last_span());
-    Some(ItemNode { item, span })
+    Some(ItemNode {
+        item,
+        span,
+        conditions,
+    })
 }
 
 /// `alias Name<G...> = <type or path>;`. The right-hand side is parsed with

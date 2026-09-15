@@ -1,16 +1,15 @@
 use super::Lowerer;
 use crate::hir::{
-    HirAlias, HirAnnotation, HirAnnotationArg, HirAnnotationValue, HirBlock, HirConformDef,
-    HirDeclaration, HirEnumDef, HirEnumVariant, HirExpr, HirExprNode, HirField, HirForeignBinding,
-    HirForeignFunction, HirFunctionDef, HirGapDef, HirGapFunction, HirGenericParam, HirGlueDef,
-    HirImport, HirItem, HirParam, HirPlace, HirPlaceRoot, HirPrimitiveDef, HirSpecDef,
-    HirSpecFunction, HirStmt, HirStructDef, HirUnionDef, HirWalrusDeclaration,
+    HirAlias, HirAnnotation, HirBlock, HirConformDef, HirDeclaration, HirEnumDef, HirEnumVariant,
+    HirExpr, HirExprNode, HirField, HirForeignBinding, HirForeignFunction, HirFunctionDef,
+    HirGapDef, HirGapFunction, HirGenericParam, HirGlueDef, HirImport, HirItem, HirParam, HirPlace,
+    HirPlaceRoot, HirPrimitiveDef, HirSpecDef, HirSpecFunction, HirStmt, HirStructDef, HirUnionDef,
+    HirWalrusDeclaration,
 };
 use omega_parser::prelude::{
-    AnnotationArg, AnnotationNode, AnnotationValue, DeclarationStmt, EnumStmt, ForeignBindingItem,
-    ForeignBlockEntry, ForeignBlockItem, ForeignFunctionItem, FunctionDefinitionStmt, GenericParam,
-    Ident, Item, ItemNode, Param, Path, SelfMode, Span, SpecFunctionStmt, SpecStmt, StructStmt,
-    Type, UnionStmt,
+    AnnotationNode, DeclarationStmt, EnumStmt, ForeignBindingItem, ForeignBlockEntry,
+    ForeignBlockItem, ForeignFunctionItem, FunctionDefinitionStmt, GenericParam, Ident, Item,
+    ItemNode, Param, Path, SelfMode, Span, SpecFunctionStmt, SpecStmt, StructStmt, Type, UnionStmt,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -358,37 +357,7 @@ impl Lowerer {
             .iter()
             .map(|a| HirAnnotation {
                 name: a.name.clone(),
-                args: a
-                    .args
-                    .iter()
-                    .map(|arg| match arg {
-                        AnnotationArg::Ident(ident) => HirAnnotationArg::Ident(ident.clone()),
-                        AnnotationArg::KeyValue(key, AnnotationValue::IntLiteral(value)) => {
-                            HirAnnotationArg::KeyValue(
-                                key.clone(),
-                                HirAnnotationValue::IntLiteral(value.clone()),
-                            )
-                        }
-                        AnnotationArg::KeyValue(key, AnnotationValue::Sizeof(r#type)) => {
-                            HirAnnotationArg::KeyValue(
-                                key.clone(),
-                                HirAnnotationValue::Sizeof(r#type.clone()),
-                            )
-                        }
-                        AnnotationArg::KeyValue(key, AnnotationValue::StrLiteral(value)) => {
-                            HirAnnotationArg::KeyValue(
-                                key.clone(),
-                                HirAnnotationValue::StrLiteral(value.clone()),
-                            )
-                        }
-                        AnnotationArg::KeyValue(key, AnnotationValue::Ident(value)) => {
-                            HirAnnotationArg::KeyValue(
-                                key.clone(),
-                                HirAnnotationValue::Ident(value.clone()),
-                            )
-                        }
-                    })
-                    .collect(),
+                args: a.args.clone(),
                 span: a.span,
             })
             .collect()

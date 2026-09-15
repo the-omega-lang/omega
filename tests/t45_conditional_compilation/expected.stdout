@@ -1,0 +1,5 @@
+mode: slow
+budget: 10
+target: hosted wide 64-bit
+identities: always present
+counter: 42

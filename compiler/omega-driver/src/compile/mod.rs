@@ -3,7 +3,6 @@ use crate::error::{CompileError, CompiledProgram};
 use crate::items::{CheckedBody, GlueSignature, ItemKey};
 use crate::{Driver, ModulePath};
 use indexmap::IndexMap;
-use omega_analyzer::Target;
 use omega_analyzer::analysis::AnalysisSite;
 use omega_analyzer::annotations::{ManglingMode, SymbolPolicy};
 use omega_analyzer::checked::{
@@ -66,12 +65,7 @@ mod runtime_checks;
 mod signatures;
 
 impl Driver {
-    pub fn compile(
-        &mut self,
-        entry: &[Ident],
-        target: Target,
-    ) -> Result<CompiledProgram, Vec<CompileError>> {
-        self.target = target;
+    pub fn compile(&mut self, entry: &[Ident]) -> Result<CompiledProgram, Vec<CompileError>> {
         let Some(local) = self.local_module_paths() else {
             // Reject an empty package before semantic sweeps so the user gets
             // the direct package error instead of secondary resolution

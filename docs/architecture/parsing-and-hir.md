@@ -25,6 +25,7 @@ The normative lexical and grammatical rules live in [`../language/lexical-struct
 - recursive-descent grammar (`parser/`);
 - parser recovery and parse diagnostics;
 - source macro definitions/invocations (`macros.rs`) and recursive expansion (`macros/expander.rs`);
+- the annotation-argument expression grammar (`ast/annotation.rs`, `parser/item/annotations.rs`), including standalone literal decoding for values written outside any source file;
 - Omega syntax highlighting (`highlight.rs`);
 - the public parser-facing re-export surface (`prelude.rs`).
 
@@ -33,6 +34,7 @@ It does **not** own:
 - durable compiler node IDs;
 - name/type resolution;
 - semantic validity requiring declarations or types;
+- what an annotation argument *means*, including whether a `@cond` condition holds;
 - aggregate layout or backend representation.
 
 ## Lexing
@@ -124,6 +126,25 @@ call, the literal itself). `ExpressionNode` and `HirExprNode` carry it, and HIR
 lowering stamps the written construct's own origin onto the node it produces.
 Diagnostics use it to decide authorship; resolution continues to use the
 per-name origins described above.
+
+### Conditional item filtering
+
+`ItemNode` carries its unevaluated `@cond` annotations, and expansion takes a
+caller-supplied item filter that decides whether an item survives. The parser
+owns the traversal and nothing else: the filter's error type is a parameter
+(`ExpansionFailure<E>` separates a macro failure from a filter failure), so no
+analyzer type is reachable from here.
+
+The filter runs before raw macro definitions are collected and at each
+`expand_item_list` iteration, including on freshly reparsed macro-generated
+items **before** their bodies or invocations are expanded. A removed item
+therefore never binds a macro name, never has a macro of its own looked up, and
+never contributes syntax to anything downstream. Syntax-only entry points pass
+an identity filter.
+
+Generated tokens carry the invocation's span, so a diagnostic about a
+macro-authored condition is located at the call site and names the declaring
+macro through the ordinary authorship record.
 
 ### Expansion limits
 

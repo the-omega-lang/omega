@@ -1,0 +1,10 @@
+import std::io::println;
+
+# A condition decides which declarations exist, not which source is read:
+# disabled source is still lexed and parsed like every other line.
+@cond(false)
+exposed broken : i32 = ;
+
+main() => void {
+	println$("unreachable");
+}

@@ -1,0 +1,7 @@
+error: 'no_such_operator' is not a condition operator
+ --> tests/t45g_conditional_invalid_condition/t45g_conditional_invalid_condition.omg:4:17
+  |
+4 | @cond(any(true, no_such_operator()))
+  |                 ^^^^^^^^^^^^^^^^^^ in this condition
+
+error: could not compile the program due to 1 previous error

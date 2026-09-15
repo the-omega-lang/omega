@@ -2,9 +2,11 @@
 
 pub mod aliases;
 pub mod analysis;
+pub mod annotation_eval;
 pub mod annotations;
 pub mod checked;
 pub mod comp_eval;
+pub mod compiler_definitions;
 mod context;
 pub use context::{DeclarationPolicy, is_reserved_type_name};
 pub mod dead_code;
