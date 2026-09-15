@@ -48,7 +48,7 @@ AliasState      declared-`alias` resolution + ordered resolution stack
 Primitives      primitive declarations/templates/instantiations
 Conformances    concrete + generic conformance registrations and solver goals
 prelude_macros  cached ambient exposed core macros
-CompilerDefinitions  frozen target + `-D` definitions every source is read with
+CompilerDefinitions  frozen target + compiler definitions every source is read with
 ```
 
 The analyzer borrows this state only through `ModuleResolver` queries or focused driver-owned orchestration calls.

@@ -82,18 +82,6 @@ impl fmt::Display for DefinitionValue {
     }
 }
 
-/// One `-D` option as the command line spelled it, before any name or value
-/// is known to be well formed. Repeated names are kept, in input order, so
-/// they can be reported as the conflict they are.
-#[derive(Debug, Clone)]
-pub struct RawDefinition {
-    /// The option as written, quoted back in diagnostics.
-    pub spelling: String,
-    pub name: String,
-    /// `None` for `-Dname`, which defines a boolean truth.
-    pub value: Option<String>,
-}
-
 /// The configuration every source read by one invocation is selected with.
 #[derive(Debug, Clone)]
 pub struct CompilerDefinitions {
@@ -102,8 +90,8 @@ pub struct CompilerDefinitions {
 }
 
 /// The builtin definitions, which describe the selected target rather than
-/// the host. They live in their own namespace: a `-D` option of the same
-/// spelling defines `def::target_os`, and never replaces `target_os`.
+/// the host. They live in their own namespace: a supplied definition of the
+/// same spelling defines `def::target_os`, and never replaces `target_os`.
 pub const BUILTIN_NAMES: [&str; 4] = [
     "target_os",
     "target_arch",
@@ -119,58 +107,18 @@ impl CompilerDefinitions {
         }
     }
 
-    /// Decodes and validates every `-D` option against `target`, so an unused
-    /// definition is checked exactly like a used one and the result cannot
-    /// depend on the order the options were written in.
-    pub fn from_raw(target: Target, raw: &[RawDefinition]) -> Result<Self, Vec<DefinitionError>> {
-        let mut definitions = Self::new(target);
-        let mut errors = Vec::new();
-        let mut origins: HashMap<Ident, String> = HashMap::new();
-
-        for entry in raw {
-            let name = match validate_name(entry) {
-                Ok(name) => name,
-                Err(error) => {
-                    errors.push(error);
-                    continue;
-                }
-            };
-            if let Some(first) = origins.get(&name) {
-                errors.push(DefinitionError::Duplicate {
-                    name: name.0.clone(),
-                    first: first.clone(),
-                    second: entry.spelling.clone(),
-                });
-                continue;
+    /// Adds one definition. A configuration has exactly one value per name,
+    /// so a repeated name is refused rather than overwritten; which input
+    /// supplied each one, and how to say so, belongs to whoever collected
+    /// them.
+    #[must_use = "a refused definition is a configuration conflict the caller must report"]
+    pub fn define(&mut self, name: Ident, value: DefinitionValue) -> bool {
+        match self.user.entry(name) {
+            std::collections::hash_map::Entry::Occupied(_) => false,
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(value);
+                true
             }
-            let value = match &entry.value {
-                None => Ok(DefinitionValue::Bool(true)),
-                Some(text) if text.is_empty() => Err(
-                    "a definition needs a value after '='; write '-Dname' for a boolean truth"
-                        .to_string(),
-                ),
-                Some(text) => omega_parser::prelude::parse_literal(text)
-                    .map_err(|error| error.to_string())
-                    .and_then(|literal| {
-                        decode_literal(&literal, target.pointer_bits()).map_err(|e| e.to_string())
-                    }),
-            };
-            match value {
-                Ok(value) => {
-                    origins.insert(name.clone(), entry.spelling.clone());
-                    definitions.user.insert(name, value);
-                }
-                Err(reason) => errors.push(DefinitionError::InvalidValue {
-                    spelling: entry.spelling.clone(),
-                    reason,
-                }),
-            }
-        }
-
-        if errors.is_empty() {
-            Ok(definitions)
-        } else {
-            Err(errors)
         }
     }
 
@@ -200,59 +148,6 @@ impl CompilerDefinitions {
             }
             _ => return None,
         })
-    }
-}
-
-fn validate_name(entry: &RawDefinition) -> Result<Ident, DefinitionError> {
-    if omega_parser::lexer::is_valid_identifier(&entry.name) {
-        Ok(Ident(entry.name.clone()))
-    } else {
-        Err(DefinitionError::InvalidName {
-            spelling: entry.spelling.clone(),
-            name: entry.name.clone(),
-        })
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum DefinitionError {
-    InvalidName {
-        spelling: String,
-        name: String,
-    },
-    Duplicate {
-        name: String,
-        first: String,
-        second: String,
-    },
-    InvalidValue {
-        spelling: String,
-        reason: String,
-    },
-}
-
-impl fmt::Display for DefinitionError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidName { spelling, name } => write!(
-                f,
-                "invalid definition '{spelling}': '{name}' is not a valid definition name -- a \
-                 name is a single Omega identifier (ASCII letters/digits/underscore, not starting \
-                 with a digit, and not a keyword)"
-            ),
-            Self::Duplicate {
-                name,
-                first,
-                second,
-            } => write!(
-                f,
-                "definition '{name}' is defined more than once ('{first}' and '{second}') -- one \
-                 invocation has one value for each definition"
-            ),
-            Self::InvalidValue { spelling, reason } => {
-                write!(f, "invalid definition '{spelling}': {reason}")
-            }
-        }
     }
 }
 

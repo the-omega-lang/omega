@@ -1,29 +1,31 @@
 use super::*;
-use crate::compiler_definitions::RawDefinition;
+use crate::compiler_definitions::decode_literal;
 use crate::target::{Arch, Os, Target};
 use omega_parser::SourceModule;
+use omega_parser::prelude::parse_literal;
 
 fn definitions(options: &[&str]) -> CompilerDefinitions {
     definitions_for(Target::DEFAULT, options)
 }
 
 fn definitions_for(target: Target, options: &[&str]) -> CompilerDefinitions {
-    let raw: Vec<RawDefinition> = options
-        .iter()
-        .map(|option| match option.split_once('=') {
-            Some((name, value)) => RawDefinition {
-                spelling: format!("-D{option}"),
-                name: name.to_string(),
-                value: Some(value.to_string()),
-            },
-            None => RawDefinition {
-                spelling: format!("-D{option}"),
-                name: option.to_string(),
-                value: None,
-            },
-        })
-        .collect();
-    CompilerDefinitions::from_raw(target, &raw).expect("the test definitions are valid")
+    let mut definitions = CompilerDefinitions::new(target);
+    for option in options {
+        let (name, value) = match option.split_once('=') {
+            Some((name, text)) => {
+                let literal = parse_literal(text).expect("the test literal parses");
+                let value = decode_literal(&literal, target.pointer_bits())
+                    .expect("the test literal decodes");
+                (name, value)
+            }
+            None => (*option, DefinitionValue::Bool(true)),
+        };
+        assert!(
+            definitions.define(Ident(name.into()), value),
+            "{name} is defined twice in one test configuration"
+        );
+    }
+    definitions
 }
 
 fn item(condition: &str) -> omega_parser::prelude::ItemNode {

@@ -1,6 +1,5 @@
 use crate::cli::{self, Args, Command};
 use omega_analyzer::Target;
-use omega_analyzer::compiler_definitions::CompilerDefinitions;
 use omega_codegen::{CodegenRequest, EmitKind, EmitOutput, EmittedArtifact};
 use omega_diagnostics::{GREEN, Renderer, SourceRegistry, paint};
 use omega_driver::{Driver, basename};
@@ -74,17 +73,7 @@ fn compile(args: Args) -> Result<(), AppError> {
         );
     }
 
-    // Definitions are decoded against the selected target, so an option's
-    // meaning never depends on where it sits relative to '--target'.
-    let definitions = CompilerDefinitions::from_raw(target, &definitions).map_err(|errors| {
-        AppError::Message(
-            errors
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join("\n"),
-        )
-    })?;
+    let definitions = cli::resolve_definitions(target, &definitions)?;
 
     let mut driver =
         Driver::new_with_definitions(entry_dir, name, externs, definitions).map_err(|errors| {

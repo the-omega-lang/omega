@@ -1,14 +1,34 @@
 use omega_analyzer::Target;
 use omega_analyzer::annotation_eval::ConditionErrorKind;
 use omega_analyzer::checked::CheckedItem;
-use omega_analyzer::compiler_definitions::{CompilerDefinitions, RawDefinition};
+use omega_analyzer::compiler_definitions::{CompilerDefinitions, DefinitionValue, decode_literal};
 use omega_driver::{CompileError, CompiledProgram, Driver, ExternRoot};
-use omega_parser::prelude::Ident;
+use omega_parser::prelude::{Ident, parse_literal};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 static NEXT_DIR: AtomicUsize = AtomicUsize::new(0);
+
+/// One `name[=literal]` per option, the same shape a `-D` option carries
+/// after `omgc` has split it.
+fn definitions(options: &[&str]) -> CompilerDefinitions {
+    let target = Target::DEFAULT;
+    let mut definitions = CompilerDefinitions::new(target);
+    for option in options {
+        let (name, value) = match option.split_once('=') {
+            Some((name, text)) => {
+                let literal = parse_literal(text).expect("the test literal parses");
+                let value = decode_literal(&literal, target.pointer_bits())
+                    .expect("the test literal decodes");
+                (name, value)
+            }
+            None => (*option, DefinitionValue::Bool(true)),
+        };
+        assert!(definitions.define(Ident(name.into()), value));
+    }
+    definitions
+}
 
 struct TestPackage(PathBuf);
 
@@ -36,24 +56,7 @@ impl TestPackage {
     }
 
     fn driver_with_externs(&self, options: &[&str], externs: Vec<ExternRoot>) -> Driver {
-        let raw: Vec<RawDefinition> = options
-            .iter()
-            .map(|option| match option.split_once('=') {
-                Some((name, value)) => RawDefinition {
-                    spelling: format!("-D{option}"),
-                    name: name.to_string(),
-                    value: Some(value.to_string()),
-                },
-                None => RawDefinition {
-                    spelling: format!("-D{option}"),
-                    name: option.to_string(),
-                    value: None,
-                },
-            })
-            .collect();
-        let definitions = CompilerDefinitions::from_raw(Target::DEFAULT, &raw)
-            .expect("the test definitions are valid");
-        Driver::new_with_definitions(self.0.clone(), None, externs, definitions)
+        Driver::new_with_definitions(self.0.clone(), None, externs, definitions(options))
             .expect("construct driver")
     }
 

@@ -1,5 +1,5 @@
 use omega_analyzer::Target;
-use omega_analyzer::compiler_definitions::RawDefinition;
+use omega_analyzer::compiler_definitions::{CompilerDefinitions, DefinitionValue, decode_literal};
 use omega_codegen::{EmitKind, OptLevel};
 use omega_diagnostics::{BOLD, CYAN, paint};
 use omega_driver::{ExternRoot, basename};
@@ -17,7 +17,7 @@ pub(crate) struct Args {
     /// Every `-D` option in the order it was written, still undecoded: the
     /// values are validated against the final target, not against whichever
     /// target had been selected when the option was read.
-    pub(crate) definitions: Vec<RawDefinition>,
+    pub(crate) definitions: Vec<DefinitionOption>,
     pub(crate) output_dir: PathBuf,
     pub(crate) externs: Vec<ExternRoot>,
     pub(crate) name: Option<Ident>,
@@ -101,17 +101,92 @@ fn parse_compile(args: &[String]) -> Result<Args, String> {
     })
 }
 
+/// One `-D` option as the command line spelled it, before its name or value
+/// is known to be well formed. Repeated names are kept, in input order, so
+/// each conflict can be reported against the two options that caused it.
+#[derive(Debug, Clone)]
+pub(crate) struct DefinitionOption {
+    /// The option as written, quoted back in diagnostics.
+    spelling: String,
+    name: String,
+    /// `None` for `-Dname`, which defines a boolean truth.
+    value: Option<String>,
+}
+
 /// `name` or `name=<literal>`. Only the first `=` separates them, so a value
 /// may contain one; the value itself stays undecoded here.
-fn parse_definition(spelling: &str, value: &str) -> RawDefinition {
+fn parse_definition(spelling: &str, value: &str) -> DefinitionOption {
     let (name, value) = match value.split_once('=') {
         Some((name, value)) => (name, Some(value.to_string())),
         None => (value, None),
     };
-    RawDefinition {
+    DefinitionOption {
         spelling: spelling.to_string(),
         name: name.to_string(),
         value,
+    }
+}
+
+/// Turns the collected options into the compilation's configuration.
+///
+/// This runs once the target is final, so an option's meaning never depends
+/// on where it sits relative to `--target`, and every option is checked --
+/// including one nothing reads. Each failure is reported against the option
+/// that caused it, so all of them are collected rather than only the first.
+pub(crate) fn resolve_definitions(
+    target: Target,
+    options: &[DefinitionOption],
+) -> Result<CompilerDefinitions, String> {
+    let mut definitions = CompilerDefinitions::new(target);
+    let mut spellings: Vec<(&str, &str)> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+
+    for option in options {
+        let invalid =
+            |reason: String| format!("invalid definition '{}': {reason}", option.spelling);
+        if !omega_parser::lexer::is_valid_identifier(&option.name) {
+            errors.push(invalid(format!(
+                "'{}' is not a valid definition name -- a name is a single Omega identifier \
+                 (ASCII letters/digits/underscore, not starting with a digit, and not a keyword)",
+                option.name
+            )));
+            continue;
+        }
+        if let Some((_, first)) = spellings.iter().find(|(name, _)| *name == option.name) {
+            errors.push(format!(
+                "definition '{}' is defined more than once ('{first}' and '{}') -- one \
+                 invocation has one value for each definition",
+                option.name, option.spelling
+            ));
+            continue;
+        }
+        let value = match option.value.as_deref() {
+            None => Ok(DefinitionValue::Bool(true)),
+            Some("") => Err(
+                "a definition needs a value after '='; write '-Dname' for a boolean truth"
+                    .to_string(),
+            ),
+            Some(text) => omega_parser::prelude::parse_literal(text)
+                .map_err(|error| error.to_string())
+                .and_then(|literal| {
+                    decode_literal(&literal, target.pointer_bits()).map_err(|e| e.to_string())
+                }),
+        };
+        match value {
+            Ok(value) => {
+                spellings.push((&option.name, &option.spelling));
+                // The duplicate check above already refused a repeated name,
+                // so this is the first and only definition of it.
+                assert!(definitions.define(Ident(option.name.clone()), value));
+            }
+            Err(reason) => errors.push(invalid(reason)),
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(definitions)
+    } else {
+        Err(errors.join("\n"))
     }
 }
 
@@ -417,7 +492,7 @@ mod tests {
         assert_eq!(parsed.entry_dir, PathBuf::from("deps/core"));
     }
 
-    fn definitions(values: &[&str]) -> Vec<RawDefinition> {
+    fn definitions(values: &[&str]) -> Vec<DefinitionOption> {
         let Ok(Command::Compile(parsed)) = parse(&args(&[&["src", "-o", "out"], values].concat()))
         else {
             panic!("expected compile command for {values:?}");
@@ -451,8 +526,8 @@ mod tests {
         assert_eq!(collected[0].value.as_deref(), Some("\"a=b\""));
     }
 
-    /// The CLI only splits; every repeated name reaches definition
-    /// validation, which is where one invocation's configuration is settled.
+    /// Splitting keeps every occurrence; `resolve_definitions` is where a
+    /// repeated name becomes the conflict it is.
     #[test]
     fn repeated_definitions_are_preserved_in_input_order() {
         let collected = definitions(&["-Dflag=1", "-Dflag=2"]);
@@ -482,6 +557,89 @@ mod tests {
         assert_eq!(parsed.definitions.len(), 1);
         assert_eq!(parsed.target, Target::parse("avr-none").expect("valid"));
         assert_eq!(parsed.opt_level, OptLevel::O2);
+    }
+
+    fn resolved(target: Target, values: &[&str]) -> Result<CompilerDefinitions, String> {
+        resolve_definitions(target, &definitions(values))
+    }
+
+    fn resolve_error(values: &[&str]) -> String {
+        resolved(Target::DEFAULT, values).expect_err("these options must be rejected")
+    }
+
+    #[test]
+    fn a_bare_name_defines_a_truth_and_a_value_is_decoded() {
+        let definitions = resolved(Target::DEFAULT, &["-Dflag", "-Dcount=12", "-Dlabel=\"x\""])
+            .expect("valid options");
+        assert_eq!(
+            definitions.user(&Ident("flag".into())),
+            Some(&DefinitionValue::Bool(true))
+        );
+        assert_eq!(
+            definitions.user(&Ident("label".into())),
+            Some(&DefinitionValue::Str("x".into()))
+        );
+        assert!(definitions.user(&Ident("count".into())).is_some());
+        assert_eq!(definitions.user(&Ident("never_supplied".into())), None);
+    }
+
+    #[test]
+    fn a_definition_name_must_be_one_plain_identifier() {
+        for option in ["-D=1", "-D0abc", "-Dfoo-bar", "-Dif", "-Da::b"] {
+            let message = resolve_error(&[option]);
+            assert!(
+                message.contains("definition name") && message.contains(option),
+                "{option}: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_repeated_name_is_reported_against_both_options() {
+        let message = resolve_error(&["-Dflag=1", "-Dflag=2"]);
+        assert!(message.contains("more than once"), "{message}");
+        assert!(
+            message.contains("-Dflag=1") && message.contains("-Dflag=2"),
+            "both spellings must appear: {message}"
+        );
+        assert!(resolve_error(&["-Dflag", "-D", "flag=true"]).contains("more than once"));
+    }
+
+    #[test]
+    fn a_malformed_value_names_the_option_that_carried_it() {
+        for (option, expected) in [
+            ("-Dlabel=release", "expected one literal value"),
+            ("-Dcount=", "needs a value"),
+            ("-Dcount=300u8", "does not fit"),
+        ] {
+            let message = resolve_error(&[option]);
+            assert!(
+                message.contains(expected) && message.contains(option),
+                "{option}: {message}"
+            );
+        }
+    }
+
+    /// Every failure is collected, so one mistake does not hide the next.
+    #[test]
+    fn every_invalid_option_is_reported() {
+        let message = resolve_error(&["-D0abc", "-Dgood=1", "-Dbad=release"]);
+        assert!(message.contains("0abc"), "{message}");
+        assert!(message.contains("-Dbad=release"), "{message}");
+        assert_eq!(message.lines().count(), 2, "{message}");
+    }
+
+    /// Options are decoded once the target is final, so an unused definition
+    /// is checked against the target that was actually selected.
+    #[test]
+    fn a_definition_is_validated_against_the_final_target() {
+        let narrow = Target::parse("avr-none").expect("valid target");
+        assert!(
+            resolved(narrow, &["-Dunused=65536usize"])
+                .expect_err("16-bit usize cannot hold 65536")
+                .contains("16-bit")
+        );
+        assert!(resolved(Target::DEFAULT, &["-Dunused=65536usize"]).is_ok());
     }
 
     #[test]

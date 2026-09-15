@@ -1,42 +1,24 @@
 use super::*;
 use crate::target::{Arch, Os};
+use omega_parser::prelude::parse_literal;
 
-fn raw(spelling: &str) -> RawDefinition {
-    let body = spelling.strip_prefix("-D").expect("a -D option");
-    match body.split_once('=') {
-        Some((name, value)) => RawDefinition {
-            spelling: spelling.to_string(),
-            name: name.to_string(),
-            value: Some(value.to_string()),
-        },
-        None => RawDefinition {
-            spelling: spelling.to_string(),
-            name: body.to_string(),
-            value: None,
-        },
-    }
+/// Decodes one written literal exactly as a supplied definition's value is
+/// decoded. What spelling delivered it is the caller's business, not this
+/// module's.
+fn decoded(target: Target, literal: &str) -> Result<DefinitionValue, String> {
+    parse_literal(literal)
+        .map_err(|error| error.to_string())
+        .and_then(|literal| {
+            decode_literal(&literal, target.pointer_bits()).map_err(|error| error.to_string())
+        })
 }
 
-fn define(target: Target, options: &[&str]) -> Result<CompilerDefinitions, Vec<DefinitionError>> {
-    let raw: Vec<RawDefinition> = options.iter().map(|option| raw(option)).collect();
-    CompilerDefinitions::from_raw(target, &raw)
+fn value(literal: &str) -> DefinitionValue {
+    decoded(Target::DEFAULT, literal).unwrap_or_else(|error| panic!("{literal}: {error}"))
 }
 
-fn value(options: &[&str], name: &str) -> DefinitionValue {
-    let definitions = define(Target::DEFAULT, options).expect("the options are valid");
-    definitions
-        .user(&Ident(name.into()))
-        .expect("the definition was supplied")
-        .clone()
-}
-
-fn rejected(target: Target, option: &str) -> String {
-    let errors = define(target, &[option]).expect_err("the option must be rejected");
-    errors
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join("; ")
+fn rejected(target: Target, literal: &str) -> String {
+    decoded(target, literal).expect_err(&format!("{literal} must be rejected"))
 }
 
 fn int(value: i128, signed: bool, width: u32) -> DefinitionValue {
@@ -47,75 +29,59 @@ fn int(value: i128, signed: bool, width: u32) -> DefinitionValue {
 }
 
 #[test]
-fn a_name_without_a_value_defines_a_truth() {
-    assert_eq!(
-        value(&["-Denabled"], "enabled"),
-        DefinitionValue::Bool(true)
-    );
-    assert_eq!(
-        value(&["-Dflag=false"], "flag"),
-        DefinitionValue::Bool(false)
-    );
-}
-
-#[test]
 fn every_literal_kind_keeps_the_kind_it_was_written_as() {
-    assert_eq!(value(&["-Dn=123"], "n"), int(123, true, 32));
+    assert_eq!(value("true"), DefinitionValue::Bool(true));
+    assert_eq!(value("false"), DefinitionValue::Bool(false));
+    assert_eq!(value("123"), int(123, true, 32));
     assert_eq!(
-        value(&["-Dratio=1.5"], "ratio"),
+        value("1.5"),
         DefinitionValue::Float {
             value: 1.5,
             width: 32
         }
     );
-    assert_eq!(value(&["-Dc='x'"], "c"), DefinitionValue::Char('x'));
+    assert_eq!(value("'x'"), DefinitionValue::Char('x'));
     assert_eq!(
-        value(&["-Dlabel=\"release build\""], "label"),
+        value("\"release build\""),
         DefinitionValue::Str("release build".into())
     );
-    assert_eq!(
-        value(&["-Dbytes=b\"raw\""], "bytes"),
-        DefinitionValue::ByteStr("raw".into())
-    );
+    assert_eq!(value("b\"raw\""), DefinitionValue::ByteStr("raw".into()));
 }
 
 #[test]
 fn escapes_and_unicode_decode_exactly_once() {
-    assert_eq!(value(&[r#"-Dc='\n'"#], "c"), DefinitionValue::Char('\n'));
+    assert_eq!(value(r"'\n'"), DefinitionValue::Char('\n'));
+    assert_eq!(value(r"'\u{1F600}'"), DefinitionValue::Char('\u{1F600}'));
     assert_eq!(
-        value(&[r#"-Dc='\u{1F600}'"#], "c"),
-        DefinitionValue::Char('\u{1F600}')
-    );
-    assert_eq!(
-        value(&[r#"-Dtext="a\tb\\c""#], "text"),
+        value(r#""a\tb\\c""#),
         DefinitionValue::Str("a\tb\\c".into())
     );
 }
 
 #[test]
 fn a_suffix_selects_the_numeric_type_and_a_base_is_decoded() {
-    assert_eq!(value(&["-Dn=255u8"], "n"), int(255, false, 8));
-    assert_eq!(value(&["-Dn=0xff_u8"], "n"), int(255, false, 8));
-    assert_eq!(value(&["-Dn=0b1010"], "n"), int(10, true, 32));
-    assert_eq!(value(&["-Dn=0o17"], "n"), int(15, true, 32));
-    assert_eq!(value(&["-Dn=1_000_000i64"], "n"), int(1_000_000, true, 64));
-    assert_eq!(value(&["-Dn=-5"], "n"), int(-5, true, 32));
+    assert_eq!(value("255u8"), int(255, false, 8));
+    assert_eq!(value("0xff_u8"), int(255, false, 8));
+    assert_eq!(value("0b1010"), int(10, true, 32));
+    assert_eq!(value("0o17"), int(15, true, 32));
+    assert_eq!(value("1_000_000i64"), int(1_000_000, true, 64));
+    assert_eq!(value("-5"), int(-5, true, 32));
 }
 
 #[test]
 fn a_signed_minimum_decodes_without_wrapping() {
-    assert_eq!(value(&["-Dn=-128i8"], "n"), int(-128, true, 8));
+    assert_eq!(value("-128i8"), int(-128, true, 8));
     assert_eq!(
-        value(&["-Dn=-9223372036854775808i64"], "n"),
+        value("-9223372036854775808i64"),
         int(i64::MIN.into(), true, 64)
     );
     assert_eq!(
-        value(&["-Dn=18446744073709551615u64"], "n"),
+        value("18446744073709551615u64"),
         int(u64::MAX.into(), false, 64)
     );
-    assert!(rejected(Target::DEFAULT, "-Dn=-129i8").contains("does not fit"));
-    assert!(rejected(Target::DEFAULT, "-Dn=128i8").contains("does not fit"));
-    assert!(rejected(Target::DEFAULT, "-Dn=-1u8").contains("negative"));
+    assert!(rejected(Target::DEFAULT, "-129i8").contains("does not fit"));
+    assert!(rejected(Target::DEFAULT, "128i8").contains("does not fit"));
+    assert!(rejected(Target::DEFAULT, "-1u8").contains("negative"));
 }
 
 #[test]
@@ -128,34 +94,25 @@ fn pointer_sized_suffixes_follow_the_selected_target() {
         arch: Arch::Avr,
         os: Os::None,
     };
-    let definitions = define(wide, &["-Dn=65536usize"]).expect("64-bit usize holds 65536");
     assert_eq!(
-        definitions.user(&Ident("n".into())),
-        Some(&int(65536, false, 64))
+        decoded(wide, "65536usize").expect("64-bit usize holds 65536"),
+        int(65536, false, 64)
     );
-    assert!(rejected(narrow, "-Dn=65536usize").contains("16-bit"));
-    assert!(rejected(narrow, "-Dn=-32769isize").contains("16-bit"));
-}
-
-#[test]
-fn every_definition_is_validated_even_when_nothing_reads_it() {
-    let errors = define(Target::DEFAULT, &["-Dgood=1", "-Dbad=300u8"])
-        .expect_err("an unused definition is still checked");
-    assert_eq!(errors.len(), 1);
-    assert!(errors[0].to_string().contains("300"));
+    assert!(rejected(narrow, "65536usize").contains("16-bit"));
+    assert!(rejected(narrow, "-32769isize").contains("16-bit"));
 }
 
 #[test]
 fn a_float_is_rounded_to_its_declared_width() {
     assert_eq!(
-        value(&["-Dn=0.1"], "n"),
+        value("0.1"),
         DefinitionValue::Float {
             value: f64::from(0.1f32),
             width: 32
         }
     );
     assert_eq!(
-        value(&["-Dn=0.1f64"], "n"),
+        value("0.1f64"),
         DefinitionValue::Float {
             value: 0.1f64,
             width: 64
@@ -173,7 +130,7 @@ fn f32_rounding_does_not_pass_through_f64() {
         for suffix in ["", "f32"] {
             for (sign, factor) in [("", 1.0), ("-", -1.0)] {
                 assert_eq!(
-                    value(&[&format!("-Dn={sign}{literal}{suffix}")], "n"),
+                    value(&format!("{sign}{literal}{suffix}")),
                     DefinitionValue::Float {
                         value: f64::from(expected) * factor,
                         width: 32,
@@ -187,78 +144,65 @@ fn f32_rounding_does_not_pass_through_f64() {
 #[test]
 fn an_unrepresentable_float_is_rejected() {
     let huge = "9".repeat(60);
-    assert!(rejected(Target::DEFAULT, &format!("-Dn={huge}.0")).contains("finite"));
+    assert!(rejected(Target::DEFAULT, &format!("{huge}.0")).contains("finite"));
     assert!(
-        define(Target::DEFAULT, &[&format!("-Dn={huge}.0f64")]).is_ok(),
+        decoded(Target::DEFAULT, &format!("{huge}.0f64")).is_ok(),
         "the same magnitude is finite as an f64"
     );
 }
 
 #[test]
 fn a_malformed_or_non_literal_value_is_rejected() {
-    for option in [
-        "-Dlabel=release",
-        "-Dn=1 + 1",
-        "-Dn=1u7",
-        "-Dn=1.5u8",
-        "-Dn=0x1.5",
-        "-Dn=",
-        "-Dn=sizeof<u32>",
-        "-Dn=&[1]",
-        "-Dn=\"unterminated",
+    for literal in [
+        "release",
+        "1 + 1",
+        "1u7",
+        "1.5u8",
+        "0x1.5",
+        "",
+        "sizeof<u32>",
+        "&[1]",
+        "\"unterminated",
     ] {
         assert!(
-            define(Target::DEFAULT, &[option]).is_err(),
-            "{option} must be rejected"
+            decoded(Target::DEFAULT, literal).is_err(),
+            "{literal:?} must be rejected"
         );
     }
 }
 
+/// A configuration has one value per name. Which spelling supplied each one,
+/// and how to report the conflict, belongs to whoever collected them.
 #[test]
-fn a_name_must_be_one_plain_identifier() {
-    for option in [
-        "-D=1",
-        "-D0abc",
-        "-Dfoo-bar",
-        "-Dif",
-        "-Da::b",
-        "-Dwith space",
-    ] {
-        assert!(
-            rejected(Target::DEFAULT, option).contains("definition name"),
-            "{option} must be rejected as a name"
-        );
-    }
+fn a_name_can_only_be_defined_once() {
+    let mut definitions = CompilerDefinitions::new(Target::DEFAULT);
+    let name = Ident("flag".into());
+    assert!(definitions.define(name.clone(), DefinitionValue::Bool(true)));
+    assert!(!definitions.define(name.clone(), DefinitionValue::Bool(false)));
+    assert!(!definitions.define(name.clone(), int(1, true, 32)));
+    assert_eq!(
+        definitions.user(&name),
+        Some(&DefinitionValue::Bool(true)),
+        "a refused definition must not overwrite the one already there"
+    );
 }
 
 #[test]
-fn a_repeated_name_is_rejected_however_it_is_spelled() {
-    for options in [
-        ["-Dflag", "-Dflag"],
-        ["-Dflag=1", "-Dflag=1"],
-        ["-Dflag=1", "-Dflag=2"],
-        ["-Dflag", "-Dflag=true"],
-    ] {
-        let message = define(Target::DEFAULT, &options)
-            .expect_err("a repeated definition must be rejected")
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join("; ");
-        assert!(message.contains("more than once"), "{message}");
-    }
+fn an_undefined_name_is_absent_rather_than_false() {
+    let definitions = CompilerDefinitions::new(Target::DEFAULT);
+    assert_eq!(definitions.user(&Ident("never_supplied".into())), None);
 }
 
 #[test]
 fn builtins_describe_the_selected_target_and_are_not_user_definitions() {
-    let definitions = define(
-        Target {
-            arch: Arch::Avr,
-            os: Os::None,
-        },
-        &["-Dtarget_os=\"custom\""],
-    )
-    .expect("a user definition may share a builtin spelling");
+    let mut definitions = CompilerDefinitions::new(Target {
+        arch: Arch::Avr,
+        os: Os::None,
+    });
+    assert!(definitions.define(
+        Ident("target_os".into()),
+        DefinitionValue::Str("custom".into())
+    ));
 
     assert_eq!(
         definitions.builtin(&Ident("target_os".into())),
