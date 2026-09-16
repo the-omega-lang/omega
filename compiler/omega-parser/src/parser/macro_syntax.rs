@@ -166,6 +166,10 @@ fn parse_macro_body(p: &mut Parser, in_repetition: bool) -> Option<Vec<MacroBody
                 }
                 body.push(MacroBodyPiece::Repetition(parse_repetition(p)?));
             }
+            TokenKind::At if matches!(p.peek_at(1), TokenKind::LBracket) => {
+                p.error(ParseErrorKind::SourceAnnotationNotInPrologue);
+                body.push(MacroBodyPiece::Token(p.advance()));
+            }
             TokenKind::Import => {
                 p.error_at(p.peek_span(), ParseErrorKind::ImportInMacroBody);
                 body.push(MacroBodyPiece::Token(p.advance()));

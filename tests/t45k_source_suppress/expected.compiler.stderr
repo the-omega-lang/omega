@@ -1,0 +1,9 @@
+warning: unnecessary 'mut' on 'value'
+ --> tests/t45k_source_suppress/t45k_source_suppress.omg:7:5
+  |
+7 |     mut value := 2;
+  |     ^^^^^^^^^^^^^^^ `value` is declared `mut` but never reassigned
+  |
+  = help: remove `mut` -- it isn't just a hint, dropping it changes nothing about how this compiles
+  = note: suppress this with '@suppress(unnecessary_mut)'
+

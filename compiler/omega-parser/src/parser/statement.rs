@@ -57,6 +57,11 @@ pub(crate) fn starts_statement(p: &Parser) -> bool {
 }
 
 pub fn parse_statement(p: &mut Parser) -> Option<StatementNode> {
+    if p.check(&TokenKind::At) && matches!(p.peek_at(1), TokenKind::LBracket) {
+        p.error(ParseErrorKind::SourceAnnotationNotInPrologue);
+        p.advance();
+        return None;
+    }
     let start = p.peek_span();
     let (statement, block_shaped) = parse_statement_content(p)?;
     if block_shaped {

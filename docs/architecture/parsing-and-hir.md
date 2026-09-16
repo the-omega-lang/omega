@@ -78,6 +78,13 @@ The AST under `ast/` is source-oriented. It intentionally represents syntax befo
 ## AST and spans
 
 `SourceModule::parse` is the ordinary source -> AST entry point.
+`SourceModule::annotations` holds only the `@[...]` prologue; item annotations
+remain on their respective nodes. Source annotations use the shared annotation
+argument parser but are rejected outside the prologue, including captured macro
+bodies. Macro item expansions reparse item lists without a source prologue.
+The driver resolves the source prologue before publishing a selected AST and
+clears `SourceModule::annotations`, just as it consumes `ItemNode::conditions`.
+Neither field reaches HIR with entries.
 
 A construct that can be diagnosed carries a span appropriate to that construct, including more specific spans such as names/signatures/return types where later diagnostics need them. Do not replace specific child spans with an enclosing item's span merely because the parent already covers the same bytes.
 

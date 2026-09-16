@@ -1,0 +1,9 @@
+@[suppress(unused_variable, unused_import)]
+
+import std::io::println;
+
+main() => void {
+    unused := 1;
+    mut value := 2;
+    value;
+}

@@ -47,6 +47,64 @@ Recognized annotations are `cond`, `layout`, `inline`, `naked`, `suppress`, and 
 
 Other item kinds do not acquire an annotation meaning merely because the generic `@...` syntax exists.
 
+## Source-level annotations
+
+A source annotation uses brackets around the same name and argument grammar:
+
+```ebnf
+source-annotation = "@", "[", identifier, [ "(", [ arg, { ",", arg } ], ")" ], "]" ;
+```
+
+```omega
+@[cond(def::platform_enabled)]
+@[suppress(unused_variable, unused_import)]
+
+import self::support;
+```
+
+Source annotations form a prologue before any top-level item or its node-level
+annotations. Comments and whitespace may separate them. A file containing only
+a prologue is valid syntax. Bare `@[name]` and `@[name()]` both have zero arguments.
+`@[...]` after an item, on a member or statement, or inside a macro body is a
+parse error. A node-level `@cond` before the first item still belongs to that item.
+
+| Annotation | Source level | Meaning or reason for rejection |
+|---|---|---|
+| `cond` | yes | selects the module and its whole subtree |
+| `suppress` | yes | suppresses named warnings reported against this source file |
+| `layout` | no | a file has no layout; it does not set defaults for its types |
+| `inline` | no | a file has no body to inline |
+| `naked` | no | a file has no machine-level body |
+| `symbol` | no | a file owns no symbol; names and visibility remain per-item decisions |
+
+An unknown annotation is an error distinct from a recognized annotation that
+is not applicable at source level. Each source-level annotation may occur at
+most once per file; in particular a second `@[cond]` is an error regardless of
+either condition's value.
+
+`@[cond]` takes exactly one positional condition, with the same evaluation rules
+as `@cond` below. A valid false condition makes this module and every descendant
+module nonexistent for imports, semantic registration, and artifact emission.
+The annotated file itself must parse completely. Descendant files of a disabled
+module are not read, so their syntax is not checked. The well-formedness rule
+therefore applies to files the compilation reads, not to every file on disk.
+The same configuration and selection rules apply to local and external packages.
+If every local source module is conditioned out, compilation reports that fact
+as an error.
+
+Existence is decided first: duplicate or malformed `@[cond]` annotations and
+conditions that cannot be evaluated are errors, never false conditions. Once a
+single condition evaluates to false, the remaining source annotations and
+node-level conditions are not validated. On surviving sources, the remaining
+source annotations are checked for applicability, multiplicity, and arguments.
+
+`@[suppress(a, b)]` takes bare warning names, just as `@suppress` does. Names need
+not identify a known warning. It drops suppressible warnings reported against
+this file, including warnings about unused imports and other whole-program
+findings. It does not suppress warnings in child or sibling files, and it
+cannot suppress warnings designated unsuppressible (such as `unfilled_gap`).
+This is a source diagnostic scope, not a default annotation copied onto items.
+
 ## `@cond(condition)`
 
 `@cond` decides whether a top-level declaration exists at all in this compilation.
@@ -64,7 +122,7 @@ exposed reset_handler() => never { ... }
 
 A false condition removes the declaration before anything else looks at it. A removed declaration claims no name, adds no overload, resolves no import or alias, registers no primitive, conformance, or glue, is never signature- or body-checked, is never instantiated, and reaches no emitted artifact. Two declarations of one name are therefore allowed when their conditions are mutually exclusive; two *enabled* declarations of one name collide exactly as they always would.
 
-This is a selection, not an escape from the grammar. The whole physical source is still lexed and parsed, so disabled source must be well formed, and a declaration's own place in the grammar still applies.
+This is a selection, not an escape from the grammar. Every physical source file the compilation reads is still fully lexed and parsed, so disabled declarations in those files must be well formed, and a declaration's own place in the grammar still applies.
 
 `@cond` takes exactly one positional condition. Bare `@cond`, `@cond()`, a named argument, more than one argument, and a second `@cond` on one declaration are all errors, whatever the conditions evaluate to.
 

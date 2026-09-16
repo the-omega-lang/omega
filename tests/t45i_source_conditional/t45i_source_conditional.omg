@@ -1,0 +1,8 @@
+import std::io::println;
+import self::thing;
+import self::thing::child;
+
+main() => void {
+    println$("parent: ", thing::value());
+    println$("child: ", child::value());
+}

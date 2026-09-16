@@ -51,21 +51,31 @@ pub(super) fn parse_annotations(p: &mut Parser) -> Vec<AnnotationNode> {
     annotations
 }
 
+pub(crate) fn at_source_annotation(p: &Parser) -> bool {
+    p.check(&TokenKind::At) && matches!(p.peek_at(1), TokenKind::LBracket)
+}
+
 fn parse_annotation_list(p: &mut Parser) -> Vec<AnnotationNode> {
     let mut annotations = Vec::new();
     while p.check(&TokenKind::At) {
+        let source = at_source_annotation(p);
+        if source {
+            p.error(ParseErrorKind::SourceAnnotationNotInPrologue);
+        }
         match parse_annotation(p) {
-            Some(annotation) => annotations.push(annotation),
+            Some(annotation) if !source => annotations.push(annotation),
+            Some(_) => {}
             None => recovery::synchronize_to_statement_boundary(p),
         }
     }
     annotations
 }
 
-fn parse_annotation(p: &mut Parser) -> Option<AnnotationNode> {
+pub(super) fn parse_annotation(p: &mut Parser) -> Option<AnnotationNode> {
     let start = p.peek_span();
     let origin = p.peek_origin();
     p.expect(&TokenKind::At, "'@'");
+    let source = p.eat(&TokenKind::LBracket);
     let name = p.expect_ident()?;
     let mut args = Vec::new();
     if p.eat(&TokenKind::LParen) {
@@ -78,6 +88,9 @@ fn parse_annotation(p: &mut Parser) -> Option<AnnotationNode> {
             }
         }
         p.expect(&TokenKind::RParen, "')'");
+    }
+    if source {
+        p.expect(&TokenKind::RBracket, "']'");
     }
     let span = start.to(p.last_span());
     Some(AnnotationNode {

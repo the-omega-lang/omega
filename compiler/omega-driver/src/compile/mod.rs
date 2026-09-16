@@ -66,6 +66,7 @@ mod signatures;
 
 impl Driver {
     pub fn compile(&mut self, entry: &[Ident]) -> Result<CompiledProgram, Vec<CompileError>> {
+        self.select_modules()?;
         let Some(local) = self.local_module_paths() else {
             // Reject an empty package before semantic sweeps so the user gets
             // the direct package error instead of secondary resolution
@@ -151,6 +152,7 @@ impl Driver {
         warnings.extend(self.sweep_dead_code(compilation.emitted(), &usage));
         warnings.extend(gap_warnings);
         deduplicate_warnings(&mut warnings);
+        self.apply_source_suppressions(&mut warnings);
 
         let extern_functions = self.collect_extern_functions();
         Ok(CompiledProgram {

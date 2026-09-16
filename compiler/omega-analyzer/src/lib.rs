@@ -8,6 +8,7 @@ pub mod checked;
 pub mod comp_eval;
 pub mod compiler_definitions;
 mod context;
+pub mod source_annotations;
 pub use context::{DeclarationPolicy, is_reserved_type_name};
 pub mod dead_code;
 pub mod error;

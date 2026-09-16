@@ -66,6 +66,10 @@ pub(crate) enum LoadFailure {
 #[derive(Default)]
 pub(crate) struct ModuleStore {
     modules: HashMap<ModulePath, ParsedModule>,
+    raw_asts: HashMap<ModulePath, Rc<SourceModule>>,
+    raw_failures: HashMap<ModulePath, String>,
+    pub(crate) source_annotations:
+        HashMap<ModulePath, omega_analyzer::source_annotations::SourceAnnotations>,
     asts: HashMap<ModulePath, Rc<SourceModule>>,
     macro_defs: HashMap<ModulePath, Rc<HashMap<Ident, MacroDefinitionStmt>>>,
     /// Which of a module's macro bindings came from an `alias` rather than a
@@ -182,18 +186,29 @@ impl ModuleStore {
 }
 
 impl Driver {
-    fn ensure_ast(
+    pub(crate) fn ensure_raw_ast(
         &mut self,
         path: &[Ident],
         file: &std::path::Path,
     ) -> Result<Rc<SourceModule>, ResolveError> {
-        if let Some(ast) = self.modules.asts.get(path) {
+        if let Some(message) = self.modules.raw_failures.get(path) {
+            return Err(ResolveError::LoadFailed {
+                path: path.to_vec(),
+                message: message.clone(),
+            });
+        }
+        if let Some(ast) = self.modules.raw_asts.get(path) {
             return Ok(ast.clone());
         }
 
-        let source = std::fs::read_to_string(file).map_err(|e| ResolveError::LoadFailed {
-            path: path.to_vec(),
-            message: e.to_string(),
+        let source = std::fs::read_to_string(file).map_err(|e| {
+            self.modules
+                .raw_failures
+                .insert(path.to_vec(), e.to_string());
+            ResolveError::LoadFailed {
+                path: path.to_vec(),
+                message: e.to_string(),
+            }
         })?;
         let id = self
             .modules
@@ -202,6 +217,9 @@ impl Driver {
         self.modules.source_ids.insert(path.to_vec(), id);
         let ast = SourceModule::parse(&source).map_err(|errors| {
             self.modules
+                .raw_failures
+                .insert(path.to_vec(), "the module has syntax errors".into());
+            self.modules
                 .failures
                 .insert(path.to_vec(), LoadFailure::Parse(errors));
             ResolveError::LoadFailed {
@@ -209,11 +227,32 @@ impl Driver {
                 message: "the module has syntax errors".into(),
             }
         })?;
+        let ast = Rc::new(ast);
+        self.modules.raw_asts.insert(path.to_vec(), ast.clone());
+        Ok(ast)
+    }
+
+    pub(crate) fn source_selection_failure(&mut self, path: &[Ident], failure: LoadFailure) {
+        self.modules
+            .raw_failures
+            .insert(path.to_vec(), "the source annotations are invalid".into());
+        self.modules.failures.insert(path.to_vec(), failure);
+    }
+
+    fn ensure_ast(
+        &mut self,
+        path: &[Ident],
+        file: &std::path::Path,
+    ) -> Result<Rc<SourceModule>, ResolveError> {
+        if let Some(ast) = self.modules.asts.get(path) {
+            return Ok(ast.clone());
+        }
+        let ast = self.ensure_raw_ast(path, file)?;
         // Conditions are evaluated before the tree is published, so macro
         // binding, name claiming, and every later phase only ever see the
         // declarations this configuration selected.
         let mut nodes = Vec::with_capacity(ast.nodes.len());
-        for mut node in ast.nodes {
+        for mut node in ast.nodes.iter().cloned() {
             match item_is_enabled(&self.definitions, &mut node) {
                 Ok(true) => nodes.push(node),
                 Ok(false) => {}
@@ -228,7 +267,10 @@ impl Driver {
                 }
             }
         }
-        let ast = Rc::new(SourceModule { nodes });
+        let ast = Rc::new(SourceModule {
+            annotations: vec![],
+            nodes,
+        });
         self.modules.asts.insert(path.to_vec(), ast.clone());
         Ok(ast)
     }

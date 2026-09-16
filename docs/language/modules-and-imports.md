@@ -32,9 +32,15 @@ A known edge case in the current implementation's same-name-directory discovery 
 
 ## Local package membership
 
-Every module discovered under the local package root is part of that package's compilation set, whether or not another local module imports it. Imports are required to *name/reference* declarations, not to decide whether a local source file belongs to the package.
+Every discovered module that survives source-level conditional selection is part of the local package's compilation set, whether or not another local module imports it. Imports are required to *name/reference* declarations, not to decide whether a local source file belongs to the package.
 
-Consequently, a malformed local module cannot become valid merely because no other module imports it.
+A module whose source has a valid false `@[cond(...)]` does not exist in this
+compilation, and neither do its children. Imports cannot reach that subtree and
+it contributes no emitted source artifact. Its own file must parse, but its
+children's files are not read. These rules also apply to external packages; see
+[source-level annotations](annotations-and-sizeof.md#source-level-annotations).
+
+Consequently, a malformed local module cannot become valid merely because no other module imports it. Descendants of a source-conditioned-out module are outside the compilation's source-reading scope.
 
 ## Import syntax
 

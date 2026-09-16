@@ -15,7 +15,7 @@ Whitespace/comments are omitted.
 ## Compilation unit
 
 ```ebnf
-module = { [ annotation-list ], item } ;
+module = { source-annotation }, { [ annotation-list ], item } ;
 
 item = import
      | foreign-binding
@@ -41,7 +41,7 @@ global-declaration = [ visibility ], [ "mut" ], identifier, ":", type, [ "=", ex
 global-binding = [ visibility ], [ "mut" ], [ "comp" ], identifier, ":=", expression ;
 ```
 
-Annotations are syntactically accepted only before supported item kinds; semantic applicability is defined in [`annotations-and-sizeof.md`](annotations-and-sizeof.md). `@cond` is the one annotation every `item` above accepts, and it is accepted nowhere else in this grammar: a condition selects a whole item, so an `annotation-list` attached to a member, field, variant, or statement rejects it.
+Source annotations (`@[...]`) occur only in the compilation-unit prologue, before any item or item annotation. They are forbidden inside macro bodies. Node-level annotations are syntactically accepted only before supported item kinds; semantic applicability is defined in [`annotations-and-sizeof.md`](annotations-and-sizeof.md). `@cond` is the one annotation every `item` above accepts, and it is accepted nowhere else in this grammar: a condition selects a whole item, so an `annotation-list` attached to a member, field, variant, or statement rejects it.
 
 Top-level source may contain imports, foreign bindings/functions/blocks, aggregate/spec/gap/glue/conformance/primitive declarations, macro definitions/invocations, global bindings/declarations, and function definitions. Local aggregate/spec declarations -- and local `foreign` items of any shape -- are not permitted inside function bodies.
 
@@ -385,6 +385,7 @@ Macro parameter kinds and repetition are specified in [`macros.md`](macros.md); 
 ## Annotations
 
 ```ebnf
+source-annotation = "@", "[", identifier, [ "(", [ annotation-args ], ")" ], "]" ;
 annotation-list = { annotation } ;
 annotation = "@", identifier, [ "(", [ annotation-args ], ")" ] ;
 annotation-args = annotation-arg, { ",", annotation-arg } ;

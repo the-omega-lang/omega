@@ -1,0 +1,3 @@
+import self::thing::child;
+
+main() => void {}

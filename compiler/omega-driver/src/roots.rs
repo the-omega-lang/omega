@@ -180,6 +180,29 @@ impl ModuleRoots {
         self.local_tree.iter()
     }
 
+    pub fn source_modules(&self) -> Vec<ModulePath> {
+        let mut paths = Self::real_modules(&self.local_tree);
+        paths.extend(self.extern_modules());
+        paths.sort_by(|a, b| a.iter().map(Ident::as_ref).cmp(b.iter().map(Ident::as_ref)));
+        paths
+    }
+
+    pub fn prune(&mut self, disabled: &[ModulePath]) {
+        let keep = |path: &ModulePath, _: &mut Result<ModuleLocation, ResolveError>| {
+            !disabled.iter().any(|parent| path.starts_with(parent))
+        };
+        self.local_tree.retain(keep);
+        for tree in self.extern_trees.values_mut() {
+            tree.retain(keep);
+        }
+        self.local_identity = self
+            .local_tree
+            .keys()
+            .find(|path| path.len() == 1)
+            .and_then(|path| path.first())
+            .cloned();
+    }
+
     /// Every source-bearing local `.omg` file, sorted by its path relative to
     /// the package root. A namespace-only directory bears no source of its
     /// own and therefore has no entry.
@@ -286,6 +309,39 @@ mod tests {
         std::fs::create_dir_all(path.parent().expect("test file has a parent"))
             .expect("create test module parent");
         std::fs::write(path, "").expect("write test module");
+    }
+
+    #[test]
+    fn pruning_removes_subtrees_and_recomputes_local_identity() {
+        let local = TestDir::new();
+        let external = TestDir::new();
+        write(&local.0, "thing/thing.omg");
+        write(&local.0, "thing/child.omg");
+        write(&local.0, "keep.omg");
+        write(&external.0, "thing/thing.omg");
+        write(&external.0, "thing/child.omg");
+        let name = Ident("local".into());
+        let ext = Ident("ext".into());
+        let mut roots = ModuleRoots::new(
+            local.0.clone(),
+            Some(name.clone()),
+            vec![ExternRoot {
+                name: ext.clone(),
+                dir: external.0.clone(),
+            }],
+        )
+        .unwrap();
+        roots.prune(&[vec![name.clone(), Ident("thing".into())], vec![ext.clone()]]);
+        assert_eq!(roots.local_sources().len(), 1);
+        assert!(roots.extern_modules().is_empty());
+        assert!(matches!(
+            roots.locate(&[name.clone(), Ident("thing".into()), Ident("child".into())]),
+            Err(ResolveError::UnknownModule(_))
+        ));
+        assert!(roots.is_known_top_level(&name));
+        roots.prune(&[vec![name.clone()]]);
+        assert!(!roots.is_known_top_level(&name));
+        assert!(roots.local_sources().is_empty());
     }
 
     #[test]

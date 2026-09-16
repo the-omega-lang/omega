@@ -154,7 +154,7 @@ impl<'a, E> Expander<'a, E> {
         let tokens = self.substitute_invocation(&def, inv, call_span)?;
         let padded = with_eof(&tokens);
         let mut p = Parser::new(&padded);
-        let nodes = crate::parser::item::parse_source_module(&mut p);
+        let nodes = crate::parser::item::parse_items(&mut p);
         let errors = p.into_errors();
         if !errors.is_empty() {
             return Err(MacroError::new(MacroErrorKind::ExpansionParseError {

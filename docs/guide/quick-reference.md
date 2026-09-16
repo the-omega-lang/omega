@@ -513,6 +513,19 @@ exposed reset_handler() => never { ... }
 
 Definitions come from `omgc -Dname[=literal]` (see [`compiler-cli.md`](compiler-cli.md#compiler-definitions)). A definition that was never supplied reads as `false` where a boolean is expected, and is an error where a value is compared. `@cond` goes on a whole top-level declaration -- never on a member, field, variant, or statement.
 
+Use brackets for a whole-file prologue, before imports or other declarations:
+
+```omega
+@[cond(def::platform_enabled)]
+@[suppress(unused_variable, unused_import)]
+
+import self::support;
+```
+
+A false source condition removes the module and its children. Source suppression
+covers warnings reported against this file only. Only `cond` and `suppress`
+support this placement.
+
 Other supported annotations are normative in [`../language/annotations-and-sizeof.md`](../language/annotations-and-sizeof.md).
 
 ## Macros

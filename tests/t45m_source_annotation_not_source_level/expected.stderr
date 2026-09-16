@@ -1,0 +1,7 @@
+error: '@inline' is not a source-level annotation
+ --> tests/t45m_source_annotation_not_source_level/t45m_source_annotation_not_source_level.omg:1:1
+  |
+1 | @[inline]
+  | ^^^^^^^^^ in this source-level annotation
+
+error: could not compile the program due to 1 previous error

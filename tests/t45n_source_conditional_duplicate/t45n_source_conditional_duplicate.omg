@@ -1,0 +1,4 @@
+@[cond(false)]
+@[cond(true)]
+
+main() => void {}

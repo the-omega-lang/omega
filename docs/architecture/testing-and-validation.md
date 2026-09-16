@@ -92,11 +92,18 @@ Expectation files are optional and exact:
 
 - `expected.stdout` checks stdout;
 - `expected.stderr` checks stderr;
+- `expected.compiler.stderr` checks compiler stderr after a successful compilation;
 - `expected.status` checks the termination status of a successfully linked program.
 
 If compilation fails, the current runner compares the compiler's stdout/stderr against the same expectation files. A compile failure without `expected.stderr` is treated as unexpected. If compilation succeeds, link failure is always a test failure.
 
-Only a *failed* compilation exposes compiler output to these files; once compilation succeeds the runner compares the linked program's own streams, so warnings emitted by a successful compile are invisible here. Assert warning behavior in the owning crate's tests (`compiler/omega-driver/tests/` for whole-package warnings) instead.
+After successful compilation, `expected.stdout` and `expected.stderr` describe
+the linked program's streams. Use `expected.compiler.stderr` to assert exact
+compiler warnings independently of runtime output; an empty file requires a
+warning-free compilation. Compiler failure still requires `expected.stderr`, so
+a warning test cannot accidentally pass on a failed compilation. Component
+warning tests also belong in the owning crate (`compiler/omega-driver/tests/`
+for whole-package warnings).
 
 Without `expected.status`, a successfully linked program must exit successfully in addition to matching any expected streams. `expected.status` replaces that requirement with an exact decimal comparison, so a case may assert a deliberately abnormal termination -- a panic reaching the hosted handler, for example, which exits `134`.
 

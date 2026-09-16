@@ -1,0 +1,3 @@
+@[cond(def::enabled)]
+
+exposed value() => i32 { 10 }

@@ -20,6 +20,7 @@ fn items(source: &str) -> Vec<Item> {
     let (tokens, _) = lexer::tokenize(source);
     let mut parser = parser::Parser::new(&tokens);
     parser::item::parse_source_module(&mut parser)
+        .nodes
         .into_iter()
         .map(|node| node.item)
         .collect()
@@ -342,7 +343,7 @@ fn glue_rejects_generic_and_self_taking_functions() {
 fn recovered_members(source: &str) -> (Vec<String>, usize) {
     let (tokens, lex_errors) = lexer::tokenize(source);
     let mut parser = parser::Parser::new(&tokens);
-    let nodes = parser::item::parse_source_module(&mut parser);
+    let nodes = parser::item::parse_source_module(&mut parser).nodes;
     let error_count = lex_errors.len() + parser.into_errors().len();
     let names: Vec<Ident> = match &nodes.last().expect("at least one item").item {
         Item::Conform(c) => c.functions.iter().map(|f| f.ident.clone()).collect(),

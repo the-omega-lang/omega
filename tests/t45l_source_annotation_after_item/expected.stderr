@@ -1,0 +1,7 @@
+error: source-level annotations must come before any top-level declaration
+ --> tests/t45l_source_annotation_after_item/t45l_source_annotation_after_item.omg:3:1
+  |
+3 | @[suppress(unused_variable)]
+  | ^ source-level annotation outside the source prologue
+
+error: could not compile the program due to 1 previous error

@@ -1,0 +1,4 @@
+main() => void {}
+
+@[suppress(unused_variable)]
+exposed value: i32 = 1;

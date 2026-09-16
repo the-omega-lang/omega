@@ -1,0 +1,9 @@
+error: cannot find module 't45j_source_conditional_children::thing'
+ --> tests/t45j_source_conditional_children/t45j_source_conditional_children.omg:1:1
+  |
+1 | import self::thing::child;
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^ module not found
+  |
+  = note: modules are looked up as `thing.omg` files or `thing/` directories under the compiler's search roots
+
+error: could not compile the program due to 1 previous error

@@ -69,7 +69,25 @@ After construction, `ModuleRoots::locate` is a map lookup rather than a live fil
 This separation matters:
 
 - **existence/discovery is eager metadata**;
-- **parsing/semantic resolution is demand-sensitive**.
+- **source parsing and selection are eager; semantic resolution is demand-sensitive**.
+
+### Source selection
+
+At the start of `Driver::compile`, before either `local_module_paths` or
+`collect_extern_signatures`, `select_modules` visits every source-bearing module
+in local and extern trees in segment-sorted order, parents before children.
+`ensure_raw_ast` reads, registers, parses, and caches each visited source.
+The analyzer's `source_annotations` validates the prologue in two stages:
+condition shape/multiplicity first, then other annotations on surviving sources.
+Condition evaluation uses the existing `annotation_eval` evaluator.
+
+Only a clean false condition prunes. Parse, prologue, or evaluation failures
+leave the module present and cached as a load failure for ordinary diagnostic
+reporting. A false module and its descendants are removed from `ModuleRoots`;
+descendant files are not read. Local identity is recomputed after pruning.
+No later phase has a disabled-module state: lookup and `local_sources()` use
+that same pruned inventory. Conditioning out every local source produces a
+distinct package error, including when namespace-only ancestors remain.
 
 ### Local vs extern eagerness
 
@@ -82,7 +100,8 @@ Extern packages are separate compilation units. Their discovered inventories are
 `ModuleStore` keeps every module artifact needed beyond one parse call:
 
 - the `SourceRegistry` of retained source text, and each module's `SourceId`;
-- raw unexpanded `SourceModule` AST;
+- raw and selected unexpanded `SourceModule` AST caches;
+- resolved source-level suppression names per module;
 - module-local raw macro definitions;
 - shared macro `ExpansionState` provenance;
 - expanded/lowered `HirModule`;
@@ -92,7 +111,8 @@ Extern packages are separate compilation units. Their discovered inventories are
 
 ### Parse once
 
-`ensure_ast` reads and parses a physical source file once, then evaluates and
+`ensure_raw_ast` caches the parse (including read/parse failures). `ensure_ast`
+uses that raw tree, strips its source annotations, then evaluates and
 removes conditioned-out top-level items **before the AST is published to any
 consumer**. Every consumer -- raw macro-definition collection, macro aliases,
 imports, the macro-namespace collision pass, and HIR lowering -- therefore sees
@@ -537,3 +557,12 @@ The driver relies on a few ordering and memoization rules that are not obvious f
 - Local and extern modules have different emission ownership. A concrete generic instantiation whose template lives in an extern package is still materialized by the local compilation that requested it; it must not be dropped merely because its template module is absent from the local-module output map.
 
 These are implementation invariants, not language semantics. If the query/conformance architecture changes, update this section with the new invariant rather than recreating long explanatory comments throughout the driver.
+
+### Source warning suppression
+
+After all analyzer and whole-program sweep warnings have been collected and
+`deduplicate_warnings` has run, `apply_source_suppressions` filters each
+`(ModulePath, AnalysisWarning)` against that source's suppression list.
+`AnalysisWarningKind::is_suppressible()` remains authoritative, so even a
+source-level request cannot hide `unfilled_gap`. Suppression is not seeded
+into per-item analyzers and does not extend to child files.

@@ -102,6 +102,10 @@ class TestModule
     @path.join("expected.stderr")
   end
 
+  def expected_compiler_stderr_path
+    @path.join("expected.compiler.stderr")
+  end
+
   def expected_status_path
     @path.join("expected.status")
   end
@@ -279,6 +283,17 @@ class TestRunner
       end
 
       return TestResult.new(test, failures, now - start)
+    end
+
+    compiler_failures = []
+    compare_stream(
+      test.expected_compiler_stderr_path,
+      compile.stderr,
+      "compiler stderr",
+      compiler_failures
+    )
+    unless compiler_failures.empty?
+      return TestResult.new(test, compiler_failures, now - start)
     end
 
     native = compile_native_helpers(test, target_dir)

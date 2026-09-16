@@ -8,6 +8,14 @@ use omega_hir::{
 use omega_parser::prelude::{Ident, NumberBase, Span};
 use std::fmt;
 
+pub const CONDITION: &str = "cond";
+const LAYOUT: &str = "layout";
+const INLINE: &str = "inline";
+const NAKED: &str = "naked";
+const SYMBOL: &str = "symbol";
+pub const SUPPRESS: &str = "suppress";
+pub const RECOGNIZED_NAMES: [&str; 6] = [CONDITION, LAYOUT, INLINE, NAKED, SYMBOL, SUPPRESS];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ItemKind {
     Struct,
@@ -204,7 +212,7 @@ pub fn resolve(
         }
 
         match name {
-            "layout" => {
+            LAYOUT => {
                 if !matches!(kind, ItemKind::Struct | ItemKind::Enum) {
                     analyzer.error(
                         node_id,
@@ -219,7 +227,7 @@ pub fn resolve(
                 }
                 result.layout = resolve_layout(analyzer, node_id, annotation);
             }
-            "inline" => {
+            INLINE => {
                 if kind != ItemKind::Function {
                     analyzer.error(
                         node_id,
@@ -247,7 +255,7 @@ pub fn resolve(
                     ),
                 }
             }
-            "naked" => {
+            NAKED => {
                 if kind != ItemKind::Function {
                     analyzer.error(
                         node_id,
@@ -274,7 +282,7 @@ pub fn resolve(
                 result.naked = true;
                 naked_span = Some(annotation.span);
             }
-            "symbol" => {
+            SYMBOL => {
                 if !matches!(
                     kind,
                     ItemKind::Function
@@ -327,7 +335,7 @@ pub fn resolve(
                     ),
                 }
             }
-            "suppress" => {
+            SUPPRESS => {
                 if !SUPPRESS_TARGETS.contains(&kind) {
                     analyzer.error(
                         node_id,

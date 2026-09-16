@@ -1,6 +1,22 @@
 use super::*;
 
 impl Driver {
+    pub(super) fn apply_source_suppressions(&self, warnings: &mut TaggedWarnings) {
+        warnings.retain(|(module, warning)| {
+            !warning.kind.is_suppressible()
+                || !self
+                    .modules
+                    .source_annotations
+                    .get(module)
+                    .is_some_and(|annotations| {
+                        annotations
+                            .suppress
+                            .iter()
+                            .any(|name| name.as_ref() == warning.kind.name())
+                    })
+        });
+    }
+
     pub(super) fn report_unused_imports(&mut self, path: &[Ident], warnings: &mut TaggedWarnings) {
         for (alias, import) in &self.modules.index(path).imports {
             // A macro import is consumed by expansion, before HIR exists, so

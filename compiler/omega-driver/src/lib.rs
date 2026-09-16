@@ -10,6 +10,7 @@ mod modules;
 mod primitives;
 mod resolver;
 mod roots;
+mod selection;
 
 pub use error::{CompileError, CompiledProgram};
 pub use fs_resolve::basename;

@@ -110,7 +110,22 @@ pub(crate) fn starts_item(p: &Parser) -> bool {
         )
 }
 
-pub fn parse_source_module(p: &mut Parser) -> Vec<ItemNode> {
+pub fn parse_source_module(p: &mut Parser) -> crate::SourceModule {
+    let mut annotations = Vec::new();
+    while annotations::at_source_annotation(p) {
+        if let Some(annotation) = annotations::parse_annotation(p) {
+            annotations.push(annotation);
+        } else {
+            recovery::synchronize_to_item_boundary(p);
+        }
+    }
+    crate::SourceModule {
+        annotations,
+        nodes: parse_items(p),
+    }
+}
+
+pub(crate) fn parse_items(p: &mut Parser) -> Vec<ItemNode> {
     let mut nodes = Vec::new();
     while !p.is_eof() {
         match parse_item(p) {

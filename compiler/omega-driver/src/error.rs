@@ -4,6 +4,7 @@ use omega_analyzer::annotation_eval::{ConditionError, ConditionErrorKind};
 use omega_analyzer::checked::{CheckedModule, ExternFunctionRef};
 use omega_analyzer::error::{AnalysisError, AnalysisWarning};
 use omega_analyzer::resolver::ResolveError;
+use omega_analyzer::source_annotations::{SourceAnnotationError, SourceAnnotationErrorKind};
 use omega_diagnostics::{Diagnostic, SourceSpan, Span};
 use omega_parser::macros::MacroError;
 use omega_parser::prelude::{Ident, ParseError};
@@ -62,6 +63,13 @@ pub enum CompileError {
         previous: Span,
         span: Span,
     },
+    SourceAnnotation {
+        module: ModulePath,
+        error: SourceAnnotationError,
+    },
+    FullyDisabledPackage {
+        root: PathBuf,
+    },
     EmptyPackage {
         root: PathBuf,
         expected: PathBuf,
@@ -77,11 +85,13 @@ impl CompileError {
             Self::Parse { module, .. }
             | Self::MacroExpansion { module, .. }
             | Self::Condition { module, .. }
+            | Self::SourceAnnotation { module, .. }
             | Self::Analysis { module, .. } => Some(module),
             Self::MacroNameCollision { module, .. } => Some(module),
             Self::DuplicateModuleIdentity { .. }
             | Self::AmbiguousPreludeMacro { .. }
-            | Self::EmptyPackage { .. } => None,
+            | Self::EmptyPackage { .. }
+            | Self::FullyDisabledPackage { .. } => None,
         }
     }
 
@@ -127,6 +137,19 @@ impl CompileError {
                 }
                 vec![diagnostic]
             }
+            Self::SourceAnnotation { error, .. } => {
+                let mut diagnostic =
+                    Diagnostic::error(error.to_string()).with_label(error.span, error.label());
+                if let SourceAnnotationErrorKind::Duplicate { first, .. } = &error.kind {
+                    diagnostic = diagnostic
+                        .with_secondary_label(*first, "the first source-level annotation is here");
+                }
+                vec![diagnostic]
+            }
+            Self::FullyDisabledPackage { root } => vec![Diagnostic::error(format!(
+                "every local module in package '{}' was conditioned out",
+                root.display()
+            ))],
             Self::DuplicateModuleIdentity {
                 name,
                 first,

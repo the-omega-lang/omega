@@ -1,0 +1,1 @@
+exposed value() => i32 { 20 }

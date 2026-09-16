@@ -484,7 +484,10 @@ pub fn expand_with_origins<E>(
     }
     let nodes = expander::Expander::new(&defs, module_path, source, state, filter)
         .expand_item_list(items)?;
-    Ok(SourceModule { nodes })
+    Ok(SourceModule {
+        annotations: module.annotations,
+        nodes,
+    })
 }
 
 /// Attaches the facts a raw parsed definition cannot know: which module
