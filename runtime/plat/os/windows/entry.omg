@@ -6,12 +6,19 @@
 # or `WinMainCRTStartup`: naming it after the Microsoft C runtime would claim
 # a CRT contract this platform does not implement. The link selects it with
 # `/ENTRY:omg_start` (see docs/guide/platform-glue.md).
+#
+# Startup is the one platform facility a build can decline, with
+# `omega_no_startup`. The import and the `_omg_main` binding below exist only
+# for the entry point, so they share its condition.
+@cond(not(def::omega_no_startup))
 import root::os::api;
 
 # The fixed symbol Omega emits for the root `main`
 # (docs/language/foreign-function-interface.md).
+@cond(not(def::omega_no_startup))
 foreign _omg_main : () => void;
 
+@cond(not(def::omega_no_startup))
 @symbol(name = "omg_start")
 foreign(c) process_entry() => never {
 	_omg_main();

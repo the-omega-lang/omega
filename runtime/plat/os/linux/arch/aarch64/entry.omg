@@ -9,6 +9,10 @@
 # returns comes back here and terminates with status 0. `exit_group` is
 # spelled out rather than routed through `root::os::syscall` because a naked
 # body cannot contain an Omega call.
+#
+# Startup is the one platform facility a build can decline, with
+# `omega_no_startup`.
+@cond(not(def::omega_no_startup))
 @naked
 @symbol(name = "_start")
 process_entry() => never {

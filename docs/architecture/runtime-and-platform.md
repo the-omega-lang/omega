@@ -78,6 +78,12 @@ A target root has no root-module file of its own, since a directory that only gr
 
 `avr-none` fills `PanicHandler` and all four atomic widths and nothing else. A generic AVR target identifies no MCU, so there is no RAM region, USART instance, register map, clock policy, reset vector or board wiring to build an allocator, a console or a startup sequence out of. Those gaps stay unfilled, and a program that references one fails at link naming the missing glue symbol. That is the designed outcome: a stub returning `None` or null would turn a build error into a runtime one.
 
+#### Startup selection
+
+Startup is selected by configuration: each platform entry declaration and its startup-only dependencies carry `@cond(not(def::omega_no_startup))`. With no definition, startup is enabled; a `plat` compilation with `-Domega_no_startup` emits no entry symbol or `_omg_main` reference and retains all other platform glue. This also covers the libc compatibility platform's `main` adapter.
+
+A gap requires exactly one glue implementation when used. Startup must be able to be absent entirely when the final image owns its entry point, so it uses ordinary `@cond` selection instead of a gap. A fully filtered entry module still emits an object, but defines no entry symbol.
+
 ## Gaps and glue as the platform seam
 
 Portable code declares a capability with `gap`. A platform/final-program package provides it with `glue`.

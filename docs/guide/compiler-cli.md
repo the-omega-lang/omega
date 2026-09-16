@@ -121,6 +121,13 @@ there. The builtin names (`target_os`, `target_arch`, `target_pointer_width`,
 `target_freestanding`) describe that target and cannot be overridden --
 `-Dtarget_os='"custom"'` defines `def::target_os`, which is a different value.
 
+Definitions form a single flat namespace shared by every package in an
+invocation, including `core`, `std`, `plat` and the application. By convention,
+the `omega_` prefix is reserved for definitions read by the shipped runtime
+packages; the compiler does not enforce this reservation. The first is
+`omega_no_startup`, which disables platform startup when passed to the `plat`
+compilation (see [platform startup](platform-glue.md#disabling-startup)).
+
 One configuration applies to every source the invocation reads, its imported
 packages included. Definitions are not recorded in the emitted objects or in
 any linker name, so separately compiled packages that share declarations or an

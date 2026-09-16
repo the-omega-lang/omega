@@ -129,6 +129,26 @@ pairings: a `GlobalAllocator::alloc` result is freed with
 `GlobalAllocator::free`, and a `std::alloc::alloc` result with
 `std::alloc::free`.
 
+### Disabling startup
+
+Startup is the one platform facility a build can decline. By default, the
+entry points in the matrix above are enabled, as is the libc compatibility
+platform's `main` adapter. Pass `-Domega_no_startup` to disable them while
+keeping the platform's allocator, console, panic and atomic glue:
+
+```sh
+omgc plat:runtime/plat/target/x86_64-linux/ --target=x86_64-linux \
+  --import=core:runtime/core/ -Domega_no_startup -o target/plat-no-startup
+```
+
+The resulting platform objects define no `_start`, `omg_start` or `main`, and
+do not reference `_omg_main`. The final link must supply its own entry point,
+for example through a host program or its startup objects. The definition
+must be passed to the **`plat` compilation**: passing it only when compiling
+the application does not remove startup from previously built platform
+objects. Omitting the definition, or setting `-Domega_no_startup=false`, keeps
+the default startup.
+
 ## What each platform does
 
 ### Linux (`x86_64-linux`, `aarch64-linux`)

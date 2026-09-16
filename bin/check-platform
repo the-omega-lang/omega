@@ -65,15 +65,25 @@ def objects(*dirs, extension: "o")
 end
 
 def symbols(*paths, only_defined: false)
+  raise "no objects to inspect" if paths.empty?
+
   args = [NM]
   args << "--defined-only" if only_defined
-  out, _err, _status = run(*args, *paths)
+  out, err, status = run(*args, *paths)
+  raise "symbol inspection failed:\n#{err}" unless status.success?
+
   out
 end
 
-def compile(source_dir, target, output, imports:, opt: nil)
+def symbol_names(*paths, only_defined: false)
+  symbols(*paths, only_defined: only_defined)
+    .scan(/^\s*(?:[0-9a-fA-F]+\s+)?[A-Za-z?]\s+(\S+)\s*$/).flatten.uniq
+end
+
+def compile(source_dir, target, output, imports:, opt: nil, defines: [])
   args = [OMGC.to_s, source_dir.to_s, "--target=#{target}", "-o", output.to_s]
   args << opt if opt
+  defines.each { |definition| args << "-D#{definition}" }
   imports.each { |name, path| args << "--import=#{name}:#{path}" }
   out, err, status = run(*args)
   [out + err, status]
@@ -96,6 +106,34 @@ def runtime_objects(target, extension: "o")
   )
 end
 
+def check_without_startup(source, target, baseline, output, capabilities:, opt: nil)
+  FileUtils.rm_rf(output)
+  compiled, status = compile(
+    source, target, output, imports: { "core" => ROOT.join("runtime", "core") },
+    opt: opt, defines: ["omega_no_startup"]
+  )
+  return compiled unless status.success?
+
+  extension = target.end_with?("windows") ? "obj" : "o"
+  emitted = objects(output, extension: extension)
+  names = symbol_names(*emitted)
+  defined = symbol_names(*emitted, only_defined: true)
+  original = symbol_names(*objects(baseline, extension: extension), only_defined: true)
+  remaining = names & %w[_start omg_start main _omg_main]
+  problems = []
+  problems << "startup symbols remain: #{remaining.join(", ")}" unless remaining.empty?
+  capabilities.each do |capability|
+    expected = original.select { |name| name.start_with?("_omg_") && name.include?(capability) }
+    if expected.empty?
+      problems << "baseline has no #{capability} glue; preservation is unverified"
+    else
+      missing = expected - defined
+      problems << "lost #{capability} symbols: #{missing.join(", ")}" unless missing.empty?
+    end
+  end
+  problems.empty? ? nil : problems.join("\n")
+end
+
 FileUtils.mkdir_p(WORK)
 puts "Omega platform checks"
 puts
@@ -113,6 +151,52 @@ check "every target root's runtime artifacts were built" do
     %w[core plat std].all? { |package| ARTIFACTS.join(target, package).directory? }
   end
   missing.empty? ? nil : "not built: #{missing.join(", ")} -- run `just build-runtime-all`"
+end
+puts
+
+puts "startup selection"
+HOSTED_GLUE = %w[GlobalAllocator StandardOutput StandardError StandardInput PanicHandler].freeze
+ATOMIC_GLUE = %w[Atomicity8 Atomicity16 Atomicity32 Atomicity64].freeze
+
+TARGETS.each do |target|
+  baseline = ARTIFACTS.join(target, "plat")
+  if target.end_with?("linux")
+    check "#{target}: the platform defines _start by default" do
+      entry = baseline.join("os", "entry.o")
+      symbol_names(entry.to_s, only_defined: true).include?("_start") ? nil : "no _start in #{entry}"
+    end
+  end
+
+  check "#{target}: disabling startup preserves every supplied glue capability" do
+    capabilities = (target == "avr-none" ? ["PanicHandler"] : HOSTED_GLUE) + ATOMIC_GLUE
+    check_without_startup(
+      "plat:#{ROOT.join("runtime", "plat", "target", target)}", target,
+      baseline, WORK.join("no-startup-#{target}"), capabilities: capabilities,
+      opt: target == "avr-none" ? "-O1" : nil
+    )
+  end
+end
+
+libc_source = "plat:#{ROOT.join("runtime", "plat", "libc")}"
+libc_baseline = WORK.join("libc-default")
+libc_built = false
+check "libc: the platform defines main by default" do
+  FileUtils.rm_rf(libc_baseline)
+  output, status = compile(
+    libc_source, HOST, libc_baseline, imports: { "core" => ROOT.join("runtime", "core") }
+  )
+  next output unless status.success?
+
+  libc_built = true
+  symbol_names(*objects(libc_baseline), only_defined: true).include?("main") ? nil : "no main in #{libc_baseline}"
+end
+
+check "libc: disabling startup preserves allocator, console and panic glue" do
+  next "default libc platform did not compile" unless libc_built
+
+  check_without_startup(
+    libc_source, HOST, libc_baseline, WORK.join("libc-no-startup"), capabilities: HOSTED_GLUE
+  )
 end
 puts
 

@@ -21,8 +21,10 @@ shared foreign(c) read(fd: i32, buf: *mut u8, count: usize) => isize;
 # Omega-convention. This adapter owns the real libc-facing `main` -- a
 # `foreign(c)` definition with its forced C-facing symbol -- and hands off to
 # it.
+@cond(not(def::omega_no_startup))
 foreign _omg_main : () => void;
 
+@cond(not(def::omega_no_startup))
 @symbol(name = "main")
 foreign(c) platform_main() => i32 {
 	_omg_main();
