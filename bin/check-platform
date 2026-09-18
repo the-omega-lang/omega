@@ -5,9 +5,11 @@
 # one target through one uniform link. This script proves the things that
 # suite deliberately cannot: that every platform root in the tree compiles for
 # its own target, that the hosted x86-64 Linux link really needs no C runtime,
-# that the atomic glue survives real concurrency, that each architecture emits
-# the instructions its implementation claims, and that `avr-none` leaves the
-# capabilities it cannot honestly provide unresolved instead of stubbed.
+# that the atomic glue survives real concurrency, that a package deployed as a
+# shared library loads into a C process carrying no C runtime of its own, that
+# each architecture emits the instructions its implementation claims, and that
+# `avr-none` leaves the capabilities it cannot honestly provide unresolved
+# instead of stubbed.
 #
 # Requires the runtime matrix to be built first (`just build-runtime-all`);
 # `just check-platform` does that for you.
@@ -64,19 +66,20 @@ def objects(*dirs, extension: "o")
     .sort
 end
 
-def symbols(*paths, only_defined: false)
+def symbols(*paths, only_defined: false, dynamic: false)
   raise "no objects to inspect" if paths.empty?
 
   args = [NM]
   args << "--defined-only" if only_defined
+  args << "--dynamic" if dynamic
   out, err, status = run(*args, *paths)
   raise "symbol inspection failed:\n#{err}" unless status.success?
 
   out
 end
 
-def symbol_names(*paths, only_defined: false)
-  symbols(*paths, only_defined: only_defined)
+def symbol_names(*paths, only_defined: false, dynamic: false)
+  symbols(*paths, only_defined: only_defined, dynamic: dynamic)
     .scan(/^\s*(?:[0-9a-fA-F]+\s+)?[A-Za-z?]\s+(\S+)\s*$/).flatten.uniq
 end
 
@@ -158,6 +161,11 @@ puts "startup selection"
 HOSTED_GLUE = %w[GlobalAllocator StandardOutput StandardError StandardInput PanicHandler].freeze
 ATOMIC_GLUE = %w[Atomicity8 Atomicity16 Atomicity32 Atomicity64].freeze
 
+# The platform objects each target produced without startup, kept for the
+# checks that consume one: a library image is exactly the case that cannot
+# carry an entry point.
+NO_STARTUP_PLAT = {}
+
 TARGETS.each do |target|
   baseline = ARTIFACTS.join(target, "plat")
   if target.end_with?("linux")
@@ -169,11 +177,14 @@ TARGETS.each do |target|
 
   check "#{target}: disabling startup preserves every supplied glue capability" do
     capabilities = (target == "avr-none" ? ["PanicHandler"] : HOSTED_GLUE) + ATOMIC_GLUE
-    check_without_startup(
+    output = WORK.join("no-startup-#{target}")
+    problem = check_without_startup(
       "plat:#{ROOT.join("runtime", "plat", "target", target)}", target,
-      baseline, WORK.join("no-startup-#{target}"), capabilities: capabilities,
+      baseline, output, capabilities: capabilities,
       opt: target == "avr-none" ? "-O1" : nil
     )
+    NO_STARTUP_PLAT[target] = output unless problem
+    problem
   end
 end
 
@@ -341,6 +352,92 @@ check "linking it without glue fails at the handler symbol" do
   next "the link unexpectedly succeeded" if status.success?
 
   err.include?("PanicHandler") ? nil : "the failure did not name the handler:\n#{err}"
+end
+puts
+
+# --- an Omega package deployed as a shared library --------------------------
+
+puts "#{HOST}: an Omega shared library inside a C process"
+library_objects = WORK.join("shared-library-objects")
+library_image = WORK.join("libomegacheck.so")
+host_binary = WORK.join("shared-library-host")
+library_source = ROOT.join("checks", "shared_library")
+library_built = false
+
+check "the library package compiles" do
+  output, status = compile(library_source, HOST, library_objects, imports: runtime_imports(HOST))
+  status.success? ? nil : output
+end
+
+# The platform without startup is what makes a library image possible at all:
+# the default `_start` calls `_omg_main`, and a library has no `main` to
+# resolve it against, so the load would fail on that reference alone.
+check "it links into a shared object against the platform without startup" do
+  plat = NO_STARTUP_PLAT[HOST]
+  next "the platform without startup was not built" unless plat
+
+  _out, err, status = run(
+    "cc", "-shared", "-nostdlib",
+    *objects(library_objects),
+    *objects(ARTIFACTS.join(HOST, "core"), ARTIFACTS.join(HOST, "std"), plat),
+    "-Wl,--gc-sections", "-o", library_image.to_s
+  )
+  library_built = status.success?
+  status.success? ? nil : err
+end
+
+# `core`, `std` and the platform are all inside this image, and none of them
+# reaches a C runtime: a library that had acquired one would show it here as a
+# dependency the host process is then obliged to satisfy.
+check "the image depends on no library and needs no text relocation" do
+  next "not linked" unless library_built
+
+  dynamic, _err, _status = run("readelf", "-d", library_image.to_s)
+  problems = []
+  problems << "dynamic dependency:\n#{dynamic}" if dynamic.include?("NEEDED")
+  problems << "text relocations:\n#{dynamic}" if dynamic.include?("TEXTREL")
+  problems.empty? ? nil : problems.join("\n")
+end
+
+# The exported surface is exactly what the source declared `foreign`, in both
+# directions. Everything `core`, `std`, the platform and the package itself
+# define for their own use stays hidden, and the only names the loader has to
+# find in the host process are the two the library declared as the host's.
+check "it exports its foreign entry point alone and imports the host's two symbols" do
+  next "not linked" unless library_built
+
+  defined = symbol_names(library_image.to_s, dynamic: true, only_defined: true)
+  undefined = symbol_names(library_image.to_s, dynamic: true) - defined
+  problems = []
+  problems << "exported: #{defined.sort.join(", ")}" unless defined == %w[omega_run]
+  unless undefined.sort == %w[host_bump host_secret]
+    problems << "imported: #{undefined.sort.join(", ")}"
+  end
+  problems.empty? ? nil : problems.join("\n")
+end
+
+# `-rdynamic` so the host's own symbols are in its dynamic table: without it
+# the library's references to them are unresolvable and the load fails.
+check "a C host loads it, calls in, and shares a variable in both directions" do
+  next "not linked" unless library_built
+
+  _out, err, status = run(
+    "cc", "-O1", "-rdynamic", ROOT.join("checks", "shared_library", "host.c").to_s,
+    "-o", host_binary.to_s
+  )
+  next err unless status.success?
+
+  out, err, status = run(host_binary.to_s, library_image.to_s)
+  expected = <<~OUT
+    host-before: 10
+    library-entered: 10
+    library-assigned: 42
+    library-after-callback: 50
+    host-after: 50
+  OUT
+  next "exited with #{status.exitstatus}: #{err}" unless status.success?
+
+  out == expected ? nil : "stdout was:\n#{out}"
 end
 puts
 

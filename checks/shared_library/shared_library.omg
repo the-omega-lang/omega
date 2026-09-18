@@ -1,0 +1,37 @@
+# An Omega package deployed as a shared library and loaded into a running C
+# process.
+#
+# The library carries `core`, `std` and the platform's own glue, with the
+# platform compiled `-Domega_no_startup` so that no entry point travels with
+# it: a `_start` that calls `_omg_main` would leave the image with an
+# unresolvable reference and the load would fail. Nothing in it is linked
+# against a C runtime, while the host that loads it is an ordinary libc
+# program -- the two only meet at the symbols named here.
+#
+# Driven by `bin/check-platform`.
+import std::io::println;
+
+# Both live in the host executable, so the dynamic loader resolves them
+# against the process image when the library is loaded. That only works if
+# the host exports its own symbols; an executable linked without
+# `-rdynamic` keeps them out of its dynamic table and the load fails here.
+foreign mut host_secret : i32;
+foreign(c) host_bump(amount: i32) => void;
+
+# An ordinary Omega item: linked into the library and called below, but
+# hidden in the produced image, so it is not part of what the library
+# exports. See docs/architecture/symbol-mangling.md.
+report(stage: *str, value: i32) => void {
+	println$("library-", stage, ": ", value);
+}
+
+# A `foreign` item is the opposite default -- the exact name written here, and
+# a symbol that crosses images -- which is what makes this the one entry
+# `dlsym` can find.
+foreign(c) omega_run() => void {
+	report("entered", host_secret);
+	host_secret = 42;
+	report("assigned", host_secret);
+	host_bump(8);
+	report("after-callback", host_secret);
+}

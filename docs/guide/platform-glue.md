@@ -149,6 +149,33 @@ the application does not remove startup from previously built platform
 objects. Omitting the definition, or setting `-Domega_no_startup=false`, keeps
 the default startup.
 
+### Shared libraries
+
+A platform without startup is what an Omega shared library needs: the default
+`_start` calls `_omg_main`, and a library has no `main` to resolve it against,
+so the image would fail to load on that reference alone. Link the package
+against the no-startup platform objects instead of the default ones:
+
+```sh
+omgc mylib/ --target=x86_64-linux --import=core:runtime/core/ \
+  --import=std:runtime/std/ \
+  --import=plat:runtime/plat/target/x86_64-linux/ -o target/mylib
+cc -shared -nostdlib -Wl,--gc-sections <objects> -o libmylib.so
+```
+
+`-nostdlib` for the same reason as a program link: the library carries `core`,
+`std` and the platform's own glue and needs no C runtime, so it loads into a
+host process without obliging it to supply one.
+
+What the library exports is what it declared `foreign`. An ordinary Omega item
+is hidden in the produced image, so it links across the library's own objects
+but is not a name a loader can find; a `foreign` definition keeps the exact
+name written in source and crosses images, which makes it the entry a host
+resolves with `dlsym`. A `foreign` declaration the library does not define --
+including a `foreign mut` data symbol -- is resolved out of the loading process
+in the same way, which requires that process to export its own symbols
+(`-rdynamic` when the host is a C executable).
+
 ## What each platform does
 
 ### Linux (`x86_64-linux`, `aarch64-linux`)

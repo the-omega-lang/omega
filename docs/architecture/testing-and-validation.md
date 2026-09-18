@@ -187,6 +187,7 @@ The root language runner is intentionally simple; workflows that need several in
 - eight host threads agree on the final value of every atomic width, linked against `core` plus only the platform's single `arch/atomic` object -- the harness may use pthreads, since what must be free of a C runtime is the platform implementation it calls;
 - each architecture emits the instructions its implementation claims (x86-64 locked forms, AArch64 baseline exclusives rather than optional LSE, AVR interrupt masking);
 - the Windows objects import Kernel32 and nothing else and define this platform's own entry symbol rather than a CRT startup one;
+- an Omega package links into a shared object against the platform compiled without startup, with no library dependency and no text relocation, exporting only the entry it declared `foreign` and importing only the host symbols it named -- and a libc C host `dlopen`s it, calls in, and shares one variable with it in both directions;
 - `avr-none` leaves the allocator and console gaps genuinely unresolved instead of stubbed, while filling all four atomic widths and the panic handler.
 
 Cross targets are taken as far as the host toolchain honestly allows: `aarch64-linux` is linked into a static ELF, and the Windows link command is documented rather than faked because no import library is present. A check that cannot run reports as skipped with the reason, never as a pass.
