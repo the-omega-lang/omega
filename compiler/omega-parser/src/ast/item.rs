@@ -94,6 +94,7 @@ pub struct ForeignBindingItem {
     pub annotations: Vec<AnnotationNode>,
     pub visibility: Visibility,
     pub explicit_hidden_span: Option<Span>,
+    pub mut_span: Option<Span>,
     pub ident: Ident,
     pub name_span: Span,
     pub r#type: Type,

@@ -487,6 +487,8 @@ struct Header {
 @symbol(name = "symbol_from_outside")
 foreign outside_sym : i32;
 
+foreign mut shared_counter : i32;
+
 @symbol(name = "unmangled_symbol_with_default_value")
 my_symbol : i32 = 10;
 
@@ -494,7 +496,7 @@ my_symbol : i32 = 10;
 exposed exported_api() => void { }
 ```
 
-The first names storage another object owns; the second is an ordinary Omega global that owns and initializes its own storage under an exact external name. A `comp` binding and a local take no `@symbol`; a top-level `comp` binding still takes `@cond`, and a local takes no annotation at all.
+The foreign bindings name storage another object owns; `foreign mut` permits Omega to write that storage. Omitting `mut` does not promise that another object will leave it unchanged. `my_symbol` is an ordinary Omega global that owns and initializes its own storage under an exact external name. A `comp` binding and a local take no `@symbol`; a top-level `comp` binding still takes `@cond`, and a local takes no annotation at all.
 
 An Omega-declared symbol is hidden by default -- still linkable across source files and separately compiled objects of one program, but not exported out of a shared library; `export` is what changes that. A `foreign` item defaults the other way, since declaring one already says the symbol crosses a boundary. None of this is `exposed`/`shared`/`hidden`, which decide what Omega *source* may name.
 

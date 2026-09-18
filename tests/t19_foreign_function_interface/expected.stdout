@@ -1,3 +1,9 @@
+counter-assigned: 10
+counter-added: 15
+counter-incremented: 16
+counter-decremented: 15
+counter-pointer: 42
+counter-helper: 50
 scratch-deref: 77
 t19_abs(-5): 5
 variadic-ints: 10

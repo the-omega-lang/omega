@@ -188,6 +188,7 @@ impl Lowerer {
             annotations: Self::lower_annotations(&binding.annotations),
             ident: binding.ident.clone(),
             name_span: binding.name_span,
+            mut_span: binding.mut_span,
             r#type: binding.r#type.clone(),
             visibility: binding.visibility,
             explicit_hidden_span: binding.explicit_hidden_span,

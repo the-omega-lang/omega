@@ -406,7 +406,7 @@ impl Driver {
                         r#type,
                         storage,
                         decl_id: binding.id,
-                        mutable: false,
+                        mutable: binding.mut_span.is_some(),
                     }
                 }),
 

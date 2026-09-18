@@ -10,7 +10,7 @@ use crate::diagnostics::{ParseErrorKind, Span};
 use crate::lexer::TokenKind;
 use crate::parser::expression::parse_codeblock;
 use crate::parser::r#type::{parse_raw_convention, parse_type};
-use crate::parser::{Parser, parse_param_decls, recovery};
+use crate::parser::{Parser, contextual, parse_param_decls, recovery};
 
 pub(super) fn parse_foreign_item(
     p: &mut Parser,
@@ -25,6 +25,7 @@ pub(super) fn parse_foreign_item(
         return Some(Item::ForeignBlock(parse_foreign_block(p, convention)?));
     }
 
+    let mut_span = parse_optional_mut(p);
     let ident = p.expect_ident()?;
     let name_span = p.last_span();
 
@@ -37,11 +38,13 @@ pub(super) fn parse_foreign_item(
             annotations,
             visibility,
             explicit_hidden_span,
+            mut_span,
             ident,
             name_span,
         )?));
     }
 
+    reject_function_mut(p, mut_span);
     Some(Item::ForeignFunction(parse_foreign_function_tail(
         p,
         annotations,
@@ -61,11 +64,29 @@ fn parse_optional_convention(p: &mut Parser) -> Option<Option<RawConvention>> {
     }
 }
 
+fn parse_optional_mut(p: &mut Parser) -> Option<Span> {
+    if p.at_contextual(contextual::MUT) && matches!(p.peek_at(1), TokenKind::Ident(_)) {
+        p.advance();
+        Some(p.last_span())
+    } else {
+        None
+    }
+}
+
+fn reject_function_mut(p: &mut Parser, mut_span: Option<Span>) {
+    if let Some(span) = mut_span
+        && matches!(p.peek(), TokenKind::LParen | TokenKind::Lt)
+    {
+        p.error_at(span, ParseErrorKind::ForeignMutOnFunction);
+    }
+}
+
 fn parse_foreign_binding_tail(
     p: &mut Parser,
     annotations: Vec<AnnotationNode>,
     visibility: Visibility,
     explicit_hidden_span: Option<Span>,
+    mut_span: Option<Span>,
     ident: crate::ast::identifier::Ident,
     name_span: Span,
 ) -> Option<ForeignBindingItem> {
@@ -76,6 +97,7 @@ fn parse_foreign_binding_tail(
         annotations,
         visibility,
         explicit_hidden_span,
+        mut_span,
         ident,
         name_span,
         r#type,
@@ -167,6 +189,7 @@ fn parse_foreign_block_entry(
         return None;
     }
 
+    let mut_span = parse_optional_mut(p);
     let ident = p.expect_ident()?;
     let name_span = p.last_span();
 
@@ -176,11 +199,13 @@ fn parse_foreign_block_entry(
             annotations,
             visibility,
             explicit_hidden_span,
+            mut_span,
             ident,
             name_span,
         )?));
     }
 
+    reject_function_mut(p, mut_span);
     Some(ForeignBlockEntry::Function(parse_foreign_function_tail(
         p,
         annotations,

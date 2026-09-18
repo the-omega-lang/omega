@@ -8,6 +8,12 @@
  */
 #include <stdarg.h>
 
+int t19_counter;
+
+int t19_read_counter(void) {
+	return t19_counter;
+}
+
 int t19_abs(int x) {
 	return x < 0 ? -x : x;
 }

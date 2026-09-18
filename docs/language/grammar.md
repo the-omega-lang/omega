@@ -113,7 +113,7 @@ path segments or by a group. Module/import meaning is specified in [`modules-and
 ## Foreign items
 
 ```ebnf
-foreign-binding = [ visibility ], "foreign", identifier, ":", type, ";" ;
+foreign-binding = [ visibility ], "foreign", [ "mut" ], identifier, ":", type, ";" ;
 
 foreign-function-item = [ visibility ], "foreign", [ calling-convention ],
                         identifier, [ generic-parameters ],
@@ -122,12 +122,14 @@ foreign-function-item = [ visibility ], "foreign", [ calling-convention ],
 
 foreign-block = "foreign", calling-convention, "{", { foreign-block-entry }, "}" ;
 
-foreign-block-entry = [ visibility ], identifier,
+foreign-block-entry = [ visibility ], [ "mut" ], identifier,
                       ( ":", type, ";"
                       | "(", [ parameter-list-rest ], ")", "=>", type, ( ";" | code-block ) ) ;
 ```
 
 `foreign-binding`'s `identifier, ":"` and `foreign-function-item`'s `identifier, "("`/`"<"` are unambiguous on the token right after the name. `foreign(cc) name : Type;` (a `calling-convention` directly on a binding) is rejected -- see [`foreign-function-interface.md`](foreign-function-interface.md) for the exact rule and the equivalent unambiguous spelling. Inside a `foreign-block`, `calling-convention` is never written again; the block's own applies to each direct function-signature entry (not to a `":", type` entry), and blocks do not nest.
+
+`mut` is valid only on the `":", type` form for a non-function type. A `mut` modifier before an identifier followed by `"("` or `"<"` is rejected, including on a function definition with a body. The modifier is contextual: it is consumed only when another identifier follows, so `foreign mut : i32;` still declares an unmodifiable binding named `mut`.
 
 ## Generic parameters and bounds
 

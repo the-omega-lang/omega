@@ -442,3 +442,27 @@ fn conflicting_glues_label_each_glue_block_in_its_own_source() {
         "each conflicting glue must name the file it was written in: {glues:?}"
     );
 }
+
+#[test]
+fn mutable_function_typed_foreign_bindings_are_rejected() {
+    for source in [
+        "foreign mut fp : (i32) => void;",
+        "foreign(c) { mut fp : foreign(c) (i32) => void; }",
+        "alias Callback = (i32) => void; foreign mut fp : Callback;",
+    ] {
+        let package = TestPackage::new(&format!("{source} main() => void {{ }}"));
+        let errors = package.expect_errors();
+        let errors = analysis_errors(&errors);
+        assert_eq!(
+            errors.len(),
+            1,
+            "unexpected errors for {source}: {errors:?}"
+        );
+        assert!(matches!(
+            errors[0].kind,
+            AnalysisErrorKind::ForeignMutFunctionBinding
+        ));
+        let span = errors[0].span;
+        assert_eq!(&source[span.start..span.end], "mut");
+    }
+}

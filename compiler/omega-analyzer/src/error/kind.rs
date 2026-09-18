@@ -375,6 +375,7 @@ pub enum AnalysisErrorKind {
     NotMutableBinding {
         ident: Ident,
     },
+    ForeignMutFunctionBinding,
     NotMutablePointer,
     MutateTemporary,
 
@@ -1133,6 +1134,12 @@ impl fmt::Display for AnalysisErrorKind {
             Self::MatchArmTypeMismatch { .. } => write!(f, "'match' arms have incompatible types"),
             Self::NotMutableBinding { ident } => {
                 write!(f, "cannot mutate '{}': not declared 'mut'", ident.as_ref())
+            }
+            Self::ForeignMutFunctionBinding => {
+                write!(
+                    f,
+                    "a function-typed foreign binding cannot be declared 'mut'"
+                )
             }
             Self::NotMutablePointer => write!(f, "cannot mutate through an immutable pointer"),
             Self::MutateTemporary => write!(f, "cannot mutate a temporary value"),

@@ -104,6 +104,20 @@ fn foreign_block_convention_applies_only_to_direct_function_entries() {
 }
 
 #[test]
+fn foreign_binding_mut_span_survives_lowering() {
+    let source = "foreign mut counter : i32; foreign(c) { mut other : i32; }";
+    let hir = lower(source);
+    assert_eq!(hir.items.len(), 2);
+    for item in &hir.items {
+        let HirItem::ForeignBinding(binding) = item else {
+            panic!("expected a foreign binding");
+        };
+        let span = binding.mut_span.expect("expected a mut span");
+        assert_eq!(&source[span.start..span.end], "mut");
+    }
+}
+
+#[test]
 fn import_tree_lowers_to_one_flat_binding_per_leaf() {
     let source = "@suppress(unused_import)\n\
                   import reveal thing::{ self as Mod, First, sub::{ Second as Two } };";

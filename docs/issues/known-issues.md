@@ -79,6 +79,11 @@ Concrete current compiler/library bugs and unsupported cases. Resolved issues ar
   it already exposes extern functions, which is a resolver/interface
   decision rather than a local backend patch. Until then, expose the datum
   through an accessor function in the defining package.
+  The same failure affects imported foreign data bindings, with or without
+  `mut`: a provider declaring `exposed foreign mut counter : i32;` and a
+  consumer importing `provider::counter` cannot emit a read or write of
+  that symbol. Declaring and using the foreign binding within one package,
+  including across its modules, works.
   [modules-and-imports.md](../language/modules-and-imports.md)
 
 ## Types

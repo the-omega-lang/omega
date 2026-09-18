@@ -1,5 +1,11 @@
+import root::t19_counter;
+
 # A `main` outside the root module is an ordinary mangled Omega function,
 # not the platform-facing C entry point.
 exposed main() => i32 {
 	999
+}
+
+exposed update_counter() => void {
+	t19_counter += 8;
 }

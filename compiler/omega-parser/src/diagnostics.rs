@@ -164,6 +164,9 @@ impl ParseError {
             ParseErrorKind::ForeignConventionOnBinding => Diagnostic::error("a foreign binding cannot carry its own calling convention")
                 .with_label(self.span, "'foreign(cc)' is not allowed directly on a 'name : Type' binding")
                 .with_help("write 'foreign name : foreign(cc) (...) => T;' instead -- the convention belongs to the type"),
+            ParseErrorKind::ForeignMutOnFunction => Diagnostic::error("a foreign function cannot be declared 'mut'")
+                .with_label(self.span, "'mut' applies to data storage, not a function symbol")
+                .with_help("remove 'mut' from this function declaration or definition"),
             ParseErrorKind::NestedForeignBlock => Diagnostic::error("foreign blocks cannot nest")
                 .with_label(self.span, "this 'foreign' block is inside another foreign block")
                 .with_help("flatten this into a direct entry of the enclosing block"),
@@ -247,6 +250,7 @@ pub enum ParseErrorKind {
     ImportSelfNotTerminal,
     UnterminatedAsmBody,
     ForeignConventionOnBinding,
+    ForeignMutOnFunction,
     NestedForeignBlock,
 }
 

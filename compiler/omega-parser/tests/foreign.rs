@@ -17,7 +17,86 @@ fn foreign_binding_parses() {
         panic!("expected a foreign binding item, got {item:?}");
     };
     assert_eq!(binding.ident.0, "errno");
+    assert!(binding.mut_span.is_none());
     assert!(matches!(binding.r#type, Type::Named(_)));
+}
+
+#[test]
+fn mutable_foreign_binding_parses() {
+    let source = "foreign mut errno : i32;";
+    let Item::ForeignBinding(binding) = parse_item(source) else {
+        panic!("expected a foreign binding");
+    };
+    assert_eq!(binding.ident.0, "errno");
+    let span = binding.mut_span.expect("expected a mut span");
+    assert_eq!(&source[span.start..span.end], "mut");
+}
+
+#[test]
+fn foreign_mut_remains_an_identifier_without_a_following_name() {
+    for source in ["foreign mut : i32;", "foreign mut() => void;"] {
+        match parse_item(source) {
+            Item::ForeignBinding(binding) => {
+                assert_eq!(binding.ident.0, "mut");
+                assert!(binding.mut_span.is_none());
+            }
+            Item::ForeignFunction(function) => assert_eq!(function.ident.0, "mut"),
+            item => panic!("unexpected item: {item:?}"),
+        }
+    }
+}
+
+#[test]
+fn foreign_block_accepts_mutable_data_and_contextual_mut() {
+    let Item::ForeignBlock(block) =
+        parse_item("foreign(c) { shared mut errno : i32; f(a: i32) => void; mut : i32; }")
+    else {
+        panic!("expected a foreign block");
+    };
+    use omega_parser::prelude::ForeignBlockEntry;
+    let ForeignBlockEntry::Binding(binding) = &block.entries[0] else {
+        panic!("expected a foreign binding");
+    };
+    assert_eq!(binding.ident.0, "errno");
+    assert!(binding.mut_span.is_some());
+    let ForeignBlockEntry::Function(function) = &block.entries[1] else {
+        panic!("expected a foreign function");
+    };
+    assert_eq!(convention_name(&function.convention), Some("c"));
+    let ForeignBlockEntry::Binding(binding) = &block.entries[2] else {
+        panic!("expected a binding named mut");
+    };
+    assert_eq!(binding.ident.0, "mut");
+    assert!(binding.mut_span.is_none());
+}
+
+#[test]
+fn foreign_function_forms_reject_mut_and_continue_parsing() {
+    for source in [
+        "foreign mut f(a: i32) => void;",
+        "foreign(c) mut f(a: i32) => void { }",
+        "foreign mut f<T>(a: T) => void;",
+        "foreign(c) { mut f(a: i32) => void; }",
+        "foreign(c) { mut f(a: i32) => void { } }",
+        "foreign(c) { mut f<T>(a: T) => void; }",
+    ] {
+        let errors = SourceModule::parse(&format!("{source} foreign(c) errno : i32;")).unwrap_err();
+        assert_eq!(
+            errors.len(),
+            2,
+            "unexpected errors for {source}: {errors:?}"
+        );
+        assert!(matches!(
+            errors[0].kind,
+            ParseErrorKind::ForeignMutOnFunction
+        ));
+        let span = errors[0].span;
+        assert_eq!(&source[span.start..span.end], "mut");
+        assert!(matches!(
+            errors[1].kind,
+            ParseErrorKind::ForeignConventionOnBinding
+        ));
+    }
 }
 
 #[test]

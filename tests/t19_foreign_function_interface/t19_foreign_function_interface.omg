@@ -1,6 +1,9 @@
 import std::io::println;
 import self::helper;
 
+shared foreign mut t19_counter : i32;
+shared foreign(c) t19_read_counter() => i32;
+
 # A direct `foreign(c)` declaration gives a name a C-convention function type
 # with no Omega body; calls use ordinary Omega call syntax. The functions all
 # live in this case's own `native.c`, compiled freestanding and linked in:
@@ -74,6 +77,20 @@ foreign(sysv64) sysv_add(a: i32, b: i32) => i32 {
 }
 
 main() => void {
+	t19_counter = 10;
+	println$("counter-assigned: ", t19_read_counter());
+	t19_counter += 5;
+	println$("counter-added: ", t19_read_counter());
+	++t19_counter;
+	println$("counter-incremented: ", t19_read_counter());
+	--t19_counter;
+	println$("counter-decremented: ", t19_read_counter());
+	counter_ptr : *mut i32 = &mut t19_counter;
+	*counter_ptr = 42;
+	println$("counter-pointer: ", t19_read_counter());
+	helper::update_counter();
+	println$("counter-helper: ", t19_read_counter());
+
 	# --- foreign(c) declarations: scalars/pointers are the practical
 	# interop boundary --------------------------------------------------------
 	block := t19_scratch();

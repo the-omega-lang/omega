@@ -509,6 +509,9 @@ impl AnalysisErrorKind {
             Self::NotMutableBinding { ident } => d
                 .with_label(span, format!("`{}` is not declared `mut`", ident.as_ref()))
                 .with_help(format!("declare it `mut {}`", ident.as_ref())),
+            Self::ForeignMutFunctionBinding => d
+                .with_label(span, "this binding names an external function symbol, not data storage")
+                .with_help("remove `mut` and put any calling convention on the function type; use a `*mut` type if you meant a mutable function pointer variable"),
             Self::NotMutablePointer => d
                 .with_label(span, "this pointer's pointee is immutable")
                 .with_help("use `*mut T` instead of `*T`, and `&mut` to create one"),

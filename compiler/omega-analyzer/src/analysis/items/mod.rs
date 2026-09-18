@@ -337,6 +337,14 @@ impl<'r> Analyzer<'r> {
         // A non-function binding is an external data symbol, not a call
         // boundary, so no calling convention applies to it.
         if let ResolvedType::Function(fn_type) = &resolved_type {
+            if let Some(mut_span) = binding.mut_span {
+                self.error(
+                    binding.id,
+                    mut_span,
+                    AnalysisErrorKind::ForeignMutFunctionBinding,
+                );
+                return None;
+            }
             let fn_type = fn_type.clone();
             if !self.check_signature_abi(binding.id, binding.span, &fn_type) {
                 return None;
@@ -363,7 +371,7 @@ impl<'r> Analyzer<'r> {
             Origin::default(),
             resolved_type.clone(),
             storage,
-            false,
+            binding.mut_span.is_some(),
             DeclarationPolicy::Unique,
         )?;
         Some((resolved_type, annotations))

@@ -139,6 +139,7 @@ pub struct HirForeignBinding {
     pub annotations: Vec<HirAnnotation>,
     pub ident: Ident,
     pub name_span: Span,
+    pub mut_span: Option<Span>,
     pub r#type: Type,
     pub visibility: Visibility,
     pub explicit_hidden_span: Option<Span>,

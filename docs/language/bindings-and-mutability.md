@@ -72,7 +72,7 @@ Mutability is expressed independently for:
 
 Ordinary function parameters and aggregate fields are immutable bindings; a field's value can still be mutated through an appropriately mutable place/pointer.
 
-A `foreign` binding is an immutable symbol binding.
+A `foreign mut name : Type;` binding makes an external data symbol mutable; without `mut`, Omega code cannot write through that binding. Foreign function symbols cannot be declared `mut`. Absence of `mut` does not imply that external data is constant; see [`foreign-function-interface.md`](foreign-function-interface.md#foreign-bindings).
 
 ## Receiver forms
 

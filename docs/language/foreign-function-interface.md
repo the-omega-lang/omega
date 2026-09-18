@@ -19,6 +19,25 @@ shared foreign malloc_omega_abi : (size: usize) => *mut u8;
 
 This is rare in practice -- most external functions use a non-Omega ABI, spelled explicitly (see "Direct foreign functions" below). A non-function `Type` binds an external data symbol; it becomes a real linker-visible global with no initializer/storage allocated in the current object.
 
+`foreign mut name : Type;` makes an external data symbol a mutable place. Omega code may assign to it, use compound assignment or `++`/`--`, and take `&mut` to its storage, including through imports from other modules or separately compiled packages. Inside a foreign block, write `mut name : Type;` (after any visibility).
+
+For a counter defined in C as `int counter;`:
+
+```omega
+shared foreign mut counter : i32;
+
+increment_counter() => void {
+	counter += 1;
+
+	p : *mut i32 = &mut counter;
+	*p += 1;
+}
+```
+
+**Omitting `mut` is not a claim that the external value is constant.** It only denies writes through this binding in Omega code. A shared library or another object may write the symbol; Omega derives no immutability optimization from a non-`mut` foreign binding. Neither form can be read during compile-time evaluation. `foreign` and `mut` do not imply volatile access or synchronization; concurrent access follows the rules in [`atomics.md`](atomics.md).
+
+`mut` is rejected on every foreign function form: direct declarations, definitions with a body, direct function entries in a foreign block, and bindings whose resolved type is a function type (including through an alias). Such a binding names a function symbol, not writable data storage. Put any calling convention on its type; use a `*mut` type when the intended binding holds a mutable function pointer instead.
+
 The definition on the other side must satisfy the layout the Omega declaration states, including its effective alignment: Omega accesses the symbol as storage for `Type`, and an external definition that is laid out or aligned differently is a program error rather than something the access adapts to. See [`annotations-and-sizeof.md`](annotations-and-sizeof.md).
 
 `foreign(cc) name : Type` is rejected: a binding never applies a convention to its own type. Write the convention on `Type` directly instead:
