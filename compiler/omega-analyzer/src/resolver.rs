@@ -169,9 +169,10 @@ pub enum ResolveError {
         spec: Ident,
         missing: Vec<Ident>,
     },
-    /// Two generic declarations on one owner share a name and a namespace.
-    /// A template has no signature to rank before its arguments are known,
-    /// so the call cannot choose between them.
+    GenericFunctionOverload {
+        module: Vec<Ident>,
+        function: Ident,
+    },
     GenericMethodOverload {
         module: Vec<Ident>,
         owner: Ident,
@@ -313,6 +314,12 @@ impl fmt::Display for ResolveError {
                     .map(Ident::as_ref)
                     .collect::<Vec<_>>()
                     .join(", ")
+            ),
+            Self::GenericFunctionOverload { module, function } => write!(
+                f,
+                "'{}::{}' is declared generic more than once; generic declarations do not participate in overload resolution",
+                join(module),
+                function.as_ref()
             ),
             Self::GenericMethodOverload {
                 module,

@@ -1022,6 +1022,11 @@ pub fn resolve_error_diagnostic(error: &ResolveError, span: Option<Span>) -> Dia
         ResolveError::GenericArgCountMismatch { expected, .. } => {
             with_label(d, format!("expected {expected} generic {}", plural(*expected, "argument")))
         }
+        ResolveError::GenericFunctionOverload { function, .. } => {
+            with_label(d, format!("`{}` is declared generic more than once here", function.as_ref()))
+                .with_note("a generic declaration has no signature until its arguments are known, so overload resolution cannot rank it")
+                .with_help("give the declarations distinct names")
+        }
         ResolveError::GenericMethodOverload { function, .. } => {
             with_label(d, format!("`{}` is declared generic more than once here", function.as_ref()))
                 .with_note("a generic declaration has no signature until its arguments are known, so overload resolution cannot rank it")

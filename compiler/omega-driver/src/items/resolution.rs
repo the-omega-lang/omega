@@ -36,24 +36,27 @@ impl Driver {
         accessor: &[Ident],
         bypass: bool,
     ) -> Result<ResolvedItem, ResolveError> {
-        if bypass || Self::visibility_allows(visibility, &key.module, accessor) {
+        if bypass || Self::visibility_allows(visibility, key.module(), accessor) {
             Ok(item)
         } else {
             Err(ResolveError::NotVisible {
-                module: key.module.clone(),
+                module: key.module().clone(),
                 item: key.name.clone(),
             })
         }
     }
 
-    fn in_progress_result(
+    pub(super) fn in_progress_result(
         &self,
         key: &ItemKey,
         indirect: bool,
     ) -> Result<ResolvedItem, ResolveError> {
+        if key.owner().is_some() {
+            return Err(ResolveError::Cycle(self.items.cycle_path(key)));
+        }
         if !indirect {
             return Err(ResolveError::RecursiveTypeWithoutIndirection {
-                module: key.module.clone(),
+                module: key.module().clone(),
                 item: key.name.clone(),
             });
         }
@@ -76,7 +79,26 @@ impl Driver {
         // effective types must produce the identical key to share one
         // instantiation.
         let index = self.local_item_index(module_path, name)?;
-        let generic_params = self.item_generics(module_path, name)?;
+        self.ensure_item_at(
+            accessor_module_path,
+            module_path,
+            name,
+            index,
+            generic_args,
+            options,
+        )
+    }
+
+    pub(crate) fn ensure_item_at(
+        &mut self,
+        accessor_module_path: &[Ident],
+        module_path: &[Ident],
+        name: &Ident,
+        index: usize,
+        generic_args: &[ResolvedGenericArg],
+        options: ResolveItemOptions,
+    ) -> Result<ResolvedItem, ResolveError> {
+        let generic_params = self.item_generics_at(module_path, index)?;
         let owner_site = item_site(&self.modules.hir(module_path).items[index]);
         let generic_args = self.pad_generic_defaults(
             module_path,
@@ -85,48 +107,19 @@ impl Driver {
             &generic_params,
             generic_args,
         )?;
-        let key = ItemKey::new(module_path, name, &generic_args);
+        let key = ItemKey::new(module_path, name, index, &generic_args);
 
-        match self.items.state(&key) {
-            Some(ItemQueryState::Resolved(entry)) => {
-                return Self::gate_visibility(
-                    entry.item.clone(),
-                    entry.visibility,
-                    &key,
-                    accessor_module_path,
-                    options.bypasses_visibility(),
-                );
+        let visibility = item_visibility(&self.modules.hir(module_path).items[index]);
+        let result = self.ensure_item_query(&key, visibility, options, |driver| {
+            if generic_params.iter().any(|g| !g.bounds().is_empty()) {
+                driver.check_item_generic_bounds(&key, index, &generic_params, &generic_args)?;
             }
-            // Secondary by construction: the query that failed kept its own
-            // reason, which was already delivered where it happened.
-            Some(ItemQueryState::Failed(_)) => return Err(key.failed()),
-            Some(ItemQueryState::InProgress) => {
-                return self.in_progress_result(&key, options.allows_indirection());
-            }
-            None => {}
-        }
-
-        if generic_params.iter().any(|g| !g.bounds().is_empty()) {
-            self.check_item_generic_bounds(&key, index, &generic_params, &generic_args)?;
-        }
-
-        let visibility = self
-            .declared_visibility(module_path, name)
-            .expect("just indexed by local_item_index");
-        let generics: Vec<Ident> = generic_params.iter().map(|g| g.ident.clone()).collect();
-
-        self.items.begin(&key);
-        let result = self.compute_item(&key, index, &generics);
-        self.items.finish(&key, visibility, result.as_ref());
-
-        // An instantiation's body is checked right here, once its signature
-        // is resolved -- preserves the invariant that a recursive call never
-        // hits `InProgress`, for a generic call `compile`'s static sweep
-        // could never enumerate.
+            let generics: Vec<Ident> = generic_params.iter().map(|g| g.ident.clone()).collect();
+            driver.compute_item(&key, index, &generics)
+        });
         if result.is_ok() && key.is_instantiation() {
-            self.check_generic_instantiation_body(&key, index);
+            self.ensure_item_body(&key);
         }
-
         Self::gate_visibility(
             result?,
             visibility,
@@ -134,6 +127,30 @@ impl Driver {
             accessor_module_path,
             options.bypasses_visibility(),
         )
+    }
+
+    pub(super) fn ensure_item_query(
+        &mut self,
+        key: &ItemKey,
+        visibility: Visibility,
+        options: ResolveItemOptions,
+        compute: impl FnOnce(&mut Self) -> Result<ResolvedItem, ResolveError>,
+    ) -> Result<ResolvedItem, ResolveError> {
+        match self.items.state(key) {
+            Some(ItemQueryState::Resolved(entry)) => {
+                debug_assert_eq!(entry.visibility, visibility);
+                return Ok(entry.item.clone());
+            }
+            Some(ItemQueryState::Failed(_)) => return Err(key.failed()),
+            Some(ItemQueryState::InProgress) => {
+                return self.in_progress_result(key, options.allows_indirection());
+            }
+            None => {}
+        }
+        self.items.begin(key);
+        let result = compute(self);
+        self.items.finish(key, visibility, result.as_ref());
+        result
     }
 
     pub(crate) fn pad_generic_defaults(
@@ -277,10 +294,10 @@ impl Driver {
         generic_params: &[HirGenericParam],
         generic_args: &[ResolvedGenericArg],
     ) -> Result<(), ResolveError> {
-        let hir = self.modules.hir(&key.module);
+        let hir = self.modules.hir(key.module());
         let owner = item_site(&hir.items[index]);
         let declared =
-            match self.check_generic_bounds(&key.module, owner, generic_params, generic_args) {
+            match self.check_generic_bounds(key.module(), owner, generic_params, generic_args) {
                 Some(Ok(declared)) => declared,
                 Some(Err(error)) => return Err(error),
                 None => return Err(key.failed()),
@@ -312,9 +329,9 @@ impl Driver {
         index: usize,
         generics: &[Ident],
     ) -> Result<ResolvedItem, ResolveError> {
-        let hir = self.modules.hir(&key.module);
+        let hir = self.modules.hir(key.module());
         let item = &hir.items[index];
-        let module = &key.module;
+        let module = key.module();
         let substitution: GenericSubstitution = generics
             .iter()
             .cloned()
@@ -549,7 +566,7 @@ impl Driver {
         let mut substitution = substitution.clone();
         substitution.push_type(Ident("Self".to_string()), self_type.clone());
 
-        self.analyze(&key.module, &substitution, owner, |analyzer| {
+        self.analyze(key.module(), &substitution, owner, |analyzer| {
             signature(analyzer, &method_ids)
         })?;
         Some(ResolvedItem::Type(self_type))

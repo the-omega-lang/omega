@@ -7,7 +7,7 @@ use omega_analyzer::resolver::GenericMethodTemplate;
 /// A generic method declaration, together with everything the owner
 /// instantiation it was reached through binds for it.
 struct MethodTemplate {
-    key: MethodKey,
+    key: ItemKey,
     function: HirFunctionDef,
     site: AnalysisSite,
     /// The owner's generic arguments and `Self`, with any name the method's
@@ -58,24 +58,46 @@ impl Driver {
             return Ok(None);
         };
         let generic_args = self.pad_generic_defaults(
-            &template.key.owner.module,
+            template.key.module(),
             name,
             template.site,
             &template.function.generics,
             generic_args,
         )?;
-        let key = MethodKey {
+        let key = ItemKey {
             generic_args,
             ..template.key.clone()
         };
-        match self.items.method_instantiations.get(&key) {
-            Some(MethodQueryState::Resolved(method)) => return Ok(Some(method.clone())),
-            Some(MethodQueryState::Failed) => return Err(Self::method_failure(&key, name)),
-            None => {}
-        }
+        let visibility = template.function.visibility;
+        let item =
+            self.ensure_item_query(&key, visibility, ResolveItemOptions::INDIRECT, |driver| {
+                driver.compute_method_signature(&key, &template)
+            })?;
+        self.ensure_item_body(&key);
+        let ResolvedItem::Value {
+            decl_id,
+            r#type: ResolvedType::Function(fn_type),
+            ..
+        } = item
+        else {
+            unreachable!("a method query resolves a function");
+        };
+        Ok(Some(ResolvedMethod {
+            decl_id,
+            fn_type,
+            visibility,
+            annotations: self.items.function_annotations[&decl_id].clone(),
+            source: None,
+        }))
+    }
 
+    fn compute_method_signature(
+        &mut self,
+        key: &ItemKey,
+        template: &MethodTemplate,
+    ) -> Result<ResolvedItem, ResolveError> {
         let declared = match self.check_generic_bounds_under(
-            &key.owner.module,
+            key.module(),
             template.site,
             &template.owner_substitution,
             &template.function.generics,
@@ -83,75 +105,102 @@ impl Driver {
         ) {
             Some(Ok(declared)) => declared,
             Some(Err(error)) => return Err(error),
-            None => return Err(self.fail_method(key, name)),
+            None => return Err(key.failed()),
         };
-
-        let substitution = Self::method_substitution(&template, &key.generic_args);
+        self.items.declared_bounds.insert(key.clone(), declared);
+        let substitution = Self::method_substitution(template, &key.generic_args);
         let site = AnalysisSite::new(template.function.id, template.function.span);
-        let signature = self.with_analyzer(&key.owner.module, &substitution, site, |analyzer| {
+        let signature = self.with_analyzer(key.module(), &substitution, site, |analyzer| {
             analyzer.collect_function_signature(&template.function)
         });
-        let Some((fn_type, annotations)) = signature.result else {
-            return Err(self.fail_method(key, name));
-        };
         self.diagnostics
-            .record_warnings(&key.owner.module, signature.warnings);
-
-        let decl_id = self.items.fresh_synthetic_id();
-        // The owner query is where this identity's diagnostics and source
-        // live; `method_identities` is what leads back to the instantiation
-        // itself, which is emitted on its own.
-        self.items.decl_id_owner.insert(decl_id, key.owner.clone());
-        self.items.method_identities.insert(decl_id, key.clone());
-        self.items
-            .function_annotations
-            .insert(decl_id, annotations.clone());
-        let method = ResolvedMethod {
+            .record_warnings(key.module(), signature.warnings);
+        let (fn_type, annotations) = signature.result.ok_or_else(|| key.failed())?;
+        let decl_id = self.items.identity_for(key, template.function.id);
+        self.items.function_annotations.insert(decl_id, annotations);
+        Ok(ResolvedItem::Value {
             decl_id,
-            fn_type: fn_type.clone(),
-            visibility: template.function.visibility,
-            annotations: annotations.clone(),
-            source: None,
+            r#type: ResolvedType::Function(fn_type),
+            storage: Storage::Function,
+            mutable: false,
+        })
+    }
+
+    pub(crate) fn check_method_body(&mut self, key: &ItemKey) -> Option<CheckedBody> {
+        let template = self.method_template_for_key(key);
+        let ResolvedItem::Value {
+            decl_id,
+            r#type: ResolvedType::Function(fn_type),
+            ..
+        } = self.items.expect_resolved(key).clone()
+        else {
+            unreachable!("a method query resolves a function");
         };
-        // Cached before the body is checked: a method that instantiates
-        // itself at the same arguments must find this signature instead of
-        // re-entering an unfinished instantiation.
-        self.items
-            .method_instantiations
-            .insert(key.clone(), MethodQueryState::Resolved(method.clone()));
-
-        let mut bounds = self.method_bound_context(&key, template.site, &substitution, &declared);
-        bounds.extend(template.enclosing_bounds.clone());
-        let run = self.with_analyzer_in(
-            &key.owner.module,
-            &substitution,
-            &bounds,
-            site,
-            |analyzer| {
-                analyzer.check_function_body(&template.function, &fn_type, decl_id, &annotations)
-            },
-        );
-        if let Some(mut checked) = run.result {
-            checked.generic_args = key.generic_args.clone();
-            if let Some(owner) = &template.conformance_owner {
-                checked.conformance_owner = Some(owner.clone());
-            } else {
-                checked.method_owner = Some(CheckedMethodOwner {
-                    module_path: key.owner.module.clone(),
-                    name: key.owner.name.clone(),
-                    generic_args: key.owner.generic_args.clone(),
-                });
-            }
-            self.items.method_bodies.insert(
-                key,
-                CheckedBody {
-                    item: CheckedItem::FunctionDefinition(checked),
-                    warnings: run.warnings,
-                },
-            );
+        let annotations = self.items.function_annotations[&decl_id].clone();
+        let substitution = Self::method_substitution(&template, &key.generic_args);
+        let declared = self
+            .items
+            .declared_bounds
+            .get(key)
+            .cloned()
+            .unwrap_or_default();
+        let mut bounds = self.method_bound_context(key, template.site, &substitution, &declared);
+        bounds.extend(template.enclosing_bounds);
+        let site = AnalysisSite::new(template.function.id, template.function.span);
+        let run = self.with_analyzer_in(key.module(), &substitution, &bounds, site, |analyzer| {
+            analyzer.check_function_body(&template.function, &fn_type, decl_id, &annotations)
+        });
+        let mut checked = run.result?;
+        checked.generic_args = key.generic_args.clone();
+        if let Some(owner) = template.conformance_owner {
+            checked.conformance_owner = Some(owner);
+        } else {
+            let owner = key.owner().expect("a method has an owner");
+            checked.method_owner = Some(CheckedMethodOwner {
+                module_path: owner.module().clone(),
+                name: owner.name.clone(),
+                generic_args: owner.generic_args.clone(),
+            });
         }
+        Some(CheckedBody {
+            item: CheckedItem::FunctionDefinition(checked),
+            warnings: run.warnings,
+        })
+    }
 
-        Ok(Some(method))
+    fn method_template_for_key(&mut self, key: &ItemKey) -> MethodTemplate {
+        let owner = key.owner().expect("a method query has an owner");
+        let (target, namespace) = if let Some(target) = self.items.cells.resolved_type(owner) {
+            let hir = self.modules.hir(owner.module());
+            let functions = match &hir.items[owner.disambiguator] {
+                HirItem::Struct(s) => &s.functions,
+                HirItem::Enum(e) => &e.functions,
+                HirItem::Union(u) => &u.functions,
+                _ => unreachable!("nominal owners declare methods"),
+            };
+            (
+                target,
+                FunctionNamespace::of_declaration(functions[key.disambiguator].self_mode),
+            )
+        } else {
+            let entry = self
+                .conformances
+                .entries
+                .iter()
+                .find(|entry| self.conformance_method_key(entry) == *owner)
+                .expect("a resolved conformance method has a registered owner");
+            (
+                entry.target.clone(),
+                FunctionNamespace::of_declaration(entry.functions[key.disambiguator].self_mode),
+            )
+        };
+        let template = self
+            .find_generic_method(&target, &key.name, namespace)
+            .expect("a resolved method template remains valid")
+            .expect("a resolved method has a template");
+        debug_assert_eq!(&template.key.scope, &key.scope);
+        debug_assert_eq!(template.key.disambiguator, key.disambiguator);
+        template
     }
 
     /// The bindings one method instantiation analyzes under: its own generic
@@ -173,38 +222,18 @@ impl Driver {
 
     fn method_bound_context(
         &mut self,
-        key: &MethodKey,
+        key: &ItemKey,
         site: AnalysisSite,
         substitution: &GenericSubstitution,
         declared: &[ResolvedBound],
     ) -> Vec<ResolvedBound> {
-        let keys_run = self.with_analyzer(&key.owner.module, substitution, site, |a| {
+        let keys_run = self.with_analyzer(key.module(), substitution, site, |a| {
             a.expand_bound_set(site.id, site.span, declared)
         });
         self.diagnostics
-            .record_warnings(&key.owner.module, keys_run.warnings);
+            .record_warnings(key.module(), keys_run.warnings);
         let keys = keys_run.result;
         self.bound_context_over(declared, &keys)
-    }
-
-    /// Records a failed instantiation, so a second call site reaching the
-    /// same broken declaration references the error already reported instead
-    /// of producing its own copy.
-    fn fail_method(&mut self, key: MethodKey, name: &Ident) -> ResolveError {
-        let failure = Self::method_failure(&key, name);
-        self.items
-            .method_instantiations
-            .insert(key, MethodQueryState::Failed);
-        failure
-    }
-
-    /// The instantiation failed for a reason an analyzer run already
-    /// reported at the declaration.
-    fn method_failure(key: &MethodKey, name: &Ident) -> ResolveError {
-        ResolveError::ItemFailed {
-            module: key.owner.module.clone(),
-            item: name.clone(),
-        }
     }
 
     /// Finds the one generic declaration an owner makes under a name. Two of
@@ -217,17 +246,17 @@ impl Driver {
         name: &Ident,
         namespace: FunctionNamespace,
     ) -> Result<Option<MethodTemplate>, ResolveError> {
-        let Some((key, self_type)) = Self::owner_item_key(owner) else {
+        let Some((key, self_type)) = self.owner_item_key(owner) else {
             return self.find_generic_conformance_method(owner, name, namespace);
         };
-        let index = match self.local_item_index(&key.module, &key.name) {
+        let index = match self.local_item_index(key.module(), &key.name) {
             Ok(index) => index,
             Err(_) => return Ok(None),
         };
         // Only the declarations that could match are copied out of the HIR:
         // this query runs on every type-qualified call, and an owner's other
         // declarations carry whole bodies.
-        let item = &self.modules.parsed(&key.module).hir.items[index];
+        let item = &self.modules.parsed(key.module()).hir.items[index];
         let site = item_site(item);
         let (generics, functions) = match item {
             HirItem::Struct(s) => (&s.generics, &s.functions),
@@ -236,20 +265,21 @@ impl Driver {
             _ => return self.find_generic_conformance_method(owner, name, namespace),
         };
         let generics = generics.clone();
-        let candidates: Vec<HirFunctionDef> = functions
+        let candidates: Vec<(usize, HirFunctionDef)> = functions
             .iter()
-            .filter(|f| {
+            .enumerate()
+            .filter(|(_, f)| {
                 &f.name == name && FunctionNamespace::of_declaration(f.self_mode) == namespace
             })
-            .cloned()
+            .map(|(index, function)| (index, function.clone()))
             .collect();
 
         // The *normalized* generics decide what a template is: a `spec S`
         // parameter is an anonymous bounded generic, so `f(x: spec S)` is as
         // much a template as `f<T: S>(x: T)`.
         let mut matches = Vec::new();
-        for f in &candidates {
-            let normalized = match self.normalized_function(&key.module, f) {
+        for (index, f) in &candidates {
+            let normalized = match self.normalized_function(key.module(), f) {
                 Ok(normalized) => normalized,
                 // A declaration whose written types cannot even be expanded
                 // is not a template to instantiate; the ordinary member
@@ -260,15 +290,15 @@ impl Driver {
             if normalized.generics.is_empty() {
                 continue;
             }
-            matches.push(normalized);
+            matches.push((*index, normalized));
         }
         let mut matches = matches.into_iter();
-        let Some(function) = matches.next() else {
+        let Some((index, function)) = matches.next() else {
             return self.find_generic_conformance_method(owner, name, namespace);
         };
         if matches.next().is_some() {
             return Err(ResolveError::GenericMethodOverload {
-                module: key.module.clone(),
+                module: key.module().clone(),
                 owner: key.name.clone(),
                 function: name.clone(),
             });
@@ -287,11 +317,7 @@ impl Driver {
         }
 
         Ok(Some(MethodTemplate {
-            key: MethodKey {
-                owner: key,
-                method: function.id,
-                generic_args: Vec::new(),
-            },
+            key: ItemKey::member(key, function.name.clone(), index),
             site,
             function,
             owner_substitution,
@@ -308,22 +334,25 @@ impl Driver {
     ) -> Result<Option<MethodTemplate>, ResolveError> {
         let mut candidates = Vec::new();
         for entry in self.conformances_for_type(owner) {
-            for (function, method_id) in entry.functions.iter().zip(&entry.method_ids) {
+            for (index, (function, method_id)) in
+                entry.functions.iter().zip(&entry.method_ids).enumerate()
+            {
                 if entry.templates.contains(method_id)
                     && function.name == *name
                     && FunctionNamespace::of_declaration(function.self_mode) == namespace
                 {
-                    candidates.push((entry.clone(), function.clone()));
+                    candidates.push((entry.clone(), index, function.clone()));
                 }
             }
         }
         let mut candidates = candidates.into_iter();
-        let Some((entry, mut function)) = candidates.next() else {
+        let Some((entry, index, mut function)) = candidates.next() else {
             return Ok(None);
         };
         if candidates.next().is_some() {
-            let (module, owner_name) = Self::owner_item_key(owner)
-                .map(|(key, _)| (key.module, key.name))
+            let (module, owner_name) = self
+                .owner_item_key(owner)
+                .map(|(key, _)| (key.module().clone(), key.name))
                 .unwrap_or_else(|| (entry.module.clone(), Ident(owner.to_string())));
             return Err(ResolveError::GenericMethodOverload {
                 module,
@@ -354,11 +383,11 @@ impl Driver {
             function.visibility = requirement.visibility;
         }
         Ok(Some(MethodTemplate {
-            key: MethodKey {
-                owner: Self::conformance_method_key(&entry),
-                method: function.id,
-                generic_args: Vec::new(),
-            },
+            key: ItemKey::member(
+                self.conformance_method_key(&entry),
+                function.name.clone(),
+                index,
+            ),
             site: AnalysisSite::new(function.id, function.span),
             function,
             owner_substitution,
@@ -369,19 +398,37 @@ impl Driver {
 
     /// The item query a resolved aggregate type came from, which is also the
     /// context its own declarations are analyzed in.
-    fn owner_item_key(owner: &ResolvedType) -> Option<(ItemKey, ResolvedType)> {
+    fn owner_item_key(&mut self, owner: &ResolvedType) -> Option<(ItemKey, ResolvedType)> {
         let key = match owner {
             ResolvedType::Struct(cell) => {
                 let owner = cell.borrow();
-                ItemKey::new(&owner.module_path, &owner.name, &owner.generic_args)
+                ItemKey::new(
+                    &owner.module_path,
+                    &owner.name,
+                    self.local_item_index(&owner.module_path, &owner.name)
+                        .ok()?,
+                    &owner.generic_args,
+                )
             }
             ResolvedType::Union(cell) => {
                 let owner = cell.borrow();
-                ItemKey::new(&owner.module_path, &owner.name, &owner.generic_args)
+                ItemKey::new(
+                    &owner.module_path,
+                    &owner.name,
+                    self.local_item_index(&owner.module_path, &owner.name)
+                        .ok()?,
+                    &owner.generic_args,
+                )
             }
             ResolvedType::Enum { cell, .. } => {
                 let owner = cell.borrow();
-                ItemKey::new(&owner.module_path, &owner.name, &owner.generic_args)
+                ItemKey::new(
+                    &owner.module_path,
+                    &owner.name,
+                    self.local_item_index(&owner.module_path, &owner.name)
+                        .ok()?,
+                    &owner.generic_args,
+                )
             }
             _ => return None,
         };

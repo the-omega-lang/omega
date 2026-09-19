@@ -335,37 +335,55 @@ re-export visibility.
 
 ## Item query identity
 
-The primary item-query key is:
+All named declarations and generic member/static instantiations use one key:
 
 ```rust
 ItemKey {
-    module: ModulePath,
+    scope: ItemScope, // Module(ModulePath) or Owner(Box<ItemKey>)
     name: Ident,
+    disambiguator: usize,
     generic_args: Vec<ResolvedGenericArg>,
 }
 ```
 
-An ordinary item has empty `generic_args`. A concrete generic instantiation is the same query shape with concrete arguments. A `ResolvedGenericArg` is either a resolved type or a canonical compile-time scalar value (`CompScalar`), so a `comp` generic argument distinguishes two instantiations exactly as a type argument does: `Buffer<10, i32>` and `Buffer<11, i32>` are different keys, different cells, and different symbols. Values are canonicalized to the parameter's declared type before the key is built, so two spellings that mean the same value share one entry.
+The disambiguator is the declaration's index in its module's HIR item list or
+its owner's function list. It distinguishes overload candidates and the two
+associated-function namespaces. It is query identity only: it never enters a
+mangled path or changes a linker symbol. An owner-scoped key retains its owner's
+arguments as well as the method's own, so `Pair<i32>::self::map<u8>` and
+`Pair<u8>::self::map<u8>` remain distinct.
 
-This means there is no second parallel “generic instantiation engine” for named items. It participates in the same caching/cycle machinery.
+An ordinary item has empty `generic_args`. A concrete generic instantiation is
+the same query shape with concrete arguments. A `ResolvedGenericArg` is either a
+resolved type or a canonical compile-time scalar value (`CompScalar`), so
+`Buffer<10, i32>` and `Buffer<11, i32>` have different keys, cells, and symbols.
+Values are canonicalized to the parameter's declared type, and defaults are
+filled before constructing the key, so equivalent spellings share one entry.
 
-A generic *member or static* declaration is not a named item: it belongs to an owner instantiation, not to a module, so it cannot be reached by name from a module index. Its instantiations are keyed beside the item queries, by the owner's own key plus the declaration and its arguments:
+Overload candidates resolve through ordinary item queries during the signature
+phase, and their bodies use the ordinary body cache. Generic templates have no
+signature until instantiated. Duplicate concrete parameter signatures are
+checked over the per-name query results; name indexing alone cannot compare
+resolved parameter types.
 
-```rust
-MethodKey {
-    owner: ItemKey,
-    method: HirId,
-    generic_args: Vec<ResolvedGenericArg>,
-}
-```
+`items/methods.rs` finds templates and binds their owner's substitution.
+Owner-scoped signatures use the same `InProgress / Resolved / Failed` state and
+resolution stack as module-scoped signatures. A signature must reach `Resolved`
+before body checking starts. Ordinary recursive calls reuse that completed
+signature, while re-entry during signature resolution reports the cycle chain.
+The shared body guard prevents recursive calls from rechecking an active body.
+Failed queries retain their cause, so later calls reference the original failure.
 
-`items/methods.rs` owns that query: it finds the template on the owner's HIR, checks bounds and fills defaults under the owner's substitution, analyzes the signature, assigns a fresh identity, and checks the body immediately -- the signature is cached before the body is checked, so a declaration that instantiates itself at the same arguments finds it rather than re-entering an unfinished query. A failed instantiation keeps a `Failed` state for the same reason ordinary item queries do: later call sites reference one reported error instead of repeating it.
+Concrete methods and free functions share `generic_instantiations` and
+`decl_id_owner`; the latter also lets compile-time evaluation find a method's
+body from its materialized identity. Their query states and emission cache keep
+insertion order.
 
 Each instantiation is emitted as a standalone checked function carrying its owner identity (`CheckedFunctionDef::method_owner`), into the owner module's `CheckedModule` -- the same declaring-module rule concrete item instantiations follow, and for the same symbol-identity reason. MIR builds its symbol from the owner path, the owner's generic arguments, and the declaration's own, and gives it weak linkage, so two packages that instantiate one declaration at the same arguments fold to one definition.
 
 Generic conformance methods share this cache/materialization path, retaining their `ConformanceOwner` so emission uses conformance linkage and identity rather than treating the implementation as an inherent method.
 
-Implementation ownership is split under `items/`: `items/mod.rs` owns query keys, cells, state transitions, checked-body caching, and type cells; `items/resolution.rs` owns the driver-side resolution algorithms that populate those states; `items/methods.rs` owns generic member/static instantiation. Keeping cache lifetime/state separate from resolution logic makes query invariants visible without turning one file into both the database and every query implementation.
+Implementation ownership is split under `items/`: `items/mod.rs` owns query keys, cells, state transitions, checked-body caching, and type cells; `items/resolution.rs` owns the driver-side resolution algorithms that populate those states; `items/methods.rs` owns owner-scoped template lookup and signature/body analysis through the shared query state machine. Keeping cache lifetime/state separate from resolution logic makes query invariants visible without turning one file into both the database and every query implementation.
 
 ## Query states and cycles
 

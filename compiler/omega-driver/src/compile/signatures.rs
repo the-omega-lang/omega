@@ -208,7 +208,7 @@ impl Driver {
                 .collect();
             match glues.as_slice() {
                 [] => warnings.push((
-                    key.module.clone(),
+                    key.module().clone(),
                     AnalysisWarning::new(
                         gap.id,
                         gap.span,
@@ -220,7 +220,7 @@ impl Driver {
                 )),
                 [_] => {}
                 _ => errors.push(CompileError::Analysis {
-                    module: key.module.clone(),
+                    module: key.module().clone(),
                     errors: vec![AnalysisError::new(
                         gap.id,
                         gap.span,
@@ -301,29 +301,38 @@ impl Driver {
 
             self.validate_aliases(path);
 
-            for (name, _) in self.modules.index(path).plain_items() {
-                match self.is_generic_template(path, &name) {
-                    Ok(true) => continue,
-                    Ok(false) => {}
-                    Err(error) => {
-                        self.record_item_failure(path, error);
-                        continue;
+            for (name, indices) in self.modules.index(path).item_groups() {
+                let mut concrete_indices = Vec::new();
+                let mut signatures = Vec::new();
+                for index in indices {
+                    match self.item_generics_at(path, index) {
+                        Ok(generics) if !generics.is_empty() => continue,
+                        Ok(_) => {}
+                        Err(error) => {
+                            self.record_item_failure(path, error);
+                            continue;
+                        }
+                    }
+                    match self.ensure_item_at(
+                        path,
+                        path,
+                        &name,
+                        index,
+                        &[],
+                        ResolveItemOptions::INDIRECT,
+                    ) {
+                        Ok(ResolvedItem::Value {
+                            r#type: ResolvedType::Function(fn_type),
+                            ..
+                        }) => {
+                            concrete_indices.push(index);
+                            signatures.push(fn_type);
+                        }
+                        Ok(_) => {}
+                        Err(error) => self.record_item_failure(path, error),
                     }
                 }
-                let _ = self.ensure_item(path, path, &name, &[], ResolveItemOptions::INDIRECT);
-            }
-
-            for (name, indices) in self.modules.index(path).overloads.clone() {
-                let signatures: Result<Vec<ResolvedFunctionType>, ResolveError> = indices
-                    .iter()
-                    .map(|&i| self.ensure_overload_signature(path, i))
-                    .collect();
-                match signatures {
-                    Ok(signatures) => {
-                        self.check_overload_duplicates(path, &name, &indices, &signatures)
-                    }
-                    Err(error) => self.record_item_failure(path, error),
-                }
+                self.check_overload_duplicates(path, &name, &concrete_indices, &signatures);
             }
         }
 
@@ -349,7 +358,6 @@ impl Driver {
                 None => return,
             },
         };
-        let is_overloaded = index.overloads.contains_key(&name);
 
         for index in indices {
             let hir = self.modules.hir(entry);
@@ -361,16 +369,19 @@ impl Driver {
             }
             let (id, span) = (f.id, f.signature_span);
 
-            let fn_type = if is_overloaded {
-                self.ensure_overload_signature(entry, index).ok()
-            } else {
-                match self.ensure_item(entry, entry, &name, &[], ResolveItemOptions::INDIRECT) {
-                    Ok(ResolvedItem::Value {
-                        r#type: ResolvedType::Function(fn_type),
-                        ..
-                    }) => Some(fn_type),
-                    _ => None,
-                }
+            let fn_type = match self.ensure_item_at(
+                entry,
+                entry,
+                &name,
+                index,
+                &[],
+                ResolveItemOptions::INDIRECT,
+            ) {
+                Ok(ResolvedItem::Value {
+                    r#type: ResolvedType::Function(fn_type),
+                    ..
+                }) => Some(fn_type),
+                _ => None,
             };
 
             let Some(fn_type) = fn_type else { continue };

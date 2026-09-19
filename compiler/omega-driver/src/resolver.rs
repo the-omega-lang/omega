@@ -346,14 +346,46 @@ impl Driver {
         };
         let hir = self.modules.hir(module_path);
         let mut candidates = Vec::with_capacity(indices.len());
+        // A generic declaration does not participate in overload resolution
+        // (`docs/language/functions.md`), so it is skipped rather than
+        // poisoning the group: a concrete candidate of the same name still
+        // wins, exactly as it does on the member path. Only a group with no
+        // concrete candidate left has nothing to rank, which is the case the
+        // specification rejects at the call.
+        let mut skipped_generic = false;
         for index in indices {
             let HirItem::FunctionDefinition(f) = &hir.items[index] else {
                 unreachable!("only a function is ever recorded as an overload candidate");
             };
+            if !self.item_generics_at(module_path, index)?.is_empty() {
+                skipped_generic = true;
+                continue;
+            }
+            let ResolvedItem::Value {
+                decl_id,
+                r#type: ResolvedType::Function(fn_type),
+                ..
+            } = self.ensure_item_at(
+                module_path,
+                module_path,
+                name,
+                index,
+                &[],
+                ResolveItemOptions::INDIRECT,
+            )?
+            else {
+                unreachable!("an overload candidate is a function");
+            };
             candidates.push(OverloadCandidate {
-                decl_id: f.id,
-                fn_type: self.ensure_overload_signature(module_path, index)?,
+                decl_id,
+                fn_type,
                 visibility: f.visibility,
+            });
+        }
+        if candidates.is_empty() && skipped_generic {
+            return Err(ResolveError::GenericFunctionOverload {
+                module: module_path.to_vec(),
+                function: name.clone(),
             });
         }
         Ok(Some(candidates))
@@ -1054,30 +1086,19 @@ impl ModuleResolver for Driver {
 
     fn function_source(&self, decl_id: HirId) -> Option<omega_diagnostics::SourceId> {
         let key = self.items.decl_id_owner.get(&decl_id)?;
-        self.modules.source_id(&key.module)
+        self.modules.source_id(key.module())
     }
 
     fn resolve_function_body(
         &mut self,
         decl_id: HirId,
     ) -> Result<Option<CheckedFunctionDef>, ResolveError> {
-        // A generic method's instantiation is emitted on its own rather than
-        // inside its owner's definition, so it is found by its own key.
-        if let Some(key) = self.items.method_identities.get(&decl_id).cloned() {
-            return Ok(
-                match self.items.method_bodies.get(&key).map(|body| &body.item) {
-                    Some(CheckedItem::FunctionDefinition(f)) => Some(f.clone()),
-                    _ => None,
-                },
-            );
-        }
         let Some(key) = self.items.decl_id_owner.get(&decl_id).cloned() else {
             return Ok(None);
         };
-        let index = self.local_item_index(&key.module, &key.name)?;
-        let Some(body) = self.ensure_item_body(&key, index) else {
+        let Some(body) = self.ensure_item_body(&key) else {
             return Err(ResolveError::ItemFailed {
-                module: key.module,
+                module: key.module().clone(),
                 item: key.name,
             });
         };

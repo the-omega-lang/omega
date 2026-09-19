@@ -178,31 +178,42 @@ fn a_failed_signature_skips_only_its_own_body() {
 }
 
 #[test]
-fn a_dependent_use_never_replaces_the_primary_with_a_rootless_marker() {
-    // A generic and a non-generic candidate share one name. Whatever the
-    // overload machinery does with that, the real reason must be visible.
+fn a_mixed_generic_overload_group_selects_the_concrete_candidate() {
+    // A generic declaration does not participate in overload resolution, so it
+    // is skipped rather than poisoning the group: the concrete candidate still
+    // wins, matching both `functions.md` and the member path.
+    TestPackage::new(
+        r#"
+        free<T>(p: *T) => void { }
+        free(p: *u8) => void { }
+        main() => void {
+            value := 1u8;
+            free(&value);
+        }
+        "#,
+    )
+    .expect_ok();
+}
+
+#[test]
+fn an_all_generic_overload_group_reports_the_restriction() {
     let package = TestPackage::new(
         r#"
         free<T>(p: *T) => void { }
-
-        free(p: *u8) => void { }
-
-        main() => void { }
+        free<T>(p: T) => void { }
+        main() => void {
+            value := 1u8;
+            free(&value);
+        }
         "#,
     );
-
     let errors = package.expect_errors();
     let text = rendered(&errors);
     assert!(
-        !text.is_empty(),
-        "the failure must produce at least one diagnostic"
+        text.contains("generic declarations do not participate in overload resolution"),
+        "{text}"
     );
-    assert!(
-        !text
-            .lines()
-            .all(|line| line.contains("because of its own error")),
-        "the primary reason must be present, not only the secondary marker: {text}"
-    );
+    assert!(!text.contains("cannot find type 'T'"), "{text}");
 }
 
 #[test]

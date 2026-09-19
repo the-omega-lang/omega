@@ -41,7 +41,7 @@ impl Driver {
         let mut functions = Vec::new();
 
         for (key, item) in self.items.resolved_items() {
-            if key.is_instantiation() || !self.roots.is_extern(&key.module) {
+            if key.is_instantiation() || !self.roots.is_extern(key.module()) {
                 continue;
             }
             let ResolvedItem::Value {
@@ -55,42 +55,21 @@ impl Driver {
             };
             functions.push(ExternFunctionRef {
                 decl_id: *decl_id,
-                module_path: key.module.clone(),
+                module_path: key.module().clone(),
                 kind: ExternFunctionKind::Free(key.name.clone()),
                 fn_type: fn_type.clone(),
                 symbol: self.symbol_of(decl_id),
             });
         }
 
-        // Free-function *overloads* live in their own cache, addressed by
-        // position rather than by name -- the function's own name/id are read
-        // back off the parsed HIR at that same position.
-        for ((module_path, index), fn_type) in &self.items.overload_signatures {
-            if !self.roots.is_extern(module_path) {
-                continue;
-            }
-            let HirItem::FunctionDefinition(f) =
-                &self.modules.parsed(module_path).hir.items[*index]
-            else {
-                unreachable!("only a function is ever recorded as an overload candidate");
-            };
-            functions.push(ExternFunctionRef {
-                decl_id: f.id,
-                module_path: module_path.clone(),
-                kind: ExternFunctionKind::Free(f.name.clone()),
-                fn_type: fn_type.clone(),
-                symbol: self.symbol_of(&f.id),
-            });
-        }
-
         for (key, methods) in self.items.cells.all_methods() {
-            if key.is_instantiation() || !self.roots.is_extern(&key.module) {
+            if key.is_instantiation() || !self.roots.is_extern(key.module()) {
                 continue;
             }
             for (method_name, method) in methods {
                 functions.push(ExternFunctionRef {
                     decl_id: method.decl_id,
-                    module_path: key.module.clone(),
+                    module_path: key.module().clone(),
                     kind: ExternFunctionKind::Method {
                         type_name: key.name.clone(),
                         method_name,
@@ -102,7 +81,7 @@ impl Driver {
         }
 
         for (key, gap) in &self.items.gaps {
-            if !self.roots.is_extern(&key.module) {
+            if !self.roots.is_extern(key.module()) {
                 continue;
             }
             for (fn_name, gap_fn) in &gap.functions {
@@ -335,9 +314,9 @@ where
     for (key, cell) in cells {
         let (id, suppress) = facts(&cell.borrow());
         grouped
-            .entry((&key.module, &key.name))
+            .entry((key.module(), &key.name))
             .or_insert_with(|| Declaration {
-                module: &key.module,
+                module: key.module(),
                 name: &key.name,
                 ids: vec![],
                 suppress,

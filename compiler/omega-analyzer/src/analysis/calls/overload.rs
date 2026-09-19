@@ -163,13 +163,9 @@ impl<'r> Analyzer<'r> {
         &mut self,
         ident: &Ident,
         origin: Origin,
-    ) -> Option<ResolvedOverloadSet> {
+    ) -> Result<Option<ResolvedOverloadSet>, ResolveError> {
         let accessor = self.origin_module(origin);
-        let alias = self
-            .resolver
-            .resolve_import_alias(&accessor, ident)
-            .ok()
-            .flatten();
+        let alias = self.resolver.resolve_import_alias(&accessor, ident)?;
         let access = match alias {
             Some(ImportTarget::ItemPath(access)) => access,
             Some(ImportTarget::Item(absolute, _)) => ItemAccess::gated(absolute),
@@ -181,7 +177,7 @@ impl<'r> Analyzer<'r> {
                     .collect(),
             ),
         };
-        self.overload_set(&accessor, &access, origin).ok().flatten()
+        self.overload_set(&accessor, &access, origin)
     }
 
     pub(crate) fn resolve_overloaded_call(
@@ -210,10 +206,14 @@ impl<'r> Analyzer<'r> {
         // found, never in which candidates the caller may then choose
         // between.
         let set = if path.is_unqualified() {
-            let Some(set) = self.resolve_bare_overload_candidates(&path.head, path.origin) else {
-                return Intercepted::Declined;
-            };
-            set
+            match self.resolve_bare_overload_candidates(&path.head, path.origin) {
+                Ok(Some(set)) => set,
+                Ok(None) => return Intercepted::Declined,
+                Err(error) => {
+                    self.error(node_id, span, AnalysisErrorKind::ModuleResolution(error));
+                    return Intercepted::Claimed(None);
+                }
+            }
         } else {
             let accessor = self.path_module(path);
             let access = match self.module_qualified_path(node_id, span, path) {

@@ -1,0 +1,10 @@
+# Two generic declarations sharing a name have nothing to rank at the call:
+# neither has a signature until its arguments are known. A group that still
+# has a concrete candidate is not an error -- see t05c.
+free<T>(ptr: *T) => void { }
+free<T>(ptr: T) => void { }
+
+main() => void {
+    value := 1u8;
+    free(&value);
+}

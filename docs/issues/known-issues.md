@@ -142,6 +142,27 @@ Concrete current compiler/library bugs and unsupported cases. Resolved issues ar
   (Ryu/Grisu-class) is deliberate future work, not a narrow fix here.
   [console-io.md](../guide/console-io.md)
 
+- **A field and a member function may share a name, and the field silently
+  shadows the function.** `struct Thing { exposed thing : i32; exposed
+  thing(*self) => i32 { self.thing } }` is accepted with no diagnostic.
+  `t.thing()` then fails with `this expression is not a callable function`,
+  because member access resolves the field first and an `i32` is not callable;
+  the function remains reachable only as `Thing::self::thing(&t)`. So the
+  declaration is not rejected — the function is just unreachable through the
+  spelling anyone would write, and the diagnostic blames the call site rather
+  than the declaration. Field names are checked against each other
+  (`analyze_struct_fields`' `seen` map) and member functions against each other
+  (`collect_methods` -> `check_overload_duplicates`), but the two sets are never
+  compared, in `signature_of_struct` or `signature_of_union`.
+  **Decision needed:** whether a field and a member function share one member
+  namespace (making this a `Redeclaration` at the declaration), or are separate
+  domains that member access must disambiguate by syntactic position.
+  `functions.md` states that static and member functions are separate overload
+  domains but says nothing about fields, and `structs-and-unions.md` states no
+  member-collision rule at all, so neither outcome is currently specified.
+  [functions.md](../language/functions.md),
+  [structs-and-unions.md](../language/structs-and-unions.md)
+
 ## Conformance and specs (`meet` / `primitive`)
 
 Remaining known conformance/spec issues:
@@ -285,8 +306,6 @@ Remaining known conformance/spec issues:
 
 
 Shape problems in `omega-driver` and `omega-analyzer` that still need a deliberate design change — full writeups in [design-debt.md](design-debt.md).
-
-- **Overloading needs a parallel item pipeline** because the ordinary item query key cannot identify one candidate inside an overload group. This also makes generic overloads structurally unsupported: a generic/non-generic overload pair still fails to compile, though it now reports the real reason rather than a rootless `ItemFailed`. Fixing it means changing resolver/query identity rather than adding another special case.
 
 - **Module paths and item paths are the same untyped `Vec<Ident>`**, so nothing in the type system prevents confusing a module identity with `module + item`. A distinct/interned path model would be cross-crate and is intentionally deferred.
 

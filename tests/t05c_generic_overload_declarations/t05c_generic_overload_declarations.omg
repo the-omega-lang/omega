@@ -1,0 +1,11 @@
+import std::io::println;
+
+# A generic declaration does not participate in overload resolution, so it is
+# skipped rather than poisoning the group: the concrete candidate is selected.
+free(ptr: *u8) => void { println$("concrete"); }
+free<T>(ptr: *T) => void { println$("generic"); }
+
+main() => void {
+    value := 1u8;
+    free(&value);
+}

@@ -285,3 +285,82 @@ fn a_static_spec_parameter_makes_a_method_a_template() {
     );
     assert_eq!(workspace.instantiations_of("tell").len(), 1);
 }
+
+#[test]
+fn a_failed_method_signature_is_reported_once_across_call_sites() {
+    let errors = TestWorkspace::new(
+        r#"
+        struct Holder {
+            exposed value: i32;
+            exposed broken<T>(thing: T) => Missing { thing }
+        }
+        main() => void {
+            Holder::broken(1);
+            Holder::broken(2);
+        }
+    "#,
+    )
+    .expect_errors();
+    let messages = resolve_errors(&errors);
+    assert_eq!(
+        messages.iter().filter(|m| m.contains("Missing")).count(),
+        1,
+        "{messages:#?}"
+    );
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|m| m.contains("main::broken") && m.contains("because of its own error"))
+            .count(),
+        2,
+        "{messages:#?}"
+    );
+}
+
+#[test]
+fn a_failed_method_body_reports_once_like_a_free_function() {
+    let errors = TestWorkspace::new(
+        r#"
+        struct Holder {
+            exposed value: i32;
+            exposed broken<T>(thing: T) => T { missing }
+        }
+        main() => void {
+            Holder::broken(1);
+            Holder::broken(2);
+        }
+    "#,
+    )
+    .expect_errors();
+    let messages = resolve_errors(&errors);
+    assert_eq!(
+        messages.iter().filter(|m| m.contains("missing")).count(),
+        1,
+        "{messages:#?}"
+    );
+    // A failed *body* does not demote its own already-resolved signature, so a
+    // call site references the declaration normally rather than reporting a
+    // second, derived failure. A failed *signature* still does -- see the test
+    // above. This is the free-function behavior, which the method path must
+    // not diverge from.
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|m| m.contains("because of its own error"))
+            .count(),
+        0,
+        "{messages:#?}"
+    );
+}
+
+#[test]
+fn an_uncalled_generic_overload_group_has_no_eager_signature() {
+    let workspace = TestWorkspace::new(
+        r#"
+        free(ptr: *u8) => void { }
+        free<T>(ptr: *T) => void { }
+        main() => void { }
+    "#,
+    );
+    assert!(workspace.compile().is_ok());
+}

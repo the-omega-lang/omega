@@ -18,18 +18,63 @@ use std::rc::Rc;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct ItemKey {
-    pub module: ModulePath,
+    pub scope: ItemScope,
+    pub disambiguator: usize,
     pub name: Ident,
     pub generic_args: Vec<ResolvedGenericArg>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) enum ItemScope {
+    Module(ModulePath),
+    Owner(Box<ItemKey>),
+}
+
 impl ItemKey {
-    pub fn new(module: &[Ident], name: &Ident, generic_args: &[ResolvedGenericArg]) -> Self {
+    pub fn new(
+        module: &[Ident],
+        name: &Ident,
+        disambiguator: usize,
+        generic_args: &[ResolvedGenericArg],
+    ) -> Self {
         Self {
-            module: module.to_vec(),
+            scope: ItemScope::Module(module.to_vec()),
+            disambiguator,
             name: name.clone(),
             generic_args: generic_args.to_vec(),
         }
+    }
+
+    pub fn member(owner: ItemKey, name: Ident, disambiguator: usize) -> Self {
+        Self {
+            scope: ItemScope::Owner(Box::new(owner)),
+            name,
+            disambiguator,
+            generic_args: Vec::new(),
+        }
+    }
+
+    pub fn module(&self) -> &ModulePath {
+        match &self.scope {
+            ItemScope::Module(module) => module,
+            ItemScope::Owner(owner) => owner.module(),
+        }
+    }
+
+    pub fn owner(&self) -> Option<&ItemKey> {
+        match &self.scope {
+            ItemScope::Module(_) => None,
+            ItemScope::Owner(owner) => Some(owner),
+        }
+    }
+
+    fn path(&self) -> ModulePath {
+        let mut path = match &self.scope {
+            ItemScope::Module(module) => module.clone(),
+            ItemScope::Owner(owner) => owner.path(),
+        };
+        path.push(self.name.clone());
+        path
     }
 
     pub fn is_instantiation(&self) -> bool {
@@ -38,39 +83,13 @@ impl ItemKey {
 
     fn failed(&self) -> ResolveError {
         ResolveError::ItemFailed {
-            module: self.module.clone(),
+            module: self.module().clone(),
             item: self.name.clone(),
         }
     }
 }
 
-/// What one generic-method instantiation query settled on. A failed
-/// instantiation keeps its state so that every later call site reaching the
-/// same broken declaration is a secondary reference to one reported error
-/// rather than a fresh copy of it.
-///
-/// There is no in-progress state: the resolved signature is recorded before
-/// the body is checked, so a declaration that instantiates itself at the
-/// same arguments finds the finished signature instead of re-entering.
-pub(crate) enum MethodQueryState {
-    Resolved(ResolvedMethod),
-    Failed,
-}
-
-/// One instantiation of a generic method: the owner query it was declared
-/// in, which declaration it is, and the arguments it was instantiated with.
-/// The owner key carries the owner's own generic arguments, so
-/// `Pair<i32>::self::map<u8>` and `Pair<u8>::self::map<u8>` stay distinct.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct MethodKey {
-    pub owner: ItemKey,
-    pub method: HirId,
-    pub generic_args: Vec<ResolvedGenericArg>,
-}
-
 type SpecKey = (ModulePath, Ident);
-
-type OverloadKey = (ModulePath, usize);
 
 enum ItemQueryState {
     InProgress,
@@ -136,7 +155,7 @@ impl TypeCells {
                 Rc::new(RefCell::new(ResolvedStructType {
                     id,
                     name: key.name.clone(),
-                    module_path: key.module.clone(),
+                    module_path: key.module().clone(),
                     generic_args: key.generic_args.clone(),
                     fields: vec![],
                     functions: vec![],
@@ -155,7 +174,7 @@ impl TypeCells {
                 Rc::new(RefCell::new(ResolvedEnumType {
                     id,
                     name: key.name.clone(),
-                    module_path: key.module.clone(),
+                    module_path: key.module().clone(),
                     generic_args: key.generic_args.clone(),
                     tag_type: ResolvedType::U16,
                     header: vec![],
@@ -176,7 +195,7 @@ impl TypeCells {
                 Rc::new(RefCell::new(ResolvedUnionType {
                     id,
                     name: key.name.clone(),
-                    module_path: key.module.clone(),
+                    module_path: key.module().clone(),
                     generic_args: key.generic_args.clone(),
                     fields: vec![],
                     functions: vec![],
@@ -260,15 +279,7 @@ pub(crate) struct ItemQueries {
     pub glues: Vec<GlueSignature>,
     spec_states: HashMap<SpecKey, SpecQueryState>,
     pub function_annotations: HashMap<HirId, ResolvedAnnotations>,
-    pub overload_signatures: IndexMap<OverloadKey, ResolvedFunctionType>,
-    pub overload_bodies: HashMap<OverloadKey, CheckedBody>,
     pub generic_instantiations: IndexMap<ItemKey, CheckedBody>,
-    pub method_instantiations: IndexMap<MethodKey, MethodQueryState>,
-    pub method_bodies: IndexMap<MethodKey, CheckedBody>,
-    /// The instantiation each materialized method identity belongs to, so a
-    /// use site holding only a `decl_id` -- compile-time evaluation asking
-    /// for the body behind a call -- can find it again.
-    pub method_identities: HashMap<HirId, MethodKey>,
     pub declared_bounds: HashMap<ItemKey, Vec<ResolvedBound>>,
     next_synthetic_id: u32,
     checked_bodies: HashMap<ItemKey, CheckedBody>,
@@ -364,7 +375,7 @@ impl ItemQueries {
     fn failure(key: &ItemKey, cause: &ResolveError) -> QueryFailure {
         match cause {
             ResolveError::ItemFailed { module, item }
-                if *module == key.module && *item == key.name =>
+                if *module == *key.module() && *item == key.name =>
             {
                 QueryFailure::Reported
             }
@@ -381,11 +392,7 @@ impl ItemQueries {
         self.resolution_stack[start..]
             .iter()
             .chain(std::iter::once(key))
-            .map(|item| {
-                let mut path = item.module.clone();
-                path.push(item.name.clone());
-                path
-            })
+            .map(ItemKey::path)
             .collect()
     }
 
@@ -424,8 +431,11 @@ impl ItemQueries {
     }
 
     pub fn cache_checked_body(&mut self, key: &ItemKey, body: CheckedBody) {
-        debug_assert!(!key.is_instantiation());
-        self.checked_bodies.insert(key.clone(), body);
+        if key.is_instantiation() {
+            self.generic_instantiations.insert(key.clone(), body);
+        } else {
+            self.checked_bodies.insert(key.clone(), body);
+        }
     }
 
     /// Whether every recorded failure kept a reason. Component tests assert
@@ -478,7 +488,7 @@ mod tests {
 
     #[test]
     fn a_failed_query_never_keeps_its_own_already_failed_marker_as_the_cause() {
-        let key = ItemKey::new(&[ident("a")], &ident("Broken"), &[]);
+        let key = ItemKey::new(&[ident("a")], &ident("Broken"), 0, &[]);
         let mut queries = ItemQueries::default();
 
         queries.begin(&key);
@@ -486,7 +496,7 @@ mod tests {
             &key,
             Visibility::Exposed,
             Err(&ResolveError::ItemFailed {
-                module: key.module.clone(),
+                module: key.module().clone(),
                 item: key.name.clone(),
             }),
         );
@@ -500,7 +510,7 @@ mod tests {
 
     #[test]
     fn a_failed_query_retains_the_reason_it_failed() {
-        let key = ItemKey::new(&[ident("a")], &ident("Broken"), &[]);
+        let key = ItemKey::new(&[ident("a")], &ident("Broken"), 0, &[]);
         let mut queries = ItemQueries::default();
 
         queries.begin(&key);
@@ -521,8 +531,8 @@ mod tests {
 
     #[test]
     fn item_cycle_path_preserves_resolution_order() {
-        let first = ItemKey::new(&[ident("a")], &ident("First"), &[]);
-        let second = ItemKey::new(&[ident("b")], &ident("Second"), &[]);
+        let first = ItemKey::new(&[ident("a")], &ident("First"), 0, &[]);
+        let second = ItemKey::new(&[ident("b")], &ident("Second"), 0, &[]);
         let mut queries = ItemQueries::default();
         queries.begin(&first);
         queries.begin(&second);
@@ -535,5 +545,56 @@ mod tests {
                 vec![ident("a"), ident("First")],
             ]
         );
+    }
+    #[test]
+    fn owner_scoped_queries_share_cycle_and_failure_states() {
+        let mut driver = Driver::new(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/t10c_generic_member_functions"),
+            None,
+            Vec::new(),
+            omega_analyzer::Target::DEFAULT,
+        )
+        .unwrap();
+        let owner = ItemKey::new(&[ident("a")], &ident("Holder"), 0, &[]);
+        let first = ItemKey::member(owner.clone(), ident("first"), 0);
+        let second = ItemKey::member(owner, ident("second"), 1);
+        let error = driver
+            .ensure_item_query(
+                &first,
+                Visibility::Exposed,
+                ResolveItemOptions::INDIRECT,
+                |driver| {
+                    driver.ensure_item_query(
+                        &second,
+                        Visibility::Exposed,
+                        ResolveItemOptions::INDIRECT,
+                        |driver| {
+                            driver.ensure_item_query(
+                                &first,
+                                Visibility::Exposed,
+                                ResolveItemOptions::INDIRECT,
+                                |_| panic!("an in-progress query must not be recomputed"),
+                            )
+                        },
+                    )
+                },
+            )
+            .unwrap_err();
+        let ResolveError::Cycle(chain) = error else {
+            panic!("expected a cycle")
+        };
+        assert_eq!(chain, vec![first.path(), second.path(), first.path()]);
+        assert!(driver.items.resolution_stack.is_empty());
+        assert!(driver.items.failures_retain_a_cause());
+        assert!(matches!(
+            driver.ensure_item_query(
+                &first,
+                Visibility::Exposed,
+                ResolveItemOptions::INDIRECT,
+                |_| { panic!("a failed query must not be recomputed") }
+            ),
+            Err(ResolveError::ItemFailed { .. })
+        ));
     }
 }

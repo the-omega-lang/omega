@@ -82,11 +82,19 @@ impl<'r> Analyzer<'r> {
             return Some((root, binding.r#type.clone(), binding.mutable));
         }
 
-        if origin.0.is_none()
-            && let Some(set) = self.resolve_bare_overload_candidates(ident, origin)
-        {
-            let (root, r#type) = self.resolve_bare_overload_root(node_id, span, set, expected)?;
-            return Some((root, r#type, false));
+        if origin.0.is_none() {
+            match self.resolve_bare_overload_candidates(ident, origin) {
+                Ok(Some(set)) => {
+                    let (root, r#type) =
+                        self.resolve_bare_overload_root(node_id, span, set, expected)?;
+                    return Some((root, r#type, false));
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    self.error(node_id, span, AnalysisErrorKind::ModuleResolution(error));
+                    return None;
+                }
+            }
         }
 
         // An import alias, lazily resolved (see `resolve_alias`). A plain

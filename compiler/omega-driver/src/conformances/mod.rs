@@ -116,11 +116,33 @@ mod registration;
 mod solver;
 
 impl Driver {
-    pub(crate) fn conformance_method_key(entry: &ConformanceEntry) -> ItemKey {
+    pub(crate) fn conformance_method_key(&self, entry: &ConformanceEntry) -> ItemKey {
+        self.implementation_owner_key(&entry.module, entry.id, &entry.target)
+    }
+
+    fn implementation_owner_key(
+        &self,
+        module: &[Ident],
+        declaration: HirId,
+        target: &ResolvedType,
+    ) -> ItemKey {
+        let index = self
+            .modules
+            .parsed(module)
+            .hir
+            .items
+            .iter()
+            .position(|item| match item {
+                HirItem::Conform(conform) => conform.id == declaration,
+                HirItem::Primitive(primitive) => primitive.id == declaration,
+                _ => false,
+            })
+            .expect("an implementation owner belongs to its declaring module");
         ItemKey::new(
-            &entry.module,
-            &Ident(format!("__conform_{}", entry.id.local)),
-            &[ResolvedGenericArg::Type(entry.target.lookup_key())],
+            module,
+            &Ident(format!("__conform_{}", declaration.local)),
+            index,
+            &[ResolvedGenericArg::Type(target.lookup_key())],
         )
     }
 
@@ -131,11 +153,7 @@ impl Driver {
         target: &ResolvedType,
         functions: &[HirFunctionDef],
     ) -> Vec<HirId> {
-        let key = ItemKey::new(
-            module,
-            &Ident(format!("__conform_{}", declaration.local)),
-            &[ResolvedGenericArg::Type(target.lookup_key())],
-        );
+        let key = self.implementation_owner_key(module, declaration, target);
         self.items
             .method_identities(&key, functions.iter().map(|function| function.id))
     }

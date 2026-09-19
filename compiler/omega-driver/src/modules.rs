@@ -39,6 +39,21 @@ pub(crate) struct ModuleIndex {
 }
 
 impl ModuleIndex {
+    pub fn item_groups(&self) -> Vec<(Ident, Vec<usize>)> {
+        self.items
+            .iter()
+            .map(|(name, &index)| {
+                (
+                    name.clone(),
+                    self.overloads
+                        .get(name)
+                        .cloned()
+                        .unwrap_or_else(|| vec![index]),
+                )
+            })
+            .collect()
+    }
+
     pub fn plain_items(&self) -> Vec<(Ident, usize)> {
         self.items
             .iter()
@@ -1019,6 +1034,14 @@ impl Driver {
         name: &Ident,
     ) -> Result<Vec<HirGenericParam>, ResolveError> {
         let index = self.local_item_index(module_path, name)?;
+        self.item_generics_at(module_path, index)
+    }
+
+    pub(crate) fn item_generics_at(
+        &mut self,
+        module_path: &[Ident],
+        index: usize,
+    ) -> Result<Vec<HirGenericParam>, ResolveError> {
         // A static-spec parameter contributes an anonymous bounded generic, so
         // a function's generic arity is only known after normalization.
         if let HirItem::FunctionDefinition(f) = &self.modules.parsed(module_path).hir.items[index] {

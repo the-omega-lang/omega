@@ -31,21 +31,10 @@ impl Driver {
     ) -> Vec<CheckedItem> {
         let mut bodies: Vec<CheckedBody> = Vec::new();
 
-        for (name, index) in self.modules.index(path).plain_items() {
-            match self.is_generic_template(path, &name) {
-                Ok(true) => continue,
-                Ok(false) => {}
-                Err(error) => {
-                    self.record_item_failure(path, error);
-                    continue;
-                }
-            }
-            bodies.extend(self.ensure_item_body(&ItemKey::new(path, &name, &[]), index));
-        }
-
-        for indices in self.modules.index(path).overloads.clone().into_values() {
+        for (name, indices) in self.modules.index(path).item_groups() {
             for index in indices {
-                bodies.extend(self.ensure_overload_body(path, index));
+                let key = ItemKey::new(path, &name, index, &[]);
+                bodies.extend(self.ensure_item_body(&key));
             }
         }
 
@@ -346,7 +335,7 @@ impl Driver {
         let mut items = Vec::new();
         for (name, index) in self.modules.index(path).plain_items() {
             if matches!(self.modules.parsed(path).hir.items[index], HirItem::Gap(_)) {
-                let key = ItemKey::new(path, &name, &[]);
+                let key = ItemKey::new(path, &name, index, &[]);
                 let Some(gap) = self.items.gaps.get(&key) else {
                     continue;
                 };

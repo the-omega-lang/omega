@@ -119,6 +119,23 @@ Several functions or methods may share a name. A call is resolved using the argu
 - If exactly one minimum-cost candidate exists, that candidate is selected.
 - If multiple candidates tie at the minimum cost, the call is ambiguous and must be rejected.
 
+**Adapting a literal is a last resort, not a default.** A candidate that accepts
+the arguments as written always beats one that only becomes viable by adapting a
+literal, because the first costs nothing and the second does not. Adaptation
+happens when there is no alternative, not because a wider parameter was declared:
+
+```omega
+f(a: i32) => void { ... }
+f(a: i64) => void { ... }
+
+f(10);      # selects 'f(a: i32)' -- '10' is already 'i32'; 'i64' would cost an adaptation
+f(10i64);   # selects 'f(a: i64)' -- written as 'i64', so that candidate now costs nothing
+```
+
+With only `f(a: i64)` declared, `f(10)` does adapt, because nothing else can
+accept the call. See [`types-and-primitives.md`](types-and-primitives.md) for a
+literal's own default type.
+
 An uncalled reference to an overloaded name is ambiguous unless an expected function type selects exactly one overload:
 
 ```omega

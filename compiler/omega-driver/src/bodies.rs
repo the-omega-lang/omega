@@ -5,7 +5,7 @@ use omega_analyzer::checked::{CheckedEnumDef, CheckedItem, CheckedStructDef, Che
 use omega_analyzer::error::{AnalysisError, AnalysisErrorKind};
 use omega_analyzer::generics::GenericSubstitution;
 use omega_analyzer::resolved_type::{ResolvedFunctionType, ResolvedGenericArg, ResolvedType};
-use omega_analyzer::resolver::{ResolveError, ResolvedItem};
+use omega_analyzer::resolver::ResolvedItem;
 use omega_hir::{HirGenericParam, HirItem};
 use omega_parser::prelude::Ident;
 
@@ -35,31 +35,29 @@ impl CheckedAggregate for CheckedUnionDef {
 }
 
 impl Driver {
-    pub(crate) fn ensure_item_body(&mut self, key: &ItemKey, index: usize) -> Option<CheckedBody> {
+    pub(crate) fn ensure_item_body(&mut self, key: &ItemKey) -> Option<CheckedBody> {
         if let Some(body) = self.items.cached_body(key) {
             return Some(body.clone_of());
         }
         // A body has nothing sound to check while its own signature is
         // unavailable. The signature failure is already reported, so this is a
         // skip, not a second diagnostic.
-        if !key.is_instantiation() && !self.items.is_resolved(key) {
+        if !self.items.is_resolved(key) {
             return None;
         }
         if !self.items.begin_body(key) {
             return None;
         }
 
-        let body = if key.is_instantiation() {
-            self.check_generic_instantiation_body(key, index);
-            self.items.cached_body(key).map(CheckedBody::clone_of)
+        let body = if key.owner().is_some() {
+            self.check_method_body(key)
         } else {
-            let hir = self.modules.hir(&key.module);
-            let body = self.check_item_body(key, &hir.items[index]);
-            if let Some(body) = &body {
-                self.items.cache_checked_body(key, body.clone_of());
-            }
-            body
+            let hir = self.modules.hir(key.module());
+            self.check_item_body(key, &hir.items[key.disambiguator])
         };
+        if let Some(body) = &body {
+            self.items.cache_checked_body(key, body.clone_of());
+        }
 
         self.items.finish_body(key);
         body
@@ -116,7 +114,7 @@ impl Driver {
                         ..Default::default()
                     });
                 let run = self.with_analyzer(
-                    &key.module,
+                    key.module(),
                     &GenericSubstitution::new(),
                     AnalysisSite::new(f.id, f.span),
                     |analyzer| analyzer.check_foreign_function_body(f, &fn_type, &annotations),
@@ -139,7 +137,7 @@ impl Driver {
                 // The body is checked against the normalized signature, so its
                 // substitution must be keyed by the normalized generics.
                 let generics = self
-                    .normalized_function(&key.module, f)
+                    .normalized_function(key.module(), f)
                     .map(|f| f.generics)
                     .unwrap_or_else(|_| f.generics.clone());
                 let substitution = Self::substitution(&generics, &key.generic_args);
@@ -150,13 +148,13 @@ impl Driver {
                     .cloned()
                     .unwrap_or_default();
                 let keys_run = self.with_analyzer(
-                    &key.module,
+                    key.module(),
                     &substitution,
                     AnalysisSite::new(f.id, f.span),
                     |a| a.expand_bound_set(f.id, f.span, &declared),
                 );
                 self.diagnostics
-                    .record_warnings(&key.module, keys_run.warnings);
+                    .record_warnings(key.module(), keys_run.warnings);
                 let keys = keys_run.result;
                 let bounds = self.bound_context_over(&declared, &keys);
                 let annotations = self
@@ -166,7 +164,7 @@ impl Driver {
                     .cloned()
                     .unwrap_or_default();
                 let run = self.with_analyzer_in(
-                    &key.module,
+                    key.module(),
                     &substitution,
                     &bounds,
                     AnalysisSite::new(f.id, f.span),
@@ -246,25 +244,18 @@ impl Driver {
             .get(key)
             .cloned()
             .unwrap_or_default();
-        let keys_run = self.with_analyzer(&key.module, &substitution, owner, |a| {
+        let keys_run = self.with_analyzer(key.module(), &substitution, owner, |a| {
             a.expand_bound_set(owner.id, owner.span, &declared)
         });
         self.diagnostics
-            .record_warnings(&key.module, keys_run.warnings);
+            .record_warnings(key.module(), keys_run.warnings);
         let keys = keys_run.result;
         let bounds = self.bound_context_over(&declared, &keys);
-        let run = self.with_analyzer_in(&key.module, &substitution, &bounds, owner, check);
+        let run = self.with_analyzer_in(key.module(), &substitution, &bounds, owner, check);
         run.result.map(|checked| CheckedBody {
             item: checked.assemble(key.generic_args.clone()),
             warnings: run.warnings,
         })
-    }
-
-    pub(crate) fn check_generic_instantiation_body(&mut self, key: &ItemKey, index: usize) {
-        let hir = self.modules.hir(&key.module);
-        if let Some(body) = self.check_item_body(key, &hir.items[index]) {
-            self.items.generic_instantiations.insert(key.clone(), body);
-        }
     }
 
     fn checked_global_body(&self, id: omega_hir::HirId) -> CheckedBody {
@@ -296,71 +287,6 @@ impl Driver {
 }
 
 impl Driver {
-    pub(crate) fn ensure_overload_signature(
-        &mut self,
-        module_path: &[Ident],
-        index: usize,
-    ) -> Result<ResolvedFunctionType, ResolveError> {
-        let key = (module_path.to_vec(), index);
-        if let Some(fn_type) = self.items.overload_signatures.get(&key) {
-            return Ok(fn_type.clone());
-        }
-        let hir = self.modules.hir(module_path);
-        let HirItem::FunctionDefinition(f) = &hir.items[index] else {
-            unreachable!("only ever called with an index confirmed to be a function");
-        };
-
-        let checked = self.analyze(
-            module_path,
-            &GenericSubstitution::new(),
-            AnalysisSite::new(f.id, f.span),
-            |a| a.collect_function_signature(f),
-        );
-        let (fn_type, annotations) = checked.ok_or_else(|| ResolveError::ItemFailed {
-            module: module_path.to_vec(),
-            item: f.name.clone(),
-        })?;
-
-        self.items.function_annotations.insert(f.id, annotations);
-        self.items.overload_signatures.insert(key, fn_type.clone());
-        Ok(fn_type)
-    }
-
-    pub(crate) fn ensure_overload_body(
-        &mut self,
-        module_path: &[Ident],
-        index: usize,
-    ) -> Option<CheckedBody> {
-        let key = (module_path.to_vec(), index);
-        if let Some(body) = self.items.overload_bodies.get(&key) {
-            return Some(body.clone_of());
-        }
-        let fn_type = self.ensure_overload_signature(module_path, index).ok()?;
-        let hir = self.modules.hir(module_path);
-        let HirItem::FunctionDefinition(f) = &hir.items[index] else {
-            unreachable!("only ever called with an index confirmed to be a function");
-        };
-        let annotations = self
-            .items
-            .function_annotations
-            .get(&f.id)
-            .cloned()
-            .unwrap_or_default();
-
-        let run = self.with_analyzer(
-            module_path,
-            &GenericSubstitution::new(),
-            AnalysisSite::new(f.id, f.span),
-            |analyzer| analyzer.check_function_body(f, &fn_type, f.id, &annotations),
-        );
-        let body = CheckedBody {
-            item: CheckedItem::FunctionDefinition(run.result?),
-            warnings: run.warnings,
-        };
-        self.items.overload_bodies.insert(key, body.clone_of());
-        Some(body)
-    }
-
     pub(crate) fn check_overload_duplicates(
         &mut self,
         module_path: &[Ident],
