@@ -11,46 +11,6 @@ Normative chapter: [`../language/functions.md`](../language/functions.md)
   than one level of module qualification) resolves without overload
   disambiguation at all — a documented, narrow gap distinct from the
   ordinary locally-visible-type overload path described above.
-- **A generic declaration does not participate in overload resolution.** The
-  cause is that overload selection does not yet infer a template's arguments to
-  obtain a signature it can rank; the query key can already identify individual
-  candidates. Top-level functions and members/statics behave identically, as
-  `functions.md` specifies:
-
-  - A generic candidate is skipped, so a concrete declaration of the same name
-    and namespace simply wins. The template is never consulted, so an argument
-    that only the generic declaration would accept is an argument-type error.
-  - A group whose candidates are *all* generic has nothing to rank and is
-    rejected at the call (`GenericFunctionOverload` /
-    `GenericMethodOverload`), which is the case the normative chapter
-    describes.
-
-  **The intended rule, once this is lifted, is already decided** and is
-  recorded here so it is not re-derived: ranking reuses the existing
-  machinery rather than adding a second one. Minimum adaptation cost
-  (`functions.md`, "Overloading") remains the outer gate, and the
-  more-specific-wins ordering already normative for conformance selection
-  (`specs-and-conformance.md`, selection rules 1-5) breaks ties among
-  candidates that reach that minimum. Concretely: `f(10)` against
-  `{ f(a: i64), f<T>(a: T) }` selects the **generic**, because `10` is `i32`
-  and the generic deduces `T = i32` at no cost while the concrete candidate
-  would have to adapt; `f(10i64)` against the same pair selects the
-  **concrete** one, because both now cost nothing and specificity breaks the
-  tie. Specificity is not a tier above cost -- a conversion is a last resort,
-  never a default. Two generic candidates compare by bound sets, and
-  incomparable sets are ambiguous, exactly as for blankets. Bounds are checked
-  after selection, not used to filter candidates during ranking.
-
-  **Explicit generic arguments select the template**, so specificity never
-  makes a generic candidate unreachable. Given `thing(a: i32)` and
-  `thing<T>(a: T)`, `thing(10)` selects the concrete declaration by the tie
-  rule above, while `thing<i32>(10)` selects the generic one: a declaration
-  with no generic parameters rejects a written argument list as an arity error
-  (`expects 0 generic argument(s), found 1`), so it is not viable and drops out
-  before argument matching. This follows from the existing positional-prefix
-  rule in `generics.md` rather than adding anything, and it is what keeps
-  "the concrete declaration simply wins" from leaving the template with no
-  spelling that reaches it.
 - **An expected function type does not instantiate a generic declaration.**
   This is a deliberate current restriction: `fnptr : (i32) => void =
   some_generic_function;` reports `GenericFunctionNotInstantiated`, even when

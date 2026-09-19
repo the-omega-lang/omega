@@ -153,6 +153,42 @@ impl Driver {
         result
     }
 
+    pub(crate) fn complete_overload_arguments(
+        &mut self,
+        key: &ItemKey,
+        function: &HirFunctionDef,
+        enclosing: &GenericSubstitution,
+        inferred: &[Option<ResolvedGenericArg>],
+    ) -> Result<Vec<ResolvedGenericArg>, ResolveError> {
+        let site = AnalysisSite::new(function.id, function.span);
+        let mut result = Vec::with_capacity(function.generics.len());
+        for (param, inferred) in function.generics.iter().zip(inferred) {
+            if let Some(value) = inferred {
+                result.push(value.clone());
+                continue;
+            }
+            let Some(default) = &param.default else {
+                return Err(key.failed());
+            };
+            let mut substitution =
+                GenericSubstitution::zip(function.generics.iter().map(|g| &g.ident), &result);
+            for (name, value) in enclosing.iter() {
+                substitution.push(name.clone(), value.clone());
+            }
+            let run = self.with_analyzer(key.module(), enclosing, site, |analyzer| {
+                analyzer.resolve_default_generic_arg(
+                    site.id,
+                    site.span,
+                    param,
+                    default,
+                    &substitution,
+                )
+            });
+            result.push(run.result.ok_or_else(|| key.failed())?);
+        }
+        Ok(result)
+    }
+
     pub(crate) fn pad_generic_defaults(
         &mut self,
         module_path: &[Ident],

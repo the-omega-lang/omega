@@ -1,6 +1,6 @@
-# A generic declaration has no signature until a call determines its generic
-# arguments, so every position that cannot instantiate it is rejected, and
-# two generic declarations of one name in one namespace cannot be ranked.
+# Generic bounds, uncalled references, explicit arguments, and ambiguous
+# generic overloads are checked under functions.md and generics.md.
+# Equally specific templates remain ambiguous at equal adaptation cost.
 exposed spec Describable {
 	describe(*self) => *str;
 }
@@ -17,7 +17,7 @@ struct Holder {
 	exposed alone<T>(*self, thing: T) => T { thing }
 
 	exposed twin<T>(*self, thing: T) => T { thing }
-	exposed twin<T>(*self, first: T, second: T) => T { second }
+	exposed twin<T>(*self, thing: *T) => *T { thing }
 }
 
 main() => void {
@@ -27,5 +27,5 @@ main() => void {
 	unbounded := holder.need(widget);
 	uninstantiated := Holder::self::alone;
 	not_generic := holder.plain<i32>(1);
-	ambiguous := holder.twin(1);
+	ambiguous := holder.twin(&holder.value);
 }

@@ -1,0 +1,8 @@
+spec A { }
+spec B { }
+marker Value { }
+meet A for Value { }
+meet B for Value { }
+choose<T: A>(value: T) => void { }
+choose<T: B>(value: T) => void { }
+main() => void { choose(Value { }); }

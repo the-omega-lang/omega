@@ -81,7 +81,7 @@ impl ItemKey {
         !self.generic_args.is_empty()
     }
 
-    fn failed(&self) -> ResolveError {
+    pub(crate) fn failed(&self) -> ResolveError {
         ResolveError::ItemFailed {
             module: self.module().clone(),
             item: self.name.clone(),

@@ -169,6 +169,14 @@ For a function call, constraints are resolved broadly in this priority order:
 
 Every rule below the first applies only to a generic that the call left unwritten.
 
+When a call must choose among overload candidates, a generic default cannot make
+a candidate viable: matching the written arguments never consults a default. A
+parameter the arguments do not determine still takes its default once a candidate
+is selected. The viability, adaptation-cost, and specificity rules are defined in
+[`functions.md`](functions.md#overloading), which uses the
+[conformance selection rules](specs-and-conformance.md#blanket-conformances)
+to break minimum-cost ties.
+
 Example:
 
 ```omega
@@ -211,7 +219,7 @@ Arguments are inferred from the call's written arguments and the expected result
 
 The `spec S` parameter sugar applies here as it does to a top-level function: `f(x: spec S)` is a declaration with an anonymous bounded generic parameter, and is therefore instantiated per argument type.
 
-Because a generic declaration has no signature before its arguments are known, it does not participate in overload resolution and cannot be named uncalled; see [`functions.md`](functions.md). Positions this leaves unsupported are tracked in [`../issues/language-limitations.md`](../issues/language-limitations.md).
+Generic declarations participate in call-site overload resolution under the ordinary inference rules in this chapter, under the [overloading rules](functions.md#overloading). Specificity follows the [conformance selection rules](specs-and-conformance.md#blanket-conformances) only among candidates tied at minimum adaptation cost. Only the winner is instantiated and its bounds checked. A generic declaration still cannot be named uncalled, including when an expected function type is available. Positions this leaves unsupported are tracked in [`../issues/language-limitations.md`](../issues/language-limitations.md).
 
 ## Generic specs and conformances
 

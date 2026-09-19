@@ -1,0 +1,18 @@
+cost: 2 1
+explicit: 2
+floating: 20 19
+alias: 2 1
+losing-body: 3
+bounds: 6
+nominal: 7 8
+array: 3
+defaults: 10
+member: 12 11 12
+static: 14 13 14
+unbound: 12 11
+holes: 42
+type-default: 15
+nested: 16
+callback: 17
+isolation: 18
+uncalled: 1

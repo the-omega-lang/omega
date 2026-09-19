@@ -346,19 +346,25 @@ impl Driver {
         };
         let hir = self.modules.hir(module_path);
         let mut candidates = Vec::with_capacity(indices.len());
-        // A generic declaration does not participate in overload resolution
-        // (`docs/language/functions.md`), so it is skipped rather than
-        // poisoning the group: a concrete candidate of the same name still
-        // wins, exactly as it does on the member path. Only a group with no
-        // concrete candidate left has nothing to rank, which is the case the
-        // specification rejects at the call.
-        let mut skipped_generic = false;
         for index in indices {
             let HirItem::FunctionDefinition(f) = &hir.items[index] else {
-                unreachable!("only a function is ever recorded as an overload candidate");
+                unreachable!("only functions form overload sets");
             };
             if !self.item_generics_at(module_path, index)?.is_empty() {
-                skipped_generic = true;
+                let key = crate::items::ItemKey::new(module_path, name, index, &[]);
+                let run = self.with_analyzer(
+                    module_path,
+                    &GenericSubstitution::new(),
+                    omega_analyzer::analysis::AnalysisSite::new(f.id, f.span),
+                    |analyzer| analyzer.overload_template(f),
+                );
+                let template = run.result.ok_or_else(|| key.failed())?;
+                self.items.decl_id_owner.insert(f.id, key);
+                candidates.push(OverloadCandidate {
+                    decl_id: f.id,
+                    signature: omega_analyzer::resolver::OverloadSignature::Template(template),
+                    visibility: f.visibility,
+                });
                 continue;
             }
             let ResolvedItem::Value {
@@ -378,14 +384,8 @@ impl Driver {
             };
             candidates.push(OverloadCandidate {
                 decl_id,
-                fn_type,
+                signature: omega_analyzer::resolver::OverloadSignature::Concrete(fn_type),
                 visibility: f.visibility,
-            });
-        }
-        if candidates.is_empty() && skipped_generic {
-            return Err(ResolveError::GenericFunctionOverload {
-                module: module_path.to_vec(),
-                function: name.clone(),
             });
         }
         Ok(Some(candidates))
@@ -912,6 +912,60 @@ impl ModuleResolver for Driver {
         generic_args: &[ResolvedGenericArg],
     ) -> Result<Option<ResolvedMethod>, ResolveError> {
         Driver::instantiate_generic_method(self, owner, name, namespace, generic_args)
+    }
+
+    fn instantiate_overload(
+        &mut self,
+        declaration: HirId,
+        arguments: &[Option<ResolvedGenericArg>],
+    ) -> Result<ResolvedMethod, ResolveError> {
+        let key = self.items.decl_id_owner[&declaration].clone();
+        if key.owner().is_some() {
+            return self.instantiate_method_overload(&key, arguments);
+        }
+        let hir = self.modules.hir(key.module());
+        let HirItem::FunctionDefinition(function) = &hir.items[key.disambiguator] else {
+            unreachable!()
+        };
+        let function = self.normalized_function(key.module(), function)?;
+        let arguments = self.complete_overload_arguments(
+            &key,
+            &function,
+            &GenericSubstitution::new(),
+            arguments,
+        )?;
+        let item = self.ensure_item_at(
+            key.module(),
+            key.module(),
+            &key.name,
+            key.disambiguator,
+            &arguments,
+            ResolveItemOptions::INDIRECT,
+        )?;
+        let ResolvedItem::Value {
+            decl_id,
+            r#type: ResolvedType::Function(fn_type),
+            ..
+        } = item
+        else {
+            unreachable!("an overload candidate is a function")
+        };
+        Ok(ResolvedMethod {
+            decl_id,
+            fn_type,
+            visibility: item_visibility(&self.modules.hir(key.module()).items[key.disambiguator]),
+            annotations: self.items.function_annotations[&decl_id].clone(),
+            source: None,
+        })
+    }
+
+    fn method_overload_candidates(
+        &mut self,
+        owner: &ResolvedType,
+        name: &Ident,
+        namespace: FunctionNamespace,
+    ) -> Result<OverloadCandidates, ResolveError> {
+        self.collect_method_overloads(owner, name, namespace)
     }
 
     fn spec_declaration(

@@ -361,6 +361,15 @@ pub fn expand_type_alias(
     normalize_type(resolver, module_path, &[], &ty, &mut Vec::new())
 }
 
+pub fn expand_template_type(
+    resolver: &mut dyn ModuleResolver,
+    module_path: &[Ident],
+    parameters: &[Ident],
+    ty: &Type,
+) -> Result<Type, ResolveError> {
+    normalize_type(resolver, module_path, parameters, ty, &mut Vec::new())
+}
+
 /// Flattens a written bound list. A bound naming an alias of `spec A + B`
 /// contributes each member, so `<T: AB>` and `<T: A + B>` produce the same
 /// bound set rather than making bound checking learn an alias-only format.

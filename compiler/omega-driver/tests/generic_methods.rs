@@ -234,8 +234,8 @@ fn an_owner_instantiation_is_part_of_a_method_instantiation_identity() {
 }
 
 #[test]
-fn two_generic_declarations_of_one_name_cannot_be_ranked() {
-    let errors = TestWorkspace::new(
+fn generic_overloads_are_selected_by_argument_count() {
+    let workspace = TestWorkspace::new(
         r#"
         struct Holder {
             exposed value: i32;
@@ -247,15 +247,8 @@ fn two_generic_declarations_of_one_name_cannot_be_ranked() {
             x := h.twin(1);
         }
         "#,
-    )
-    .expect_errors();
-    assert!(
-        resolve_errors(&errors)
-            .iter()
-            .any(|message| message.contains("declares more than one generic 'twin'")),
-        "expected the generic-overload rejection, got: {:#?}",
-        resolve_errors(&errors)
     );
+    assert_eq!(workspace.instantiations_of("twin").len(), 1);
 }
 
 #[test]

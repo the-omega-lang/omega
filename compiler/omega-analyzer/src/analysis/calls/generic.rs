@@ -270,7 +270,7 @@ impl<'r> Analyzer<'r> {
     /// position. `None` means the prefix does not name a type, which is not
     /// this call shape; the ordinary callee path reports whatever is wrong
     /// with it, so nothing is reported here.
-    fn callee_owner_type(
+    pub(super) fn callee_owner_type(
         &mut self,
         node_id: HirId,
         span: Span,

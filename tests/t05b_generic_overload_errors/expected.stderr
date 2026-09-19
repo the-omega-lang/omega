@@ -1,10 +1,10 @@
-error: 't05b_generic_overload_errors::free' is declared generic more than once; generic declarations do not participate in overload resolution
+error: ambiguous reference to overloaded 'free'
  --> tests/t05b_generic_overload_errors/t05b_generic_overload_errors.omg:9:5
   |
 9 |     free(&value);
-  |     ^^^^^^^^^^^^ `free` is declared generic more than once here
+  |     ^^^^^^^^^^^^ reference to `free` is ambiguous
   |
-  = note: a generic declaration has no signature until its arguments are known, so overload resolution cannot rank it
-  = help: give the declarations distinct names
+  = note: candidate: <T>(ptr: *T) => void
+  = note: candidate: <T>(ptr: T) => void
 
 error: could not compile the program due to 1 previous error

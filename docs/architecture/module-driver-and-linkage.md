@@ -481,6 +481,23 @@ For argument/field-driven inference, the analyzer sometimes needs the **raw decl
 
 Resolving a written argument list needs the declaration's parameter kinds first, because a bare path is a type or a compile-time value according to the parameter it lands on. `ModuleResolver::item_generic_params` is the metadata-only query that supplies them; it follows alias forwarding and instantiates nothing.
 
+Overload candidates carry either a concrete signature or a structural template.
+Template preparation resolves declaration-owned names and expands aliases, while
+keeping generic parameters and nominal applications as patterns. The analyzer
+checks caller expressions once, then infers and compares those patterns without
+querying the driver under a trial substitution. A nominal pattern is compared
+against an argument's existing nominal identity and generic arguments; it does
+not materialize a candidate type to discover whether it matches.
+
+Adaptation cost selects the minimum-cost candidates; the shared bound-set
+comparator breaks specificity ties without proving conformances. Only the winner
+enters the ordinary `ItemKey` query path, where omitted defaults, bounds,
+signature resolution, and body checking run normally. Failed candidates cannot
+publish an item state, solver result, or body diagnostic. The same structural
+patterns, with generic parameters identified by position, detect template
+redeclarations during signature collection. Uncalled overload references filter
+out templates and continue to match concrete signatures only.
+
 Once concrete arguments are known, the ordinary `ItemKey` path resolves/checks that instantiation.
 
 Concrete instantiations declared in extern packages may still be emitted by the local compilation that uses them. The checked program creates/finds a `CheckedModule` using the **template's declaring module path** and places the instantiation there. This is an identity invariant, not presentation: MIR incorporates the containing module path into the symbol name, so assigning an extern-owned instantiation to an arbitrary local module would change its linker identity.

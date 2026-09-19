@@ -663,6 +663,55 @@ impl<'r> Analyzer<'r> {
         ))
     }
 
+    pub fn check_generic_overload_duplicates(&mut self, functions: &[HirFunctionDef]) {
+        let mut templates: Vec<(&HirFunctionDef, OverloadTemplate)> = Vec::new();
+        for function in functions {
+            if !self.is_generic_method(function) {
+                continue;
+            }
+            if functions
+                .iter()
+                .filter(|other| {
+                    other.name == function.name
+                        && FunctionNamespace::of_declaration(other.self_mode)
+                            == FunctionNamespace::of_declaration(function.self_mode)
+                })
+                .count()
+                < 2
+            {
+                continue;
+            }
+            let Some(template) = self.overload_template(function) else {
+                continue;
+            };
+            if let Some((previous, _)) = templates.iter().find(|(previous, other)| {
+                previous.name == function.name
+                    && FunctionNamespace::of_declaration(previous.self_mode)
+                        == FunctionNamespace::of_declaration(function.self_mode)
+                    && other.generics.len() == template.generics.len()
+                    && other
+                        .generics
+                        .iter()
+                        .zip(&template.generics)
+                        .all(|(a, b)| a.is_comp() == b.is_comp())
+                    && other.comp_types == template.comp_types
+                    && other.params == template.params
+                    && crate::generics::compare_bound_sets(&other.bounds, &template.bounds)
+                        == Some(std::cmp::Ordering::Equal)
+            }) {
+                self.error(
+                    function.id,
+                    function.name_span,
+                    AnalysisErrorKind::Redeclaration {
+                        name: function.name.clone(),
+                        previous: Some(previous.name_span),
+                    },
+                );
+            }
+            templates.push((function, template));
+        }
+    }
+
     pub fn check_overload_duplicates(
         &mut self,
         functions: &[&HirFunctionDef],
@@ -776,6 +825,7 @@ impl<'r> Analyzer<'r> {
         method_ids: &[HirId],
         owner_is_generic: bool,
     ) -> Option<Vec<(Ident, ResolvedMethod)>> {
+        self.check_generic_overload_duplicates(functions);
         let mut concrete = Vec::with_capacity(functions.len());
         let mut ids = Vec::with_capacity(functions.len());
         for (f, &decl_id) in functions.iter().zip(method_ids) {

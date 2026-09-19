@@ -1,0 +1,21 @@
+error: 'duplicate' is declared multiple times in this scope
+ --> tests/t05f_generic_overload_duplicates/t05f_generic_overload_duplicates.omg:5:1
+  |
+4 | duplicate<T: AB>(value: *T) => void { }
+  | --------- `duplicate` first declared here
+5 | duplicate<U: B + A>(value: *U) => void { }
+  | ^^^^^^^^^ `duplicate` declared again here
+  |
+  = note: this declaration context requires each name to be declared once
+
+error: 'same' is declared multiple times in this scope
+ --> tests/t05f_generic_overload_duplicates/t05f_generic_overload_duplicates.omg:9:13
+  |
+8 |     exposed same<T>(*self, value: [3]T) => void { }
+  |             ---- `same` first declared here
+9 |     exposed same<U>(*self, value: [3]U) => void { }
+  |             ^^^^ `same` declared again here
+  |
+  = note: this declaration context requires each name to be declared once
+
+error: could not compile the program due to 2 previous errors

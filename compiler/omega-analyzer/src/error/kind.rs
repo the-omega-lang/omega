@@ -398,11 +398,11 @@ pub enum AnalysisErrorKind {
 
     NoMatchingOverload {
         name: Ident,
-        candidates: Vec<ResolvedFunctionType>,
+        candidates: Vec<String>,
     },
     AmbiguousOverload {
         name: Ident,
-        candidates: Vec<ResolvedFunctionType>,
+        candidates: Vec<String>,
     },
     AmbiguousSelfOverload {
         name: Ident,

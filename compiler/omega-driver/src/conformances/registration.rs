@@ -517,22 +517,10 @@ impl Driver {
         if candidate.origin == ConformanceOrigin::Blanket
             && incumbent.origin == ConformanceOrigin::Blanket
         {
-            // Both sides compare alias-expanded key sets, so `T: AB` and
-            // `T: A + B` compare as equal.
-            let candidate_subset_of_incumbent = candidate
-                .declared_bound_keys
-                .iter()
-                .all(|bound| incumbent.declared_bound_keys.contains(bound));
-            let incumbent_subset_of_candidate = incumbent
-                .declared_bound_keys
-                .iter()
-                .all(|bound| candidate.declared_bound_keys.contains(bound));
-            return match (candidate_subset_of_incumbent, incumbent_subset_of_candidate) {
-                (true, false) => Some(Ordering::Less),
-                (false, true) => Some(Ordering::Greater),
-                (true, true) => Some(Ordering::Equal),
-                (false, false) => None,
-            };
+            return omega_analyzer::generics::compare_bound_sets(
+                &candidate.declared_bound_keys,
+                &incumbent.declared_bound_keys,
+            );
         }
         Some(candidate.precedence().cmp(&incumbent.precedence()))
     }

@@ -564,14 +564,14 @@ impl AnalysisErrorKind {
             Self::NoMatchingOverload { name, candidates } => {
                 let mut d = d.with_label(span, format!("no overload of `{}` matches this", name.as_ref()));
                 for candidate in candidates {
-                    d = d.with_note(format!("candidate: {}", ResolvedType::Function(candidate.clone())));
+                    d = d.with_note(format!("candidate: {}", candidate));
                 }
                 d
             }
             Self::AmbiguousOverload { name, candidates } => {
                 let mut d = d.with_label(span, format!("reference to `{}` is ambiguous", name.as_ref()));
                 for candidate in candidates {
-                    d = d.with_note(format!("candidate: {}", ResolvedType::Function(candidate.clone())));
+                    d = d.with_note(format!("candidate: {}", candidate));
                 }
                 d
             }
@@ -1021,16 +1021,6 @@ pub fn resolve_error_diagnostic(error: &ResolveError, span: Option<Span>) -> Dia
         }
         ResolveError::GenericArgCountMismatch { expected, .. } => {
             with_label(d, format!("expected {expected} generic {}", plural(*expected, "argument")))
-        }
-        ResolveError::GenericFunctionOverload { function, .. } => {
-            with_label(d, format!("`{}` is declared generic more than once here", function.as_ref()))
-                .with_note("a generic declaration has no signature until its arguments are known, so overload resolution cannot rank it")
-                .with_help("give the declarations distinct names")
-        }
-        ResolveError::GenericMethodOverload { function, .. } => {
-            with_label(d, format!("`{}` is declared generic more than once here", function.as_ref()))
-                .with_note("a generic declaration has no signature until its arguments are known, so overload resolution cannot rank it")
-                .with_help("give the declarations distinct names")
         }
         ResolveError::SpecDependencyCycle { spec, .. } => {
             with_label(d, format!("`{}` depends on itself, directly or through another spec's own dependency list", spec.as_ref()))

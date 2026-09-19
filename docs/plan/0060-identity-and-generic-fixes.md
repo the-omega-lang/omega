@@ -103,7 +103,18 @@
      reached the resolved state; a lazily discovered generic body is checked only
      after its signature completed. Both are listed under "Maintainer invariants
      that are easy to break" and both still apply to owner-scoped keys.
-  6. **`ModuleResolver` stays the seam.** The analyzer must keep asking the driver
+  6. **A failed body never demotes its own resolved signature.** A failed
+     *signature* stays `Failed`, so later call sites reference one reported
+     error. A failed *body* must leave the signature `Resolved`: the declaration
+     still has a usable signature, and demoting it makes every call site emit a
+     derived "because of its own error" secondary on top of the real diagnostic.
+     This was implemented and reverted once during Phase 1 (an owner-scoped
+     `fail_body` that made methods emit 1 + N diagnostics where free functions
+     emit 1), so it is recorded here rather than left as a shape someone
+     re-derives. Owner-scoped and module-scoped keys must not diverge on this.
+     Covered by `generic_methods.rs::a_failed_method_body_reports_once_like_a_free_function`
+     beside the signature-failure test above it.
+  7. **`ModuleResolver` stays the seam.** The analyzer must keep asking the driver
      for candidates; do not move overload-set construction into the analyzer.
 
 - **Out of scope:**
@@ -126,7 +137,7 @@
   two consequences from "a generic declaration has no signature until a call
   determines its arguments": that it cannot be named uncalled, and that it "does
   not participate in overload resolution... since nothing can rank them".
-  `docs/language/generics.md:214` restates the second.
+  `docs/language/generics.md` (end of "Generic member and static functions") restates the second.
 
   The first consequence is sound: an uncalled reference supplies no arguments, so
   nothing can drive monomorphization and there is no signature to match against an
@@ -142,7 +153,15 @@
   Phase 2 is consequently a **clarification**: split the rule so that an uncalled
   reference stays excluded while call-site candidates participate through ordinary
   inference. It is still a normative edit to two chapters and still requires
-  approval before implementation.
+  approval.
+
+  **How that approval works — do not block on it before starting.** The rule
+  itself is already decided and is written out in step 9; what needs approval is
+  the *chapter text*, which does not exist yet and therefore cannot be approved
+  in advance. Draft the `functions.md` and `generics.md` amendments as part of
+  step 11, then stop and present them for review. Treating approval as a
+  precondition means reporting blocked without having produced the thing being
+  approved.
 
   Phase 1 contains **no** language change. It does, however, correct a genuine
   specification divergence: today the sweep at `compile/signatures.rs:316`
@@ -174,11 +193,20 @@ Each step should leave the tree building and the conformance suite passing.
    deliberately makes. What disappears is its dedicated *sweep*, not the check —
    it runs over the ordinary per-name query results instead of a separate pass.
 
-3. **Confirm the specification divergence is closed.** With candidates on the
-   ordinary path, a generic candidate is an uninstantiated template with no eager
-   signature, so a generic/non-generic pair must now compile until it is *called*,
-   and the call must report a real diagnostic rather than an unresolved type
-   parameter. Prove this with the negative case described in *Testing*.
+3. **Confirm the specification divergence is closed.** *(Delivered — recorded
+   here because the delivered behavior differs from this step as first written.)*
+   With candidates on the ordinary path, a generic candidate is an uninstantiated
+   template with no eager signature, so a generic/non-generic pair compiles
+   rather than failing at signature collection.
+
+   Beyond that, `raw_overload_signatures` **skips** a generic candidate instead
+   of failing the group. `functions.md` excludes a generic declaration from
+   overload resolution, so a concrete candidate of the same name still wins —
+   which is what the member path already did. Only a group whose candidates are
+   *all* generic has nothing to rank, and that is the case the chapter rejects at
+   the call. The first draft of this step directed the opposite (fail the whole
+   group on any generic candidate); that was a misreading of the chapter and
+   would have left top-level and member behavior diverging.
 
 4. **Generalize the key's scope.** Replace `ItemKey`'s module path with a scope
    that is either a module path or an owner `ItemKey`. Keep `MethodKey` alive as a
@@ -242,6 +270,16 @@ Each step should leave the tree building and the conformance suite passing.
    about which contexts are *wired up*, not about what is knowable. Do not amend
    `docs/language/functions.md` for this; the normative rule stands as written.
 
+   **A separate, approved `functions.md` addition did land in Phase 1**, and is
+   not a breach of the line above: the "Overloading" section gained
+   "Adapting a literal is a last resort, not a default" with a worked
+   `f(10)`/`f(10i64)` example. It was requested directly by the user, it
+   describes behavior the compiler already had (verified against emitted IR —
+   `f(10)` calls the `i32` candidate, `f(10i64)` the `i64` one), and it changes
+   no semantics. It is a prerequisite for Phase 2's ranking rule, which builds
+   on adaptation cost being the outer gate. Do not revert it as an out-of-scope
+   edit.
+
    Then remove from `docs/issues/design-debt.md`
    the entries "Overloading is a second, parallel item pipeline…", "Generic
    member/static instantiation is a third query identity…", and "Method
@@ -251,6 +289,30 @@ Each step should leave the tree building and the conformance suite passing.
    `docs/issues/language-limitations.md` unless Phase 2 is approved and completed.
 
 **Phase 2 — only with approved amendment of `docs/language/functions.md`:**
+
+Phase 1 is complete, so Phase 2 starts from the delivered behavior in step 3,
+not from the pre-Phase-1 tree.
+
+Phase 1 is committed as `885bae2 "implement phase 1 of fixes"`, including both
+post-review fixes and `tests/t05c_generic_overload_declarations/expected.stdout`.
+Phase 2 therefore starts from a clean tree.
+
+Two consequences for the existing cases:
+
+- `t05c` (mixed group, concrete wins) must keep passing **unchanged**. Under
+  Phase 2 the concrete candidate still wins that call — both candidates reach
+  zero adaptation cost and specificity breaks the tie — so any change to its
+  output means the ranking rule was implemented wrongly. It is the best
+  regression anchor available for step 10.
+- `t05b` (all-generic group) changes meaning and needs a regenerated
+  `expected.stderr`. Once templates are ranked, its two candidates both deduce
+  successfully and both are unbounded, so the call becomes an **ambiguity**
+  rather than "declared generic more than once".
+
+Decide as part of step 11 what remains of `ResolveError::GenericFunctionOverload`
+and `GenericMethodOverload`. Once an all-generic group is rankable, the condition
+they describe is largely replaced by the ambiguity diagnostic; leaving both in
+place would be two mechanisms for one outcome.
 
 9. Define candidate ranking by **reusing Omega's existing specificity rule**, not
    by inventing one for functions. `docs/language/specs-and-conformance.md`
@@ -315,19 +377,84 @@ Each step should leave the tree building and the conformance suite passing.
      called" stands unchanged. The resulting asymmetry is recorded as a tracked
      limitation in step 8 rather than fixed here.
 
-10. Make generic-argument inference speculative in
-    `analysis/calls/overload.rs`: probe each candidate, drop a candidate whose
-    parameters do not solve, and instantiate only the winner. Failure during
-    probing must emit no diagnostics — audit every diagnostic path reachable from
-    inference. `Analyzer::without_diagnostics` (already used this way by
-    `comp_param_types`) is the existing mechanism; do not add a second one.
+10. Rank generic candidates in `analysis/calls/overload.rs` by unifying against
+    the **raw declared shape**, instantiating only the winner.
 
-11. Amend `docs/language/functions.md` and `docs/language/generics.md:214`. The
+    **Do not use `Analyzer::without_diagnostics` as the isolation mechanism.**
+    An earlier draft of this step named it; that was wrong. It truncates the
+    analyzer's own `errors`/`warnings` vectors
+    (`analysis/mod.rs:629`) and cannot undo driver-side effects — a memoized
+    `ItemQueryState::Failed`, a diagnostic already recorded in the driver's sink,
+    or a body checked as a side effect. A losing candidate must not leave any of
+    those behind.
+
+    The isolation comes from **not starting speculative driver work at all**,
+    which the existing inference path already makes possible:
+
+    - `ModuleResolver::generic_function_signature` returns a `GenericSignature`
+      whose `params` are `Vec<Type>` — *syntactic*, not resolved. The
+      architecture doc calls these "focused raw-signature queries that do not
+      instantiate the item just to inspect its generic pattern"
+      (`module-driver-and-linkage.md`, "Generic inference vs instantiation").
+    - Analyze the call arguments **once**, before ranking, exactly as concrete
+      overload resolution already must. Arguments are real caller expressions;
+      analyzing them is not speculative and must not be repeated per candidate.
+    - Per candidate, unify its syntactic `params` against the already-analyzed
+      argument types. This is a structural operation producing a candidate
+      substitution — see `infer_generic_args` in `analysis/calls/generic.rs`,
+      which is the same unification an ordinary generic call already performs.
+    - Instantiate only the winner, through the ordinary `ItemKey` path, then
+      check its bounds.
+
+    **The line to hold:** resolving names *written in a candidate's own
+    signature* is non-speculative — a declaration naming an unresolvable type is
+    a real error belonging to that declaration, whichever overload wins.
+    *Instantiating anything under a trial substitution* is speculative and is
+    forbidden during ranking. Ranking must also not prove conformances (bounds
+    are checked after selection, per step 9) and must not check bodies.
+
+    If a case is found that genuinely cannot be ranked without starting
+    speculative driver work, **stop and escalate rather than improvising**. The
+    correct mechanism would be a driver-level savepoint that buffers query-state
+    and diagnostic mutations until committed — a new driver capability with its
+    own design, not something to approximate with local suppression. Note that
+    `comp_param_types` already wraps `without_diagnostics` around a path that can
+    reach the driver; that is pre-existing and out of scope here, but do not
+    treat it as precedent for this step.
+
+11. Amend `docs/language/functions.md` and `docs/language/generics.md`. The
     amendment should **cite** `specs-and-conformance.md`'s selection rules rather
     than restating them, so Omega keeps one written definition of "more specific".
     Remove the now-resolved entries from `docs/issues/language-limitations.md`
     ("A generic member/static declaration does not participate in overload
     resolution").
+
+    **Drafts already exist and have been reviewed.** A draft of both chapters was
+    written before step 10 was attempted. It is substantively correct — the split
+    rule, specificity breaking minimum-cost ties via the conformance rules,
+    defaults not establishing viability, bounds checked after selection, no
+    parameter-structure specificity, template redeclaration reported at the
+    declaration, and uncalled references excluding generic candidates all match
+    the decisions in step 9. The `#blanket-conformances` anchor it links to is
+    valid. Do not redo that work; apply the corrections below and submit for
+    approval.
+
+    **Required corrections — implementation vocabulary in normative chapters.**
+    A language chapter states what Omega *means*, not how the compiler computes
+    it. Three phrases leak the latter:
+
+    - `functions.md`: "alias-expanded declared **bound-key** sets".
+      `declared_bound_keys` is a driver field name. `specs-and-conformance.md`
+      says "required bound sets"; match that chapter's vocabulary, since the
+      whole point is to cite one definition rather than fork it.
+    - `generics.md`: generic declarations participate "through **speculative
+      inference**". That names an implementation technique. They participate
+      under this chapter's ordinary inference rules; whether the compiler probes
+      speculatively is not a language fact.
+    - `functions.md`: "**Probing** an unsuccessful candidate produces no
+      diagnostics." The observable rule is worth stating and should be kept, but
+      phrase it as a property of the candidate — a candidate that is not viable
+      produces no diagnostics of its own — rather than of the probe.
 
 ## Testing
 
@@ -361,15 +488,15 @@ Each step should leave the tree building and the conformance suite passing.
   `tests/t10c_generic_member_functions` remains the regression proving ordinary
   recursion still compiles and runs; it must pass unchanged.
 
-- **New conformance case — `tests/t05b_generic_overload_errors/`** (negative,
-  Phase 1): a module declaring both `free(ptr: *u8) => void` and
-  `free<T>(ptr: *T) => void`. With `expected.stderr`, prove that
-  (a) the declarations alone do not error, and (b) a call reports a real
-  diagnostic about generic candidates not participating in overload resolution —
-  not `unresolved type parameter`. **Specification trace:**
-  `docs/language/functions.md`, the generic paragraph preceding "Overloading"
-  ("rejected where they are called"). A compile failure alone is not sufficient
-  evidence here; the expected diagnostic text is the whole point of the case.
+- **Conformance cases — delivered as two, not one.** `tests/t05b_generic_overload_errors/`
+  is the negative case: an **all-generic** group (`free<T>(ptr: *T)` beside
+  `free<T>(ptr: T)`), whose call has nothing to rank, with `expected.stderr`
+  pinning the diagnostic text — a compile failure alone is not evidence here.
+  `tests/t05c_generic_overload_declarations/` is the positive case: a **mixed**
+  group whose call selects the concrete candidate, proved by `expected.stdout`
+  rather than by compiling alone, so it shows *which* body ran. **Specification
+  trace:** `docs/language/functions.md`, the generic paragraph preceding
+  "Overloading".
 
 - **Phase 2 conformance case** (only if approved): positive case proving a
   concrete candidate wins over a viable generic one, plus a negative case proving

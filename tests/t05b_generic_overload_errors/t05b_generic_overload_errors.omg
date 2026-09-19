@@ -1,6 +1,6 @@
-# Two generic declarations sharing a name have nothing to rank at the call:
-# neither has a signature until its arguments are known. A group that still
-# has a concrete candidate is not an error -- see t05c.
+# Both templates match at zero cost and have empty bound sets.
+# Parameter structure does not break the tie.
+# See functions.md, Overloading.
 free<T>(ptr: *T) => void { }
 free<T>(ptr: T) => void { }
 

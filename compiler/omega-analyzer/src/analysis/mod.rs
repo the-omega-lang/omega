@@ -53,8 +53,9 @@ use crate::{
     },
     resolver::{
         GenericLiteralSignature, GenericMethodTemplate, GenericOwnerFunctionSignature,
-        GenericSignature, ImportTarget, ItemAccess, ItemNamespace, ModuleResolver, ResolveError,
-        ResolveItemOptions, ResolvedItem, ResolvedOverloadSet,
+        GenericSignature, ImportTarget, ItemAccess, ItemNamespace, ModuleResolver,
+        OverloadCandidate, OverloadTemplate, ResolveError, ResolveItemOptions, ResolvedItem,
+        ResolvedOverloadSet,
     },
     similarity::best_match,
 };

@@ -3,6 +3,24 @@ use crate::resolver::{ModuleResolver, ResolveError};
 use omega_hir::{HirFunctionDef, HirGenericParam};
 use omega_parser::prelude::{ArrayLength, GenericArg, GenericParamKind, Ident, Type};
 
+pub mod pattern;
+
+pub fn compare_bound_sets<T: PartialEq>(
+    candidate: &[T],
+    incumbent: &[T],
+) -> Option<std::cmp::Ordering> {
+    use std::cmp::Ordering;
+    match (
+        candidate.iter().all(|bound| incumbent.contains(bound)),
+        incumbent.iter().all(|bound| candidate.contains(bound)),
+    ) {
+        (true, false) => Some(Ordering::Less),
+        (false, true) => Some(Ordering::Greater),
+        (true, true) => Some(Ordering::Equal),
+        (false, false) => None,
+    }
+}
+
 /// Rewrites each outermost static `spec ...` parameter into the anonymous
 /// bounded generic the rest of the compiler already understands, after
 /// expanding aliases so that `f(x: spec A + B)` and `f(x: AB)` normalize

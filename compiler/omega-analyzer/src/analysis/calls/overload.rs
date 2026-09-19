@@ -1,109 +1,72 @@
 use super::*;
 
 impl<'r> Analyzer<'r> {
-    /// Overloaded `Type::name(...)` and `Type::self::name(...)` calls.
-    ///
-    /// A single candidate needs no interception: the ordinary callee path
-    /// resolves the same namespace through `resolve_type_member`. Only an
-    /// overload set needs the arguments to choose, and a member call ranks
-    /// against the unbound signature -- receiver included -- because
-    /// `Type::self::name` supplies no implicit receiver.
     pub(crate) fn resolve_type_qualified_overload_call(
         &mut self,
         node_id: HirId,
         span: Span,
         call: &HirFunctionCall,
-        _expected: Option<&ResolvedType>,
+        expected: Option<&ResolvedType>,
     ) -> Intercepted {
-        let Some(path) = Self::callee_path(call) else {
+        let Some(expr_path) = Self::callee_expr_path(call) else {
             return Intercepted::Declined;
         };
-        let (namespace, member) = match path.tail.as_slice() {
-            [member] => (FunctionNamespace::Static, member),
-            [segment, member] if segment.as_ref() == FunctionNamespace::MEMBER_SEGMENT => {
-                (FunctionNamespace::Member, member)
+        let path = &expr_path.path;
+        let (namespace, member, segments) = match path.tail.as_slice() {
+            [.., segment, member] if segment.as_ref() == FunctionNamespace::MEMBER_SEGMENT => {
+                (FunctionNamespace::Member, member, 2)
             }
-            _ => return Intercepted::Declined,
+            [.., member] => (FunctionNamespace::Static, member, 1),
+            [] => return Intercepted::Declined,
         };
-
-        // A module binding wins over a type/static-member interpretation.
-        // This probe resolves physical modules and module aliases alike,
-        // including anchored aliases such as `self::io::print`.
-        match self.module_qualified_path(node_id, span, path) {
-            ModuleQualifiedPath::Item(_) => return Intercepted::Declined,
-            ModuleQualifiedPath::Failed => return Intercepted::Claimed(None),
-            ModuleQualifiedPath::NotModule => {}
-        }
-
-        let accessor = self.path_module(path);
-        let anchored =
-            match self.anchored_prefix(node_id, span, path, std::slice::from_ref(&path.head)) {
-                AnchoredPath::Failed => return Intercepted::Claimed(None),
-                AnchoredPath::Absolute(absolute) => Some(absolute),
-                AnchoredPath::Unanchored => None,
-            };
-        let alias = match anchored {
-            Some(_) => None,
-            None => self
-                .resolver
-                .resolve_import_alias(&accessor, &path.head)
-                .ok()
-                .flatten(),
-        };
-
-        let owner = match anchored {
-            Some(absolute) => Some(ItemAccess::gated(absolute)),
-            None if self.context.find_defined_type(&path.head).is_some() => None,
-            None => match &alias {
-                Some(ImportTarget::Item(_, ResolvedItem::Type(_))) => None,
-                Some(ImportTarget::ItemPath(access)) => Some(access.clone()),
-                _ => Some(ItemAccess::gated(
-                    accessor
-                        .iter()
-                        .cloned()
-                        .chain(std::iter::once(path.head.clone()))
-                        .collect(),
-                )),
-            },
-        };
-        let r#type = match owner {
-            Some(access) => match self.resolve_item_checked(&access, &[], true, path.origin) {
-                Ok(ResolvedItem::Type(t)) => t,
-                _ => return Intercepted::Declined,
-            },
-            None => match self.context.find_defined_type(&path.head) {
-                Some(t) => t.clone(),
-                None => match alias {
-                    Some(ImportTarget::Item(_, ResolvedItem::Type(t))) => t,
-                    _ => return Intercepted::Declined,
-                },
-            },
-        };
-
-        let Some(overloads) = r#type.candidates_in(namespace, member) else {
-            return Intercepted::Declined;
-        };
-        if overloads.len() < 2 {
+        let owner_generics =
+            !expr_path.generic_args.is_empty() && expr_path.args_at + segments == path.tail.len();
+        let function_generics =
+            !expr_path.generic_args.is_empty() && expr_path.args_at == path.tail.len();
+        if !expr_path.generic_args.is_empty() && !owner_generics && !function_generics {
             return Intercepted::Declined;
         }
-
-        let candidates: Vec<(HirId, ResolvedFunctionType)> = overloads
-            .iter()
-            .map(|m| (m.decl_id, m.value_fn_type()))
-            .collect();
-        let Some((winner, args)) =
-            self.resolve_overload(node_id, span, member, &candidates, &call.args)
+        let Some(owner) =
+            self.callee_owner_type(node_id, span, expr_path, segments, owner_generics)
         else {
+            return Intercepted::Declined;
+        };
+        let candidates = match self
+            .resolver
+            .method_overload_candidates(&owner, member, namespace)
+        {
+            Ok(candidates) => candidates,
+            Err(error) => {
+                self.error(node_id, span, AnalysisErrorKind::ModuleResolution(error));
+                return Intercepted::Claimed(None);
+            }
+        };
+        if candidates.len() < 2 {
+            return Intercepted::Declined;
+        }
+        let explicit = if function_generics {
+            expr_path.generic_args.as_slice()
+        } else {
+            &[]
+        };
+        let Some((winner, instantiated, args)) = self.resolve_overload_candidates(
+            node_id,
+            span,
+            member,
+            &candidates,
+            &call.args,
+            expected,
+            explicit,
+            0,
+        ) else {
             return Intercepted::Claimed(None);
         };
-        let (decl_id, fn_type) = candidates[winner].clone();
-
-        let (owner_module_path, owner_id) = r#type
+        let (module, owner_id) = owner
             .declaring_owner()
             .unwrap_or_else(|| (Vec::new(), node_id));
         if !self.check_member_visibility(
-            overloads[winner].visibility,
-            &owner_module_path,
+            candidates[winner].visibility,
+            &module,
             owner_id,
             path.origin,
         ) {
@@ -112,12 +75,22 @@ impl<'r> Analyzer<'r> {
                 span,
                 AnalysisErrorKind::MethodNotVisible {
                     method: member.clone(),
-                    base: r#type.clone(),
+                    base: owner,
                 },
             );
             return Intercepted::Claimed(None);
         }
-
+        let (decl_id, fn_type) = match instantiated {
+            Some(method) => (method.decl_id, method.value_fn_type()),
+            None => (
+                candidates[winner].decl_id,
+                candidates[winner]
+                    .fn_type()
+                    .cloned()
+                    .unwrap()
+                    .unbound_value(),
+            ),
+        };
         Intercepted::Claimed(Some(self.checked_call(
             node_id,
             span,
@@ -187,10 +160,14 @@ impl<'r> Analyzer<'r> {
         call: &HirFunctionCall,
         _expected: Option<&ResolvedType>,
     ) -> Intercepted {
-        let Some(path) = Self::callee_path(call) else {
+        let Some(expr_path) = Self::callee_expr_path(call) else {
             return Intercepted::Declined;
         };
 
+        let path = &expr_path.path;
+        if !expr_path.generic_args.is_empty() && expr_path.args_at != path.tail.len() {
+            return Intercepted::Declined;
+        }
         if path.is_unqualified()
             && self
                 .context
@@ -235,25 +212,32 @@ impl<'r> Analyzer<'r> {
         };
         let candidates = set.candidates;
 
-        let signatures: Vec<(HirId, ResolvedFunctionType)> = candidates
-            .iter()
-            .map(|candidate| (candidate.decl_id, candidate.fn_type.clone()))
-            .collect();
-
-        let Some((winner, args)) =
-            self.resolve_overload(node_id, span, &name, &signatures, &call.args)
-        else {
+        let Some((winner, instantiated, args)) = self.resolve_overload_candidates(
+            node_id,
+            span,
+            &name,
+            &candidates,
+            &call.args,
+            _expected,
+            &expr_path.generic_args,
+            0,
+        ) else {
             return Intercepted::Claimed(None);
         };
-        let winner = candidates[winner].clone();
-
+        let (decl_id, fn_type) = match instantiated {
+            Some(method) => (method.decl_id, method.fn_type),
+            None => (
+                candidates[winner].decl_id,
+                candidates[winner].fn_type().cloned().unwrap(),
+            ),
+        };
         Intercepted::Claimed(Some(self.checked_call(
             node_id,
             span,
             &call.callee,
-            winner.decl_id,
+            decl_id,
             Storage::Function,
-            winner.fn_type,
+            fn_type,
             args,
         )))
     }
@@ -266,7 +250,34 @@ impl<'r> Analyzer<'r> {
         candidates: &[(HirId, ResolvedFunctionType)],
         args: &[HirExprNode],
     ) -> Option<(usize, Vec<CheckedExprNode>)> {
-        let mut fixed: Vec<Option<CheckedExprNode>> = Vec::with_capacity(args.len());
+        let candidates: Vec<_> = candidates
+            .iter()
+            .map(|(decl_id, fn_type)| OverloadCandidate {
+                decl_id: *decl_id,
+                signature: crate::resolver::OverloadSignature::Concrete(fn_type.clone()),
+                visibility: Visibility::Exposed,
+            })
+            .collect();
+        let (winner, _, args) =
+            self.resolve_overload_candidates(node_id, span, name, &candidates, args, None, &[], 0)?;
+        Some((winner, args))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn resolve_overload_candidates(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        name: &Ident,
+        candidates: &[OverloadCandidate],
+        args: &[HirExprNode],
+        expected: Option<&ResolvedType>,
+        explicit: &[GenericArg],
+        implicit: usize,
+    ) -> Option<(usize, Option<ResolvedMethod>, Vec<CheckedExprNode>)> {
+        use crate::generics::pattern::TypePattern;
+        use std::cmp::Ordering;
+        let mut fixed = Vec::with_capacity(args.len());
         for arg in args {
             fixed.push(if Self::adaptable_literal(arg) {
                 None
@@ -274,98 +285,244 @@ impl<'r> Analyzer<'r> {
                 Some(self.analyze_expr(arg, None)?)
             });
         }
-
-        let mut viable: Vec<(usize, u32)> = Vec::new();
-        for (i, (_, fn_type)) in candidates.iter().enumerate() {
-            if fn_type.is_variadic || fn_type.params.len() != args.len() {
-                continue;
+        let argument_type = |index: usize| -> ResolvedType {
+            if let Some(checked) = &fixed[index] {
+                return checked.r#type.clone();
             }
-            let mut score = 0u32;
-            let mut ok = true;
-            for (param_type, (arg, fixed_arg)) in fn_type.param_types().zip(args.iter().zip(&fixed))
-            {
-                match fixed_arg {
-                    Some(checked) => match Self::conversion_cost(param_type, &checked.r#type) {
-                        Some(cost) => score += cost,
-                        None => {
-                            ok = false;
+            let raw = match &args[index].expr {
+                HirExpr::Negate(inner) => &inner.expr,
+                other => other,
+            };
+            match raw {
+                HirExpr::Number(number) if number.fractional_part.is_some() => ResolvedType::F32,
+                _ => ResolvedType::I32,
+            }
+        };
+        let mut viable = Vec::new();
+        for (index, candidate) in candidates.iter().enumerate() {
+            let mut bindings = Vec::new();
+            let patterns = if let Some(template) = candidate.template() {
+                if template.params.len() != args.len() + implicit
+                    || explicit.len() > template.generics.len()
+                {
+                    continue;
+                }
+                bindings.resize(template.generics.len(), None);
+                let mut explicit_ok = true;
+                for (position, written) in explicit.iter().enumerate() {
+                    let reveals = &self.reveals;
+                    match self.context.resolve_generic_arg(
+                        written,
+                        Some(&template.generics[position]),
+                        self.resolver,
+                        &self.module_path,
+                        ResolveItemOptions::INDIRECT,
+                        &|origin| reveals.allows(origin),
+                    ) {
+                        Ok(value) => bindings[position] = Some(value),
+                        Err(_) => {
+                            explicit_ok = false;
                             break;
                         }
-                    },
-                    None => match Self::literal_overload_fit(
-                        arg,
-                        param_type,
-                        self.target.pointer_bits(),
-                    ) {
-                        Some(true) => {}
-                        Some(false) => score += 1,
-                        // An adaptable literal that no candidate parameter
-                        // can adopt numerically still injects, using the
-                        // literal's ordinary default type -- the same type
-                        // analysis will give it once the winner is known.
-                        None => match Self::literal_injection_fit(arg, param_type) {
-                            Some(cost) => score += cost,
-                            None => {
-                                ok = false;
-                                break;
-                            }
-                        },
-                    },
+                    }
                 }
-            }
-            if ok {
-                viable.push((i, score));
+                if !explicit_ok {
+                    continue;
+                }
+                if let Some(expected) = expected {
+                    template.return_type.infer(expected, &mut bindings);
+                }
+                for (position, pattern) in template.params[implicit..].iter().enumerate() {
+                    pattern.infer(&argument_type(position), &mut bindings);
+                }
+                let mut complete = true;
+                for (position, param) in template.generics.iter().enumerate() {
+                    if bindings[position].is_none() && param.default.is_none() {
+                        complete = false;
+                    }
+                    if let Some(ResolvedGenericArg::Comp(value)) = &bindings[position] {
+                        let kind = template.comp_types[position]
+                            .as_ref()
+                            .and_then(|pattern| pattern.resolved(&bindings))
+                            .and_then(|ty| CompScalarType::from_resolved(&ty));
+                        match (value, kind) {
+                            (CompScalar::Int { value, .. }, Some(CompScalarType::Int(kind))) => {
+                                let value = *value;
+                                let Some((min, max)) =
+                                    kind.resolved().integer_domain(self.target.pointer_bits())
+                                else {
+                                    complete = false;
+                                    continue;
+                                };
+                                if !(min..=max).contains(&value) {
+                                    complete = false;
+                                }
+                                bindings[position] =
+                                    Some(ResolvedGenericArg::Comp(CompScalar::Int {
+                                        r#type: kind,
+                                        value,
+                                    }));
+                            }
+                            (CompScalar::Bool(_), Some(CompScalarType::Bool))
+                            | (CompScalar::Char(_), Some(CompScalarType::Char)) => {}
+                            _ => complete = false,
+                        }
+                    }
+                }
+                if !complete {
+                    continue;
+                }
+                template.params[implicit..].to_vec()
+            } else {
+                let signature = candidate.fn_type().unwrap();
+                if !explicit.is_empty()
+                    || signature.is_variadic
+                    || signature.params.len() != args.len() + implicit
+                {
+                    continue;
+                }
+                signature
+                    .param_types()
+                    .skip(implicit)
+                    .cloned()
+                    .map(TypePattern::Fixed)
+                    .collect()
+            };
+            let score = patterns
+                .iter()
+                .enumerate()
+                .try_fold(0, |score, (position, pattern)| {
+                    let found = argument_type(position);
+                    let cost = if let Some(target) = pattern.resolved(&bindings) {
+                        if fixed[position].is_none() {
+                            Self::literal_overload_fit(
+                                &args[position],
+                                &target,
+                                self.target.pointer_bits(),
+                            )
+                            .map(|exact| u32::from(!exact))
+                            .or_else(|| Self::literal_injection_fit(&args[position], &target))
+                        } else {
+                            Self::conversion_cost(&target, &found)
+                        }
+                    } else {
+                        Self::pattern_conversion_cost(pattern, &found, &bindings)
+                    };
+                    cost.map(|cost| score + cost)
+                });
+            if let Some(score) = score {
+                viable.push((index, score, bindings));
             }
         }
-
-        let Some(min_score) = viable.iter().map(|&(_, s)| s).min() else {
+        let describe = |candidate: &OverloadCandidate| {
+            candidate
+                .template()
+                .map(|t| t.description.clone())
+                .unwrap_or_else(|| {
+                    ResolvedType::Function(candidate.fn_type().cloned().unwrap()).to_string()
+                })
+        };
+        let Some(minimum) = viable.iter().map(|(_, cost, _)| *cost).min() else {
             self.error(
                 node_id,
                 span,
                 AnalysisErrorKind::NoMatchingOverload {
                     name: name.clone(),
-                    candidates: candidates.iter().map(|(_, t)| t.clone()).collect(),
+                    candidates: candidates.iter().map(describe).collect(),
                 },
             );
             return None;
         };
-        let winners: Vec<usize> = viable
-            .iter()
-            .filter(|&&(_, s)| s == min_score)
-            .map(|&(i, _)| i)
-            .collect();
-        let winner = match winners.as_slice() {
-            [only] => *only,
-            _ => {
-                self.error(
-                    node_id,
-                    span,
-                    AnalysisErrorKind::AmbiguousOverload {
-                        name: name.clone(),
-                        candidates: winners.iter().map(|&i| candidates[i].1.clone()).collect(),
-                    },
-                );
-                return None;
+        viable.retain(|(_, cost, _)| *cost == minimum);
+        let dominates = |left: usize, right: usize| match (
+            candidates[left].template(),
+            candidates[right].template(),
+        ) {
+            (None, Some(_)) => true,
+            (Some(left), Some(right)) => {
+                crate::generics::compare_bound_sets(&left.bounds, &right.bounds)
+                    == Some(Ordering::Greater)
             }
+            _ => false,
         };
-
-        let winner_params = candidates[winner].1.params.clone();
-        let mut final_args = Vec::with_capacity(args.len());
-        for (arg, fixed_arg) in args.iter().zip(fixed) {
-            let index = final_args.len();
-            let expected = &winner_params[index].r#type;
-            let checked = match fixed_arg {
+        let winners: Vec<_> = viable
+            .iter()
+            .filter(|(index, _, _)| !viable.iter().any(|(other, _, _)| dominates(*other, *index)))
+            .collect();
+        let [(winner, _, bindings)] = winners.as_slice() else {
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::AmbiguousOverload {
+                    name: name.clone(),
+                    candidates: winners
+                        .iter()
+                        .map(|(index, _, _)| describe(&candidates[*index]))
+                        .collect(),
+                },
+            );
+            return None;
+        };
+        let winner = *winner;
+        let instantiated = if candidates[winner].template().is_some() {
+            match self
+                .resolver
+                .instantiate_overload(candidates[winner].decl_id, bindings)
+            {
+                Ok(method) => Some(method),
+                Err(error) => {
+                    self.error(node_id, span, AnalysisErrorKind::ModuleResolution(error));
+                    return None;
+                }
+            }
+        } else {
+            None
+        };
+        let signature = instantiated
+            .as_ref()
+            .map(|m| &m.fn_type)
+            .or(candidates[winner].fn_type())
+            .unwrap();
+        let parameters: Vec<_> = signature.param_types().skip(implicit).cloned().collect();
+        let mut final_args = Vec::new();
+        for ((raw, checked), expected) in args.iter().zip(fixed).zip(&parameters) {
+            let checked = match checked {
                 Some(checked) => checked,
-                None => self.analyze_expr(arg, Some(expected))?,
+                None => self.analyze_expr(raw, Some(expected))?,
             };
-            // Arguments picked before the winner was known were analyzed with
-            // no expected type, so the conversion the ranking counted still
-            // has to be applied -- through the same path an ordinary call
-            // uses.
             final_args.push(self.coerce_to_expected(Some(expected), checked));
         }
+        Some((winner, instantiated, final_args))
+    }
 
-        Some((winner, final_args))
+    fn pattern_conversion_cost(
+        pattern: &crate::generics::pattern::TypePattern,
+        found: &ResolvedType,
+        bindings: &[Option<ResolvedGenericArg>],
+    ) -> Option<u32> {
+        use crate::generics::pattern::TypePattern;
+        if pattern.accepts(found, bindings) {
+            return Some(0);
+        }
+        if let Some((_, member)) = found.refined_anonymous_member() {
+            return Self::pattern_conversion_cost(pattern, member, bindings).map(|_| 2);
+        }
+        if matches!(pattern, TypePattern::AnonymousEnum(_)) {
+            let leaves = pattern.leaves(bindings);
+            let fits = |ty: &ResolvedType| {
+                leaves
+                    .iter()
+                    .any(|leaf| leaf.exact(&ty.widened(), bindings))
+            };
+            return match found {
+                ResolvedType::AnonymousEnum {
+                    shape,
+                    variant: None,
+                } => shape.members().iter().all(fits).then_some(2),
+                _ => fits(found).then_some(2),
+            };
+        }
+        None
     }
 
     /// The cost of injecting an adaptable numeric literal into an
@@ -406,7 +563,7 @@ impl<'r> Analyzer<'r> {
         }
         parse_number_literal(n, target_kind).ok()?;
         let default = if n.fractional_part.is_some() {
-            ResolvedType::F64
+            ResolvedType::F32
         } else {
             ResolvedType::I32
         };

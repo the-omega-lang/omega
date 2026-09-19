@@ -1,0 +1,86 @@
+import std::io::println;
+
+pick(value: i64) => i32 { 1 }
+pick<T>(value: T) => i32 { 2 }
+
+floating(value: f64) => i32 { 19 }
+floating<T>(value: T) => i32 { 20 }
+
+safe(value: i32) => i32 { 3 }
+safe<T>(value: T) => i32 { missing_in_losing_body }
+
+spec A { }
+spec B { }
+alias AB = spec A + B;
+struct Value { exposed value: i32; }
+meet A for Value { }
+meet B for Value { }
+
+bound<T>(value: T) => i32 { 4 }
+bound<T: A>(value: T) => i32 { 5 }
+bound<T: AB>(value: T) => i32 { 6 }
+
+struct Box<T> { exposed value: T; }
+nominal<T>(value: Box<T>) => i32 { 7 }
+nominal<T>(value: *T) => i32 { 8 }
+
+array<comp N: usize, T>(value: [N]T) => usize { N }
+array(value: bool) => usize { 0usize }
+
+defaults<T = u64>(a: T, b: T) => i32 { 9 }
+defaults(a: i32, b: u32) => i32 { 10 }
+
+holes<T = i64, U = i32>(value: U) => U { value }
+holes(value: bool) => bool { value }
+
+struct DefaultBox<T, U = T> { exposed first: T; exposed second: U; }
+with_default<T>(value: DefaultBox<T>) => i32 { 15 }
+with_default(value: bool) => i32 { 0 }
+
+nested<T>(value: T, mixed: enum Box<T> | i32) => i32 { 16 }
+nested(value: bool, mixed: bool) => i32 { 0 }
+
+callback<T>(value: T, function: (Box<T>) => i32) => i32 { 17 }
+callback(value: bool, function: bool) => i32 { 0 }
+accept_box(value: Box<i32>) => i32 { 0 }
+
+struct Poison<T> {
+    exposed value: T;
+    exposed invalid(*self) => i32 { missing_in_uninstantiated_type }
+}
+isolated<T>(seed: T, value: *Poison<T>) => i32 { 0 }
+isolated<T>(seed: T, value: *Box<T>) => i32 { 18 }
+
+struct Holder<A> {
+    exposed value: A;
+    exposed pick(*self, value: i64) => i32 { 11 }
+    exposed pick<T>(*self, value: T) => i32 { 12 }
+    exposed make(value: i64) => i32 { 13 }
+    exposed make<T>(value: T) => i32 { 14 }
+}
+alias H = Holder<i32>;
+alias choose = pick;
+
+main() => void {
+    println$("cost: ", pick(10), " ", pick(10i64));
+    println$("explicit: ", pick<i64>(10i64));
+    println$("floating: ", floating(1.0), " ", floating(1.0f64));
+    println$("alias: ", choose(10), " ", choose(10i64));
+    println$("losing-body: ", safe(10));
+    println$("bounds: ", bound(Value { value = 1; }));
+    box := Box<i32> { value = 1; };
+    println$("nominal: ", nominal(box), " ", nominal(&box));
+    println$("array: ", array([1, 2, 3]));
+    println$("defaults: ", defaults(1, 2u32));
+    holder := H { value = 1; };
+    println$("member: ", holder.pick(10), " ", holder.pick(10i64), " ", holder.pick<i64>(10i64));
+    println$("static: ", H::make(10), " ", H::make(10i64), " ", H::make<i64>(10i64));
+    println$("unbound: ", H::self::pick(&holder, 10), " ", H::self::pick(&holder, 10i64));
+    println$("holes: ", holes(42u8));
+    println$("type-default: ", with_default(DefaultBox<i32> { first = 1; second = 2; }));
+    println$("nested: ", nested(1, 2));
+    println$("callback: ", callback(1, accept_box));
+    println$("isolation: ", isolated(1, &box));
+    fnptr: (i64) => i32 = pick;
+    println$("uncalled: ", fnptr(10i64));
+}

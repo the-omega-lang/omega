@@ -179,9 +179,6 @@ fn a_failed_signature_skips_only_its_own_body() {
 
 #[test]
 fn a_mixed_generic_overload_group_selects_the_concrete_candidate() {
-    // A generic declaration does not participate in overload resolution, so it
-    // is skipped rather than poisoning the group: the concrete candidate still
-    // wins, matching both `functions.md` and the member path.
     TestPackage::new(
         r#"
         free<T>(p: *T) => void { }
@@ -196,7 +193,7 @@ fn a_mixed_generic_overload_group_selects_the_concrete_candidate() {
 }
 
 #[test]
-fn an_all_generic_overload_group_reports_the_restriction() {
+fn equally_specific_generic_overloads_report_ambiguity() {
     let package = TestPackage::new(
         r#"
         free<T>(p: *T) => void { }
@@ -210,7 +207,7 @@ fn an_all_generic_overload_group_reports_the_restriction() {
     let errors = package.expect_errors();
     let text = rendered(&errors);
     assert!(
-        text.contains("generic declarations do not participate in overload resolution"),
+        text.contains("ambiguous reference to overloaded 'free'"),
         "{text}"
     );
     assert!(!text.contains("cannot find type 'T'"), "{text}");

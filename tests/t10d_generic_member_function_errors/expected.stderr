@@ -23,13 +23,13 @@ error: 'Holder::plain' takes no generic arguments
    |
    = help: remove the generic arguments from `plain`
 
-error: 't10d_generic_member_function_errors::Holder' declares more than one generic 'twin'; generic declarations do not participate in overload resolution
+error: ambiguous reference to overloaded 'twin'
   --> tests/t10d_generic_member_function_errors/t10d_generic_member_function_errors.omg:30:18
    |
-30 |     ambiguous := holder.twin(1);
-   |                  ^^^^^^^^^^^ `twin` is declared generic more than once here
+30 |     ambiguous := holder.twin(&holder.value);
+   |                  ^^^^^^^^^^^ reference to `twin` is ambiguous
    |
-   = note: a generic declaration has no signature until its arguments are known, so overload resolution cannot rank it
-   = help: give the declarations distinct names
+   = note: candidate: <T>(self: *Self, thing: T) => T
+   = note: candidate: <T>(self: *Self, thing: *T) => *T
 
 error: could not compile the program due to 4 previous errors

@@ -1,0 +1,10 @@
+error: ambiguous reference to overloaded 'choose'
+ --> tests/t05e_generic_overload_ambiguity/t05e_generic_overload_ambiguity.omg:8:18
+  |
+8 | main() => void { choose(Value { }); }
+  |                  ^^^^^^^^^^^^^^^^^ reference to `choose` is ambiguous
+  |
+  = note: candidate: <T: A>(value: T) => void
+  = note: candidate: <T: B>(value: T) => void
+
+error: could not compile the program due to 1 previous error

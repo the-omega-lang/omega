@@ -932,7 +932,7 @@ impl<'r> Analyzer<'r> {
         let is_float = matches!(kind, NumericKind::Float(_));
         if n.fractional_part.is_some() && !is_float {
             let Some(explicit_type) = &n.explicit_type else {
-                unreachable!("the default type for a fractional literal is always F64");
+                unreachable!("the default type for a fractional literal is always a float");
             };
             invalid_suffix(self, explicit_type);
             return None;

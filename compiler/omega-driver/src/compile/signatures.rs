@@ -302,6 +302,24 @@ impl Driver {
             self.validate_aliases(path);
 
             for (name, indices) in self.modules.index(path).item_groups() {
+                if indices.len() > 1 {
+                    let hir = self.modules.hir(path);
+                    let functions: Vec<_> = indices
+                        .iter()
+                        .filter_map(|&index| match &hir.items[index] {
+                            HirItem::FunctionDefinition(function) => Some(function.clone()),
+                            _ => None,
+                        })
+                        .collect();
+                    if let Some(function) = functions.first() {
+                        self.with_analyzer(
+                            path,
+                            &GenericSubstitution::new(),
+                            AnalysisSite::new(function.id, function.span),
+                            |analyzer| analyzer.check_generic_overload_duplicates(&functions),
+                        );
+                    }
+                }
                 let mut concrete_indices = Vec::new();
                 let mut signatures = Vec::new();
                 for index in indices {

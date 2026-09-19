@@ -7,8 +7,7 @@ pub use render::resolve_error_diagnostic;
 pub use warning::{AnalysisWarning, AnalysisWarningKind, WarningPolicy};
 
 use crate::resolved_type::{
-    CallingConvention, FunctionNamespace, NumericKind, ResolvedFunctionType, ResolvedGenericArg,
-    ResolvedType,
+    CallingConvention, FunctionNamespace, NumericKind, ResolvedGenericArg, ResolvedType,
 };
 use crate::resolver::ResolveError;
 use crate::target::Target;

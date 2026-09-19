@@ -104,7 +104,12 @@ impl<'r> Analyzer<'r> {
             let signatures: Vec<(HirId, ResolvedFunctionType)> = set
                 .candidates
                 .iter()
-                .map(|candidate| (candidate.decl_id, candidate.fn_type.clone()))
+                .filter_map(|candidate| {
+                    candidate
+                        .fn_type()
+                        .cloned()
+                        .map(|sig| (candidate.decl_id, sig))
+                })
                 .collect();
             if let Some(ResolvedType::Function(expected_fn)) = expected
                 && let Some((decl_id, fn_type)) =
@@ -131,7 +136,12 @@ impl<'r> Analyzer<'r> {
                     candidates: set
                         .candidates
                         .into_iter()
-                        .map(|candidate| candidate.fn_type)
+                        .filter_map(|candidate| {
+                            candidate
+                                .fn_type()
+                                .cloned()
+                                .map(|sig| ResolvedType::Function(sig).to_string())
+                        })
                         .collect(),
                 },
             );
@@ -972,7 +982,10 @@ impl<'r> Analyzer<'r> {
             span,
             AnalysisErrorKind::AmbiguousOverload {
                 name: name.clone(),
-                candidates: signatures.into_iter().map(|(_, sig)| sig).collect(),
+                candidates: signatures
+                    .into_iter()
+                    .map(|(_, sig)| ResolvedType::Function(sig).to_string())
+                    .collect(),
             },
         );
         None

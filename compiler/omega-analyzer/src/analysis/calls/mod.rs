@@ -2,6 +2,7 @@ use super::*;
 
 mod generic;
 mod overload;
+mod pattern;
 mod spec;
 
 use generic::MethodTemplate;
@@ -190,6 +191,53 @@ impl<'r> Analyzer<'r> {
             ));
         }
 
+        let overloads = match self.resolver.method_overload_candidates(
+            receiver.r#type.autoderef(),
+            field,
+            FunctionNamespace::Member,
+        ) {
+            Ok(candidates) => candidates,
+            Err(error) => {
+                self.error(
+                    callee.id,
+                    callee.span,
+                    AnalysisErrorKind::ModuleResolution(error),
+                );
+                return None;
+            }
+        };
+        if overloads.len() > 1
+            && overloads
+                .iter()
+                .any(|candidate| candidate.template().is_some())
+        {
+            let (winner, instantiated, checked_args) = self.resolve_overload_candidates(
+                callee.id,
+                callee.span,
+                field,
+                &overloads,
+                args,
+                expected,
+                generic_args,
+                1,
+            )?;
+            let method = instantiated.or_else(|| {
+                receiver
+                    .r#type
+                    .autoderef()
+                    .candidates_in(FunctionNamespace::Member, field)?
+                    .into_iter()
+                    .find(|m| m.decl_id == overloads[winner].decl_id)
+            })?;
+            return self.finish_method_callee(
+                callee,
+                field,
+                field_origin,
+                receiver,
+                method,
+                Some(checked_args),
+            );
+        }
         let members = self.find_functions(
             callee.id,
             callee.span,

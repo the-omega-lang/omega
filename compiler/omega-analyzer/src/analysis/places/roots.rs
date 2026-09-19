@@ -176,7 +176,12 @@ impl<'r> Analyzer<'r> {
         let signatures: Vec<(HirId, ResolvedFunctionType)> = set
             .candidates
             .iter()
-            .map(|candidate| (candidate.decl_id, candidate.fn_type.clone()))
+            .filter_map(|candidate| {
+                candidate
+                    .fn_type()
+                    .cloned()
+                    .map(|sig| (candidate.decl_id, sig))
+            })
             .collect();
         let winner = match expected {
             Some(ResolvedType::Function(expected_fn)) => {
@@ -197,7 +202,12 @@ impl<'r> Analyzer<'r> {
                     candidates: set
                         .candidates
                         .iter()
-                        .map(|candidate| candidate.fn_type.clone())
+                        .filter_map(|candidate| {
+                            candidate
+                                .fn_type()
+                                .cloned()
+                                .map(|sig| ResolvedType::Function(sig).to_string())
+                        })
                         .collect(),
                 },
             );

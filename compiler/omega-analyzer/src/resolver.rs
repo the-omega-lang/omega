@@ -169,15 +169,6 @@ pub enum ResolveError {
         spec: Ident,
         missing: Vec<Ident>,
     },
-    GenericFunctionOverload {
-        module: Vec<Ident>,
-        function: Ident,
-    },
-    GenericMethodOverload {
-        module: Vec<Ident>,
-        owner: Ident,
-        function: Ident,
-    },
     SpecDependencyCycle {
         module: Vec<Ident>,
         spec: Ident,
@@ -314,23 +305,6 @@ impl fmt::Display for ResolveError {
                     .map(Ident::as_ref)
                     .collect::<Vec<_>>()
                     .join(", ")
-            ),
-            Self::GenericFunctionOverload { module, function } => write!(
-                f,
-                "'{}::{}' is declared generic more than once; generic declarations do not participate in overload resolution",
-                join(module),
-                function.as_ref()
-            ),
-            Self::GenericMethodOverload {
-                module,
-                owner,
-                function,
-            } => write!(
-                f,
-                "'{}::{}' declares more than one generic '{}'; generic declarations do not participate in overload resolution",
-                join(module),
-                owner.as_ref(),
-                function.as_ref()
             ),
             Self::SpecDependencyCycle { module, spec } => {
                 write!(
@@ -581,6 +555,33 @@ pub trait ModuleResolver {
         access: &ItemAccess,
     ) -> Result<Option<ResolvedOverloadSet>, ResolveError>;
 
+    fn instantiate_overload(
+        &mut self,
+        declaration: HirId,
+        arguments: &[Option<ResolvedGenericArg>],
+    ) -> Result<ResolvedMethod, ResolveError> {
+        let _ = (declaration, arguments);
+        unreachable!("this resolver supplies no generic overload candidates")
+    }
+
+    fn method_overload_candidates(
+        &mut self,
+        owner: &ResolvedType,
+        name: &Ident,
+        namespace: crate::resolved_type::FunctionNamespace,
+    ) -> Result<OverloadCandidates, ResolveError> {
+        Ok(owner
+            .candidates_in(namespace, name)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|method| OverloadCandidate {
+                decl_id: method.decl_id,
+                signature: crate::resolver::OverloadSignature::Concrete(method.fn_type),
+                visibility: method.visibility,
+            })
+            .collect())
+    }
+
     fn fresh_synthetic_id(&mut self) -> HirId;
 
     fn similar_item_name(
@@ -635,8 +636,40 @@ pub enum ItemNamespace {
 #[derive(Debug, Clone)]
 pub struct OverloadCandidate {
     pub decl_id: HirId,
-    pub fn_type: ResolvedFunctionType,
+    pub signature: OverloadSignature,
     pub visibility: Visibility,
+}
+
+#[derive(Debug, Clone)]
+pub enum OverloadSignature {
+    Concrete(ResolvedFunctionType),
+    Template(OverloadTemplate),
+}
+
+impl OverloadCandidate {
+    pub fn fn_type(&self) -> Option<&ResolvedFunctionType> {
+        match &self.signature {
+            OverloadSignature::Concrete(signature) => Some(signature),
+            _ => None,
+        }
+    }
+
+    pub fn template(&self) -> Option<&OverloadTemplate> {
+        match &self.signature {
+            OverloadSignature::Template(template) => Some(template),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct OverloadTemplate {
+    pub generics: Vec<HirGenericParam>,
+    pub params: Vec<crate::generics::pattern::TypePattern>,
+    pub return_type: crate::generics::pattern::TypePattern,
+    pub comp_types: Vec<Option<crate::generics::pattern::TypePattern>>,
+    pub bounds: Vec<(usize, HirId, Vec<crate::generics::pattern::ArgumentPattern>)>,
+    pub description: String,
 }
 
 pub type OverloadCandidates = Vec<OverloadCandidate>;

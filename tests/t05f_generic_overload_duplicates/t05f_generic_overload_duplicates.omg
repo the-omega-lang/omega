@@ -1,0 +1,11 @@
+spec A { }
+spec B { }
+alias AB = spec A + B;
+duplicate<T: AB>(value: *T) => void { }
+duplicate<U: B + A>(value: *U) => void { }
+struct Holder {
+    exposed value: i32;
+    exposed same<T>(*self, value: [3]T) => void { }
+    exposed same<U>(*self, value: [3]U) => void { }
+}
+main() => void { }

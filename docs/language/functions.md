@@ -109,7 +109,7 @@ Holder::make<u8>(1);            # written on the static
 Holder::self::echo<u8>(&h, 1);  # the member as an unbound value's call
 ```
 
-A generic declaration has no signature until a call determines its arguments, which has two consequences. It does not participate in overload resolution: two generic declarations sharing a name and a namespace are rejected where they are called, since nothing can rank them. And it cannot be named without being called, so `Holder::self::echo` is not an unbound member value; only an instantiated declaration has a single address. Generic member/static functions are specified in [`generics.md`](generics.md).
+A generic declaration has no signature until its generic arguments are determined. At a call, inference can determine those arguments for each overload candidate, as described below. A generic declaration still cannot be named without being called, so `Holder::self::echo` is not an unbound member value; only an instantiated declaration has a single address. An expected function type does not instantiate a generic declaration. Generic member/static functions are specified in [`generics.md`](generics.md).
 
 ## Overloading
 
@@ -117,7 +117,25 @@ Several functions or methods may share a name. A call is resolved using the argu
 
 - If no candidate is viable, the call is invalid.
 - If exactly one minimum-cost candidate exists, that candidate is selected.
-- If multiple candidates tie at the minimum cost, the call is ambiguous and must be rejected.
+- If multiple candidates tie at the minimum cost, select the unique most specific candidate using the [conformance selection rules](specs-and-conformance.md#blanket-conformances), with concrete declarations corresponding to concrete conformances and generic declarations to blankets. If there is no unique most specific candidate, the call is ambiguous and must be rejected.
+
+For each generic candidate, inference uses the call's explicit generic arguments,
+expected result type, and written arguments under the rules in
+[`generics.md`](generics.md). A candidate whose parameter types cannot be
+determined or do not accept the arguments is not viable. A candidate that is not
+viable produces no diagnostics of its own, and only the selected declaration is
+instantiated. Generic defaults do not establish viability: matching an argument
+never consults a default, though a generic parameter that no argument determines
+still takes its default. The selected declaration's bounds are then checked
+normally; an unsatisfied bound is an error, not a reason to fall back to another
+candidate.
+
+Specificity compares declaration origin and required bound sets. It does not
+compare parameter structure: `f<T>(x: T)` and `f<T>(x: *T)` are both unbounded
+and remain ambiguous when both match at the minimum cost. Generic declarations
+with structurally identical parameter types and required bound sets are
+redeclarations, even if their generic parameters have different names. They are
+rejected at their declarations, independently of calls.
 
 **Adapting a literal is a last resort, not a default.** A candidate that accepts
 the arguments as written always beats one that only becomes viable by adapting a
@@ -136,7 +154,17 @@ With only `f(a: i64)` declared, `f(10)` does adapt, because nothing else can
 accept the call. See [`types-and-primitives.md`](types-and-primitives.md) for a
 literal's own default type.
 
-An uncalled reference to an overloaded name is ambiguous unless an expected function type selects exactly one overload:
+The cost gate also applies when a candidate is generic:
+
+```omega
+f(a: i64) => void { ... }
+f<T>(a: T) => void { ... }
+
+f(10);      # selects the generic with T = i32: no adaptation is needed
+f(10i64);   # selects the concrete declaration: both cost zero, so specificity decides
+```
+
+An uncalled reference excludes generic candidates. A reference to the remaining overload set is ambiguous unless an expected function type selects exactly one overload:
 
 ```omega
 f : (thing: u32) => void = print_any;
