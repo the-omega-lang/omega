@@ -1,0 +1,17 @@
+error: 'never' is only allowed as a function/method's own return type
+ --> tests/t46o_never_generic/t46o_never_generic.omg:1:25
+  |
+1 | struct Box<T> { exposed value: T; }
+  |                         ^^^^^^^^ `never` used outside a function's own return type
+  |
+  = help: there is no such thing as a `never`-typed value -- only a function/method/foreign/gap may declare `=> never`
+
+error: cannot use 't46o_never_generic::Box' because of its own error
+ --> tests/t46o_never_generic/t46o_never_generic.omg:2:18
+  |
+2 | main() => void { value: Box<never>; }
+  |                  ^^^^^^^^^^^^^^^^^ cannot be used because of its own error
+  |
+  = note: `Box`'s own error is reported where it is defined
+
+error: could not compile the program due to 2 previous errors

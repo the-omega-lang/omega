@@ -428,46 +428,16 @@ Shape problems in `omega-driver` and `omega-analyzer` that still need a delibera
 
 ## Control flow
 
-- **Assignment-target evaluation can be skipped by a panic in the right-hand
-  side.** Reproduced with
-  `*select_target(&mut value) = if true { panic$("rhs"); } else { 1 };`,
-  where `select_target` prints a marker and returns its pointer argument:
-  compilation/linking succeed, but execution prints only the panic diagnostic
-  and exits `134`; the target's marker is missing. Ordinary assignment emission
-  evaluates the target before its value, but
-  [`lower_assignment_stmt`](../../compiler/omega-mir/src/lower/function.rs)
-  leaves the target as an expression tree while lowering the RHS control flow
-  immediately. The operand-sequencing helper in
-  [`lower/function/expr.rs`](../../compiler/omega-mir/src/lower/function/expr.rs)
-  protects call, binary, and aggregate operands, not assignment targets.
-  Follow up by preserving target evaluation/address computation before RHS
-  control flow. Inspect the analogous sequencing of slice bounds and dynamic
-  place components as part of that bounded work; those are related candidates,
-  not independently reproduced failures here. Test preceding side effects,
-  address stability, and no store or later effect after panic at `-O0`/`-O3`.
-
-- **`never` is rejected in some expected-value positions.** A direct
-  `consume(stop())`, with `consume` taking `i32` and `stop` returning `never`,
-  is rejected with `ArgumentTypeMismatch` (`I32` versus `Never`). Supplying the
-  same call to an exposed `i32` struct field is rejected with
-  `FieldTypeMismatch`. Both conflict with the general rule that a diverging
-  expression is compatible with any expected expression type in
-  [`types-and-primitives.md`](../language/types-and-primitives.md#never).
-  An `if` expression with one diverging arm and one value-producing arm is
-  accepted in these positions. Fix the expected-type checks without making
-  `never` a storable type; retain runtime guards and verify that earlier
-  operands execute but later operands and the enclosing operation do not.
-
-- **`&&`/`||` reject a `never`-typed operand, but the `if` form they desugar
-  to accepts one.** `flag && exit(1)` fails with `'&&' requires 'bool'
-  operands, found 'never'`, while the equivalent
-  `if flag { exit(1) } else { false }` compiles — so the operator is
-  strictly narrower than the desugaring it produces. This follows
-  `analyze_if`'s existing rule for a condition rather than being new, and
-  diverging-in-one-branch is rare in practice, but it is an inconsistency
-  between two spellings the docs present as equivalent.
-  [control-flow.md](../language/control-flow-and-operators.md)
-
+- **Divergence and non-value bindings still have gaps.** A `never` call is
+  rejected as an ordinary binary operand (`1 + stop()`) and by general casts
+  (`<i32>stop()`); these need rules for operator applicability and result
+  typing, separate from expected-value compatibility. `loop` is parsed only
+  as a statement, although the `never` chapter describes loop expressions.
+  Inferred bindings can still store `void` (`x := consume(1)`). Written
+  fixed-array types also still accept `never` elements (`value: [1]never;`):
+  the non-storable-type gate checks the outer type, while anonymous-enum
+  members have their own gate. Nested-type validation needs a separate fix.
+  [types-and-primitives.md](../language/types-and-primitives.md#never)
 
 - **`bool` now has two spellings for each connective, and both are
   supported.** `a & b` and `a && b` differ only in whether `b` is evaluated;
@@ -505,13 +475,6 @@ Shape problems in `omega-driver` and `omega-analyzer` that still need a delibera
   **Decision needed:** accept the asymmetry, promote these two words to real
   keywords, or give casts a spelling that does not start with `<`.
   [parsing-and-hir.md](../architecture/parsing-and-hir.md)
-
-- **A bare `return;` is a parse error**, so a `void` function cannot return
-  early at all — `expected an expression, found ';'`. Every early exit in a
-  `void` body has to be restructured around a sentinel flag, which
-  old fixed-buffer I/O helpers had to do; the current `std::io::read_line`
-  loops with a sentinel flag instead.
-  [control-flow.md](../language/control-flow-and-operators.md)
 
 - **A number literal's type suffix is resolved as a named type, so
   user-declared names can be used as suffixes and macro-authored suffixes

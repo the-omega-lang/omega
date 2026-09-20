@@ -11,17 +11,19 @@ pub(super) fn place_align(r#type: &ResolvedType) -> u32 {
 }
 
 pub(super) fn lower_place(lowerer: &mut FunctionLowerer, place: CheckedPlace) -> MirPlace {
-    lower_place_with(lowerer, place, |lowerer, e| lowerer.lower_expr(e))
+    if place
+        .projections
+        .iter()
+        .any(|p| matches!(p, CheckedProjection::Index { .. }))
+    {
+        lower_place_evaluated_once(lowerer, place)
+    } else {
+        lower_place_with(lowerer, place, |lowerer, e| lowerer.lower_expr(e))
+    }
 }
 
-/// Lowers `place`, materializing any dynamic component (a computed root
-/// expression, or an index expression) into a MIR local exactly once. The
-/// resulting `MirPlace` only ever re-reads already-computed locals, so it
-/// is safe to lower once here and then clone/reuse for both a load and a
-/// store, without re-executing any side-effecting subexpression. Used by
-/// compound-assign/increment-decrement lowering, which reads and writes
-/// the same place; ordinary single-use places should keep using
-/// `lower_place` so they don't pay for locals they don't need.
+/// Saves dynamic components before later operands can change their reads or
+/// divert control. The resulting place can also be reused for a load and store.
 pub(super) fn lower_place_evaluated_once(
     lowerer: &mut FunctionLowerer,
     place: CheckedPlace,

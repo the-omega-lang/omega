@@ -92,7 +92,7 @@ impl<'r> Analyzer<'r> {
         };
         let operand = |this: &mut Self, side: &HirExprNode| {
             let checked = this.analyze_expr(side, Some(&ResolvedType::Bool))?;
-            if checked.r#type != ResolvedType::Bool {
+            if !Self::value_type_compatible(&ResolvedType::Bool, &checked.r#type) {
                 this.error(
                     side.id,
                     side.span,

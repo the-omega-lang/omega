@@ -922,7 +922,7 @@ impl<'r> Analyzer<'r> {
                 continue;
             };
             let checked_arg = self.coerce_to_expected(Some(expected_type), checked_arg);
-            if !expected_type.accepts(&checked_arg.r#type) {
+            if !Self::value_type_compatible(expected_type, &checked_arg.r#type) {
                 self.error(
                     arg.id,
                     arg.span,

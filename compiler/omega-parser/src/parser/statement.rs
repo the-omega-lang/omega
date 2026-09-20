@@ -213,7 +213,11 @@ pub fn parse_declaration(p: &mut Parser) -> Option<DeclarationStmt> {
 
 fn parse_return(p: &mut Parser) -> Option<ReturnStmt> {
     p.expect(&TokenKind::Return, "'return'");
-    let return_value = parse_expression(p)?;
+    let return_value = if p.check(&TokenKind::Semi) {
+        None
+    } else {
+        Some(parse_expression(p)?)
+    };
     Some(ReturnStmt { return_value })
 }
 

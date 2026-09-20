@@ -172,11 +172,9 @@ fn anchored_expression_path_parses() {
     else {
         panic!("expected a return statement");
     };
-    let omega_parser::prelude::Expression::Path(expr_path) = ret.return_value.expression else {
-        panic!(
-            "expected a path expression, got {:?}",
-            ret.return_value.expression
-        );
+    let value = ret.return_value.expect("expected a return value");
+    let omega_parser::prelude::Expression::Path(expr_path) = value.expression else {
+        panic!("expected a path expression, got {:?}", value.expression);
     };
     assert_eq!(expr_path.path.anchor, Some(PathAnchor::Root));
 }

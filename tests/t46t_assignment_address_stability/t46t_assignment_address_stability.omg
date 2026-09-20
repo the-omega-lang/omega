@@ -1,0 +1,13 @@
+select_target(value: *mut i32) => *mut i32 { value }
+main() => void {
+    mut first: i32 = 0;
+    mut second: i32 = 0;
+    mut pointer := &mut first;
+    *select_target(pointer) = { pointer = &mut second; 7 };
+    *pointer = 3;
+    if first != 7 || second != 3 { panic$("assignment address changed"); }
+    mut values: [2]i32 = [0, 0];
+    mut index: i32 = 0;
+    values[index] = { index = 1; 9 };
+    if values[0] != 9 || values[index] != 0 { panic$("assignment index changed"); }
+}

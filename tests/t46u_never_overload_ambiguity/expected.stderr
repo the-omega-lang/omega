@@ -1,0 +1,10 @@
+error: ambiguous reference to overloaded 'consume'
+ --> tests/t46u_never_overload_ambiguity/t46u_never_overload_ambiguity.omg:4:18
+  |
+4 | main() => void { consume(stop()); }
+  |                  ^^^^^^^^^^^^^^^ reference to `consume` is ambiguous
+  |
+  = note: candidate: (value: i32) => void
+  = note: candidate: (value: bool) => void
+
+error: could not compile the program due to 1 previous error

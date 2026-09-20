@@ -21,7 +21,9 @@ test-all: build-omgc build-runtime
 # optimized build that "passed" by panicking everywhere would fail it.
 RUNTIME_CHECK_CASES := "t41_invalid_enum_tag_match t42_invalid_anonymous_enum_widen " + \
     "t43_invalid_option_try t43b_invalid_result_try t44_never_call_returned " + \
-    "t41e_match_remainder_paths"
+    "t44d_never_direct_argument t44e_never_field t44f_assignment_target_order " + \
+    "t44g_slice_bound_order t44h_dynamic_index_order " + \
+    "t46t_assignment_address_stability t41e_match_remainder_paths"
 
 playground: build-omgc build-runtime
     @echo "[*] Running playground..."

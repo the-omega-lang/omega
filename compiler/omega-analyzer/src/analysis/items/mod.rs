@@ -213,7 +213,7 @@ impl<'r> Analyzer<'r> {
         let resolved_type = self.resolve_type_or_error(decl_id, decl_span, r#type, true)?;
         let checked_value = self.analyze_expr(value, Some(&resolved_type))?;
         let checked_value = self.coerce_to_expected(Some(&resolved_type), checked_value);
-        if !resolved_type.accepts(&checked_value.r#type) {
+        if !Self::value_type_compatible(&resolved_type, &checked_value.r#type) {
             self.error(
                 value.id,
                 value.span,

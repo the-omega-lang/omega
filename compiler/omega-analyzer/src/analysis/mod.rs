@@ -752,14 +752,20 @@ impl<'r> Analyzer<'r> {
         }
     }
 
+    /// Implements `docs/language/types-and-primitives.md#never`: divergence fits
+    /// any expected expression type. Keep this separate from `ResolvedType::accepts`,
+    /// which also checks signatures and type patterns where divergence is not a value.
+    pub(crate) fn value_type_compatible(expected: &ResolvedType, found: &ResolvedType) -> bool {
+        expected.accepts(found) || *found == ResolvedType::Never
+    }
+
     /// Decides how `found` can inhabit `expected`, without owning a value to
     /// convert. `Some` with no steps means plain acceptance; `None` means no
-    /// conversion exists and the caller reports the mismatch.
+    /// conversion exists. Value sites separately accept divergence through
+    /// `value_type_compatible`, without producing a coercion.
     ///
-    /// This is the single home of "does this value fit that type": an
-    /// expected type, a `<enum ...>` cast, and `?`'s error propagation are
-    /// three ways to establish a destination, and they must agree on the
-    /// answer and on the IR.
+    /// Expected types, `<enum ...>` casts, and `?` error propagation share
+    /// this conversion plan so they agree on the resulting IR.
     pub(crate) fn plan_coercion(
         &mut self,
         id: HirId,
@@ -1011,7 +1017,7 @@ impl<'r> Analyzer<'r> {
     pub(crate) fn conversion_cost(expected: &ResolvedType, found: &ResolvedType) -> Option<u32> {
         const ANONYMOUS: u32 = 2;
 
-        if expected.accepts(found) {
+        if Self::value_type_compatible(expected, found) {
             return Some(0);
         }
         if let Some((_, member)) = found.refined_anonymous_member()

@@ -1,0 +1,11 @@
+import std::io::println;
+select_array(values: *mut [3]i32) => *mut [3]i32 {
+    println$("base-before");
+    values
+}
+start() => i32 { println$("start-before"); 0 }
+main() => void {
+    mut values: [3]i32 = [1, 2, 3];
+    view := &(*select_array(&mut values))[start()..<(if true { panic$("bound"); } else { 2 })];
+    println$("after-expression");
+}

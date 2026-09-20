@@ -237,7 +237,7 @@ impl<'r> Analyzer<'r> {
                     continue;
                 };
                 let checked = self.coerce_to_expected(Some(expected), checked);
-                if !expected.accepts(&checked.r#type) {
+                if !Self::value_type_compatible(expected, &checked.r#type) {
                     self.error(
                         arg.id,
                         arg.span,
@@ -482,7 +482,7 @@ impl<'r> Analyzer<'r> {
                     continue;
                 };
                 let checked = self.coerce_to_expected(Some(expected), checked);
-                if !expected.accepts(&checked.r#type) {
+                if !Self::value_type_compatible(expected, &checked.r#type) {
                     self.error(
                         arg.id,
                         arg.span,
@@ -610,7 +610,7 @@ impl<'r> Analyzer<'r> {
                     continue;
                 };
                 let checked = self.coerce_to_expected(Some(expected), checked);
-                if !expected.accepts(&checked.r#type) {
+                if !Self::value_type_compatible(expected, &checked.r#type) {
                     self.error(
                         arg.id,
                         arg.span,

@@ -74,7 +74,7 @@ pub(super) fn lower_expr(lowerer: &mut FunctionLowerer, node: CheckedExprNode) -
             guard_never_call(lowerer, id, span, r#type, &fn_type, trusted, node)
         }
         CheckedExpr::Assignment(assignment) => {
-            let target = lowerer.lower_place(assignment.target);
+            let target = lowerer.lower_place_evaluated_once(assignment.target);
             let value = Box::new(lowerer.lower_expr(*assignment.value));
             mir_node(
                 id,
@@ -160,10 +160,11 @@ pub(super) fn lower_expr(lowerer: &mut FunctionLowerer, node: CheckedExprNode) -
             }),
         ),
         CheckedExpr::Slice(slice) => {
-            let base = lowerer.lower_place(slice.base);
-            let start = slice
-                .start
-                .map(|start| Box::new(lowerer.lower_expr(*start)));
+            let base = lowerer.lower_place_evaluated_once(slice.base);
+            let start = slice.start.map(|start| {
+                let start = lowerer.lower_expr(*start);
+                Box::new(lowerer.materialize_once(start))
+            });
             let (end, inclusive) = match slice.end {
                 CheckedRangeEnd::Inclusive(end) => (Some(Box::new(lowerer.lower_expr(*end))), true),
                 CheckedRangeEnd::Exclusive(end) => {

@@ -314,3 +314,34 @@ fn shape_index(parent: &ResolvedType, member: &ResolvedType) -> usize {
     };
     shape.index_of(member).expect("member of this shape")
 }
+
+#[test]
+fn divergence_is_value_compatible_without_widening_type_acceptance() {
+    let mut resolver = NoResolver;
+    let mut analyzer = analyzer(&mut resolver);
+    for expected in [ResolvedType::I32, ResolvedType::Bool, ResolvedType::Void] {
+        assert!(
+            analyzer
+                .plan_coercion(id(1), sp(), &expected, &ResolvedType::Never)
+                .is_none()
+        );
+        assert!(Analyzer::value_type_compatible(
+            &expected,
+            &ResolvedType::Never
+        ));
+        assert_eq!(
+            Analyzer::conversion_cost(&expected, &ResolvedType::Never),
+            Some(0)
+        );
+        assert!(!expected.accepts(&ResolvedType::Never));
+        assert!(Analyzer::value_type_compatible(&expected, &expected));
+    }
+    assert!(!Analyzer::value_type_compatible(
+        &ResolvedType::I32,
+        &ResolvedType::Bool
+    ));
+    assert!(!Analyzer::value_type_compatible(
+        &ResolvedType::Never,
+        &ResolvedType::I32
+    ));
+}

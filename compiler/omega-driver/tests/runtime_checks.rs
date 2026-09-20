@@ -809,3 +809,40 @@ fn aggregate_and_binary_operands_keep_effects_before_a_later_panic() {
         );
     }
 }
+
+#[test]
+fn never_calls_are_guarded_in_expected_value_positions() {
+    for statement in [
+        "consume(stop());",
+        "consume(if flag { stop() } else { stop() });",
+        "value: Pair = Pair { a = before(); b = stop(); };",
+        "value: [2]i32 = [before(), stop()];",
+        "value: i32 = stop();",
+        "mut value: i32 = 0; value = stop();",
+        "return stop();",
+        "value := flag && stop();",
+        "value := flag || stop();",
+        "value := stop() && flag;",
+        "value := stop() || flag;",
+        "generic<i32>(stop());",
+        "indirect: (i32) => void = consume; indirect(stop());",
+    ] {
+        let program = TestPackage::new(&format!(
+            "foreign(c) stop() => never;
+             before() => i32 {{ 7 }}
+             consume(value: i32) => void {{ }}
+             generic<T>(value: T) => void {{ }}
+             struct Pair {{ exposed a: i32; exposed b: i32; }}
+             caller(flag: bool) => void {{ {statement} }}
+             main() => void {{ }}"
+        ))
+        .expect_ok();
+        assert!(
+            emits(
+                &mir_body(program, "caller"),
+                RuntimeCheck::NeverCallReturned
+            ),
+            "{statement}"
+        );
+    }
+}

@@ -1,0 +1,2 @@
+foreign(c) stop() => never;
+main() => void { value := stop(); }

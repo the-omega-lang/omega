@@ -1,0 +1,17 @@
+early(flag: bool, value: *mut i32) => void {
+    if flag { return; }
+    *value += 1;
+}
+with_defer(flag: bool, value: *mut i32) => void {
+    defer { *value += 10; }
+    if flag { return; }
+    *value += 100;
+}
+main() => void {
+    mut value: i32 = 0;
+    early(true, &mut value);
+    early(false, &mut value);
+    with_defer(true, &mut value);
+    with_defer(false, &mut value);
+    if value != 121 { panic$("incorrect return/defer order"); }
+}

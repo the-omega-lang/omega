@@ -240,7 +240,7 @@ impl<'r> Analyzer<'r> {
                     return None;
                 }
                 let value = self.analyze_expr(&field.value, Some(&expected))?;
-                if !expected.accepts(&value.r#type) {
+                if !Self::value_type_compatible(&expected, &value.r#type) {
                     self.error(
                         node_id,
                         value.span,
@@ -332,7 +332,7 @@ impl<'r> Analyzer<'r> {
                 ok = false;
                 continue;
             };
-            if !expected.accepts(&value.r#type) {
+            if !Self::value_type_compatible(&expected, &value.r#type) {
                 self.error(
                     node_id,
                     value.span,
@@ -1035,7 +1035,7 @@ impl<'r> Analyzer<'r> {
         let mut checked_elements = Vec::with_capacity(elements.len());
         let check_element =
             |this: &mut Self, id: HirId, elem_span: Span, checked: CheckedExprNode| {
-                if !item_type.accepts(&checked.r#type) {
+                if !Self::value_type_compatible(&item_type, &checked.r#type) {
                     this.error(
                         id,
                         elem_span,

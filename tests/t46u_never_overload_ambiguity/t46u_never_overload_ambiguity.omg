@@ -1,0 +1,4 @@
+foreign(c) stop() => never;
+consume(value: i32) => void {}
+consume(value: bool) => void {}
+main() => void { consume(stop()); }

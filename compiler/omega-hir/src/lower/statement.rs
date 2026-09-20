@@ -1,7 +1,7 @@
 use super::Lowerer;
 use crate::hir::{
-    HirAsmDescriptor, HirAsmDescriptorKind, HirBlock, HirBreak, HirContinue, HirDefer, HirFor,
-    HirForIn, HirInlineAsm, HirLoop, HirStmt, HirWalrusDeclaration, HirWhile,
+    HirAsmDescriptor, HirAsmDescriptorKind, HirBlock, HirBreak, HirContinue, HirDefer, HirExpr,
+    HirExprNode, HirFor, HirForIn, HirInlineAsm, HirLoop, HirStmt, HirWalrusDeclaration, HirWhile,
 };
 use omega_parser::prelude::{AsmDescriptorKind, CodeblockExpr, Span, Statement, StatementNode};
 
@@ -21,7 +21,19 @@ impl Lowerer {
                 "statement macro invocations are replaced by their expansion by \
                  omega_parser::macros::expand before lower_module runs"
             ),
-            Statement::Return(ret) => HirStmt::Return(self.lower_expr(&ret.return_value)),
+            Statement::Return(ret) => HirStmt::Return(match &ret.return_value {
+                Some(value) => self.lower_expr(value),
+                None => HirExprNode {
+                    id: self.ids.next(),
+                    span,
+                    origin: Default::default(),
+                    expr: HirExpr::Codeblock(HirBlock {
+                        stmts: vec![],
+                        tail: None,
+                        span,
+                    }),
+                },
+            }),
             Statement::Break => HirStmt::Break(HirBreak {
                 id: self.ids.next(),
                 span,

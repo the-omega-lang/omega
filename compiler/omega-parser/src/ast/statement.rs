@@ -45,7 +45,7 @@ pub struct DeclarationStmt {
 
 #[derive(Debug, Clone)]
 pub struct ReturnStmt {
-    pub return_value: ExpressionNode,
+    pub return_value: Option<ExpressionNode>,
 }
 
 #[derive(Debug, Clone)]

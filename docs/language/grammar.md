@@ -425,14 +425,12 @@ statement = local-declaration, ";"
 local-declaration = [ "mut" ], identifier, ":", type, [ "=", expression ] ;
 inferred-binding  = [ "mut" ], [ "comp" ], identifier, ":=", expression ;
 
-return-statement   = "return", expression ;
+return-statement   = "return", [ expression ] ;
 break-statement    = "break" ;
 continue-statement = "continue" ;
 
 defer-statement = "defer", statement-or-block ;
 ```
-
-A bare `return;` is not accepted by the current grammar; this limitation is tracked in [`../issues/known-issues.md`](../issues/known-issues.md).
 
 A block-shaped expression used directly as a statement (`{...}`, `if`, `match`) does not require a trailing semicolon. Other expression statements do.
 

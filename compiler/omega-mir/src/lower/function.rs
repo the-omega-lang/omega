@@ -540,7 +540,7 @@ impl FunctionLowerer {
         r#type: ResolvedType,
         assignment: CheckedAssignment,
     ) {
-        let target = self.lower_place(assignment.target);
+        let target = self.lower_place_evaluated_once(assignment.target);
         if self.is_current_terminated() {
             return;
         }
@@ -745,6 +745,53 @@ mod tests {
             body.blocks[0].statements.first().map(|node| &node.kind),
             Some(MirExpr::FunctionCall(_))
         ));
+    }
+
+    #[test]
+    fn assignment_target_runs_before_diverging_rhs() {
+        let mut target_call = void_call(1);
+        let pointer_type = ResolvedType::Pointer {
+            pointee: Box::new(ResolvedType::I32),
+            mutable: true,
+        };
+        target_call.r#type = pointer_type.clone();
+        if let CheckedExpr::FunctionCall(call) = &mut target_call.kind {
+            call.fn_type.return_type = Box::new(pointer_type);
+        }
+        let value = CheckedExprNode {
+            id: hir_id(5),
+            span: Span::default(),
+            r#type: ResolvedType::Never,
+            kind: CheckedExpr::Codeblock(CheckedBlock {
+                stmts: vec![CheckedStmt::Loop(non_breaking_loop(6))],
+                tail: None,
+            }),
+        };
+        let body = lower_void_body(CheckedBlock {
+            stmts: vec![CheckedStmt::Expression(CheckedExprNode {
+                id: hir_id(7),
+                span: Span::default(),
+                r#type: ResolvedType::Void,
+                kind: CheckedExpr::Assignment(CheckedAssignment {
+                    target: CheckedPlace {
+                        root: CheckedPlaceRoot::Expr(Box::new(target_call)),
+                        projections: vec![omega_analyzer::checked::CheckedProjection::Deref {
+                            r#type: ResolvedType::I32,
+                        }],
+                        r#type: ResolvedType::I32,
+                    },
+                    value: Box::new(value),
+                }),
+            })],
+            tail: None,
+        });
+        let MirExpr::Assignment(save) = &body.blocks[0].statements[0].kind else {
+            panic!("target must be saved before entering the loop");
+        };
+        assert!(matches!(save.value.kind, MirExpr::FunctionCall(_)));
+        assert!(!body.blocks.iter().flat_map(|b| &b.statements).any(|s| {
+            matches!(&s.kind, MirExpr::Assignment(a) if !a.target.projections.is_empty())
+        }));
     }
 
     #[test]

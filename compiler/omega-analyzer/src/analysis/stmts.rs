@@ -7,22 +7,7 @@ enum ForInSource {
 
 impl<'r> Analyzer<'r> {
     pub(super) fn expr_diverges(expr: &CheckedExprNode) -> bool {
-        if expr.r#type == ResolvedType::Never {
-            return true;
-        }
-        match &expr.kind {
-            CheckedExpr::If(CheckedIf {
-                branches,
-                else_branch,
-            }) => {
-                let Some(else_branch) = else_branch else {
-                    return false;
-                };
-                branches.iter().all(|(_, b)| Self::block_type(b).is_none())
-                    && Self::block_type(else_branch).is_none()
-            }
-            _ => false,
-        }
+        expr.r#type == ResolvedType::Never
     }
 
     pub(super) fn stmt_diverges(stmt: &CheckedStmt) -> bool {
@@ -173,6 +158,14 @@ impl<'r> Analyzer<'r> {
     fn analyze_walrus(&mut self, w: &HirWalrusDeclaration) -> Option<Vec<CheckedStmt>> {
         let checked_value = self.analyze_expr(&w.value, None)?;
         let r#type = checked_value.r#type.clone();
+        if r#type == ResolvedType::Never {
+            self.error(
+                w.id,
+                w.span,
+                AnalysisErrorKind::UnresolvedType(TypeResolutionError::NeverNotAllowedHere),
+            );
+            return None;
+        }
 
         if w.comp {
             if w.mutable {
@@ -278,7 +271,7 @@ impl<'r> Analyzer<'r> {
                 let return_type = self.current_return_type.clone();
                 let checked = self.analyze_expr(expr, Some(&return_type))?;
                 let checked = self.coerce_to_expected(Some(&return_type), checked);
-                if !self.current_return_type.accepts(&checked.r#type) {
+                if !Self::value_type_compatible(&self.current_return_type, &checked.r#type) {
                     self.error(
                         expr.id,
                         expr.span,

@@ -1,0 +1,2 @@
+struct Box<T> { exposed value: T; }
+main() => void { value: Box<never>; }

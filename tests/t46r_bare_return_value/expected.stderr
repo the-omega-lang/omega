@@ -1,0 +1,7 @@
+error: mismatched types: expected return type 'i32', found 'void'
+ --> tests/t46r_bare_return_value/t46r_bare_return_value.omg:1:20
+  |
+1 | invalid() => i32 { return; }
+  |                    ^^^^^^^ expected `i32` because of the declared return type, found `void`
+
+error: could not compile the program due to 1 previous error

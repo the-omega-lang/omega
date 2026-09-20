@@ -1,0 +1,7 @@
+error: mismatched types: expected return type 'void', found 'i32'
+ --> tests/t46s_void_return_value/t46s_void_return_value.omg:1:25
+  |
+1 | main() => void { return 1; }
+  |                         ^ expected `void` because of the declared return type, found `i32`
+
+error: could not compile the program due to 1 previous error

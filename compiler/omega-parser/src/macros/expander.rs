@@ -501,7 +501,10 @@ impl<'a, E> Expander<'a, E> {
             }
             Statement::Expression(expr) => Statement::Expression(self.expand_expr(expr)?),
             Statement::Return(ret) => Statement::Return(ReturnStmt {
-                return_value: self.expand_expr(ret.return_value)?,
+                return_value: match ret.return_value {
+                    Some(value) => Some(self.expand_expr(value)?),
+                    None => None,
+                },
             }),
             Statement::Break => Statement::Break,
             Statement::Continue => Statement::Continue,

@@ -391,11 +391,11 @@ impl<'r> Analyzer<'r> {
                 .cloned()
                 .chain(std::iter::once(k.clone()))
                 .flatten()
-                .next(),
-            None => None,
-        }
-        .map(|t| t.widened())
-        .unwrap_or(ResolvedType::Void);
+                .next()
+                .map(|t| t.widened())
+                .unwrap_or(ResolvedType::Never),
+            None => ResolvedType::Void,
+        };
 
         let mismatch = branch_kinds
             .iter()
@@ -503,7 +503,7 @@ impl<'r> Analyzer<'r> {
                     let checked_arg = self.coerce_to_expected(expected_type, checked_arg);
 
                     if let Some(expected_type) = expected_type
-                        && !expected_type.accepts(&checked_arg.r#type)
+                        && !Self::value_type_compatible(expected_type, &checked_arg.r#type)
                     {
                         self.error(
                             arg.id,
@@ -571,7 +571,7 @@ impl<'r> Analyzer<'r> {
         let checked_value = self.analyze_expr(&assignment.value, Some(&target_type))?;
         let checked_value = self.coerce_to_expected(Some(&target_type), checked_value);
 
-        if !target_type.accepts(&checked_value.r#type) {
+        if !Self::value_type_compatible(&target_type, &checked_value.r#type) {
             self.error(
                 node_id,
                 span,

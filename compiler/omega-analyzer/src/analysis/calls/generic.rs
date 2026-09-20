@@ -36,7 +36,7 @@ impl<'r> Analyzer<'r> {
             };
             let expected_type = param.r#type.clone();
             let arg = self.coerce_to_expected(Some(&expected_type), arg);
-            if !expected_type.accepts(&arg.r#type) {
+            if !Self::value_type_compatible(&expected_type, &arg.r#type) {
                 self.error(
                     arg.id,
                     arg.span,
