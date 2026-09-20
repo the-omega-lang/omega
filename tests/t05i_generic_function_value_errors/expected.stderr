@@ -1,0 +1,129 @@
+error: ambiguous reference to overloaded 'twin'
+  --> tests/t05i_generic_function_value_errors/t05i_generic_function_value_errors.omg:47:29
+   |
+47 |     equal: (*i32) => *i32 = twin;
+   |                             ^^^^ reference to `twin` is ambiguous
+   |
+   = note: candidate: <T>(value: T) => T
+   = note: candidate: <T>(value: *T) => *T
+
+error: ambiguous reference to overloaded 'split'
+  --> tests/t05i_generic_function_value_errors/t05i_generic_function_value_errors.omg:48:36
+   |
+48 |     incomparable: (Both) => Both = split;
+   |                                    ^^^^^ reference to `split` is ambiguous
+   |
+   = note: candidate: <T: A>(value: T) => T
+   = note: candidate: <T: B>(value: T) => T
+
+error: 'Plain' does not implement spec 'A' (missing: a_mark)
+  --> tests/t05i_generic_function_value_errors/t05i_generic_function_value_errors.omg:49:37
+   |
+49 |     unsatisfied: (Plain) => Plain = strict;
+   |                                     ^^^^^^ does not implement this spec
+   |
+   = note: missing: a_mark
+
+error: no declaration of 'thing' has type '(i32) => i32'
+  --> tests/t05i_generic_function_value_errors/t05i_generic_function_value_errors.omg:50:30
+   |
+50 |     excluded: (i32) => i32 = thing<bool>;
+   |                              ^^^^^^^^^^^ no declaration of `thing` has this type
+   |
+   = note: expected: (i32) => i32
+   = note: candidate: <T>(a: T) => T
+   = help: a function value needs an exact signature match -- a call's argument conversions do not apply here
+
+error: 't05i_generic_function_value_errors::echo' expects 1 generic argument(s), found 2
+  --> tests/t05i_generic_function_value_errors/t05i_generic_function_value_errors.omg:51:17
+   |
+51 |     too_many := echo<i32, u8>;
+   |                 ^^^^^^^^^^^^^ expected 1 generic argument
+
+error: 'i32' is a type, but a compile-time value is required here
+  --> tests/t05i_generic_function_value_errors/t05i_generic_function_value_errors.omg:52:19
+   |
+52 |     wrong_kind := stride<i32, u8>;
+   |                   ^^^^^^^^^^^^^^^ expected a compile-time value, found a type
+
+error: no declaration of 'same' has type '(i32, u8) => i32'
+  --> tests/t05i_generic_function_value_errors/t05i_generic_function_value_errors.omg:53:37
+   |
+53 |     conflicting: (i32, u8) => i32 = same;
+   |                                     ^^^^ no declaration of `same` has this type
+   |
+   = note: expected: (i32, u8) => i32
+   = note: candidate: <T>(a: T, b: T) => T
+   = help: a function value needs an exact signature match -- a call's argument conversions do not apply here
+
+error: 'stride' cannot be instantiated here: 'T' is not determined
+  --> tests/t05i_generic_function_value_errors/t05i_generic_function_value_errors.omg:54:21
+   |
+54 |     undetermined := stride<4>;
+   |                     ^^^^^^^^^ `T` is not determined here
+   |
+   = help: write the rest of `stride`'s generic arguments, or give this reference an expected function type
+
+error: no declaration of 'echo' has type '(i32) => u8'
+  --> tests/t05i_generic_function_value_errors/t05i_generic_function_value_errors.omg:55:29
+   |
+55 |     no_match: (i32) => u8 = echo;
+   |                             ^^^^ no declaration of `echo` has this type
+   |
+   = note: expected: (i32) => u8
+   = note: candidate: <T>(value: T) => T
+   = help: a function value needs an exact signature match -- a call's argument conversions do not apply here
+
+error: no declaration of 'echo' has type 'foreign(c) (i32) => i32'
+  --> tests/t05i_generic_function_value_errors/t05i_generic_function_value_errors.omg:56:43
+   |
+56 |     convention: foreign(c) (i32) => i32 = echo;
+   |                                           ^^^^ no declaration of `echo` has this type
+   |
+   = note: expected: foreign(c) (i32) => i32
+   = note: candidate: <T>(value: T) => T
+   = help: a function value needs an exact signature match -- a call's argument conversions do not apply here
+
+error: no declaration of 'echo' has type 'foreign(c) (i32, ...) => i32'
+  --> tests/t05i_generic_function_value_errors/t05i_generic_function_value_errors.omg:57:46
+   |
+57 |     variadic: foreign(c) (i32, ...) => i32 = echo;
+   |                                              ^^^^ no declaration of `echo` has this type
+   |
+   = note: expected: foreign(c) (i32, ...) => i32
+   = note: candidate: <T>(value: T) => T
+   = help: a function value needs an exact signature match -- a call's argument conversions do not apply here
+
+error: no declaration of 'deref' has type '(*i32) => *i32'
+  --> tests/t05i_generic_function_value_errors/t05i_generic_function_value_errors.omg:58:34
+   |
+58 |     mutability: (*i32) => *i32 = deref;
+   |                                  ^^^^^ no declaration of `deref` has this type
+   |
+   = note: expected: (*i32) => *i32
+   = note: candidate: <T>(p: *mut T) => *mut T
+   = help: a function value needs an exact signature match -- a call's argument conversions do not apply here
+
+error: no declaration of 'narrow' has type '(i32) => bool'
+  --> tests/t05i_generic_function_value_errors/t05i_generic_function_value_errors.omg:59:31
+   |
+59 |     widening: (i32) => bool = narrow;
+   |                               ^^^^^^ no declaration of `narrow` has this type
+   |
+   = note: expected: (i32) => bool
+   = note: candidate: <T>(value: enum T | bool) => bool
+   = help: a function value needs an exact signature match -- a call's argument conversions do not apply here
+
+error: 't05i_generic_function_value_errors::provider::hidden_alias' is not visible here
+  --> tests/t05i_generic_function_value_errors/t05i_generic_function_value_errors.omg:60:29
+   |
+60 |     aliased: (i32) => i32 = provider::hidden_alias;
+   |                             ^^^^^^^^^^^^^^^^^^^^^^ not visible from this module
+
+error: 't05i_generic_function_value_errors::provider::hidden_plain' is not visible here
+  --> tests/t05i_generic_function_value_errors/t05i_generic_function_value_errors.omg:61:28
+   |
+61 |     direct: (i32) => i32 = provider::hidden_plain;
+   |                            ^^^^^^^^^^^^^^^^^^^^^^ not visible from this module
+
+error: could not compile the program due to 15 previous errors

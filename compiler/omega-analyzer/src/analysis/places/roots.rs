@@ -84,12 +84,40 @@ impl<'r> Analyzer<'r> {
 
         if origin.0.is_none() {
             match self.resolve_bare_overload_candidates(ident, origin) {
-                Ok(Some(set)) => {
-                    let (root, r#type) =
-                        self.resolve_bare_overload_root(node_id, span, set, expected)?;
-                    return Some((root, r#type, false));
+                Ok(Some(set)) if !set.candidates.is_empty() => {
+                    let name = set
+                        .absolute
+                        .last()
+                        .expect("an absolute item path always ends in the item's own name")
+                        .clone();
+                    match self.select_function_value(
+                        node_id,
+                        span,
+                        &name,
+                        &set.absolute,
+                        &set.candidates,
+                        &[],
+                        expected,
+                    ) {
+                        FunctionValue::Selected {
+                            decl_id, fn_type, ..
+                        } => {
+                            let r#type = ResolvedType::Function(fn_type);
+                            let root = CheckedPlaceRoot::Variable {
+                                decl_id,
+                                storage: Storage::Function,
+                                r#type: r#type.clone(),
+                            };
+                            return Some((root, r#type, false));
+                        }
+                        FunctionValue::Failed => return None,
+                        // A frozen alias set can leave a lone generic
+                        // declaration here; the ordinary item query below
+                        // reports what it is still missing.
+                        FunctionValue::Undetermined => {}
+                    }
                 }
-                Ok(None) => {}
+                Ok(_) => {}
                 Err(error) => {
                     self.error(node_id, span, AnalysisErrorKind::ModuleResolution(error));
                     return None;
@@ -164,61 +192,5 @@ impl<'r> Analyzer<'r> {
             unqualified,
             expected,
         )
-    }
-
-    fn resolve_bare_overload_root(
-        &mut self,
-        node_id: HirId,
-        span: Span,
-        set: ResolvedOverloadSet,
-        expected: Option<&ResolvedType>,
-    ) -> Option<(CheckedPlaceRoot, ResolvedType)> {
-        let signatures: Vec<(HirId, ResolvedFunctionType)> = set
-            .candidates
-            .iter()
-            .filter_map(|candidate| {
-                candidate
-                    .fn_type()
-                    .cloned()
-                    .map(|sig| (candidate.decl_id, sig))
-            })
-            .collect();
-        let winner = match expected {
-            Some(ResolvedType::Function(expected_fn)) => {
-                Self::unique_overload_signature_match(expected_fn, &signatures)
-            }
-            _ => None,
-        };
-        let Some((decl_id, fn_type)) = winner else {
-            let name = set
-                .absolute
-                .last()
-                .expect("an absolute item path always ends in the item's own name");
-            self.error(
-                node_id,
-                span,
-                AnalysisErrorKind::AmbiguousOverload {
-                    name: name.clone(),
-                    candidates: set
-                        .candidates
-                        .iter()
-                        .filter_map(|candidate| {
-                            candidate
-                                .fn_type()
-                                .cloned()
-                                .map(|sig| ResolvedType::Function(sig).to_string())
-                        })
-                        .collect(),
-                },
-            );
-            return None;
-        };
-        let r#type = ResolvedType::Function(fn_type);
-        let root = CheckedPlaceRoot::Variable {
-            decl_id,
-            storage: Storage::Function,
-            r#type: r#type.clone(),
-        };
-        Some((root, r#type))
     }
 }

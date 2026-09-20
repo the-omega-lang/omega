@@ -62,7 +62,11 @@ alias H = Holder<i32>;
 alias choose = pick;
 
 main() => void {
-    println$("cost: ", pick(10), " ", pick(10i64));
+    # An unsuffixed `10` is already `i32`, so the generic costs nothing
+    # and the `i64` declaration would cost an adaptation; a suffixed
+    # `10i64` makes both cost zero, leaving specificity to decide. A
+    # suffixed `10u32` is rigid too, so the generic wins it outright.
+    println$("cost: ", pick(10), " ", pick(10i64), " ", pick(10u32));
     println$("explicit: ", pick<i64>(10i64));
     println$("floating: ", floating(1.0), " ", floating(1.0f64));
     println$("alias: ", choose(10), " ", choose(10i64));

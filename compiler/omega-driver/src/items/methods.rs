@@ -39,6 +39,28 @@ impl Driver {
         if candidates.len() + templates.len() < 2 {
             return Ok(candidates);
         }
+        candidates.extend(self.template_candidates(templates)?);
+        Ok(candidates)
+    }
+
+    /// The generic declarations an owner makes under a name, as candidates an
+    /// uncalled reference can select between. A lone template is included:
+    /// unlike a call, a value reference has no other path to it.
+    pub(crate) fn collect_method_value_templates(
+        &mut self,
+        owner: &ResolvedType,
+        name: &Ident,
+        namespace: FunctionNamespace,
+    ) -> Result<OverloadCandidates, ResolveError> {
+        let templates = self.find_generic_methods(owner, name, namespace)?;
+        self.template_candidates(templates)
+    }
+
+    fn template_candidates(
+        &mut self,
+        templates: Vec<MethodTemplate>,
+    ) -> Result<OverloadCandidates, ResolveError> {
+        let mut candidates = Vec::with_capacity(templates.len());
         for template in templates {
             let run = self.with_analyzer(
                 template.key.module(),

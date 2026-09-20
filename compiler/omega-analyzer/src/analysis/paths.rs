@@ -97,55 +97,40 @@ impl<'r> Analyzer<'r> {
         expected: Option<&ResolvedType>,
     ) -> Option<(CheckedPlaceRoot, ResolvedType, bool)> {
         let absolute = access.absolute.clone();
-        // Selecting one overload as a value uses the same authorized
+        // Selecting one declaration as a value uses the same authorized
         // candidate set calling it does, so the two cannot disagree about
-        // which candidates exist.
-        if let Ok(Some(set)) = self.overload_set(accessor, &access, written_path.origin) {
-            let signatures: Vec<(HirId, ResolvedFunctionType)> = set
-                .candidates
-                .iter()
-                .filter_map(|candidate| {
-                    candidate
-                        .fn_type()
-                        .cloned()
-                        .map(|sig| (candidate.decl_id, sig))
-                })
-                .collect();
-            if let Some(ResolvedType::Function(expected_fn)) = expected
-                && let Some((decl_id, fn_type)) =
-                    Self::unique_overload_signature_match(expected_fn, &signatures)
-            {
-                let r#type = ResolvedType::Function(fn_type);
-                let root = CheckedPlaceRoot::Variable {
-                    decl_id,
-                    storage: Storage::Function,
-                    r#type: r#type.clone(),
-                };
-                return Some((root, r#type, false));
-            }
-            let name = set
-                .absolute
-                .last()
-                .cloned()
-                .expect("an overload set path always ends in the group's name");
-            self.error(
+        // which declarations exist.
+        if let Ok(Some(set)) = self.function_value_set(accessor, &access, written_path.origin)
+            && !set.candidates.is_empty()
+        {
+            match self.select_function_value(
                 node_id,
                 span,
-                AnalysisErrorKind::AmbiguousOverload {
-                    name,
-                    candidates: set
-                        .candidates
-                        .into_iter()
-                        .filter_map(|candidate| {
-                            candidate
-                                .fn_type()
-                                .cloned()
-                                .map(|sig| ResolvedType::Function(sig).to_string())
-                        })
-                        .collect(),
-                },
-            );
-            return None;
+                set.absolute
+                    .last()
+                    .expect("an item path always ends in the item's own name"),
+                &set.absolute,
+                &set.candidates,
+                &[],
+                expected,
+            ) {
+                FunctionValue::Selected {
+                    decl_id, fn_type, ..
+                } => {
+                    let r#type = ResolvedType::Function(fn_type);
+                    let root = CheckedPlaceRoot::Variable {
+                        decl_id,
+                        storage: Storage::Function,
+                        r#type: r#type.clone(),
+                    };
+                    return Some((root, r#type, false));
+                }
+                FunctionValue::Failed => return None,
+                // A lone generic declaration this reference cannot
+                // instantiate: the ordinary item query reports it, naming the
+                // arguments it is missing.
+                FunctionValue::Undetermined => {}
+            }
         }
         match self.resolver.resolve_item(
             accessor,
@@ -202,6 +187,7 @@ impl<'r> Analyzer<'r> {
                             span,
                             &t,
                             &absolute[missing.len()..],
+                            &[],
                             expected,
                             written_path.origin,
                         )
@@ -244,23 +230,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    pub(super) fn unique_overload_signature_match(
-        expected: &ResolvedFunctionType,
-        candidates: &[(HirId, ResolvedFunctionType)],
-    ) -> Option<(HirId, ResolvedFunctionType)> {
-        let mut matches = candidates.iter().filter(|(_, fn_type)| {
-            fn_type.is_variadic == expected.is_variadic
-                && fn_type.self_mode == expected.self_mode
-                && fn_type.return_type == expected.return_type
-                && fn_type.params == expected.params
-        });
-        let first = matches.next()?;
-        if matches.next().is_some() {
-            return None;
-        }
-        Some(first.clone())
-    }
-
     pub(super) fn resolve_type_qualified_value(
         &mut self,
         node_id: HirId,
@@ -282,6 +251,7 @@ impl<'r> Analyzer<'r> {
                     span,
                     &ResolvedType::Str { mutable: false },
                     &path.tail,
+                    &[],
                     expected,
                     path.origin,
                 );
@@ -292,6 +262,7 @@ impl<'r> Analyzer<'r> {
                     span,
                     &head_type,
                     &path.tail,
+                    &[],
                     expected,
                     path.origin,
                 );
@@ -313,6 +284,7 @@ impl<'r> Analyzer<'r> {
                         span,
                         &t,
                         &path.tail,
+                        &[],
                         expected,
                         path.origin,
                     );
@@ -373,6 +345,7 @@ impl<'r> Analyzer<'r> {
                     span,
                     &t,
                     &path.tail,
+                    &[],
                     expected,
                     path.origin,
                 );
@@ -426,6 +399,15 @@ impl<'r> Analyzer<'r> {
             return None;
         }
 
+        // With nothing after them, the written arguments belong to the last
+        // segment, which may be a function rather than an item prefix.
+        if rest.is_empty()
+            && let Some(selected) =
+                self.resolve_explicit_function_value(node_id, span, expr_path, expected)
+        {
+            return selected;
+        }
+
         let prefix = &segments[..=expr_path.args_at];
         let access = self.generic_prefix_absolute(node_id, span, &expr_path.path, prefix)?;
         let absolute = access.absolute.clone();
@@ -443,9 +425,15 @@ impl<'r> Analyzer<'r> {
                 self.error(node_id, span, AnalysisErrorKind::NotAValue(absolute));
                 None
             }
-            Ok(ResolvedItem::Type(t)) => {
-                self.resolve_type_member(node_id, span, &t, rest, expected, expr_path.path.origin)
-            }
+            Ok(ResolvedItem::Type(t)) => self.resolve_type_member(
+                node_id,
+                span,
+                &t,
+                rest,
+                &[],
+                expected,
+                expr_path.path.origin,
+            ),
             Ok(ResolvedItem::Value {
                 r#type,
                 storage,
@@ -478,6 +466,106 @@ impl<'r> Analyzer<'r> {
                 None
             }
         }
+    }
+
+    /// `f<A>` and `Owner::name<A>` as values: a reference whose generic
+    /// arguments belong to the function itself.
+    ///
+    /// `None` declines, leaving the ordinary item reading -- and its
+    /// diagnostics -- in place. Both readings are tried because the same
+    /// spelling can be either: `module::f<A>` names an item under a module,
+    /// while `Owner::f<A>` names a function of a type. A reference is claimed
+    /// only when a generic declaration exists to select, so writing arguments
+    /// on a name that has none still reports the ordinary arity error.
+    fn resolve_explicit_function_value(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        expr_path: &ExprPath,
+        expected: Option<&ResolvedType>,
+    ) -> Option<Option<(CheckedPlaceRoot, ResolvedType)>> {
+        let path = &expr_path.path;
+        let explicit = expr_path.generic_args.as_slice();
+        // The `self` segment belongs to the owner-to-function path, not to
+        // the owner itself, exactly as it does at a call.
+        let member = match path.tail.as_slice() {
+            [.., segment, member] if segment.as_ref() == FunctionNamespace::MEMBER_SEGMENT => {
+                Some((FunctionNamespace::Member, member, 2))
+            }
+            [.., member] => Some((FunctionNamespace::Static, member, 1)),
+            [] => None,
+        };
+        if let Some((namespace, member, member_segments)) = member
+            && let Some(owner) =
+                self.callee_owner_type(node_id, span, expr_path, member_segments, false)
+        {
+            let templates = match self
+                .resolver
+                .generic_method_candidates(&owner, member, namespace)
+            {
+                Ok(templates) => templates,
+                Err(error) => {
+                    self.error(node_id, span, AnalysisErrorKind::ModuleResolution(error));
+                    return Some(None);
+                }
+            };
+            if templates.is_empty() {
+                return None;
+            }
+            let rest = &path.tail[path.tail.len() - member_segments..];
+            return Some(self.resolve_type_member(
+                node_id,
+                span,
+                &owner,
+                rest,
+                explicit,
+                expected,
+                path.origin,
+            ));
+        }
+
+        let prefix = &expr_path.path.segments()[..=expr_path.args_at];
+        let accessor = self.path_module(path);
+        let access = self.without_diagnostics(|this| {
+            this.generic_prefix_absolute(node_id, span, path, prefix)
+        })?;
+        let set = self
+            .function_value_set(&accessor, &access, path.origin)
+            .ok()
+            .flatten()?;
+        if !set.candidates.iter().any(|c| c.template().is_some()) {
+            return None;
+        }
+        let name = set
+            .absolute
+            .last()
+            .expect("an item path always ends in the item's own name")
+            .clone();
+        Some(
+            match self.select_function_value(
+                node_id,
+                span,
+                &name,
+                &set.absolute,
+                &set.candidates,
+                explicit,
+                expected,
+            ) {
+                FunctionValue::Selected {
+                    decl_id, fn_type, ..
+                } => {
+                    let r#type = ResolvedType::Function(fn_type);
+                    let root = CheckedPlaceRoot::Variable {
+                        decl_id,
+                        storage: Storage::Function,
+                        r#type: r#type.clone(),
+                    };
+                    Some((root, r#type))
+                }
+                FunctionValue::Failed => None,
+                FunctionValue::Undetermined => return None,
+            },
+        )
     }
 
     /// Resolves a written generic argument list against the declared
@@ -800,12 +888,17 @@ impl<'r> Analyzer<'r> {
         }
     }
 
+    /// Resolves `Type::name` / `Type::self::name` as a value. `explicit` is
+    /// the generic argument list written on the *function* segment, which a
+    /// concrete owner supports; a list on the owner was already applied to
+    /// `r#type` by the caller.
     fn resolve_type_member(
         &mut self,
         node_id: HirId,
         span: Span,
         r#type: &ResolvedType,
         rest: &[Ident],
+        explicit: &[GenericArg],
         expected: Option<&ResolvedType>,
         origin: Origin,
     ) -> Option<(CheckedPlaceRoot, ResolvedType)> {
@@ -879,25 +972,21 @@ impl<'r> Analyzer<'r> {
             }
         }
 
-        if candidates.is_empty() {
-            // A generic declaration is never among an owner's resolved
-            // functions, so "no such function" would be the wrong diagnosis:
-            // it exists, and this position cannot instantiate it.
-            if let Ok(Some(_)) = self
-                .resolver
-                .generic_method_template(r#type, member, namespace)
-            {
-                self.error(
-                    node_id,
-                    span,
-                    AnalysisErrorKind::GenericFunctionNotInstantiated {
-                        owner: owner.name.clone(),
-                        function: member.clone(),
-                        namespace,
-                    },
-                );
+        // A generic declaration is never among an owner's resolved functions,
+        // so it has to be collected separately before "no such function" can
+        // be concluded -- and it is an ordinary selection candidate here.
+        let templates = match self
+            .resolver
+            .generic_method_candidates(r#type, member, namespace)
+        {
+            Ok(templates) => templates,
+            Err(err) => {
+                self.error(node_id, span, AnalysisErrorKind::ModuleResolution(err));
                 return None;
             }
+        };
+
+        if candidates.is_empty() && templates.is_empty() {
             let sibling = namespace.other();
             let has_sibling = !sibling.select(&owner.functions, member).is_empty()
                 || conformances
@@ -929,8 +1018,45 @@ impl<'r> Analyzer<'r> {
             return None;
         }
 
-        let method = self.select_uncalled_function(node_id, span, member, candidates, expected)?;
-        if !self.check_member_visibility(method.visibility, &owner_module_path, owner_id, origin) {
+        let mut selection: Vec<OverloadCandidate> = candidates
+            .iter()
+            .map(|method| OverloadCandidate {
+                decl_id: method.decl_id,
+                signature: OverloadSignature::Concrete(method.fn_type.clone()),
+                visibility: method.visibility,
+            })
+            .collect();
+        selection.extend(templates);
+
+        let declared = Self::owner_item_path(r#type, member);
+        let selected = self.select_function_value(
+            node_id, span, member, &declared, &selection, explicit, expected,
+        );
+        let FunctionValue::Selected {
+            candidate,
+            decl_id,
+            fn_type,
+        } = selected
+        else {
+            if matches!(selected, FunctionValue::Undetermined) {
+                self.error(
+                    node_id,
+                    span,
+                    AnalysisErrorKind::GenericFunctionNotInstantiated {
+                        owner: owner.name.clone(),
+                        function: member.clone(),
+                        namespace,
+                    },
+                );
+            }
+            return None;
+        };
+        if !self.check_member_visibility(
+            selection[candidate].visibility,
+            &owner_module_path,
+            owner_id,
+            origin,
+        ) {
             self.error(
                 node_id,
                 span,
@@ -942,53 +1068,13 @@ impl<'r> Analyzer<'r> {
             return None;
         }
 
-        let fn_type = ResolvedType::Function(method.value_fn_type());
+        let fn_type = ResolvedType::Function(fn_type);
         let root = CheckedPlaceRoot::Variable {
-            decl_id: method.decl_id,
+            decl_id,
             storage: Storage::Function,
             r#type: fn_type.clone(),
         };
         Some((root, fn_type))
-    }
-
-    /// Picks the one candidate an uncalled reference names. Overloads within
-    /// a namespace are separated by the expected ordinary function type,
-    /// which for a member is its unbound explicit-receiver view.
-    fn select_uncalled_function(
-        &mut self,
-        node_id: HirId,
-        span: Span,
-        name: &Ident,
-        candidates: Vec<ResolvedMethod>,
-        expected: Option<&ResolvedType>,
-    ) -> Option<ResolvedMethod> {
-        if let [only] = candidates.as_slice() {
-            return Some(only.clone());
-        }
-        let signatures: Vec<(HirId, ResolvedFunctionType)> = candidates
-            .iter()
-            .map(|method| (method.decl_id, method.value_fn_type()))
-            .collect();
-        if let Some(ResolvedType::Function(expected_fn)) = expected
-            && let Some((decl_id, _)) =
-                Self::unique_overload_signature_match(expected_fn, &signatures)
-        {
-            return candidates
-                .into_iter()
-                .find(|method| method.decl_id == decl_id);
-        }
-        self.error(
-            node_id,
-            span,
-            AnalysisErrorKind::AmbiguousOverload {
-                name: name.clone(),
-                candidates: signatures
-                    .into_iter()
-                    .map(|(_, sig)| ResolvedType::Function(sig).to_string())
-                    .collect(),
-            },
-        );
-        None
     }
 
     fn resolve_unit_variant(

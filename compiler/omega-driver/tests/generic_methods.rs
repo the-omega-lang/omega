@@ -357,3 +357,104 @@ fn an_uncalled_generic_overload_group_has_no_eager_signature() {
     );
     assert!(workspace.compile().is_ok());
 }
+
+#[test]
+fn a_value_and_a_call_share_one_instantiation() {
+    // Selecting a declaration by expected function type reaches the same
+    // identity path a call does, so the address taken here and the address
+    // the call links to are one monomorphization.
+    let workspace = TestWorkspace::new(
+        r#"
+        struct Holder {
+            exposed value: i32;
+            exposed echo<T>(*self, thing: T) => T { thing }
+        }
+        main() => void {
+            h := Holder { value = 1; };
+            taken: (*Holder, u8) => u8 = Holder::self::echo;
+            called := h.echo(1u8);
+            again := taken(&h, 2u8);
+        }
+        "#,
+    );
+    assert_eq!(
+        workspace.instantiations_of("echo"),
+        vec!["main::Holder::self::echo<u8>(*main::Holder, u8) -> u8".to_string()],
+        "the value and the call share one instantiation",
+    );
+}
+
+#[test]
+fn a_lone_generic_member_is_selectable_as_a_value() {
+    // A declaration that forms no overload set still has to be discoverable
+    // as a value candidate: unlike a call, a value reference has no other
+    // path to it.
+    let workspace = TestWorkspace::new(
+        r#"
+        struct Holder {
+            exposed value: i32;
+            exposed make<T>(thing: T) => T { thing }
+        }
+        main() => void {
+            taken: (u16) => u16 = Holder::make;
+            used := taken(1u16);
+        }
+        "#,
+    );
+    assert_eq!(
+        workspace.instantiations_of("make"),
+        vec!["main::Holder::make<u16>(u16) -> u16".to_string()],
+    );
+}
+
+#[test]
+fn only_the_declaration_a_value_selects_is_instantiated() {
+    // A losing generic candidate is never materialized, so its body, bounds
+    // and defaults stay unanalyzed.
+    let workspace = TestWorkspace::new(
+        r#"
+        struct Holder {
+            exposed value: i32;
+            exposed pick<T>(*self, thing: T) => i32 { 1 }
+            exposed pick<T>(*self, thing: *T) => i32 { 2 }
+        }
+        main() => void {
+            h := Holder { value = 1; };
+            taken: (*Holder, u8) => i32 = Holder::self::pick;
+            used := taken(&h, 1u8);
+        }
+        "#,
+    );
+    assert_eq!(
+        workspace.instantiations_of("pick"),
+        vec!["main::Holder::self::pick<u8>(*main::Holder, u8) -> i32".to_string()],
+        "the pointer-parameter template never matched, so it was never instantiated",
+    );
+}
+
+#[test]
+fn a_generic_member_value_reports_the_winners_own_bound_failure() {
+    // A failed bound on the selected declaration is an error, not a reason
+    // to fall back to the less specific candidate that also matched.
+    let workspace = TestWorkspace::new(
+        r#"
+        spec Described { describe(*self) => *str; }
+        struct Plain { exposed value: i32; }
+        struct Holder {
+            exposed value: i32;
+            exposed pick<T>(*self, thing: T) => i32 { 1 }
+            exposed pick<T: Described>(*self, thing: T) => i32 { 2 }
+        }
+        main() => void {
+            taken: (*Holder, Plain) => i32 = Holder::self::pick;
+        }
+        "#,
+    );
+    let errors = resolve_errors(&workspace.expect_errors());
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.contains("'Plain' does not implement spec 'Described'")),
+        "{errors:#?}",
+    );
+}

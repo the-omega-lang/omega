@@ -7,20 +7,19 @@ These notes were migrated out of normative language chapters. They describe curr
 
 Normative chapter: [`../language/functions.md`](../language/functions.md)
 
+- **Generic function values can lose inherent-method precedence.** If a type
+  declares an inherent `pick<T>` and implements a spec supplying a concrete
+  `pick(i32)`, an expected `(i32) => ...` value reference to `Type::pick` can
+  select the conformance method. `resolve_type_member` falls back to concrete
+  conformance methods before collecting inherent templates, then ranks both
+  together. Writing `Type::pick<i32>` changes the selected declaration, though
+  the inherent namespace should take precedence in both cases. Candidate
+  discovery must establish that precedence and preserve each candidate's
+  declaring owner/module for visibility checks before value selection.
 - A deeper `module::Type::function(...)` static-call path (through more
   than one level of module qualification) resolves without overload
   disambiguation at all — a documented, narrow gap distinct from the
   ordinary locally-visible-type overload path described above.
-- **An expected function type does not instantiate a generic declaration.**
-  This is a deliberate current restriction: `fnptr : (i32) => void =
-  some_generic_function;` reports `GenericFunctionNotInstantiated`, even when
-  the expected type would determine every argument. An expected function type
-  can already select a concrete overload, as in `f : (thing: u32) => void =
-  print_any;`. The underlying invariant is that a generic has no signature until
-  some context determines its arguments. Calls, expected result types at calls,
-  and explicit arguments already provide such context; expected function types
-  at uncalled references are not wired into instantiation. The normative
-  restriction in `functions.md` remains in force.
 - **A generic declaration in a `meet` or `primitive` block is still
   rejected.** Those blocks collect every declaration's signature eagerly,
   so a declaration with its own generic parameters (including the

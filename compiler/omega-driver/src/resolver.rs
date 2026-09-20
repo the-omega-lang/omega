@@ -344,51 +344,150 @@ impl Driver {
         let Some(indices) = self.modules.index(module_path).overloads.get(name).cloned() else {
             return Ok(None);
         };
-        let hir = self.modules.hir(module_path);
         let mut candidates = Vec::with_capacity(indices.len());
         for index in indices {
-            let HirItem::FunctionDefinition(f) = &hir.items[index] else {
-                unreachable!("only functions form overload sets");
-            };
-            if !self.item_generics_at(module_path, index)?.is_empty() {
-                let key = crate::items::ItemKey::new(module_path, name, index, &[]);
-                let run = self.with_analyzer(
-                    module_path,
-                    &GenericSubstitution::new(),
-                    omega_analyzer::analysis::AnalysisSite::new(f.id, f.span),
-                    |analyzer| analyzer.overload_template(f),
-                );
-                let template = run.result.ok_or_else(|| key.failed())?;
-                self.items.decl_id_owner.insert(f.id, key);
-                candidates.push(OverloadCandidate {
-                    decl_id: f.id,
-                    signature: omega_analyzer::resolver::OverloadSignature::Template(template),
-                    visibility: f.visibility,
-                });
-                continue;
-            }
-            let ResolvedItem::Value {
-                decl_id,
-                r#type: ResolvedType::Function(fn_type),
-                ..
-            } = self.ensure_item_at(
+            candidates.push(self.overload_candidate_at(module_path, name, index)?);
+        }
+        Ok(Some(candidates))
+    }
+
+    /// One declaration as an overload candidate: its pattern when it is
+    /// generic, its resolved signature when it is not.
+    fn overload_candidate_at(
+        &mut self,
+        module_path: &[Ident],
+        name: &Ident,
+        index: usize,
+    ) -> Result<OverloadCandidate, ResolveError> {
+        let hir = self.modules.hir(module_path);
+        let HirItem::FunctionDefinition(f) = &hir.items[index] else {
+            unreachable!("only functions are overload candidates");
+        };
+        if !self.item_generics_at(module_path, index)?.is_empty() {
+            let key = crate::items::ItemKey::new(module_path, name, index, &[]);
+            let run = self.with_analyzer(
                 module_path,
-                module_path,
-                name,
-                index,
-                &[],
-                ResolveItemOptions::INDIRECT,
-            )?
-            else {
-                unreachable!("an overload candidate is a function");
-            };
-            candidates.push(OverloadCandidate {
-                decl_id,
-                signature: omega_analyzer::resolver::OverloadSignature::Concrete(fn_type),
+                &GenericSubstitution::new(),
+                omega_analyzer::analysis::AnalysisSite::new(f.id, f.span),
+                |analyzer| analyzer.overload_template(f),
+            );
+            let template = run.result.ok_or_else(|| key.failed())?;
+            self.items.decl_id_owner.insert(f.id, key);
+            return Ok(OverloadCandidate {
+                decl_id: f.id,
+                signature: omega_analyzer::resolver::OverloadSignature::Template(template),
                 visibility: f.visibility,
             });
         }
-        Ok(Some(candidates))
+        let visibility = f.visibility;
+        let ResolvedItem::Value {
+            decl_id,
+            r#type: ResolvedType::Function(fn_type),
+            ..
+        } = self.ensure_item_at(
+            module_path,
+            module_path,
+            name,
+            index,
+            &[],
+            ResolveItemOptions::INDIRECT,
+        )?
+        else {
+            unreachable!("an overload candidate is a function");
+        };
+        Ok(OverloadCandidate {
+            decl_id,
+            signature: omega_analyzer::resolver::OverloadSignature::Concrete(fn_type),
+            visibility,
+        })
+    }
+
+    /// The one function declared under a name that forms no overload set.
+    ///
+    /// `raw_overload_signatures` answers for groups only, because a call
+    /// reaches a lone declaration through its own resolution path, where a
+    /// declaration's defaults infer differently than they would among
+    /// candidates. An uncalled reference has no such path, so `f` and
+    /// `f<i32>` must be able to select a lone generic declaration the same
+    /// way they select one of several.
+    fn lone_function_candidate(
+        &mut self,
+        module_path: &[Ident],
+        name: &Ident,
+    ) -> Result<Option<OverloadCandidate>, ResolveError> {
+        if self.ensure_module_indexed(module_path).is_err() {
+            return Ok(None);
+        }
+        let index = self.modules.index(module_path);
+        if index.overloads.contains_key(name) {
+            return Ok(None);
+        }
+        let Some(&item_index) = index.items.get(name) else {
+            return Ok(None);
+        };
+        if !matches!(
+            self.modules.hir(module_path).items[item_index],
+            HirItem::FunctionDefinition(_)
+        ) {
+            return Ok(None);
+        }
+        self.overload_candidate_at(module_path, name, item_index)
+            .map(Some)
+    }
+
+    /// [`Self::lone_function_candidate`] as a one-candidate set, gated
+    /// exactly as `resolve_overload_set` gates a group.
+    fn singleton_function_candidates(
+        &mut self,
+        accessor: &[Ident],
+        access: &ItemAccess,
+    ) -> Result<Option<ResolvedOverloadSet>, ResolveError> {
+        let Some((name, module)) = access.absolute.split_last() else {
+            return Ok(None);
+        };
+        let (name, module) = (name.clone(), module.to_vec());
+        if self.ensure_module_indexed(&module).is_err() {
+            return Ok(None);
+        }
+
+        if let Some(target) =
+            self.visible_alias(accessor, &module, &name, access.bypass_visibility)?
+        {
+            let ResolvedAlias::Item(absolute) = target else {
+                return Ok(None);
+            };
+            let (target_name, target_module) = absolute
+                .split_last()
+                .expect("an alias item target is never empty");
+            let (target_name, target_module) = (target_name.clone(), target_module.to_vec());
+            // The alias declaration was the gate; its target is then reached
+            // with the alias's own rights, exactly as `resolve_through_alias`
+            // reaches it.
+            let Some(candidate) = self.lone_function_candidate(&target_module, &target_name)?
+            else {
+                return Ok(None);
+            };
+            return Ok(Some(ResolvedOverloadSet {
+                absolute,
+                candidates: vec![candidate],
+            }));
+        }
+
+        let Some(candidate) = self.lone_function_candidate(&module, &name)? else {
+            return Ok(None);
+        };
+        // An inaccessible declaration is not a candidate. Leaving the set
+        // empty rather than reporting here keeps the ordinary item query the
+        // reporter, so the reference still fails for its real reason.
+        if !access.bypass_visibility
+            && !Self::visibility_allows(candidate.visibility, &module, accessor)
+        {
+            return Ok(None);
+        }
+        Ok(Some(ResolvedOverloadSet {
+            absolute: access.absolute.clone(),
+            candidates: vec![candidate],
+        }))
     }
 
     /// The absolute path a query should really answer for. A plain-path alias
@@ -912,6 +1011,26 @@ impl ModuleResolver for Driver {
         generic_args: &[ResolvedGenericArg],
     ) -> Result<Option<ResolvedMethod>, ResolveError> {
         Driver::instantiate_generic_method(self, owner, name, namespace, generic_args)
+    }
+
+    fn function_value_candidates(
+        &mut self,
+        accessor: &[Ident],
+        access: &ItemAccess,
+    ) -> Result<Option<ResolvedOverloadSet>, ResolveError> {
+        match self.resolve_overload_set(accessor, access)? {
+            Some(set) => Ok(Some(set)),
+            None => self.singleton_function_candidates(accessor, access),
+        }
+    }
+
+    fn generic_method_candidates(
+        &mut self,
+        owner: &ResolvedType,
+        name: &Ident,
+        namespace: FunctionNamespace,
+    ) -> Result<OverloadCandidates, ResolveError> {
+        self.collect_method_value_templates(owner, name, namespace)
     }
 
     fn instantiate_overload(

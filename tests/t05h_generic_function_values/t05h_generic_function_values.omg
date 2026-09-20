@@ -1,0 +1,156 @@
+# An expected function type selects and instantiates a generic declaration,
+# under the value-selection rules in functions.md and generics.md. Every
+# value here is called, so a wrong selection changes the output rather than
+# only the types.
+import std::io::println;
+import core::range::Bounded;
+import self::provider;
+import self::provider::shared_pick;
+import self::provider::lone_shared as imported_lone;
+
+alias aliased_pick = provider::shared_pick;
+
+# --- the mixed overload set of the requested behaviour -------------------
+thing(a: i32) => *str { "concrete" }
+thing<T>(a: T) => *str { "generic" }
+
+# --- a lone generic declaration, which has no overload set at all --------
+echo<T>(value: T) => T { value }
+
+# --- a generic that occurs only in the return type -----------------------
+lowest<T: Bounded>() => T { T::min() }
+
+# --- a written prefix completed by the expected type ---------------------
+second<A, B>(a: A, b: B) => B { b }
+
+# --- a parameter the signature never mentions, with a default ------------
+width<T, U = u16>(value: T) => usize { sizeof<U> }
+
+# --- `comp` inference from a fixed-array parameter, and an explicit
+#     `comp` prefix -------------------------------------------------------
+count<comp N: usize, T>(values: [N]T) => usize { N }
+stride<comp N: usize, T>(value: T) => usize { N }
+
+# --- structural nominal and nested-function signatures -------------------
+struct Box<T> { exposed value: T; }
+unwrap<T>(boxed: Box<T>) => T { boxed.value }
+apply<T>(f: (T) => T, value: T) => T { f(value) }
+twice(value: u8) => u8 { value + value }
+
+# --- specificity: a stricter bound set wins among generics ---------------
+spec Loud { volume(*self) => i32; }
+struct Horn { exposed pitch: i32; }
+meet Loud for Horn { volume(*self) => i32 { self.pitch } }
+rank<T>(value: T) => *str { "unbounded" }
+rank<T: Loud>(value: T) => *str { "bounded" }
+
+# --- a losing generic candidate's body is never analyzed -----------------
+safe(value: i32) => *str { "safe-concrete" }
+safe<T>(value: T) => *str { missing_in_losing_body }
+
+# --- a concrete owner, in both associated-function namespaces ------------
+struct Holder {
+	exposed value: i32;
+
+	exposed pick(*self, n: i64) => *str { "member-concrete" }
+	exposed pick<T>(*self, n: T) => *str { "member-generic" }
+	exposed make(n: i64) => *str { "static-concrete" }
+	exposed make<T>(n: T) => *str { "static-generic" }
+	exposed alone<T>(*self, thing: T) => T { thing }
+}
+alias H = Holder;
+
+# --- a generic owner whose arguments are written on the owner ------------
+struct Bin<A> {
+	exposed value: A;
+
+	exposed take(*self, n: i64) => *str { "bin-concrete" }
+	exposed take<T>(*self, n: T) => *str { "bin-generic" }
+}
+alias BinI = Bin<i32>;
+
+# --- expected-type propagation: a callback parameter and a returned
+#     function value -------------------------------------------------------
+run(f: (u8) => *str) => *str { f(1u8) }
+echoes_u16() => (u16) => u16 { echo }
+
+main() => void {
+	# --- the three requested assignments, plus the call they contrast with
+	concrete: (i32) => *str = thing;
+	explicit: (i32) => *str = thing<i32>;
+	widened: (u32) => *str = thing;
+	println$("selection: ", concrete(1), " ", explicit(2), " ", widened(3u32), " ", thing(10u32));
+
+	# --- a lone generic declaration, inferred and written explicitly -----
+	lone: (u8) => u8 = echo;
+	written := echo<i16>;
+	println$("singleton: ", lone(7u8), " ", written(9i16));
+
+	# --- a generic that only the return type determines ------------------
+	floor: () => i8 = lowest;
+	println$("return-only: ", floor());
+
+	# --- a written prefix, with the rest coming from the expected type ---
+	prefixed: (u8, i64) => i64 = second<u8>;
+	println$("prefix: ", prefixed(1u8, 42i64));
+
+	# --- a default fills a parameter the signature never mentions, and an
+	#     explicit argument outranks that default -------------------------
+	defaulted: (i32) => usize = width;
+	overridden := width<i32, u64>;
+	println$("defaults: ", defaulted(0), " ", overridden(0));
+
+	# --- `comp` parameters, inferred structurally and written explicitly -
+	counted: ([3]i32) => usize = count;
+	strided: (i32) => usize = stride<4>;
+	println$("comp: ", counted([1, 2, 3]), " ", strided(0));
+
+	# --- nominal and nested-function parameter structure -----------------
+	opened: (Box<i32>) => i32 = unwrap;
+	applied: ((u8) => u8, u8) => u8 = apply;
+	println$("structure: ", opened(Box<i32> { value = 5; }), " ", applied(twice, 21u8));
+
+	# --- descriptors are not part of a function type, so they do not
+	#     affect selection -------------------------------------------------
+	described: (left: u8, right: u8) => u8 = second;
+	println$("descriptors: ", described(1u8, 8u8));
+
+	# --- specificity, and a losing generic body that stays unanalyzed ----
+	ranked: (Horn) => *str = rank;
+	unharmed: (i32) => *str = safe;
+	println$("specificity: ", ranked(Horn { pitch = 1; }), " ", unharmed(0));
+
+	# --- bare, module-qualified, imported, and declared-alias spellings ---
+	qualified: (u8) => *str = provider::shared_pick;
+	imported: (u8) => *str = shared_pick;
+	aliased: (u8) => *str = aliased_pick;
+	concrete_import: (i32) => *str = shared_pick;
+	println$("spellings: ", qualified(1u8), " ", imported(2u8), " ", aliased(3u8), " ", concrete_import(4));
+	lone_import: (u8) => u8 = imported_lone;
+	println$("imported-singleton: ", lone_import(6u8));
+
+	# --- a concrete owner's static and unbound member values -------------
+	holder := Holder { value = 1; };
+	member_concrete: (*Holder, i64) => *str = Holder::self::pick;
+	member_generic: (*Holder, u8) => *str = Holder::self::pick;
+	member_written: (*Holder, i64) => *str = H::self::pick<i64>;
+	println$("member: ", member_concrete(&holder, 1i64), " ", member_generic(&holder, 2u8), " ", member_written(&holder, 3i64));
+
+	static_concrete: (i64) => *str = Holder::make;
+	static_generic: (u8) => *str = Holder::make;
+	static_written: (i64) => *str = H::make<i64>;
+	println$("static: ", static_concrete(1i64), " ", static_generic(2u8), " ", static_written(3i64));
+
+	singleton_member: (*Holder, u8) => u8 = Holder::self::alone;
+	println$("member-singleton: ", singleton_member(&holder, 4u8));
+
+	# --- generic arguments written on the owner, with mixed overloads ----
+	bin := BinI { value = 1; };
+	bin_concrete: (*Bin<i32>, i64) => *str = Bin<i32>::self::take;
+	bin_generic: (*Bin<i32>, u8) => *str = Bin<i32>::self::take;
+	bin_written: (*Bin<i32>, i64) => *str = BinI::self::take<i64>;
+	println$("owner: ", bin_concrete(&bin, 1i64), " ", bin_generic(&bin, 2u8), " ", bin_written(&bin, 3i64));
+
+	# --- expected types that reach the reference through other contexts --
+	println$("propagated: ", run(thing), " ", echoes_u16()(12u16));
+}

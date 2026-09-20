@@ -96,6 +96,11 @@ impl Analyzer<'_> {
             return_type,
             comp_types,
             bounds,
+            // A function *definition* has no convention or variadic syntax of
+            // its own; see `collect_function_signature`, which gives every
+            // instantiation of this template the same pair.
+            calling_convention: CallingConvention::Omega,
+            is_variadic: false,
             description: format!(
                 "<{}>({}) => {}",
                 generics

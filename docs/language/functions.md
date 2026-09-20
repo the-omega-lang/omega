@@ -75,6 +75,8 @@ The implicit receiver adaptation of `value.name(...)` — auto-borrow, auto-dere
 
 The receiver parameter of a member value carries no descriptor. Descriptors are not part of function-type identity, so the value stores into `(*Thing) => i32` and `(target: *Thing) => i32` alike; every other part of the function type must still match exactly.
 
+A generic member is reached the same way once something determines its arguments -- an expected function type, or arguments written on the function segment. See [Selecting a function value](#selecting-a-function-value).
+
 ## Return values
 
 The final expression of a block, when not followed by `;`, is that block's value and therefore can be a function's implicit return value. `return expr;` exits the current function immediately with `expr` as the result.
@@ -109,7 +111,7 @@ Holder::make<u8>(1);            # written on the static
 Holder::self::echo<u8>(&h, 1);  # the member as an unbound value's call
 ```
 
-A generic declaration has no signature until its generic arguments are determined. At a call, inference can determine those arguments for each overload candidate, as described below. A generic declaration still cannot be named without being called, so `Holder::self::echo` is not an unbound member value; only an instantiated declaration has a single address. An expected function type does not instantiate a generic declaration. Generic member/static functions are specified in [`generics.md`](generics.md).
+A generic declaration has no signature until its generic arguments are determined. A call determines them by inference, as described below. An **expected function type** determines them too, so a generic declaration may also be named uncalled wherever one is known: `member : (*Holder, u8) => u8 = Holder::self::echo;` instantiates `echo` with `T = u8` and yields that instantiation's one address. Without an expected function type, `Holder::self::echo` still names nothing, because nothing determines its arguments. Generic member/static functions are specified in [`generics.md`](generics.md).
 
 ## Overloading
 
@@ -164,11 +166,29 @@ f(10);      # selects the generic with T = i32: no adaptation is needed
 f(10i64);   # selects the concrete declaration: both cost zero, so specificity decides
 ```
 
-An uncalled reference excludes generic candidates. A reference to the remaining overload set is ambiguous unless an expected function type selects exactly one overload:
+### Selecting a function value
+
+An uncalled reference selects one declaration using the **expected function type**, which it must match exactly. Generic candidates participate: a generic declaration is instantiated with whatever arguments give it that signature.
 
 ```omega
-f : (thing: u32) => void = print_any;
+thing(a: i32) => void { ... }
+thing<T>(a: T) => void { ... }
+
+a : (i32) => void = thing;        # the concrete declaration
+b : (i32) => void = thing<i32>;   # the generic declaration, with T = i32
+c : (u32) => void = thing;        # the generic declaration, with T = u32
+thing(10u32);                     # a call: the generic, with no conversion
 ```
+
+The rules are:
+
+- Generic arguments written on the **function** segment (`thing<i32>`) restrict selection to generic declarations. A concrete declaration of the same name is excluded, whether or not a generic one then matches. They are a positional prefix, bound as at a call; the rest are inferred from the expected type.
+- Matching is exact. Parameter count, parameter types, return type, calling convention, and variadic status must all be identical after substitution, at every depth: no literal adaptation, pointer-mutability weakening, anonymous-enum injection, receiver adaptation, or generated adapter applies. This is stricter than a call, which may pay a conversion cost for an argument; a value has nothing to pay it with. Parameter descriptors are not part of a function type and so never affect selection.
+- A generic parameter the expected signature does not mention takes its declared default. A default never establishes a match, exactly as at a call.
+- Among exact matches, specificity decides as it does for calls: a concrete declaration beats a generic one, and among generics the stricter bound set wins. Parameter structure is not a tie-breaker, so equally specific or incomparable matches are ambiguous. Only the selected declaration is instantiated, and its bounds are then checked normally.
+- With no expected function type, an uncalled reference still excludes generic declarations, because nothing determines their arguments. Written generic arguments are the exception: `f<i32>` needs no expected type when they leave exactly one declaration whose remaining parameters its own defaults complete.
+
+A value and a call that reach the same declaration with the same generic arguments share one instantiation, and therefore one address.
 
 **The two associated-function namespaces are separate overload domains.** A static and a member never participate in one overload set, are never compared for redeclaration, and adding an overload to one namespace cannot make the other ambiguous. Within the member namespace the existing rule still holds: receiver spelling alone is not a selector, so two members differing only in `self` versus `*self` are rejected. An uncalled `Type::self::name` selects among member overloads using the unbound function value type, receiver parameter included.
 

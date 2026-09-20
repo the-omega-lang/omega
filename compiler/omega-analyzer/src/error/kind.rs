@@ -199,7 +199,8 @@ pub enum AnalysisErrorKind {
         owner: Ident,
         member: Ident,
     },
-    /// A generic declaration was named where no call can give it generic
+    /// A generic declaration was named where nothing -- neither written
+    /// arguments nor an expected function type -- determines its generic
     /// arguments, so it has no signature to resolve to.
     GenericFunctionNotInstantiated {
         owner: Ident,
@@ -407,6 +408,21 @@ pub enum AnalysisErrorKind {
     AmbiguousSelfOverload {
         name: Ident,
         previous: Span,
+    },
+    /// No declaration of a name has the exact function type an uncalled
+    /// reference's context requires. Unlike a call, a function value has no
+    /// conversion to pay for a difference.
+    NoMatchingFunctionValue {
+        name: Ident,
+        expected: String,
+        candidates: Vec<String>,
+    },
+    /// An explicitly instantiated reference left a generic parameter that
+    /// neither the written prefix nor a declared default determines, and no
+    /// expected function type was available to infer it from.
+    UndeterminedFunctionValue {
+        name: Ident,
+        parameter: Ident,
     },
 
     MissingSpecFunction {
@@ -1169,6 +1185,17 @@ impl fmt::Display for AnalysisErrorKind {
             Self::AmbiguousOverload { name, .. } => {
                 write!(f, "ambiguous reference to overloaded '{}'", name.as_ref())
             }
+            Self::NoMatchingFunctionValue { name, expected, .. } => write!(
+                f,
+                "no declaration of '{}' has type '{expected}'",
+                name.as_ref()
+            ),
+            Self::UndeterminedFunctionValue { name, parameter } => write!(
+                f,
+                "'{}' cannot be instantiated here: '{}' is not determined",
+                name.as_ref(),
+                parameter.as_ref()
+            ),
             Self::AmbiguousSelfOverload { name, .. } => {
                 write!(
                     f,

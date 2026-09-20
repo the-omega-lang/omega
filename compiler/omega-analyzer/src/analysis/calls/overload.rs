@@ -113,12 +113,37 @@ impl<'r> Analyzer<'r> {
         access: &ItemAccess,
         origin: Origin,
     ) -> Result<Option<ResolvedOverloadSet>, ResolveError> {
+        self.candidate_set(accessor, access, origin, false)
+    }
+
+    /// The same set for an *uncalled* reference, which a lone declaration
+    /// also belongs to. See [`ModuleResolver::function_value_candidates`].
+    pub(crate) fn function_value_set(
+        &mut self,
+        accessor: &[Ident],
+        access: &ItemAccess,
+        origin: Origin,
+    ) -> Result<Option<ResolvedOverloadSet>, ResolveError> {
+        self.candidate_set(accessor, access, origin, true)
+    }
+
+    fn candidate_set(
+        &mut self,
+        accessor: &[Ident],
+        access: &ItemAccess,
+        origin: Origin,
+        values: bool,
+    ) -> Result<Option<ResolvedOverloadSet>, ResolveError> {
         let revealed = self.reveals.allows(origin);
         let access = ItemAccess {
             absolute: access.absolute.clone(),
             bypass_visibility: access.bypass_visibility || revealed,
         };
-        let set = self.resolver.resolve_overload_set(accessor, &access)?;
+        let set = if values {
+            self.resolver.function_value_candidates(accessor, &access)?
+        } else {
+            self.resolver.resolve_overload_set(accessor, &access)?
+        };
         if revealed
             && let Some(set) = &set
             && let Some((_, module)) = set.absolute.split_last()
@@ -335,41 +360,12 @@ impl<'r> Analyzer<'r> {
                 for (position, pattern) in template.params[implicit..].iter().enumerate() {
                     pattern.infer(&argument_type(position), &mut bindings);
                 }
-                let mut complete = true;
-                for (position, param) in template.generics.iter().enumerate() {
-                    if bindings[position].is_none() && param.default.is_none() {
-                        complete = false;
-                    }
-                    if let Some(ResolvedGenericArg::Comp(value)) = &bindings[position] {
-                        let kind = template.comp_types[position]
-                            .as_ref()
-                            .and_then(|pattern| pattern.resolved(&bindings))
-                            .and_then(|ty| CompScalarType::from_resolved(&ty));
-                        match (value, kind) {
-                            (CompScalar::Int { value, .. }, Some(CompScalarType::Int(kind))) => {
-                                let value = *value;
-                                let Some((min, max)) =
-                                    kind.resolved().integer_domain(self.target.pointer_bits())
-                                else {
-                                    complete = false;
-                                    continue;
-                                };
-                                if !(min..=max).contains(&value) {
-                                    complete = false;
-                                }
-                                bindings[position] =
-                                    Some(ResolvedGenericArg::Comp(CompScalar::Int {
-                                        r#type: kind,
-                                        value,
-                                    }));
-                            }
-                            (CompScalar::Bool(_), Some(CompScalarType::Bool))
-                            | (CompScalar::Char(_), Some(CompScalarType::Char)) => {}
-                            _ => complete = false,
-                        }
-                    }
-                }
-                if !complete {
+                let determined = template
+                    .generics
+                    .iter()
+                    .zip(&bindings)
+                    .all(|(param, binding)| binding.is_some() || param.default.is_some());
+                if !determined || !self.canonicalize_comp_bindings(template, &mut bindings) {
                     continue;
                 }
                 template.params[implicit..].to_vec()
@@ -493,6 +489,49 @@ impl<'r> Analyzer<'r> {
             final_args.push(self.coerce_to_expected(Some(expected), checked));
         }
         Some((winner, instantiated, final_args))
+    }
+
+    /// Rewrites every inferred `comp` binding into its declared parameter
+    /// type, which is the authoritative one, and reports whether each value
+    /// is exactly representable there. `false` means this candidate cannot be
+    /// instantiated with these bindings at all.
+    pub(super) fn canonicalize_comp_bindings(
+        &self,
+        template: &OverloadTemplate,
+        bindings: &mut [Option<ResolvedGenericArg>],
+    ) -> bool {
+        let mut ok = true;
+        for position in 0..bindings.len() {
+            let Some(ResolvedGenericArg::Comp(value)) = &bindings[position] else {
+                continue;
+            };
+            let kind = template.comp_types[position]
+                .as_ref()
+                .and_then(|pattern| pattern.resolved(bindings))
+                .and_then(|ty| CompScalarType::from_resolved(&ty));
+            match (value, kind) {
+                (CompScalar::Int { value, .. }, Some(CompScalarType::Int(kind))) => {
+                    let value = *value;
+                    let Some((min, max)) =
+                        kind.resolved().integer_domain(self.target.pointer_bits())
+                    else {
+                        ok = false;
+                        continue;
+                    };
+                    if !(min..=max).contains(&value) {
+                        ok = false;
+                    }
+                    bindings[position] = Some(ResolvedGenericArg::Comp(CompScalar::Int {
+                        r#type: kind,
+                        value,
+                    }));
+                }
+                (CompScalar::Bool(_), Some(CompScalarType::Bool))
+                | (CompScalar::Char(_), Some(CompScalarType::Char)) => {}
+                _ => ok = false,
+            }
+        }
+        ok
     }
 
     fn pattern_conversion_cost(

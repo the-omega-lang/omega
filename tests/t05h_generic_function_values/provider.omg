@@ -1,0 +1,8 @@
+# A sibling module, so a value reference can be written module-qualified,
+# through an import, and through a declared alias.
+exposed shared_pick(a: i32) => *str { "provider-concrete" }
+exposed shared_pick<T>(a: T) => *str { "provider-generic" }
+
+exposed lone_shared<T>(a: T) => T { a }
+
+hidden_pick<T>(a: T) => *str { "provider-hidden" }

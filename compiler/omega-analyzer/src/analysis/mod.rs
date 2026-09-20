@@ -18,7 +18,7 @@ mod tests;
 pub use specs::PendingSpecMethod;
 use specs::{FlattenedSpecFn, RequirementSignature};
 
-use calls::{CalleeResolution, Intercepted, Interceptor, ResolvedCallee};
+use calls::{CalleeResolution, FunctionValue, Intercepted, Interceptor, ResolvedCallee};
 use literals::parse_number_literal;
 
 use crate::target::Target;
@@ -54,8 +54,8 @@ use crate::{
     resolver::{
         GenericLiteralSignature, GenericMethodTemplate, GenericOwnerFunctionSignature,
         GenericSignature, ImportTarget, ItemAccess, ItemNamespace, ModuleResolver,
-        OverloadCandidate, OverloadTemplate, ResolveError, ResolveItemOptions, ResolvedItem,
-        ResolvedOverloadSet,
+        OverloadCandidate, OverloadSignature, OverloadTemplate, ResolveError, ResolveItemOptions,
+        ResolvedItem, ResolvedOverloadSet,
     },
     similarity::best_match,
 };

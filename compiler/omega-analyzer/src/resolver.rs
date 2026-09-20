@@ -555,6 +555,34 @@ pub trait ModuleResolver {
         access: &ItemAccess,
     ) -> Result<Option<ResolvedOverloadSet>, ResolveError>;
 
+    /// The candidates a written name offers an *uncalled* reference.
+    ///
+    /// This differs from [`Self::resolve_overload_set`] in exactly one way: a
+    /// name declared once is still a candidate set, because a value reference
+    /// can instantiate a lone generic declaration. Calls must keep reaching a
+    /// singleton through their own path, where a declaration's defaults infer
+    /// differently than they would among overload candidates.
+    fn function_value_candidates(
+        &mut self,
+        accessor: &[Ident],
+        access: &ItemAccess,
+    ) -> Result<Option<ResolvedOverloadSet>, ResolveError> {
+        self.resolve_overload_set(accessor, access)
+    }
+
+    /// The generic declarations `owner` makes under `name`, as value-selection
+    /// candidates. Concrete declarations are not repeated here: they already
+    /// reach the caller through the owner's resolved functions.
+    fn generic_method_candidates(
+        &mut self,
+        owner: &ResolvedType,
+        name: &Ident,
+        namespace: crate::resolved_type::FunctionNamespace,
+    ) -> Result<OverloadCandidates, ResolveError> {
+        let _ = (owner, name, namespace);
+        Ok(Vec::new())
+    }
+
     fn instantiate_overload(
         &mut self,
         declaration: HirId,
@@ -669,6 +697,11 @@ pub struct OverloadTemplate {
     pub return_type: crate::generics::pattern::TypePattern,
     pub comp_types: Vec<Option<crate::generics::pattern::TypePattern>>,
     pub bounds: Vec<(usize, HirId, Vec<crate::generics::pattern::ArgumentPattern>)>,
+    /// The ABI half of the signature every instantiation will have. A value
+    /// reference must compare it against the expected function type, so it
+    /// travels with the pattern rather than being assumed at the use site.
+    pub calling_convention: crate::resolved_type::CallingConvention,
+    pub is_variadic: bool,
     pub description: String,
 }
 

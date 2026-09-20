@@ -4,8 +4,10 @@ mod generic;
 mod overload;
 mod pattern;
 mod spec;
+mod value;
 
 use generic::MethodTemplate;
+pub(crate) use value::FunctionValue;
 
 pub(crate) enum Intercepted {
     Declined,

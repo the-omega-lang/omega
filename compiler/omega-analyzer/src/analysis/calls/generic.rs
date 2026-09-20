@@ -270,7 +270,7 @@ impl<'r> Analyzer<'r> {
     /// position. `None` means the prefix does not name a type, which is not
     /// this call shape; the ordinary callee path reports whatever is wrong
     /// with it, so nothing is reported here.
-    pub(super) fn callee_owner_type(
+    pub(crate) fn callee_owner_type(
         &mut self,
         node_id: HirId,
         span: Span,
@@ -352,7 +352,7 @@ impl<'r> Analyzer<'r> {
 
     /// How a diagnostic names the declaration a generic call reached: the
     /// owner's own path with the function appended.
-    pub(super) fn owner_item_path(owner: &ResolvedType, member: &Ident) -> Vec<Ident> {
+    pub(crate) fn owner_item_path(owner: &ResolvedType, member: &Ident) -> Vec<Ident> {
         let owner = owner.autoderef();
         let mut path = owner
             .declaring_owner()

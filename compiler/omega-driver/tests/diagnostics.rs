@@ -214,6 +214,82 @@ fn equally_specific_generic_overloads_report_ambiguity() {
 }
 
 #[test]
+fn a_value_selected_by_expected_type_emits_no_losing_candidate_errors() {
+    // Only the winner is instantiated, so a losing generic's body never
+    // reaches analysis and produces no findings of its own.
+    TestPackage::new(
+        r#"
+        safe(value: i32) => i32 { 1 }
+        safe<T>(value: T) => i32 { missing_in_losing_body }
+        main() => void {
+            chosen: (i32) => i32 = safe;
+            used := chosen(1);
+        }
+        "#,
+    )
+    .expect_ok();
+}
+
+#[test]
+fn a_function_value_with_no_exact_match_names_the_type_it_needed() {
+    // A call would adapt the argument; a value has nothing to pay for the
+    // difference, so the report is about the signature, not an argument.
+    let package = TestPackage::new(
+        r#"
+        echo<T>(value: T) => T { value }
+        main() => void {
+            chosen: (i32) => u8 = echo;
+        }
+        "#,
+    );
+    let text = rendered(&package.expect_errors());
+    assert!(
+        text.contains("no declaration of 'echo' has type '(i32) => u8'"),
+        "{text}"
+    );
+}
+
+#[test]
+fn an_explicitly_instantiated_value_reports_what_is_still_undetermined() {
+    // The written prefix is all the information a reference without an
+    // expected type has; a parameter it leaves open and no default fills is
+    // named rather than being silently defaulted or ignored.
+    let package = TestPackage::new(
+        r#"
+        stride<comp N: usize, T>(value: T) => usize { N }
+        main() => void {
+            chosen := stride<4>;
+        }
+        "#,
+    );
+    let text = rendered(&package.expect_errors());
+    assert!(
+        text.contains("'stride' cannot be instantiated here: 'T' is not determined"),
+        "{text}"
+    );
+}
+
+#[test]
+fn explicit_generic_arguments_exclude_a_concrete_declaration_of_the_same_name() {
+    // Writing generic arguments is how a reference says it means a template,
+    // so the concrete declaration is not a fallback when none of them fits.
+    let package = TestPackage::new(
+        r#"
+        thing(a: i32) => i32 { a }
+        thing<T>(a: T) => T { a }
+        main() => void {
+            chosen: (i32) => i32 = thing<bool>;
+        }
+        "#,
+    );
+    let text = rendered(&package.expect_errors());
+    assert!(
+        text.contains("no declaration of 'thing' has type '(i32) => i32'"),
+        "{text}"
+    );
+}
+
+#[test]
 fn a_macro_authored_unused_local_is_diagnosed_at_the_macro_definition() {
     let package = TestPackage::new(
         r#"

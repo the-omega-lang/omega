@@ -2232,6 +2232,100 @@ fn an_overload_selected_as_a_value_uses_the_same_frozen_set_as_a_call() {
 }
 
 #[test]
+fn a_generic_value_selected_through_an_alias_sees_the_frozen_candidate_set() {
+    // The alias freezes which declarations exist; instantiating one of them
+    // by expected function type must not widen that set, and must not reach
+    // a candidate the alias declaration site could not name.
+    TestPackage::with_modules(
+        r#"
+        import self::exporter::render;
+
+        entry_fn() => i32 {
+            chosen: (value: u8) => i32 = render;
+            chosen(2u8)
+        }
+        "#,
+        &[
+            (
+                "exporter",
+                r#"
+                import super::provider;
+
+                exposed alias render = provider::show;
+                "#,
+            ),
+            (
+                "provider",
+                r#"
+                exposed show<T>(value: T) => i32 { 1 }
+
+                show(value: bool) => i32 { 2 }
+                "#,
+            ),
+        ],
+    )
+    .expect_ok();
+}
+
+#[test]
+fn a_lone_generic_declaration_is_reachable_as_a_value_through_an_alias() {
+    // A name declared once forms no overload set, so an alias to it carries
+    // no frozen candidate list either. It is still a value candidate.
+    TestPackage::with_modules(
+        r#"
+        import self::exporter::render;
+
+        entry_fn() => i32 {
+            chosen: (value: i32) => i32 = render;
+            chosen(2)
+        }
+        "#,
+        &[
+            (
+                "exporter",
+                r#"
+                import super::provider;
+
+                exposed alias render = provider::show;
+                "#,
+            ),
+            (
+                "provider",
+                r#"
+                exposed show<T>(value: T) => T { value }
+                "#,
+            ),
+        ],
+    )
+    .expect_ok();
+}
+
+#[test]
+fn an_alias_does_not_make_an_inaccessible_generic_declaration_selectable() {
+    // The alias is its own gate. A value reference must not become a second,
+    // less restricted way to reach what the alias hides.
+    let package = TestPackage::with_modules(
+        r#"
+        entry_fn() => i32 {
+            chosen: (value: i32) => i32 = self::provider::render;
+            chosen(2)
+        }
+        "#,
+        &[(
+            "provider",
+            r#"
+            alias render = show;
+
+            show<T>(value: T) => T { value }
+            "#,
+        )],
+    );
+    let errors = package.expect_errors();
+    let text = format!("{errors:#?}");
+    assert!(text.contains("NotVisible"), "{text}");
+}
+
+#[test]
 fn an_alias_may_name_a_macro_reached_through_an_import() {
     // The import binds `shout` in `main` exactly as a local definition
     // would, so a bare alias target may name it; expansion still uses the

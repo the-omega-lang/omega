@@ -316,10 +316,12 @@ impl AnalysisErrorKind {
             Self::GenericFunctionNotInstantiated { owner, function, namespace } => d
                 .with_label(span, "generic, and not instantiated here")
                 .with_note(format!(
-                    "`{}` has no signature until a call determines its generic arguments",
+                    "`{}` has no signature until something determines its generic arguments",
                     namespace.spelling(owner.as_ref(), function)
                 ))
-                .with_help("call it directly, so its arguments can be inferred or written"),
+                .with_help(
+                    "give this reference an expected function type, or call it so its arguments can be inferred or written",
+                ),
             Self::FunctionNamespaceMismatch { owner, function, declared_in } => {
                 let d = d.with_label(span, match declared_in {
                     FunctionNamespace::Member => "this names the static namespace",
@@ -575,6 +577,21 @@ impl AnalysisErrorKind {
                 }
                 d
             }
+            Self::NoMatchingFunctionValue { name, expected, candidates } => {
+                let mut d = d
+                    .with_label(span, format!("no declaration of `{}` has this type", name.as_ref()))
+                    .with_note(format!("expected: {expected}"));
+                for candidate in candidates {
+                    d = d.with_note(format!("candidate: {candidate}"));
+                }
+                d.with_help("a function value needs an exact signature match -- a call's argument conversions do not apply here")
+            }
+            Self::UndeterminedFunctionValue { name, parameter } => d
+                .with_label(span, format!("`{}` is not determined here", parameter.as_ref()))
+                .with_help(format!(
+                    "write the rest of `{}`'s generic arguments, or give this reference an expected function type",
+                    name.as_ref()
+                )),
             Self::AmbiguousSelfOverload { name, previous } => d
                 .with_label(span, format!("`{}` differs from the other declaration only in how it receives `self`", name.as_ref()))
                 .with_secondary_label(*previous, format!("`{}` first declared here", name.as_ref()))

@@ -1,0 +1,16 @@
+selection: concrete generic generic generic
+singleton: 7 9
+return-only: -128
+prefix: 42
+defaults: 2 8
+comp: 3 4
+structure: 5 42
+descriptors: 8
+specificity: bounded safe-concrete
+spellings: provider-generic provider-generic provider-generic provider-concrete
+imported-singleton: 6
+member: member-concrete member-generic member-generic
+static: static-concrete static-generic static-generic
+member-singleton: 4
+owner: bin-concrete bin-generic bin-generic
+propagated: generic 12

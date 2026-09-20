@@ -198,6 +198,27 @@ x : i32 = lowest();
 
 If a generic appears nowhere that supplies information and has no applicable default, inference fails.
 
+## Defaults and function-value selection
+
+An uncalled reference has no arguments, so its whole constraint is the expected function type. The priority order shortens to:
+
+1. explicitly written generic arguments;
+2. the expected function type's parameters and result;
+3. a declared generic default, for a parameter the signature never mentions.
+
+An explicit argument still outranks a default, and a default still cannot establish a match: a parameter that *does* occur in the signature must be determined by rule 1 or 2, and a declaration whose default would have to supply it is simply not a match. Matching is exact rather than cost-based, so `comp` parameters are inferred from the expected signature's own compile-time structure -- a fixed array's length, a nominal generic application -- exactly as they are from an argument, and are canonicalized to their declared parameter type the same way.
+
+```omega
+count<comp N: usize, T>(values: [N]T) => usize { N }
+width<T, U = u16>(value: T) => usize { sizeof<U> }
+
+counted : ([3]i32) => usize = count;    # N = 3, T = i32
+defaulted : (i32) => usize = width;     # T = i32; U is unmentioned, so it defaults
+overridden := width<i32, u64>;          # both written, so no expected type is needed
+```
+
+The full selection rule, including how candidates are excluded and ranked, is in [`functions.md`](functions.md#selecting-a-function-value).
+
 ## Generic member and static functions
 
 A function declared inside a struct, union, or enum may declare its own generic parameters, under this chapter's rules, whether or not its owner is generic:
@@ -219,7 +240,7 @@ Arguments are inferred from the call's written arguments and the expected result
 
 The `spec S` parameter sugar applies here as it does to a top-level function: `f(x: spec S)` is a declaration with an anonymous bounded generic parameter, and is therefore instantiated per argument type.
 
-Generic declarations participate in call-site overload resolution under the ordinary inference rules in this chapter, under the [overloading rules](functions.md#overloading). Specificity follows the [conformance selection rules](specs-and-conformance.md#blanket-conformances) only among candidates tied at minimum adaptation cost. Only the winner is instantiated and its bounds checked. A generic declaration still cannot be named uncalled, including when an expected function type is available. Positions this leaves unsupported are tracked in [`../issues/language-limitations.md`](../issues/language-limitations.md).
+Generic declarations participate in call-site overload resolution under the ordinary inference rules in this chapter, under the [overloading rules](functions.md#overloading). Specificity follows the [conformance selection rules](specs-and-conformance.md#blanket-conformances) only among candidates tied at minimum adaptation cost. Only the winner is instantiated and its bounds checked. A generic member or static may also be named uncalled, under [Selecting a function value](functions.md#selecting-a-function-value); the receiver of `Owner::self::name` is parameter zero of the expected type, as it is for a concrete declaration. Positions this leaves unsupported are tracked in [`../issues/language-limitations.md`](../issues/language-limitations.md).
 
 ## Generic specs and conformances
 

@@ -12,8 +12,8 @@ error: 'Holder::self::alone' is generic and has no signature here
 28 |     uninstantiated := Holder::self::alone;
    |                       ^^^^^^^^^^^^^^^^^^^ generic, and not instantiated here
    |
-   = note: `Holder::self::alone` has no signature until a call determines its generic arguments
-   = help: call it directly, so its arguments can be inferred or written
+   = note: `Holder::self::alone` has no signature until something determines its generic arguments
+   = help: give this reference an expected function type, or call it so its arguments can be inferred or written
 
 error: 'Holder::plain' takes no generic arguments
   --> tests/t10d_generic_member_function_errors/t10d_generic_member_function_errors.omg:29:20

@@ -1,0 +1,62 @@
+# A function value needs an exact signature match. None of these references
+# has one, so each reports why rather than adapting, widening, or falling
+# back to a candidate the reference already excluded.
+import self::provider;
+
+spec A { a_mark(*self) => i32; }
+spec B { b_mark(*self) => i32; }
+struct Both { exposed v: i32; }
+meet A for Both { a_mark(*self) => i32 { self.v } }
+meet B for Both { b_mark(*self) => i32 { self.v } }
+struct Plain { exposed v: i32; }
+
+# --- two generics that both fit, with equal bound sets -------------------
+twin<T>(value: T) => T { value }
+twin<T>(value: *T) => *T { value }
+
+# --- two generics whose bound sets are incomparable ----------------------
+split<T: A>(value: T) => T { value }
+split<T: B>(value: T) => T { value }
+
+# --- a stricter candidate wins specificity, then fails its own bound.
+#     The less specific declaration is not a fallback ---------------------
+strict<T>(value: T) => T { value }
+strict<T: A>(value: T) => T { value }
+
+# --- a mixed overload set, whose concrete declaration explicit arguments
+#     exclude ------------------------------------------------------------
+thing(a: i32) => i32 { a }
+thing<T>(a: T) => T { a }
+
+# --- a lone generic declaration ------------------------------------------
+echo<T>(value: T) => T { value }
+
+# --- one parameter occurring twice ---------------------------------------
+same<T>(a: T, b: T) => T { a }
+
+# --- a `comp` parameter, and a type parameter nothing determines ---------
+stride<comp N: usize, T>(value: T) => usize { N }
+
+# --- a mutable pointer nested in the parameter ---------------------------
+deref<T>(p: *mut T) => *mut T { p }
+
+# --- an anonymous enum a call would inject into --------------------------
+narrow<T>(value: enum T | bool) => bool { true }
+
+main() => void {
+	equal: (*i32) => *i32 = twin;
+	incomparable: (Both) => Both = split;
+	unsatisfied: (Plain) => Plain = strict;
+	excluded: (i32) => i32 = thing<bool>;
+	too_many := echo<i32, u8>;
+	wrong_kind := stride<i32, u8>;
+	conflicting: (i32, u8) => i32 = same;
+	undetermined := stride<4>;
+	no_match: (i32) => u8 = echo;
+	convention: foreign(c) (i32) => i32 = echo;
+	variadic: foreign(c) (i32, ...) => i32 = echo;
+	mutability: (*i32) => *i32 = deref;
+	widening: (i32) => bool = narrow;
+	aliased: (i32) => i32 = provider::hidden_alias;
+	direct: (i32) => i32 = provider::hidden_plain;
+}

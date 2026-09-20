@@ -1,0 +1,7 @@
+# A sibling module whose declarations this package may not name. The alias
+# is the only gate on its target, so it must not launder the declaration's
+# own inaccessibility either.
+hidden_pick<T>(a: T) => T { a }
+hidden_plain(a: i32) => i32 { a }
+
+alias hidden_alias = hidden_pick;

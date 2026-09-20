@@ -165,6 +165,108 @@ impl TypePattern {
         }
     }
 
+    /// Whether `found` is *the* type this pattern denotes under `bindings`,
+    /// with no representation acceptance anywhere inside it.
+    ///
+    /// [`Self::exact`] is a matching predicate for a call, so it ends in
+    /// [`Self::accepts`] for the shapes a substitution cannot materialize.
+    /// Selecting a function *value* has no conversion to pay for the
+    /// difference: a nominal argument, a nested function type, an
+    /// anonymous-enum member set, and a pointer's mutability must all be
+    /// identical, at every depth. An unbound parameter denotes nothing, so it
+    /// matches nothing.
+    pub fn identical(&self, found: &ResolvedType, bindings: &[Option<ResolvedGenericArg>]) -> bool {
+        if let Some(expected) = self.resolved(bindings) {
+            return expected == *found;
+        }
+        match (self, found) {
+            (Self::Nominal(path, args), _) => {
+                nominal(found).is_some_and(|(found_path, found_args)| {
+                    *path == found_path
+                        && args.len() == found_args.len()
+                        && args
+                            .iter()
+                            .zip(&found_args)
+                            .all(|(pattern, arg)| pattern.identical(arg, bindings))
+                })
+            }
+            (
+                Self::SpecObject(members, mutable),
+                ResolvedType::SpecObject {
+                    shape,
+                    mutable: found_mut,
+                },
+            ) => {
+                mutable == found_mut
+                    && members.len() == shape.members.len()
+                    && members.iter().all(|(id, args)| {
+                        shape.members.iter().any(|member| {
+                            member.spec.borrow().id == *id
+                                && args.len() == member.spec_args.len()
+                                && args
+                                    .iter()
+                                    .zip(&member.spec_args)
+                                    .all(|(pattern, found)| pattern.identical(found, bindings))
+                        })
+                    })
+            }
+            (
+                Self::Function(params, result, convention, variadic),
+                ResolvedType::Function(found),
+            ) => {
+                *convention == found.calling_convention
+                    && *variadic == found.is_variadic
+                    && found.self_mode.is_none()
+                    && params.len() == found.params.len()
+                    && params
+                        .iter()
+                        .zip(found.param_types())
+                        .all(|(pattern, found)| pattern.identical(found, bindings))
+                    && result.identical(&found.return_type, bindings)
+            }
+            (
+                Self::AnonymousEnum(_),
+                ResolvedType::AnonymousEnum {
+                    shape,
+                    variant: None,
+                },
+            ) => {
+                let leaves = self.leaves(bindings);
+                leaves.iter().all(|pattern| {
+                    shape
+                        .members()
+                        .iter()
+                        .any(|found| pattern.identical(found, bindings))
+                }) && shape.members().iter().all(|found| {
+                    leaves
+                        .iter()
+                        .any(|pattern| pattern.identical(found, bindings))
+                })
+            }
+            (
+                Self::Pointer(inner, mutable),
+                ResolvedType::Pointer {
+                    pointee,
+                    mutable: found_mut,
+                },
+            )
+            | (
+                Self::Slice(inner, mutable),
+                ResolvedType::Slice {
+                    item: pointee,
+                    mutable: found_mut,
+                },
+            ) => mutable == found_mut && inner.identical(pointee, bindings),
+            (Self::Array(inner, mutable), ResolvedType::Array(item, found_mut)) => {
+                mutable == found_mut && inner.identical(item, bindings)
+            }
+            (Self::SizedArray(inner, length), ResolvedType::SizedArray(item, size)) => {
+                length.length(bindings) == Some(*size) && inner.identical(item, bindings)
+            }
+            _ => false,
+        }
+    }
+
     pub fn accepts(&self, found: &ResolvedType, bindings: &[Option<ResolvedGenericArg>]) -> bool {
         if let Some(expected) = self.resolved(bindings) {
             return expected.accepts(found);
@@ -265,6 +367,21 @@ impl ArgumentPattern {
                 bindings[*index].get_or_insert_with(|| found.clone());
             }
             _ => {}
+        }
+    }
+
+    fn identical(
+        &self,
+        found: &ResolvedGenericArg,
+        bindings: &[Option<ResolvedGenericArg>],
+    ) -> bool {
+        match (self, found) {
+            (Self::Type(pattern), ResolvedGenericArg::Type(found)) => {
+                pattern.identical(found, bindings)
+            }
+            (Self::Value(value), ResolvedGenericArg::Comp(found)) => value == found,
+            (Self::Parameter(index), _) => bindings[*index].as_ref() == Some(found),
+            _ => false,
         }
     }
 
