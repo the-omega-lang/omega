@@ -26,6 +26,12 @@ services:
     tty: true
     working_dir: /workspace
 
+    # How many host cores this container may use. `./dev.sh` derives it from
+    # OMEGA_CPU_PERCENT (80% of the machine by default) so a busy agent leaves
+    # the host responsive; 0 means no limit, which is what driving compose
+    # directly gives you.
+    cpus: ${OMEGA_CPUS:-0}
+
     # Passed through from the host only when set. Anything not listed here
     # simply does not exist inside the container.
     environment:

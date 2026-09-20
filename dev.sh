@@ -60,6 +60,14 @@ ${BOLD}Commands${RESET}
                      cargo cache, shell history and your agent logins.
   help               Show this message.
 
+${BOLD}Resource limits${RESET} ${DIM}(override via the environment)${RESET}
+  OMEGA_CPU_PERCENT     ${OMEGA_CPU_PERCENT:-80}
+                        Share of the machine's CPUs the container may use, so
+                        a busy agent leaves the host responsive. Set it to
+                        ${DIM}off${RESET} for no limit.
+
+  ${DIM}e.g. OMEGA_CPU_PERCENT=50 ./dev.sh${RESET}
+
 ${BOLD}Version pins${RESET} ${DIM}(override via the environment, then rebuild)${RESET}
   ALPINE_VERSION        ${ALPINE_VERSION:-3.23}
   RUST_VERSION          ${RUST_VERSION:-1.94.1}
@@ -113,6 +121,35 @@ HOST_GID="$(id -g)"; export HOST_GID
 GIT_USER_NAME="${GIT_USER_NAME:-$(git -C "${REPO_ROOT}" config --get user.name 2>/dev/null || true)}"
 GIT_USER_EMAIL="${GIT_USER_EMAIL:-$(git -C "${REPO_ROOT}" config --get user.email 2>/dev/null || true)}"
 export GIT_USER_NAME GIT_USER_EMAIL
+
+# Cap how much of the machine a session may take: an agent running a full
+# build should not leave the host unusable. The knob is a percentage, which is
+# how you think about it; compose wants an absolute number of cores.
+cpu_percent="${OMEGA_CPU_PERCENT:-80}"
+case "${cpu_percent}" in
+    off|none|unlimited)
+        OMEGA_CPUS=0        # 0 means "no limit" to the Docker daemon.
+        ;;
+    *)
+        [[ "${cpu_percent}" =~ ^([0-9]+|[0-9]*\.[0-9]+)$ ]] \
+            || die "OMEGA_CPU_PERCENT must be a number or 'off' (got '${cpu_percent}')"
+
+        # Ask the daemon, not the host: on macOS and Windows the containers run
+        # in a VM that was given only part of the machine.
+        host_cpus="$(docker info --format '{{.NCPU}}' 2>/dev/null || true)"
+        case "${host_cpus}" in
+            ''|0|*[!0-9]*) host_cpus="$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)" ;;
+        esac
+
+        # Docker's own floor for a cpu limit is 0.01, so never round below it.
+        OMEGA_CPUS="$(awk -v n="${host_cpus}" -v p="${cpu_percent}" 'BEGIN {
+            if (p <= 0 || p > 100) exit 1
+            cpus = n * p / 100
+            printf "%.2f", (cpus < 0.01 ? 0.01 : cpus)
+        }')" || die "OMEGA_CPU_PERCENT must be between 0 and 100, or 'off' (got '${cpu_percent}')"
+        ;;
+esac
+export OMEGA_CPUS
 
 case "${command}" in
     claude)

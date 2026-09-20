@@ -141,6 +141,30 @@ container is throwaway work for the same reason.
 If a `rust-toolchain.toml` is ever added to the repo, rustup honours it inside
 the container too, and it takes precedence over `RUST_VERSION`.
 
+## CPU limit
+
+By default a session may use **80% of the CPUs Docker can see**, so a full
+`cargo build` or a busy agent still leaves the host responsive. Change the
+share with `OMEGA_CPU_PERCENT`:
+
+```sh
+OMEGA_CPU_PERCENT=50 ./dev.sh       # half the machine
+OMEGA_CPU_PERCENT=100 ./dev.sh      # everything
+OMEGA_CPU_PERCENT=off ./dev.sh      # no limit at all
+```
+
+`./dev.sh` turns the percentage into the absolute core count compose wants
+(`cpus:` in `docker/compose.yaml`) — on a 24-core machine the default becomes
+`19.20`. It is a ceiling on total CPU time, not a pin to particular cores, so
+the container still spreads its work over every core, just never more than
+that many cores' worth at once. Set it per run as above, or export it from
+your shell profile to make it permanent.
+
+Two things the limit does not cover: `./dev.sh build` and `./dev.sh rebuild`,
+which run through BuildKit rather than this service, and sessions already
+running — each container takes the value it was started with, and several
+sessions at once each get their own share.
+
 ## What persists, and what does not
 
 Persisted in named volumes (survive `./dev.sh down`, container restarts and
