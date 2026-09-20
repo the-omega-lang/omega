@@ -16,13 +16,16 @@ test-all: build-omgc build-runtime
 # The cases whose subject is a compiler-generated check that a program is not
 # in an invalid state. An optimizer is allowed to delete such a check only
 # when it can prove the state unreachable, so these run again optimized --
-# each one's invalid value arrives from a separately compiled C helper the
-# optimizer cannot see through. The last is the legal-paths case, so an
-# optimized build that "passed" by panicking everywhere would fail it.
+# each invalid value or returning callee comes from a separately compiled C
+# helper or naked assembly the optimizer cannot see through. The last is the
+# legal-paths case, so an optimized build that "passed" by panicking everywhere
+# would fail it.
 RUNTIME_CHECK_CASES := "t41_invalid_enum_tag_match t42_invalid_anonymous_enum_widen " + \
     "t43_invalid_option_try t43b_invalid_result_try t44_never_call_returned " + \
     "t44d_never_direct_argument t44e_never_field t44f_assignment_target_order " + \
-    "t44g_slice_bound_order t44h_dynamic_index_order " + \
+    "t44g_slice_bound_order t44h_dynamic_index_order t44i_never_pointer_returned " + \
+    "t46_never_binary_right t46_never_binary_left t46_never_cast " + \
+    "t46_never_negate t46_never_not t46_never_bit_not " + \
     "t46t_assignment_address_stability t41e_match_remainder_paths"
 
 playground: build-omgc build-runtime

@@ -1,0 +1,13 @@
+import std::io::println;
+
+foreign(c) stop() => never;
+
+run() => never {
+    <i32>stop()
+}
+
+main() => void {
+    println$("before-expression");
+    run();
+    println$("after-expression");
+}

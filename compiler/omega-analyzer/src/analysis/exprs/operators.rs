@@ -9,6 +9,14 @@ impl<'r> Analyzer<'r> {
         expected: Option<&ResolvedType>,
     ) -> Option<CheckedExprNode> {
         let checked_base = self.analyze_expr(base, expected)?;
+        if checked_base.r#type == ResolvedType::Never {
+            return Some(CheckedExprNode {
+                id: node_id,
+                span,
+                r#type: ResolvedType::Never,
+                kind: CheckedExpr::Negate(Box::new(checked_base)),
+            });
+        }
         if checked_base.r#type == ResolvedType::Char {
             self.error(
                 node_id,
@@ -52,7 +60,10 @@ impl<'r> Analyzer<'r> {
         base: &HirExprNode,
     ) -> Option<CheckedExprNode> {
         let checked_base = self.analyze_expr(base, Some(&ResolvedType::Bool))?;
-        if checked_base.r#type != ResolvedType::Bool {
+        if !matches!(
+            checked_base.r#type,
+            ResolvedType::Bool | ResolvedType::Never
+        ) {
             self.error(
                 node_id,
                 span,
@@ -71,7 +82,7 @@ impl<'r> Analyzer<'r> {
         Some(CheckedExprNode {
             id: node_id,
             span,
-            r#type: ResolvedType::Bool,
+            r#type: checked_base.r#type.clone(),
             kind: CheckedExpr::BinaryOp(CheckedBinaryOp {
                 op: BinaryOp::BitXor,
                 left: Box::new(checked_base),
@@ -146,6 +157,14 @@ impl<'r> Analyzer<'r> {
         expected: Option<&ResolvedType>,
     ) -> Option<CheckedExprNode> {
         let checked_base = self.analyze_expr(base, expected)?;
+        if checked_base.r#type == ResolvedType::Never {
+            return Some(CheckedExprNode {
+                id: node_id,
+                span,
+                r#type: ResolvedType::Never,
+                kind: CheckedExpr::BitNot(Box::new(checked_base)),
+            });
+        }
         if checked_base.r#type == ResolvedType::Char {
             self.error(
                 node_id,
@@ -217,10 +236,8 @@ impl<'r> Analyzer<'r> {
         let target_type = self.resolve_type_or_error(node_id, span, target, true)?;
         let checked_base = self.analyze_expr(base, None)?;
 
-        // `<void>` is the explicit discard form, so it is deliberately not a
-        // conversion at all: it accepts any operand, is never a `NoOpCast`,
-        // and stays divergent when the operand cannot complete.
-        if target_type == ResolvedType::Void {
+        // Neither explicit discard nor divergence produces a value to convert.
+        if target_type == ResolvedType::Void || checked_base.r#type == ResolvedType::Never {
             let result_type = if checked_base.r#type == ResolvedType::Never {
                 ResolvedType::Never
             } else {
@@ -557,6 +574,19 @@ impl<'r> Analyzer<'r> {
         checked_left: CheckedExprNode,
         checked_right: CheckedExprNode,
     ) -> Option<CheckedExprNode> {
+        if checked_left.r#type == ResolvedType::Never || checked_right.r#type == ResolvedType::Never
+        {
+            return Some(CheckedExprNode {
+                id: node_id,
+                span,
+                r#type: ResolvedType::Never,
+                kind: CheckedExpr::BinaryOp(CheckedBinaryOp {
+                    op,
+                    left: Box::new(checked_left),
+                    right: Box::new(checked_right),
+                }),
+            });
+        }
         if !op.is_comparison()
             && (checked_left.r#type == ResolvedType::Char
                 || checked_right.r#type == ResolvedType::Char)
@@ -829,11 +859,10 @@ impl<'r> Analyzer<'r> {
             self.analyze_binary_op(combined_id, span, op, place_read_for_types, checked_value)?;
 
         // `analyze_binary_op` (defined above in this file) always returns
-        // `CheckedExpr::BinaryOp { left, right }`, with `left` being
-        // `coerce_for_binary_op(op, <passed-in left operand>)`: either the
-        // operand unchanged, or wrapped in exactly one `CheckedExpr::Cast`
-        // layer. Extract that coercion decision as data instead of keeping
-        // the cloned-place expression tree it was computed from.
+        // `CheckedExpr::BinaryOp { left, right }`, with `left` either unchanged
+        // or wrapped in exactly one `CheckedExpr::Cast` layer. Extract that
+        // coercion decision as data instead of keeping the cloned-place
+        // expression tree it was computed from.
         let CheckedExpr::BinaryOp(binary) = combined.kind else {
             unreachable!("analyze_binary_op always returns CheckedExpr::BinaryOp")
         };

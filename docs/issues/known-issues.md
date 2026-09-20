@@ -4,6 +4,14 @@ Concrete current compiler/library bugs and unsupported cases. Resolved issues ar
 
 ## Codegen
 
+- **Taking a function declaration's address can crash codegen.**
+  `pointer: *() => never = &stop; (*pointer)();`, where `stop` is a function
+  declaration, reaches the `a function reference is never itself
+  further-projected` assertion. Binding the function value first
+  (`indirect: () => never = stop; pointer: *() => never = &indirect;`) and
+  calling `(*pointer)()` works. This is separate from the legality of a
+  function type returning `never`.
+
 - **`avr-none` object emission can fail at `-O0` on functions with several
   live pointers.** LLVM 21.1's AVR backend runs the fast register allocator
   at `-O0`, and AVR's tiny pointer-register file makes it give up with
@@ -428,15 +436,8 @@ Shape problems in `omega-driver` and `omega-analyzer` that still need a delibera
 
 ## Control flow
 
-- **Divergence and non-value bindings still have gaps.** A `never` call is
-  rejected as an ordinary binary operand (`1 + stop()`) and by general casts
-  (`<i32>stop()`); these need rules for operator applicability and result
-  typing, separate from expected-value compatibility. `loop` is parsed only
-  as a statement, although the `never` chapter describes loop expressions.
-  Inferred bindings can still store `void` (`x := consume(1)`). Written
-  fixed-array types also still accept `never` elements (`value: [1]never;`):
-  the non-storable-type gate checks the outer type, while anonymous-enum
-  members have their own gate. Nested-type validation needs a separate fix.
+- **`loop` expressions are not parsed.** `loop` is parsed only as a
+  statement, although the `never` chapter describes loop expressions.
   [types-and-primitives.md](../language/types-and-primitives.md#never)
 
 - **`bool` now has two spellings for each connective, and both are

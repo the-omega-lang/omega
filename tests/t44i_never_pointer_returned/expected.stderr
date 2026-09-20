@@ -1,0 +1,1 @@
+panicked at tests/t44i_never_pointer_returned/t44i_never_pointer_returned.omg:14:6: never-returning call returned

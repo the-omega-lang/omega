@@ -1,0 +1,1 @@
+panicked at tests/t46_never_negate/t46_never_negate.omg:6:6: never-returning call returned

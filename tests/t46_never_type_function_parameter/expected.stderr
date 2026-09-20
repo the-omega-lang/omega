@@ -1,0 +1,9 @@
+error: 'never' is only allowed as a function/method's own return type
+ --> tests/t46_never_type_function_parameter/t46_never_type_function_parameter.omg:1:18
+  |
+1 | main() => void { value: *(a: never) => void; }
+  |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^ `never` used outside a function's own return type
+  |
+  = help: there is no such thing as a `never`-typed value -- only a function/method/foreign/gap may declare `=> never`
+
+error: could not compile the program due to 1 previous error

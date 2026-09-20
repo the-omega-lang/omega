@@ -71,7 +71,7 @@ A declaration returning `never` must not complete normally. A diverging expressi
 
 A block expression that cannot complete normally -- because its tail expression diverges, or because it has no tail and its last statement diverges -- is itself a diverging expression, and is likewise usable wherever one is.
 
-`never` is not a storable value type: it is invalid as a local/field/parameter type, generic argument, or aggregate member type.
+`never` is not a storable value type: it is invalid as a local/field/parameter type, generic argument, aggregate member, array element, slice item, or pointer pointee type, including nested positions. A function type's parameters obey the same restriction, but its return type may be `never`; a pointer to such a function type (`*() => never`) is legal.
 
 A `foreign` declaration returning `never` is a contract with foreign code, and a `never` returned by a gap function, a function pointer, or a spec's dynamic call is the same contract with whatever supplies the implementation. A call whose declared result is `never` is therefore checked rather than assumed: if it returns, the call site reports `never-returning call returned` through `core::panic::PanicHandler` and the program stops there, rather than continuing into a state the declaration said could not exist. The check is on the call, not on every expression whose type is `never`.
 

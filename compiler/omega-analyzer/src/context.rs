@@ -302,9 +302,12 @@ impl Context {
                     options.through_indirection(),
                     reveals,
                 )
-                .map(|r#type| ResolvedFunctionParam {
-                    name: param.name,
-                    r#type,
+                .and_then(|r#type| {
+                    Self::require_value_type(&r#type)?;
+                    Ok(ResolvedFunctionParam {
+                        name: param.name,
+                        r#type,
+                    })
                 })
             })
             .collect::<Result<Vec<ResolvedFunctionParam>, TypeResolutionError>>()?;
@@ -470,11 +473,23 @@ impl Context {
                 let size =
                     self.resolve_array_length(&length, resolver, module_path, options, reveals)?;
                 let item = self.resolve_type(*item, resolver, module_path, options, reveals)?;
+                Self::require_value_type(&item)?;
                 Ok(ResolvedType::SizedArray(Box::new(item), size))
             }
             Type::AnonymousEnum(members) => {
                 self.resolve_anonymous_enum_type(members, resolver, module_path, options, reveals)
             }
+        }
+    }
+
+    // `allow_never` gates outer written types; construction sites use this
+    // gate for nested value positions. Inferred bindings have no written type
+    // and are gated separately in statement analysis. Function returns are exempt.
+    fn require_value_type(r#type: &ResolvedType) -> Result<(), TypeResolutionError> {
+        if *r#type == ResolvedType::Never {
+            Err(TypeResolutionError::NeverNotAllowedHere)
+        } else {
+            Ok(())
         }
     }
 
@@ -496,14 +511,13 @@ impl Context {
     ) -> Result<ResolvedType, TypeResolutionError> {
         let mut resolved = Vec::with_capacity(members.len());
         for member in members {
-            // A member is stored inline, exactly like an aggregate field, so
-            // it faces the same value-type restrictions.
-            match self.resolve_type(member, resolver, module_path, options, reveals)? {
+            let member = self.resolve_type(member, resolver, module_path, options, reveals)?;
+            Self::require_value_type(&member)?;
+            match member {
                 ResolvedType::Spec(spec) => {
                     let name = spec.borrow().name.clone();
                     return Err(TypeResolutionError::SpecUsedAsValueType(name));
                 }
-                ResolvedType::Never => return Err(TypeResolutionError::NeverNotAllowedHere),
                 member => resolved.push(member),
             }
         }
@@ -957,6 +971,7 @@ impl Context {
                     options.through_indirection(),
                     reveals,
                 )?;
+                Self::require_value_type(&item)?;
                 Ok(ResolvedType::Slice {
                     item: Box::new(item),
                     mutable,
@@ -970,6 +985,7 @@ impl Context {
                     options.through_indirection(),
                     reveals,
                 )?;
+                Self::require_value_type(&item)?;
                 Ok(ResolvedType::Array(Box::new(item), mutable))
             }
             Type::SpecStatic(members) => self.resolve_spec_object_type(
@@ -994,10 +1010,13 @@ impl Context {
                     ResolvedType::Str { .. } => Ok(ResolvedType::Str { mutable }),
                     ResolvedType::Array(item, _) => Ok(ResolvedType::Slice { item, mutable }),
                     ResolvedType::Slice { item, .. } => Ok(ResolvedType::Slice { item, mutable }),
-                    resolved => Ok(ResolvedType::Pointer {
-                        pointee: Box::new(resolved),
-                        mutable,
-                    }),
+                    resolved => {
+                        Self::require_value_type(&resolved)?;
+                        Ok(ResolvedType::Pointer {
+                            pointee: Box::new(resolved),
+                            mutable,
+                        })
+                    }
                 }
             }
             other => {
@@ -1008,6 +1027,7 @@ impl Context {
                     options.through_indirection(),
                     reveals,
                 )?;
+                Self::require_value_type(&resolved)?;
                 Ok(ResolvedType::Pointer {
                     pointee: Box::new(resolved),
                     mutable,
