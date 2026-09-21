@@ -375,6 +375,25 @@ type parameter, and a scalar literal (integer, `bool`, `char`) or the name of a
 argument, and arbitrary expressions are not generic-argument syntax -- compute
 the value once as a `comp` binding and pass it by name.
 
+Overlapping generic overloads are chosen between by naming the bound set the
+declaration declares, either alongside a written type or on its own:
+
+```omega
+pick<T: A>(value: T) => *str { "a" }
+pick<T: B>(value: T) => i32 { 22 }
+pick<T: A + B>(value: T) => bool { true }
+
+pick<Mark: A>(mark);       # the `A` declaration, with T = Mark
+pick<spec B>(mark);        # the `B` declaration; T is still inferred
+pick<Mark: A + B>(mark);   # the conjunction declaration, exactly
+```
+
+The selector names a declaration's own bound set exactly -- it is not a claim
+that the type conforms, so `pick<Mark: A>` never reaches `pick<T: A + B>` even
+though `Mark` satisfies both. A plain `pick<Mark>(mark)` is ambiguous when more
+than one bounded declaration applies, and prefers an unbounded declaration when
+one exists.
+
 See [`../language/generics.md`](../language/generics.md).
 
 Static member access uses `::`; a receiver-bearing function is named through `::self::` instead:

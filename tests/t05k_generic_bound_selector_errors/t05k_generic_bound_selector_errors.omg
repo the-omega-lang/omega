@@ -1,0 +1,68 @@
+# Every way a bound selector can be wrong. A selector names a declaration's
+# own bound set exactly: it is not a conformance assertion, it never widens to
+# a stricter declaration or falls back to a weaker one, and it applies only to
+# a function's generic arguments.
+spec A { a_mark(*self) => i32; }
+spec B { b_mark(*self) => i32; }
+# A spec requiring nothing: conformance still needs an actual witness, so a
+# bound on it is not vacuously satisfied.
+spec Empty { }
+
+struct Mark { exposed value: i32; }
+meet A for Mark { a_mark(*self) => i32 { 1 } }
+meet B for Mark { b_mark(*self) => i32 { 2 } }
+
+struct Plain { exposed value: i32; }
+struct Box<T> { exposed value: T; }
+
+# Only the conjunction is declared, so neither half selects it.
+both<T: A + B>(value: T) => i32 { 1 }
+
+# Both halves are declared, and `Mark` satisfies both.
+either<T: A>(value: T) => i32 { 2 }
+either<T: B>(value: T) => *str { "b" }
+
+# Reversed declaration order, to show selection does not depend on it.
+reversed<T: B>(value: T) => *str { "b" }
+reversed<T: A>(value: T) => i32 { 3 }
+
+# An unbounded and a bounded declaration, neither of which the other's
+# unbounded-position set contains once both positions are written.
+pairwise<T, U: B>(a: T, b: U) => i32 { 4 }
+pairwise<T: A, U>(a: T, b: U) => *str { "second" }
+
+marked<T: Empty>(value: T) => i32 { 5 }
+lone<T: A>(value: T) => i32 { 6 }
+comped<comp N: usize, T: A>(value: T) => usize { N }
+plain(value: i32) => i32 { value }
+holed<T: A>(value: i32) => i32 { value }
+
+main() => void {
+    mark := Mark { value = 1; };
+
+    # A selector that names less than a declaration declares selects nothing.
+    both<Mark: A>(mark);
+    # Both halves apply and neither dominates the other.
+    either<Mark: A + B>(mark);
+    either(mark);
+    reversed(mark);
+    # Incomparable unbounded-position sets stay ambiguous.
+    pairwise<Mark, Mark>(mark, mark);
+    # An empty spec with no witness is still unimplemented.
+    marked<Mark: Empty>(mark);
+    # The selector is right, the conformance is not.
+    lone<Plain: A>(Plain { value = 1; });
+    # Nothing determines the type a `spec` selector stands for.
+    holed<spec A>(1);
+    # A selector never applies to a `comp` position.
+    comped<4: A, Mark>(mark);
+    # Names that are not specs, or not found at all.
+    lone<Mark: Plain>(mark);
+    lone<Mark: Missing>(mark);
+    # More arguments than the declaration accepts.
+    lone<Mark: A, u8>(mark);
+    # A declaration with no generic parameters has no bounds to name.
+    plain<i32: A>(1);
+    # Positions that are not a function's generic arguments.
+    boxed := Box<i32: A> { value = 1; };
+}

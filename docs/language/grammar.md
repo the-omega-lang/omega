@@ -67,7 +67,27 @@ generic-argument  = comp-value-literal | type ;
 comp-value-literal = [ "-" ], integer-literal
                    | "true" | "false"
                    | char-literal ;
+
+expression-path = path, [ expression-generic-arguments ] ;
+
+expression-generic-arguments =
+      "<", expression-generic-argument, { ",", expression-generic-argument }, ">" ;
+
+expression-generic-argument = generic-argument, [ ":", bound-list ]
+                            | "spec", bound-list ;
+
+bound-list = type, { "+", type } ;
 ```
+
+An `expression-generic-argument` written on a **function** path may also
+carry a **bound selector**: `M: A + B` fixes that parameter and requires the
+declaration to declare exactly that bound set, and `spec A + B` requires the
+bound set while leaving the parameter to ordinary inference. Only a leading
+`spec` introduces the second form, so `*spec A` remains an ordinary dynamic
+object type argument. Selectors are legal only on a function's generic
+argument list; `bound-list` is the same conjunction syntax a
+`type-parameter` declares. Their meaning is in
+[`generics.md`](generics.md) and [`functions.md`](functions.md).
 
 A `generic-argument` is read as the kind its declared parameter binds. A
 scalar literal is syntactically a value, so it is only legal against a `comp`
@@ -510,7 +530,7 @@ unary = "*", unary
 qualified-spec-member = "<", type, ":", type, ">", "::", identifier, { postfix-suffix } ;
 
 postfix = primary, { postfix-suffix } ;
-postfix-suffix = ".", identifier, [ generic-arguments ]
+postfix-suffix = ".", identifier, [ expression-generic-arguments ]
                | "[", ( expression | range-expression ), "]"
                | "(", [ argument-list ], ")"
                | "?" ;

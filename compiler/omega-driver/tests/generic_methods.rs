@@ -433,9 +433,9 @@ fn only_the_declaration_a_value_selects_is_instantiated() {
 }
 
 #[test]
-fn a_generic_member_value_reports_the_winners_own_bound_failure() {
-    // A failed bound on the selected declaration is an error, not a reason
-    // to fall back to the less specific candidate that also matched.
+fn an_unprovable_bound_makes_a_generic_member_value_inapplicable() {
+    // A declaration whose bound this type cannot prove is not the one meant,
+    // so the unbounded declaration is reached rather than blocked.
     let workspace = TestWorkspace::new(
         r#"
         spec Described { describe(*self) => *str; }
@@ -450,11 +450,116 @@ fn a_generic_member_value_reports_the_winners_own_bound_failure() {
         }
         "#,
     );
+    if let Err(errors) = workspace.compile() {
+        panic!("expected this to compile, got: {errors:#?}");
+    }
+}
+
+#[test]
+fn a_selected_generic_member_value_reports_its_own_bound_failure() {
+    // Selecting the bounded declaration explicitly is a request for that
+    // declaration, so its unprovable bound is the error -- selection does not
+    // quietly move on to the unbounded one.
+    let workspace = TestWorkspace::new(
+        r#"
+        spec Described { describe(*self) => *str; }
+        struct Plain { exposed value: i32; }
+        struct Holder {
+            exposed value: i32;
+            exposed pick<T>(*self, thing: T) => i32 { 1 }
+            exposed pick<T: Described>(*self, thing: T) => i32 { 2 }
+        }
+        main() => void {
+            taken: (*Holder, Plain) => i32 = Holder::self::pick<Plain: Described>;
+        }
+        "#,
+    );
     let errors = resolve_errors(&workspace.expect_errors());
     assert!(
         errors
             .iter()
-            .any(|error| error.contains("'Plain' does not implement spec 'Described'")),
+            .any(|error| error.contains("'Plain' does not implement 'Described'")),
+        "{errors:#?}",
+    );
+}
+
+#[test]
+fn deciding_applicability_does_not_instantiate_a_losing_declaration() {
+    // Proving a candidate's bounds reads the declaration, never materializes
+    // it: only the declaration selection actually reached is emitted.
+    let workspace = TestWorkspace::new(
+        r#"
+        spec Described { describe(*self) => *str; }
+        struct Plain { exposed value: i32; }
+        struct Holder {
+            exposed value: i32;
+            exposed pick<T>(*self, thing: T) => i32 { 1 }
+            exposed pick<T: Described>(*self, thing: T) => i32 { 2 }
+        }
+        main() => void {
+            holder := Holder { value = 1; };
+            used := holder.pick(Plain { value = 2; });
+        }
+        "#,
+    );
+    assert_eq!(
+        workspace.instantiations_of("pick").len(),
+        1,
+        "only the applicable declaration is instantiated",
+    );
+}
+
+#[test]
+fn a_selector_chooses_between_declarations_the_arguments_cannot() {
+    // Both declarations apply to `Mark`, so the selector is what decides;
+    // their signatures differ so that both can be emitted at once (see
+    // docs/issues/compiler-limitations.md).
+    let workspace = TestWorkspace::new(
+        r#"
+        spec A { a_mark(*self) => i32; }
+        spec B { b_mark(*self) => i32; }
+        struct Mark { exposed value: i32; }
+        meet A for Mark { a_mark(*self) => i32 { 1 } }
+        meet B for Mark { b_mark(*self) => i32 { 2 } }
+        struct Holder {
+            exposed value: i32;
+            exposed pick<T: A>(*self, thing: T) => i32 { 1 }
+            exposed pick<T: B>(*self, thing: T) => *str { "b" }
+        }
+        main() => void {
+            holder := Holder { value = 1; };
+            mark := Mark { value = 2; };
+            first := holder.pick<Mark: A>(mark);
+            second := holder.pick<spec B>(mark);
+        }
+        "#,
+    );
+    assert_eq!(
+        workspace.instantiations_of("pick").len(),
+        2,
+        "each selector reached a different declaration",
+    );
+}
+
+#[test]
+fn a_spec_that_requires_nothing_is_not_satisfied_without_a_conformance() {
+    // An empty spec has no requirement a type could accidentally meet, so
+    // only an actual conformance witness can prove a bound on it.
+    let workspace = TestWorkspace::new(
+        r#"
+        spec Marker { }
+        struct Plain { exposed value: i32; }
+        needs<T: Marker>(value: T) => i32 { 1 }
+        main() => void {
+            used := needs(Plain { value = 1; });
+        }
+        "#,
+    );
+    let errors = resolve_errors(&workspace.expect_errors());
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.contains("'Plain' does not implement spec 'Marker'")),
         "{errors:#?}",
     );
 }

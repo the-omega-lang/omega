@@ -489,11 +489,15 @@ querying the driver under a trial substitution. A nominal pattern is compared
 against an argument's existing nominal identity and generic arguments; it does
 not materialize a candidate type to discover whether it matches.
 
-Adaptation cost selects the minimum-cost candidates; the shared bound-set
-comparator breaks specificity ties without proving conformances. Only the winner
-enters the ordinary `ItemKey` query path, where omitted defaults, bounds,
-signature resolution, and body checking run normally. Failed candidates cannot
-publish an item state, solver result, or body diagnostic. The same structural
+Applicability comes first: `prepare_generic_call` completes a candidate's
+remaining arguments from its own defaults, reports the bound set each parameter
+then declares, and proves those bounds -- all without entering the `ItemKey`
+query path. Adaptation cost then selects the minimum-cost applicable candidates,
+and the caller's written plain-type positions break what remains. Only the
+winner enters the ordinary `ItemKey` query path, where signature resolution and
+body checking run normally. A losing candidate may cost the defaults its own
+bounds needed, but cannot publish an item state, solver result, or body
+diagnostic. The same structural
 patterns, with generic parameters identified by position, detect template
 redeclarations during signature collection. Uncalled overload references filter
 out templates and continue to match concrete signatures only.

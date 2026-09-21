@@ -1,0 +1,7 @@
+# A sibling module, so a selector can be written on a module-qualified path,
+# on an import, and through a declared alias.
+import super::A;
+import super::B;
+
+exposed shared<T: A>(value: T) => i32 { 111 }
+exposed shared<T: B>(value: T) => *str { "provider-b" }

@@ -65,7 +65,7 @@ pub struct FieldAccessExpr {
     /// Generic arguments written on the member, as in `x.map<u8>(f)`. The
     /// grammar only accepts them directly before a call's `(`, so they are
     /// always a generic method's arguments rather than a field's.
-    pub generic_args: Vec<crate::ast::r#type::GenericArg>,
+    pub generic_args: Vec<crate::ast::generics::ExprGenericArg>,
 }
 
 #[derive(Debug, Clone)]

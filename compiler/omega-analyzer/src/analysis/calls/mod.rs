@@ -3,10 +3,12 @@ use super::*;
 mod generic;
 mod overload;
 mod pattern;
+mod selector;
 mod spec;
 mod value;
 
 use generic::MethodTemplate;
+pub(crate) use selector::WrittenGenerics;
 pub(crate) use value::FunctionValue;
 
 pub(crate) enum Intercepted {
@@ -354,7 +356,7 @@ impl<'r> Analyzer<'r> {
         callee: &HirExprNode,
         field: &Ident,
         receiver_type: &ResolvedType,
-        generic_args: &[GenericArg],
+        generic_args: &[ExprGenericArg],
     ) -> Option<()> {
         if generic_args.is_empty() {
             return Some(());
@@ -382,7 +384,7 @@ impl<'r> Analyzer<'r> {
         field: &Ident,
         field_origin: Origin,
         receiver: &Receiver,
-        written_generics: &[GenericArg],
+        written_generics: &[ExprGenericArg],
         args: &[HirExprNode],
         expected: Option<&ResolvedType>,
     ) -> Option<Option<CalleeResolution>> {
@@ -420,12 +422,12 @@ impl<'r> Analyzer<'r> {
         receiver: &Receiver,
         owner: &ResolvedType,
         template: &GenericMethodTemplate,
-        written_generics: &[GenericArg],
+        written_generics: &[ExprGenericArg],
         args: &[HirExprNode],
         expected: Option<&ResolvedType>,
     ) -> Option<CalleeResolution> {
         let declared = Self::owner_item_path(owner, field);
-        let explicit = self.resolve_generic_arg_list(
+        let explicit = self.resolve_written_generics(
             callee.id,
             callee.span,
             written_generics,

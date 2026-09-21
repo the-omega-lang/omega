@@ -16,13 +16,14 @@ error: ambiguous reference to overloaded 'split'
    = note: candidate: <T: A>(value: T) => T
    = note: candidate: <T: B>(value: T) => T
 
-error: 'Plain' does not implement spec 'A' (missing: a_mark)
+error: 'Plain' does not implement 'A'
   --> tests/t05i_generic_function_value_errors/t05i_generic_function_value_errors.omg:49:37
    |
-49 |     unsatisfied: (Plain) => Plain = strict;
-   |                                     ^^^^^^ does not implement this spec
+49 |     unsatisfied: (Plain) => Plain = strict<Plain: A>;
+   |                                     ^^^^^^^^^^^^^^^^ `Plain` does not implement `A`
    |
-   = note: missing: a_mark
+   = note: selected `strict`, whose `T` is bound by `A`
+   = help: a selector names the declaration meant, so its bounds are checked against this call rather than passed over for another declaration
 
 error: no declaration of 'thing' has type '(i32) => i32'
   --> tests/t05i_generic_function_value_errors/t05i_generic_function_value_errors.omg:50:30

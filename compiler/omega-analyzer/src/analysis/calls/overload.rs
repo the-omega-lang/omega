@@ -1,4 +1,46 @@
 use super::*;
+use crate::resolver::UnmetBound;
+
+/// A candidate that survived argument matching and proved applicable.
+struct Viable {
+    index: usize,
+    score: u32,
+    bindings: Vec<Option<ResolvedGenericArg>>,
+    unbounded: Vec<usize>,
+}
+
+pub(crate) enum Applicability {
+    Applies,
+    Rejected(Rejection),
+    /// A genuine error was reported; selection stops rather than treating
+    /// the candidate as merely unsuitable.
+    Failed,
+}
+
+/// Why a candidate that fit the arguments is still not the declaration this
+/// call names. Kept until the whole set is known, so a failure reports every
+/// reason at once rather than one losing candidate's error.
+pub(crate) enum Rejection {
+    Selector(usize),
+    UnmetBound(UnmetBound),
+    Undetermined(Ident),
+}
+
+impl Rejection {
+    pub(crate) fn explain(&self) -> String {
+        match self {
+            Self::Selector(_) => " -- declares different bounds".to_string(),
+            Self::UnmetBound(unmet) => format!(
+                " -- '{}' does not implement '{}'",
+                unmet.r#type,
+                unmet.spec.as_ref()
+            ),
+            Self::Undetermined(parameter) => {
+                format!(" -- '{}' is not determined here", parameter.as_ref())
+            }
+        }
+    }
+}
 
 impl<'r> Analyzer<'r> {
     pub(crate) fn resolve_type_qualified_overload_call(
@@ -297,11 +339,10 @@ impl<'r> Analyzer<'r> {
         candidates: &[OverloadCandidate],
         args: &[HirExprNode],
         expected: Option<&ResolvedType>,
-        explicit: &[GenericArg],
+        explicit: &[ExprGenericArg],
         implicit: usize,
     ) -> Option<(usize, Option<ResolvedMethod>, Vec<CheckedExprNode>)> {
         use crate::generics::pattern::TypePattern;
-        use std::cmp::Ordering;
         let mut fixed = Vec::with_capacity(args.len());
         for arg in args {
             fixed.push(if Self::adaptable_literal(arg) {
@@ -323,49 +364,47 @@ impl<'r> Analyzer<'r> {
                 _ => ResolvedType::I32,
             }
         };
-        let mut viable = Vec::new();
+        let mut viable: Vec<Viable> = Vec::new();
+        let mut rejected: Vec<(usize, Rejection)> = Vec::new();
         for (index, candidate) in candidates.iter().enumerate() {
             let mut bindings = Vec::new();
+            let mut written = WrittenGenerics::default();
             let patterns = if let Some(template) = candidate.template() {
-                if template.params.len() != args.len() + implicit
-                    || explicit.len() > template.generics.len()
-                {
+                if template.params.len() != args.len() + implicit {
                     continue;
                 }
+                let template = template.clone();
+                let Some(prefix) =
+                    self.try_written_generics(node_id, span, explicit, &template.generics)
+                else {
+                    continue;
+                };
+                written = prefix;
                 bindings.resize(template.generics.len(), None);
-                let mut explicit_ok = true;
-                for (position, written) in explicit.iter().enumerate() {
-                    let reveals = &self.reveals;
-                    match self.context.resolve_generic_arg(
-                        written,
-                        Some(&template.generics[position]),
-                        self.resolver,
-                        &self.module_path,
-                        ResolveItemOptions::INDIRECT,
-                        &|origin| reveals.allows(origin),
-                    ) {
-                        Ok(value) => bindings[position] = Some(value),
-                        Err(_) => {
-                            explicit_ok = false;
-                            break;
-                        }
-                    }
-                }
-                if !explicit_ok {
-                    continue;
-                }
+                for (slot, binding) in bindings.iter_mut().zip(&written.bindings) {
+            slot.clone_from(binding);
+        }
                 if let Some(expected) = expected {
                     template.return_type.infer(expected, &mut bindings);
                 }
                 for (position, pattern) in template.params[implicit..].iter().enumerate() {
                     pattern.infer(&argument_type(position), &mut bindings);
                 }
-                let determined = template
+                let undetermined = template
                     .generics
                     .iter()
                     .zip(&bindings)
-                    .all(|(param, binding)| binding.is_some() || param.default.is_some());
-                if !determined || !self.canonicalize_comp_bindings(template, &mut bindings) {
+                    .position(|(param, binding)| binding.is_none() && param.default.is_none());
+                if let Some(position) = undetermined {
+                    if written.selectors.get(position).is_some_and(Option::is_some) {
+                        rejected.push((
+                            index,
+                            Rejection::Undetermined(template.generics[position].ident.clone()),
+                        ));
+                    }
+                    continue;
+                }
+                if !self.canonicalize_comp_bindings(&template, &mut bindings) {
                     continue;
                 }
                 template.params[implicit..].to_vec()
@@ -406,46 +445,39 @@ impl<'r> Analyzer<'r> {
                     };
                     cost.map(|cost| score + cost)
                 });
-            if let Some(score) = score {
-                viable.push((index, score, bindings));
+            let Some(score) = score else { continue };
+            // Applicability is decided before cost: a declaration whose
+            // bounds this call cannot satisfy is not a cheaper answer, it is
+            // not an answer at all.
+            match self.candidate_applies(node_id, span, candidate, &written, &bindings) {
+                Applicability::Failed => return None,
+                Applicability::Rejected(reason) => rejected.push((index, reason)),
+                Applicability::Applies => viable.push(Viable {
+                    index,
+                    score,
+                    bindings,
+                    unbounded: Self::unbounded_positions(candidate, &written),
+                }),
             }
         }
-        let describe = |candidate: &OverloadCandidate| {
-            candidate
-                .template()
-                .map(|t| t.description.clone())
-                .unwrap_or_else(|| {
-                    ResolvedType::Function(candidate.fn_type().cloned().unwrap()).to_string()
-                })
-        };
-        let Some(minimum) = viable.iter().map(|(_, cost, _)| *cost).min() else {
-            self.error(
-                node_id,
-                span,
-                AnalysisErrorKind::NoMatchingOverload {
-                    name: name.clone(),
-                    candidates: candidates.iter().map(describe).collect(),
-                },
-            );
+        let Some(minimum) = viable.iter().map(|entry| entry.score).min() else {
+            self.report_no_match(node_id, span, name, candidates, explicit, &rejected);
             return None;
         };
-        viable.retain(|(_, cost, _)| *cost == minimum);
-        let dominates = |left: usize, right: usize| match (
-            candidates[left].template(),
-            candidates[right].template(),
+        viable.retain(|entry| entry.score == minimum);
+        let dominates = |left: &Viable, right: &Viable| match (
+            candidates[left.index].template(),
+            candidates[right.index].template(),
         ) {
             (None, Some(_)) => true,
-            (Some(left), Some(right)) => {
-                crate::generics::compare_bound_sets(&left.bounds, &right.bounds)
-                    == Some(Ordering::Greater)
-            }
+            (Some(_), Some(_)) => WrittenGenerics::dominates(&left.unbounded, &right.unbounded),
             _ => false,
         };
-        let winners: Vec<_> = viable
+        let winners: Vec<&Viable> = viable
             .iter()
-            .filter(|(index, _, _)| !viable.iter().any(|(other, _, _)| dominates(*other, *index)))
+            .filter(|entry| !viable.iter().any(|other| dominates(other, entry)))
             .collect();
-        let [(winner, _, bindings)] = winners.as_slice() else {
+        let [winner] = winners.as_slice() else {
             self.error(
                 node_id,
                 span,
@@ -453,17 +485,17 @@ impl<'r> Analyzer<'r> {
                     name: name.clone(),
                     candidates: winners
                         .iter()
-                        .map(|(index, _, _)| describe(&candidates[*index]))
+                        .map(|entry| Self::describe_candidate(&candidates[entry.index]))
                         .collect(),
                 },
             );
             return None;
         };
-        let winner = *winner;
+        let (winner, bindings) = (winner.index, winner.bindings.clone());
         let instantiated = if candidates[winner].template().is_some() {
             match self
                 .resolver
-                .instantiate_overload(candidates[winner].decl_id, bindings)
+                .instantiate_overload(candidates[winner].decl_id, &bindings)
             {
                 Ok(method) => Some(method),
                 Err(error) => {
@@ -489,6 +521,172 @@ impl<'r> Analyzer<'r> {
             final_args.push(self.coerce_to_expected(Some(expected), checked));
         }
         Some((winner, instantiated, final_args))
+    }
+
+    /// Whether a candidate can be the declaration this call names: its
+    /// written selectors must name exactly the bounds it declares, and the
+    /// arguments must prove every one of them.
+    ///
+    /// Only the declaration's bounds and the defaults needed to reach them
+    /// are resolved here; the declaration itself stays unmaterialized, so a
+    /// candidate that goes on to lose leaves no instantiation behind.
+    pub(super) fn candidate_applies(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        candidate: &OverloadCandidate,
+        written: &WrittenGenerics,
+        bindings: &[Option<ResolvedGenericArg>],
+    ) -> Applicability {
+        if candidate.template().is_none() {
+            return Applicability::Applies;
+        }
+        let prepared = match self.resolver.prepare_generic_call(
+            crate::resolver::GenericCallTarget::Declaration(candidate.decl_id),
+            bindings,
+        ) {
+            Ok(Some(prepared)) => prepared,
+            // A resolver that cannot prepare declarations leaves selection
+            // with what the templates themselves say.
+            Ok(None) => return Applicability::Applies,
+            Err(error) => {
+                self.error(node_id, span, AnalysisErrorKind::ModuleResolution(error));
+                return Applicability::Failed;
+            }
+        };
+        for (position, selector) in written.selectors.iter().enumerate() {
+            let Some(selector) = selector else { continue };
+            let declared = prepared.bounds.get(position).map_or(&[][..], Vec::as_slice);
+            if !selector.matches(declared) {
+                return Applicability::Rejected(Rejection::Selector(position));
+            }
+        }
+        match prepared.unmet {
+            Some(unmet) => Applicability::Rejected(Rejection::UnmetBound(unmet)),
+            None => Applicability::Applies,
+        }
+    }
+
+    /// The written plain-type positions at which a candidate declares no
+    /// bounds. Emptiness survives substitution, so the declaration's own
+    /// pattern is enough to decide it.
+    fn unbounded_positions(candidate: &OverloadCandidate, written: &WrittenGenerics) -> Vec<usize> {
+        let Some(template) = candidate.template() else {
+            return Vec::new();
+        };
+        written.unbounded_positions(|position| {
+            !template
+                .bounds
+                .iter()
+                .any(|(parameter, _, _)| *parameter == position)
+        })
+    }
+
+    /// The error a written selector earns when it identified one declaration
+    /// and that declaration's own bound is what failed. `false` means no
+    /// selector settled the question, so the ordinary list is the answer.
+    pub(super) fn report_selected_bound_failure(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        name: &Ident,
+        explicit: &[ExprGenericArg],
+        rejected: &[(usize, Rejection)],
+    ) -> bool {
+        if explicit.iter().all(|entry| entry.selector().is_none()) {
+            return false;
+        }
+        let mut unmet = None;
+        for (_, reason) in rejected {
+            match reason {
+                Rejection::Selector(_) => {}
+                Rejection::UnmetBound(bound) if unmet.is_none() => unmet = Some(bound),
+                _ => return false,
+            }
+        }
+        let Some(unmet) = unmet else { return false };
+        self.error(
+            node_id,
+            span,
+            AnalysisErrorKind::SelectedBoundNotSatisfied {
+                name: name.clone(),
+                parameter: unmet.parameter.clone(),
+                r#type: unmet.r#type.to_string(),
+                spec: unmet.spec.clone(),
+            },
+        );
+        true
+    }
+
+    fn report_no_match(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        name: &Ident,
+        candidates: &[OverloadCandidate],
+        explicit: &[ExprGenericArg],
+        rejected: &[(usize, Rejection)],
+    ) {
+        if self.report_selected_bound_failure(node_id, span, name, explicit, rejected) {
+            return;
+        }
+        // A written selector that nothing declares is its own failure: the
+        // ordinary "no overload matches" list would invite reading the call
+        // as an argument mismatch.
+        if let Some((selector, span)) = rejected.iter().find_map(|(_, reason)| {
+            let Rejection::Selector(position) = reason else {
+                return None;
+            };
+            let entry = explicit.get(*position)?;
+            Some((
+                entry.selector()?,
+                entry.selector_span().unwrap_or(span),
+            ))
+        }) && rejected.iter().all(|(_, reason)| matches!(reason, Rejection::Selector(_)))
+        {
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::NoMatchingBoundSelector {
+                    name: name.clone(),
+                    selector: selector
+                        .iter()
+                        .map(crate::error::raw_type_display)
+                        .collect::<Vec<_>>()
+                        .join(" + "),
+                    candidates: candidates.iter().map(Self::describe_candidate).collect(),
+                },
+            );
+            return;
+        }
+        let described = candidates
+            .iter()
+            .enumerate()
+            .map(|(index, candidate)| {
+                let description = Self::describe_candidate(candidate);
+                match rejected.iter().find(|(rejected, _)| *rejected == index) {
+                    Some((_, reason)) => format!("{description}{}", reason.explain()),
+                    None => description,
+                }
+            })
+            .collect();
+        self.error(
+            node_id,
+            span,
+            AnalysisErrorKind::NoMatchingOverload {
+                name: name.clone(),
+                candidates: described,
+            },
+        );
+    }
+
+    fn describe_candidate(candidate: &OverloadCandidate) -> String {
+        candidate
+            .template()
+            .map(|t| t.description.clone())
+            .unwrap_or_else(|| {
+                ResolvedType::Function(candidate.fn_type().cloned().unwrap()).to_string()
+            })
     }
 
     /// Rewrites every inferred `comp` binding into its declared parameter

@@ -37,7 +37,7 @@ unwrap<T>(boxed: Box<T>) => T { boxed.value }
 apply<T>(f: (T) => T, value: T) => T { f(value) }
 twice(value: u8) => u8 { value + value }
 
-# --- specificity: a stricter bound set wins among generics ---------------
+# --- overlapping bound sets, chosen between by a written selector -------
 spec Loud { volume(*self) => i32; }
 struct Horn { exposed pitch: i32; }
 meet Loud for Horn { volume(*self) => i32 { self.pitch } }
@@ -115,8 +115,10 @@ main() => void {
 	described: (left: u8, right: u8) => u8 = second;
 	println$("descriptors: ", described(1u8, 8u8));
 
-	# --- specificity, and a losing generic body that stays unanalyzed ----
-	ranked: (Horn) => *str = rank;
+	# --- selection, and a losing generic body that stays unanalyzed ------
+	#     `Horn` satisfies both declarations, so a bare `rank` would be
+	#     ambiguous; the selector names the bounded one exactly.
+	ranked: (Horn) => *str = rank<Horn: Loud>;
 	unharmed: (i32) => *str = safe;
 	println$("specificity: ", ranked(Horn { pitch = 1; }), " ", unharmed(0));
 

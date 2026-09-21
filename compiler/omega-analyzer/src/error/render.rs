@@ -592,6 +592,49 @@ impl AnalysisErrorKind {
                     "write the rest of `{}`'s generic arguments, or give this reference an expected function type",
                     name.as_ref()
                 )),
+            Self::BoundSelectorNotAllowed { applied_to } => d
+                .with_label(span, format!("this selector applies to {applied_to}"))
+                .with_help(
+                    "`T: A + B` and `spec A + B` choose between generic function declarations -- \
+                     write an ordinary generic argument here",
+                ),
+            Self::BoundSelectorOnCompParam { parameter } => d
+                .with_label(span, format!("`{}` binds a compile-time value", parameter.as_ref()))
+                .with_help("only a type parameter declares bounds, so only a type position accepts a selector"),
+            Self::NoMatchingBoundSelector { name, selector, candidates } => {
+                let mut d = d
+                    .with_label(span, format!("no declaration of `{}` declares exactly these bounds", name.as_ref()))
+                    .with_note(format!("selected: {selector}"));
+                for candidate in candidates {
+                    d = d.with_note(format!("candidate: {candidate}"));
+                }
+                d.with_help(
+                    "a selector names a declaration's own bound set exactly -- it does not assert a conformance, \
+                     so it neither reaches a stricter declaration nor falls back to a weaker one",
+                )
+            }
+            Self::UndeterminedBoundSelector { name, parameter } => d
+                .with_label(span, format!("`{}` is not determined here", parameter.as_ref()))
+                .with_help(format!(
+                    "`spec ...` selects a declaration without binding its parameter -- write the type for `{}`'s \
+                     position, or give this call an argument or expected type that determines it",
+                    name.as_ref()
+                )),
+            Self::SelectedBoundNotSatisfied { name, parameter, r#type, spec } => d
+                .with_label(
+                    span,
+                    format!("`{type}` does not implement `{}`", spec.as_ref()),
+                )
+                .with_note(format!(
+                    "selected `{}`, whose `{}` is bound by `{}`",
+                    name.as_ref(),
+                    parameter.as_ref(),
+                    spec.as_ref()
+                ))
+                .with_help(
+                    "a selector names the declaration meant, so its bounds are checked against \
+                     this call rather than passed over for another declaration",
+                ),
             Self::AmbiguousSelfOverload { name, previous } => d
                 .with_label(span, format!("`{}` differs from the other declaration only in how it receives `self`", name.as_ref()))
                 .with_secondary_label(*previous, format!("`{}` first declared here", name.as_ref()))
@@ -955,7 +998,10 @@ fn type_resolution_diagnostic(error: &TypeResolutionError, span: Span) -> Diagno
         }
         TypeResolutionError::NotASpec(_) => d
             .with_label(span, "not a spec")
-            .with_help("`spec *...`'s pointee must name a spec, e.g. `spec *Animal`"),
+            .with_help(
+                "a spec name is required here -- `spec *...`'s pointee, a generic bound, \
+                 and a bound selector all name one",
+            ),
         TypeResolutionError::SpecNotObjectSafe(_) => d
             .with_label(span, "not object-safe")
             .with_help("use a generic bound (`T: ...`) or `spec T` static dispatch instead"),
@@ -1044,10 +1090,17 @@ pub fn resolve_error_diagnostic(error: &ResolveError, span: Option<Span>) -> Dia
                 .with_help("break the cycle by removing one of the dependencies, or depending on a common base spec instead")
         }
         ResolveError::SpecNotImplemented { missing, .. } => {
-            with_label(d, "does not implement this spec".to_string()).with_note(format!(
-                "missing: {}",
-                missing.iter().map(Ident::as_ref).collect::<Vec<_>>().join(", ")
-            ))
+            let d = with_label(d, "does not implement this spec".to_string());
+            // A spec that requires nothing still has to be implemented, so an
+            // empty list means "no conformance at all", not "nothing wrong".
+            if missing.is_empty() {
+                d.with_note("no conformance to it is declared for this type")
+            } else {
+                d.with_note(format!(
+                    "missing: {}",
+                    missing.iter().map(Ident::as_ref).collect::<Vec<_>>().join(", ")
+                ))
+            }
         }
         ResolveError::InvalidAliasGenericParam { param, .. } => with_label(d, format!("`{}` cannot be a generic parameter here", param.as_ref()))
             .with_note("an alias's generic parameters are ordinary type-parameter names: each must be distinct and none may spell a language type"),

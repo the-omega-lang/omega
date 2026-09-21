@@ -327,3 +327,50 @@ fn an_ordinary_member_access_carries_no_generic_arguments() {
     };
     assert!(access.generic_args.is_empty());
 }
+
+#[test]
+fn a_bound_selector_survives_a_nested_closing_angle() {
+    use omega_parser::prelude::ExprGenericArg;
+    let omega_parser::prelude::Expression::FunctionCall(call) =
+        body_expression("f() => void { g<M: Holds<i32>>(x); }")
+    else {
+        panic!("expected a call");
+    };
+    let omega_parser::prelude::Expression::Path(path) = &call.callee.expression else {
+        panic!("expected a path callee");
+    };
+    let [ExprGenericArg::Bounded { bounds, .. }] = path.generic_args.as_slice() else {
+        panic!("expected one bounded selector");
+    };
+    assert!(matches!(bounds.as_slice(), [Type::Generic(_, args)] if args.len() == 1));
+}
+
+#[test]
+fn a_member_call_takes_a_bound_selector() {
+    use omega_parser::prelude::ExprGenericArg;
+    let omega_parser::prelude::Expression::FunctionCall(call) =
+        body_expression("f() => void { x.method<spec A>(1); }")
+    else {
+        panic!("expected a call");
+    };
+    let omega_parser::prelude::Expression::FieldAccess(access) = &call.callee.expression else {
+        panic!("expected a member callee");
+    };
+    assert!(matches!(
+        access.generic_args.as_slice(),
+        [ExprGenericArg::Inferred { .. }]
+    ));
+}
+
+#[test]
+fn a_selector_without_a_bound_does_not_parse() {
+    SourceModule::parse("f() => void { g<M: >(x); }").expect_err("must not parse");
+    SourceModule::parse("f() => void { g<spec>(x); }").expect_err("must not parse");
+}
+
+#[test]
+fn a_declaration_bound_list_is_unaffected_by_selector_syntax() {
+    let function = function("f<T: A + B, U>(x: T, y: U) => void {}");
+    assert_eq!(function.generics[0].bounds().len(), 2);
+    assert!(function.generics[1].bounds().is_empty());
+}

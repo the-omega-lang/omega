@@ -16,6 +16,10 @@ struct Value { exposed value: i32; }
 meet A for Value { }
 meet B for Value { }
 
+# Three overlapping declarations: `Value` satisfies all of them, so nothing
+# about the argument alone chooses between the bounded two. A selector names
+# the declared bound set exactly, and an alias of a conjunction selects the
+# same declaration the conjunction itself would.
 bound<T>(value: T) => i32 { 4 }
 bound<T: A>(value: T) => i32 { 5 }
 bound<T: AB>(value: T) => i32 { 6 }
@@ -71,7 +75,7 @@ main() => void {
     println$("floating: ", floating(1.0), " ", floating(1.0f64));
     println$("alias: ", choose(10), " ", choose(10i64));
     println$("losing-body: ", safe(10));
-    println$("bounds: ", bound(Value { value = 1; }));
+    println$("bounds: ", bound<Value: AB>(Value { value = 1; }));
     box := Box<i32> { value = 1; };
     println$("nominal: ", nominal(box), " ", nominal(&box));
     println$("array: ", array([1, 2, 3]));

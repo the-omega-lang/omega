@@ -101,13 +101,17 @@ A blanket conformance applies to every conformable concrete type satisfying its 
 meet<T> SomeSpec for T { ... }
 ```
 
-Selection rules:
+Selection rules, which apply to **conformances**, not to function overloads:
 
 1. A matching concrete conformance is more specific than any blanket.
 2. Between matching blankets, compare their required bound sets.
 3. A strict superset of bounds is more specific than a strict subset.
 4. Incomparable matching bound sets are ambiguous and must be rejected.
 5. An unbounded blanket has the empty bound set and is therefore less specific than any otherwise matching bounded blanket.
+
+Overlapping *function declarations* are not ranked this way: bound strength
+never chooses between them, and a call says which declared bound set it means
+with an explicit selector. See [`functions.md`](functions.md).
 
 A blanket may implement only a spec owned by the blanket's package. This prevents a package from claiming every foreign type for a foreign spec.
 
@@ -169,7 +173,9 @@ use_both<T: Animal + Dummy>(value: *T) => void {
 }
 ```
 
-A bound is nominal: a concrete instantiation of `T: Animal` must have an applicable conformance to `Animal`. `T: A + B` requires both.
+A bound is nominal: a concrete instantiation of `T: Animal` must have an applicable conformance to `Animal`. `T: A + B` requires both. The witness is what satisfies the bound, never a type that merely happens to declare the required functions -- so a spec that requires nothing is still unsatisfied by a type that does not conform to it.
+
+A generic bound compares a spec's complete argument list, with the spec's own declared defaults applied. A bound that leaves a defaulted spec argument out therefore names the same bound as one that writes it, and a bound selector compares the same way.
 
 Methods supplied by declared/entailed bounds are in scope for generic code. If two bound specs make the same method name applicable and no unique overload can be selected, the call is ambiguous.
 

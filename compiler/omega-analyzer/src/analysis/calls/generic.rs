@@ -96,7 +96,7 @@ impl<'r> Analyzer<'r> {
         name: &Ident,
         namespace: FunctionNamespace,
         template: &GenericMethodTemplate,
-        explicit: &[ResolvedGenericArg],
+        explicit: &WrittenGenerics,
         implicit_params: usize,
         args: &[HirExprNode],
         expected: Option<&ResolvedType>,
@@ -105,8 +105,7 @@ impl<'r> Analyzer<'r> {
         // parameters, which the declaration's written types still name;
         // explicitly written arguments come first, so they outrank an owner
         // parameter this declaration shadows.
-        let mut seed =
-            GenericSubstitution::zip(template.generics.iter().map(|param| &param.ident), explicit);
+        let mut seed = Self::written_substitution(&template.generics, explicit);
         for (bound, arg) in template.owner_substitution.iter() {
             seed.push(bound.clone(), arg.clone());
         }
@@ -129,15 +128,30 @@ impl<'r> Analyzer<'r> {
                         AnalysisErrorKind::GenericParamFromFatPointer { parameter, found },
                     );
                 } else {
-                    self.error(
+                    self.undetermined_generic_param(
                         node_id,
                         span,
-                        AnalysisErrorKind::UnresolvedGenericParam(generic),
+                        name,
+                        &template.generics,
+                        explicit,
+                        generic,
                     );
                 }
                 return None;
             }
         };
+        self.check_written_selectors(
+            node_id,
+            span,
+            name,
+            crate::resolver::GenericCallTarget::Method {
+                owner,
+                name,
+                namespace,
+            },
+            explicit,
+            &generic_args,
+        )?;
 
         match self
             .resolver
@@ -240,7 +254,7 @@ impl<'r> Analyzer<'r> {
 
         let explicit = if function_generics_written {
             let declared = Self::owner_item_path(&owner, member);
-            match self.resolve_generic_arg_list(
+            match self.resolve_written_generics(
                 node_id,
                 span,
                 &expr_path.generic_args,
@@ -251,7 +265,7 @@ impl<'r> Analyzer<'r> {
                 None => return Intercepted::Claimed(None),
             }
         } else {
-            Vec::new()
+            WrittenGenerics::default()
         };
 
         Intercepted::Claimed(self.finish_generic_method_call(
@@ -283,7 +297,9 @@ impl<'r> Analyzer<'r> {
             .tail
             .truncate(expr_path.path.tail.len() - member_segments);
         let written = if owner_generics_written {
-            Type::Generic(owner_path, expr_path.generic_args.clone())
+            // A selector is not owner syntax, so this is not the owner-
+            // qualified reading; the ordinary path reading reports it.
+            Type::Generic(owner_path, Self::plain_generic_args(&expr_path.generic_args)?)
         } else {
             Type::Named(owner_path)
         };
@@ -301,7 +317,7 @@ impl<'r> Analyzer<'r> {
         member: &Ident,
         namespace: FunctionNamespace,
         template: &GenericMethodTemplate,
-        explicit: &[ResolvedGenericArg],
+        explicit: &WrittenGenerics,
         expected: Option<&ResolvedType>,
     ) -> Option<CheckedExprNode> {
         // Reached through its owner rather than an instance, a member's
@@ -718,7 +734,7 @@ impl<'r> Analyzer<'r> {
             Err(_) => return Intercepted::Declined,
         };
 
-        let explicit = match self.resolve_generic_arg_list(
+        let explicit = match self.resolve_written_generics(
             node_id,
             span,
             &expr_path.generic_args,
@@ -743,12 +759,13 @@ impl<'r> Analyzer<'r> {
         accessor: &[Ident],
         access: &ItemAccess,
         sig: &GenericSignature,
-        explicit: &[ResolvedGenericArg],
+        explicit: &WrittenGenerics,
         expected: Option<&ResolvedType>,
     ) -> Option<CheckedExprNode> {
         // Written arguments bind the declaration's generics left to right;
-        // inference only ever fills what is left.
-        let bound = GenericSubstitution::zip(sig.generics.iter().map(|p| &p.ident), explicit);
+        // inference only ever fills what is left, including the position a
+        // `spec ...` selector occupies without binding.
+        let bound = Self::written_substitution(&sig.generics, explicit);
 
         let comp_types = self.comp_param_types(node_id, span, &sig.generics, &bound);
         let generics = self.generic_params(&sig.generics, &comp_types);
@@ -774,15 +791,34 @@ impl<'r> Analyzer<'r> {
                         AnalysisErrorKind::GenericParamFromFatPointer { parameter, found },
                     );
                 } else {
-                    self.error(
+                    self.undetermined_generic_param(
                         node_id,
                         span,
-                        AnalysisErrorKind::UnresolvedGenericParam(generic),
+                        access
+                            .absolute
+                            .last()
+                            .expect("an item path always ends in the item's own name"),
+                        &sig.generics,
+                        explicit,
+                        generic,
                     );
                 }
                 return None;
             }
         };
+        let name = access
+            .absolute
+            .last()
+            .expect("an item path always ends in the item's own name")
+            .clone();
+        self.check_written_selectors(
+            node_id,
+            span,
+            &name,
+            crate::resolver::GenericCallTarget::Function(&access.absolute),
+            explicit,
+            &generic_args,
+        )?;
 
         let (fn_type, storage, decl_id) = match self.resolver.resolve_item(
             accessor,

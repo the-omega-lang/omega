@@ -69,7 +69,7 @@ use omega_hir::{
     HirStructLiteral, HirStructLiteralField, HirUnionDef, HirWalrusDeclaration, LogicalOp,
 };
 use omega_parser::prelude::{
-    ArrayLength, ExprPath, GenericArg, Ident, NumberBase, NumberExpr, Origin, Path,
+    ArrayLength, ExprGenericArg, ExprPath, GenericArg, Ident, NumberBase, NumberExpr, Origin, Path,
     QualifiedSpecPath, SelfMode, Span, Type, Visibility,
 };
 use std::cell::RefCell;

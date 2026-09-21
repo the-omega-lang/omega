@@ -1,18 +1,19 @@
-error: 'Value' does not implement spec 'A' (missing: marker)
- --> tests/t05g_generic_overload_failures/t05g_generic_overload_failures.omg:8:5
-  |
-8 |     selected(Value { });
-  |     ^^^^^^^^^^^^^^^^^^^ does not implement this spec
-  |
-  = note: missing: marker
+error: 'Value' does not implement 'A'
+  --> tests/t05g_generic_overload_failures/t05g_generic_overload_failures.omg:11:5
+   |
+11 |     selected<Value: A>(Value { });
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Value` does not implement `A`
+   |
+   = note: selected `selected`, whose `T` is bound by `A`
+   = help: a selector names the declaration meant, so its bounds are checked against this call rather than passed over for another declaration
 
 error: no overload of 'needs' matches this call
- --> tests/t05g_generic_overload_failures/t05g_generic_overload_failures.omg:9:5
-  |
-9 |     needs(1, 2u32);
-  |     ^^^^^^^^^^^^^^ no overload of `needs` matches this
-  |
-  = note: candidate: <T>(a: T, b: T) => void
-  = note: candidate: (value: bool) => void
+  --> tests/t05g_generic_overload_failures/t05g_generic_overload_failures.omg:12:5
+   |
+12 |     needs(1, 2u32);
+   |     ^^^^^^^^^^^^^^ no overload of `needs` matches this
+   |
+   = note: candidate: <T>(a: T, b: T) => void
+   = note: candidate: (value: bool) => void
 
 error: could not compile the program due to 2 previous errors

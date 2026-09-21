@@ -959,6 +959,13 @@ impl<'r> Analyzer<'r> {
         None
     }
 
+    /// Whether `concrete` satisfies one written generic bound.
+    ///
+    /// A bound is satisfied by an actual conformance witness. Declaring the
+    /// methods a spec happens to require is not conforming to it -- and a
+    /// spec that requires nothing would otherwise be satisfied by every type,
+    /// which would make a marker bound select nothing. The requirement walk
+    /// still runs on failure, purely to name what the type is missing.
     pub fn check_generic_bound(
         &mut self,
         id: HirId,
@@ -967,11 +974,25 @@ impl<'r> Analyzer<'r> {
         concrete: &ResolvedType,
     ) -> Option<Result<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedGenericArg>), (Ident, Vec<Ident>)>>
     {
-        let (spec, spec_args) = self.resolve_spec_reference(id, span, bound)?;
-        let spec_name = spec.borrow().name.clone();
-        match self.type_implements_spec(id, span, concrete, &spec, &spec_args, false) {
-            Ok(_) => Some(Ok((spec, spec_args))),
-            Err(missing) => Some(Err((spec_name, missing))),
+        // The canonical key, not the written syntax: a conformance is
+        // registered under the spec's complete argument list, so a bound that
+        // left a defaulted argument out has to be padded the same way before
+        // the two can be compared at all.
+        let (spec, key) = self.bound_key(id, span, bound)?;
+        let (spec_name, spec_args) = (key.name, key.args);
+        match self.resolver.conformance_for(concrete, &spec, &spec_args) {
+            Ok(Some(_)) => Some(Ok((spec, spec_args))),
+            Ok(None) => {
+                let missing = self
+                    .type_implements_spec(id, span, concrete, &spec, &spec_args, false)
+                    .err()
+                    .unwrap_or_default();
+                Some(Err((spec_name, missing)))
+            }
+            Err(error) => {
+                self.error(id, span, AnalysisErrorKind::ModuleResolution(error));
+                None
+            }
         }
     }
 }

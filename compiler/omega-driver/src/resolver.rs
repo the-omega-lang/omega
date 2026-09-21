@@ -493,7 +493,7 @@ impl Driver {
     /// The absolute path a query should really answer for. A plain-path alias
     /// forwards to its target's own path so every downstream query keeps
     /// working on the target's identity; anything else answers for itself.
-    fn canonical_query_path(&mut self, absolute_path: &[Ident]) -> ModulePath {
+    pub(crate) fn canonical_query_path(&mut self, absolute_path: &[Ident]) -> ModulePath {
         let Some((name, module)) = absolute_path.split_last() else {
             return absolute_path.to_vec();
         };
@@ -1031,6 +1031,14 @@ impl ModuleResolver for Driver {
         namespace: FunctionNamespace,
     ) -> Result<OverloadCandidates, ResolveError> {
         self.collect_method_value_templates(owner, name, namespace)
+    }
+
+    fn prepare_generic_call(
+        &mut self,
+        target: omega_analyzer::resolver::GenericCallTarget<'_>,
+        arguments: &[Option<ResolvedGenericArg>],
+    ) -> Result<Option<omega_analyzer::resolver::PreparedCall>, ResolveError> {
+        Driver::prepare_generic_call(self, target, arguments)
     }
 
     fn instantiate_overload(

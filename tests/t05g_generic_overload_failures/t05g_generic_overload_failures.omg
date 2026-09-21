@@ -5,6 +5,9 @@ selected<T>(value: T) => void { }
 needs<T = u64>(a: T, b: T) => void { }
 needs(value: bool) => void { }
 main() => void {
-    selected(Value { });
+    # The selector names the bounded declaration, so the bound it cannot
+    # prove is the error -- selection does not quietly reach the unbounded
+    # declaration that a bare `selected(Value { })` would have found.
+    selected<Value: A>(Value { });
     needs(1, 2u32);
 }

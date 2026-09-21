@@ -253,6 +253,39 @@ impl Driver {
         })
     }
 
+    /// The same declaration a preparation query needs, without the parts
+    /// only instantiation uses.
+    pub(crate) fn method_declaration_for_key(
+        &mut self,
+        key: &ItemKey,
+    ) -> crate::items::preparation::GenericDeclaration {
+        let template = self.method_template_for_key(key);
+        crate::items::preparation::GenericDeclaration {
+            key: template.key,
+            function: template.function,
+            site: template.site,
+            enclosing: template.owner_substitution,
+        }
+    }
+
+    /// The one generic function `owner` declares under `name`, as a
+    /// preparation target.
+    pub(crate) fn generic_method_declaration(
+        &mut self,
+        owner: &ResolvedType,
+        name: &Ident,
+        namespace: FunctionNamespace,
+    ) -> Result<Option<crate::items::preparation::GenericDeclaration>, ResolveError> {
+        Ok(self
+            .find_generic_method(owner, name, namespace)?
+            .map(|template| crate::items::preparation::GenericDeclaration {
+                key: template.key,
+                function: template.function,
+                site: template.site,
+                enclosing: template.owner_substitution,
+            }))
+    }
+
     fn method_template_for_key(&mut self, key: &ItemKey) -> MethodTemplate {
         let owner = key.owner().expect("a method query has an owner");
         let (target, namespace) = if let Some(target) = self.items.cells.resolved_type(owner) {

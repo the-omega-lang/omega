@@ -7,7 +7,8 @@ pub use omega_parser::prelude::{
     AnnotationLiteral,
 };
 use omega_parser::prelude::{
-    ByteStringExpr, ExprPath, FunctionType, FunctionTypeParam, GenericArg, GenericParamKind, Ident,
+    ByteStringExpr, ExprGenericArg, ExprPath, FunctionType, FunctionTypeParam, GenericArg,
+    GenericParamKind, Ident,
     NumberExpr, Origin, Path, RawConvention, SelfMode, Span, StringExpr, Type, Visibility,
 };
 
@@ -676,7 +677,7 @@ pub enum HirProjection {
     /// A named member: a field, or the method a call selects. Generic
     /// arguments are only ever written on the latter -- the grammar accepts
     /// them solely before a call's `(`.
-    FieldAccess(Ident, Origin, Vec<GenericArg>),
+    FieldAccess(Ident, Origin, Vec<ExprGenericArg>),
     Index(Box<HirExprNode>),
     Deref,
 }

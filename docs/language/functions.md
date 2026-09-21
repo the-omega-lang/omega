@@ -117,27 +117,54 @@ A generic declaration has no signature until its generic arguments are determine
 
 Several functions or methods may share a name. A call is resolved using the argument count and argument types, including literal-adaptation cost.
 
-- If no candidate is viable, the call is invalid.
-- If exactly one minimum-cost candidate exists, that candidate is selected.
-- If multiple candidates tie at the minimum cost, select the unique most specific candidate using the [conformance selection rules](specs-and-conformance.md#blanket-conformances), with concrete declarations corresponding to concrete conformances and generic declarations to blankets. If there is no unique most specific candidate, the call is ambiguous and must be rejected.
+Selection proceeds in this order:
 
-For each generic candidate, inference uses the call's explicit generic arguments,
-expected result type, and written arguments under the rules in
-[`generics.md`](generics.md). A candidate whose parameter types cannot be
-determined or do not accept the arguments is not viable. A candidate that is not
-viable produces no diagnostics of its own, and only the selected declaration is
-instantiated. Generic defaults do not establish viability: matching an argument
-never consults a default, though a generic parameter that no argument determines
-still takes its default. The selected declaration's bounds are then checked
-normally; an unsatisfied bound is an error, not a reason to fall back to another
-candidate.
+- **Applicability.** For each candidate, inference uses the call's written
+  generic arguments, expected result type, and written arguments under the
+  rules in [`generics.md`](generics.md). A candidate whose parameter types
+  cannot be determined or do not accept the arguments is not applicable.
+  Neither is one whose declared bound set a written selector does not name, or
+  whose bounds these arguments cannot prove. An inapplicable candidate never
+  blocks an applicable one, so a call may reach a candidate that costs more
+  than one that does not apply.
+- **Cost.** Among applicable candidates, keep those at the minimum
+  adaptation cost.
+- **Preference.** If more than one remains, a concrete declaration beats a
+  generic one. Among generics, let `U(c)` be the set of positions at which the
+  caller wrote a **plain type argument** and candidate `c` declares no bounds;
+  `a` beats `b` only when `U(a)` strictly contains `U(b)`. Selector positions,
+  positions the caller did not write, and `comp` positions contribute nothing.
+- **Result.** Exactly one surviving candidate is the selection; none is a
+  no-match error, and more than one is ambiguous.
 
-Specificity compares declaration origin and required bound sets. It does not
+Nonempty bound sets are never ranked against each other. With `f<T: A>` and
+`f<T: B>` declared and a type implementing both, `f<M>()` is ambiguous, and
+adding `f<T: A + B>` does not resolve it -- an explicit selector does. With
+`f<T>` and `f<T: A>` declared, `f<M>()` prefers the unbounded declaration
+because the caller wrote a plain type argument there, while `f<M: A>()` selects
+the bounded one and an inferred `f(M{})` is ambiguous.
+
+An inapplicable candidate produces no diagnostics of its own. Deciding
+applicability reads a candidate's declared bounds and resolves any default it
+needs to reach them, but never analyzes its body, and only the selected
+declaration is instantiated. Generic defaults do not establish applicability:
+matching an argument never consults a default, though a generic parameter that
+no argument determines still takes its default. A bound that is merely
+unproven makes a candidate inapplicable; a malformed declaration or a
+cyclic conformance proof remains a real error. An unsatisfied bound on a
+declaration a selector explicitly named is an error, because the selector
+already said which declaration was meant.
+
+Preference compares declaration origin and what the caller wrote. It does not
 compare parameter structure: `f<T>(x: T)` and `f<T>(x: *T)` are both unbounded
 and remain ambiguous when both match at the minimum cost. Generic declarations
 with structurally identical parameter types and required bound sets are
 redeclarations, even if their generic parameters have different names. They are
-rejected at their declarations, independently of calls.
+rejected at their declarations, independently of calls. More than one
+declaration may survive the same exact selector -- including bounds that become
+identical only after substitution -- and an unresolved tie is then ambiguous.
+
+Declaration order never affects which candidate is selected.
 
 **Adapting a literal is a last resort, not a default.** A candidate that accepts
 the arguments as written always beats one that only becomes viable by adapting a
@@ -182,13 +209,14 @@ thing(10u32);                     # a call: the generic, with no conversion
 
 The rules are:
 
-- Generic arguments written on the **function** segment (`thing<i32>`) restrict selection to generic declarations. A concrete declaration of the same name is excluded, whether or not a generic one then matches. They are a positional prefix, bound as at a call; the rest are inferred from the expected type.
+- Generic arguments written on the **function** segment (`thing<i32>`, `thing<spec A>`) restrict selection to generic declarations. A concrete declaration of the same name is excluded, whether or not a generic one then matches. They are a positional prefix, bound as at a call; the rest are inferred from the expected type.
 - Matching is exact. Parameter count, parameter types, return type, calling convention, and variadic status must all be identical after substitution, at every depth: no literal adaptation, pointer-mutability weakening, anonymous-enum injection, receiver adaptation, or generated adapter applies. This is stricter than a call, which may pay a conversion cost for an argument; a value has nothing to pay it with. Parameter descriptors are not part of a function type and so never affect selection.
 - A generic parameter the expected signature does not mention takes its declared default. A default never establishes a match, exactly as at a call.
-- Among exact matches, specificity decides as it does for calls: a concrete declaration beats a generic one, and among generics the stricter bound set wins. Parameter structure is not a tie-breaker, so equally specific or incomparable matches are ambiguous. Only the selected declaration is instantiated, and its bounds are then checked normally.
+- A candidate must also be applicable: a written selector must name its declared bound set exactly, and its bounds must be provable. As at a call, an inapplicable declaration never blocks another one.
+- Among applicable exact matches, preference decides as it does for calls: a concrete declaration beats a generic one, and among generics the unbounded-position rule applies to whatever plain type arguments the reference wrote. Parameter structure is not a tie-breaker, so equally preferred or incomparable matches are ambiguous. Only the selected declaration is instantiated.
 - With no expected function type, an uncalled reference still excludes generic declarations, because nothing determines their arguments. Written generic arguments are the exception: `f<i32>` needs no expected type when they leave exactly one declaration whose remaining parameters its own defaults complete.
 
-A value and a call that reach the same declaration with the same generic arguments share one instantiation, and therefore one address.
+A value and a call that reach the same declaration with the same generic arguments share one instantiation, and therefore one address, however each spelled the selection.
 
 **The two associated-function namespaces are separate overload domains.** A static and a member never participate in one overload set, are never compared for redeclaration, and adding an overload to one namespace cannot make the other ambiguous. Within the member namespace the existing rule still holds: receiver spelling alone is not a selector, so two members differing only in `self` versus `*self` are rejected. An uncalled `Type::self::name` selects among member overloads using the unbound function value type, receiver parameter included.
 

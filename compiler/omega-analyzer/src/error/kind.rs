@@ -425,6 +425,43 @@ pub enum AnalysisErrorKind {
         parameter: Ident,
     },
 
+    /// A bound selector was written where only ordinary generic arguments
+    /// apply. Selectors choose between function declarations; nothing else
+    /// a generic argument list can be applied to has declarations to choose
+    /// between.
+    BoundSelectorNotAllowed {
+        applied_to: String,
+    },
+    /// A bound selector was written for a `comp` parameter, which binds a
+    /// compile-time value and never declares bounds.
+    BoundSelectorOnCompParam {
+        parameter: Ident,
+    },
+    /// No declaration of the name declares exactly the bounds the selector
+    /// names. A selector is not a conformance assertion: it neither widens
+    /// to a stricter declaration nor falls back to a weaker one.
+    NoMatchingBoundSelector {
+        name: Ident,
+        selector: String,
+        candidates: Vec<String>,
+    },
+    /// A `spec ...` selector occupies a position but binds nothing, and
+    /// nothing else at this site determines the type it stands for.
+    UndeterminedBoundSelector {
+        name: Ident,
+        parameter: Ident,
+    },
+    /// A bound selector named exactly one declaration, and that
+    /// declaration's own bound is the thing these arguments cannot prove.
+    /// Reported instead of "nothing matches" because the selector already
+    /// said which declaration was meant.
+    SelectedBoundNotSatisfied {
+        name: Ident,
+        parameter: Ident,
+        r#type: String,
+        spec: Ident,
+    },
+
     MissingSpecFunction {
         implementor: Ident,
         spec: Ident,
@@ -1195,6 +1232,31 @@ impl fmt::Display for AnalysisErrorKind {
                 "'{}' cannot be instantiated here: '{}' is not determined",
                 name.as_ref(),
                 parameter.as_ref()
+            ),
+            Self::BoundSelectorNotAllowed { applied_to } => write!(
+                f,
+                "a bound selector cannot be written on {applied_to}"
+            ),
+            Self::BoundSelectorOnCompParam { parameter } => write!(
+                f,
+                "'{}' is a 'comp' parameter and declares no bounds",
+                parameter.as_ref()
+            ),
+            Self::NoMatchingBoundSelector { name, selector, .. } => write!(
+                f,
+                "no declaration of '{}' declares the bounds '{selector}'",
+                name.as_ref()
+            ),
+            Self::UndeterminedBoundSelector { name, parameter } => write!(
+                f,
+                "'{}' cannot be instantiated here: '{}' is not determined",
+                name.as_ref(),
+                parameter.as_ref()
+            ),
+            Self::SelectedBoundNotSatisfied { r#type, spec, .. } => write!(
+                f,
+                "'{type}' does not implement '{}'",
+                spec.as_ref()
             ),
             Self::AmbiguousSelfOverload { name, .. } => {
                 write!(

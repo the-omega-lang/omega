@@ -1,4 +1,5 @@
 use super::*;
+use overload::{Applicability, Rejection};
 
 /// What an uncalled reference to a function name resolved to.
 pub(crate) enum FunctionValue {
@@ -19,8 +20,15 @@ pub(crate) enum FunctionValue {
 }
 
 /// A candidate that survived the written generic arguments, together with
-/// what they bound.
-type Prepared = (usize, Vec<Option<ResolvedGenericArg>>);
+/// what they bound and what they require of it.
+struct Prepared {
+    index: usize,
+    written: WrittenGenerics,
+    bindings: Vec<Option<ResolvedGenericArg>>,
+}
+
+/// The survivors of applicability, and why each of the rest was ruled out.
+type Applicable = (Vec<Prepared>, Vec<(usize, Rejection)>);
 
 impl<'r> Analyzer<'r> {
     /// Picks the one declaration an uncalled reference names, instantiating
@@ -39,7 +47,7 @@ impl<'r> Analyzer<'r> {
         name: &Ident,
         declared: &[Ident],
         candidates: &[OverloadCandidate],
-        explicit: &[GenericArg],
+        explicit: &[ExprGenericArg],
         expected: Option<&ResolvedType>,
     ) -> FunctionValue {
         let eligible: Vec<usize> = candidates
@@ -56,11 +64,19 @@ impl<'r> Analyzer<'r> {
         let mut prepared: Vec<Prepared> = Vec::new();
         for &index in &eligible {
             let Some(template) = candidates[index].template().cloned() else {
-                prepared.push((index, Vec::new()));
+                prepared.push(Prepared {
+                    index,
+                    written: WrittenGenerics::default(),
+                    bindings: Vec::new(),
+                });
                 continue;
             };
             match self.explicit_bindings(node_id, span, declared, &template, explicit, report) {
-                Some(bindings) => prepared.push((index, bindings)),
+                Some((written, bindings)) => prepared.push(Prepared {
+                    index,
+                    written,
+                    bindings,
+                }),
                 None if report => return FunctionValue::Failed,
                 None => {}
             }
@@ -68,14 +84,16 @@ impl<'r> Analyzer<'r> {
 
         match expected {
             Some(ResolvedType::Function(expected)) => self.select_against(
-                node_id, span, name, candidates, &eligible, prepared, expected,
+                node_id, span, name, candidates, &eligible, prepared, explicit, expected,
             ),
             _ => self.select_unconstrained(node_id, span, name, candidates, prepared, explicit),
         }
     }
 
     /// Selection against a known function type: every survivor must have
-    /// exactly that signature, and specificity breaks the remaining tie.
+    /// exactly that signature, prove its own bounds, and satisfy whatever
+    /// the written prefix selected. The unbounded preference breaks the
+    /// remaining tie.
     #[allow(clippy::too_many_arguments)]
     fn select_against(
         &mut self,
@@ -85,15 +103,16 @@ impl<'r> Analyzer<'r> {
         candidates: &[OverloadCandidate],
         eligible: &[usize],
         prepared: Vec<Prepared>,
+        explicit: &[ExprGenericArg],
         expected: &ResolvedFunctionType,
     ) -> FunctionValue {
         // One concrete declaration is not a choice. Selecting it and letting
         // the surrounding context report an ordinary type mismatch says more
         // than "no declaration has this type" would.
-        if let [(index, _)] = prepared.as_slice()
-            && candidates[*index].template().is_none()
+        if let [only] = prepared.as_slice()
+            && candidates[only.index].template().is_none()
         {
-            let index = *index;
+            let index = only.index;
             return self.instantiate_function_value(
                 node_id,
                 span,
@@ -105,43 +124,53 @@ impl<'r> Analyzer<'r> {
             );
         }
         let mut matched: Vec<Prepared> = Vec::new();
-        for (index, bindings) in prepared {
-            match candidates[index].template() {
+        for entry in prepared {
+            match candidates[entry.index].template() {
                 None => {
-                    if Self::value_signature(&candidates[index]) == *expected {
-                        matched.push((index, bindings));
+                    if Self::value_signature(&candidates[entry.index]) == *expected {
+                        matched.push(entry);
                     }
                 }
                 Some(template) => {
                     let template = template.clone();
-                    if let Some(bindings) = self.match_template(&template, bindings, expected) {
-                        matched.push((index, bindings));
-                    }
+                    let Some(bindings) =
+                        self.match_template(&template, entry.bindings.clone(), expected)
+                    else {
+                        continue;
+                    };
+                    matched.push(Prepared { bindings, ..entry });
                 }
             }
         }
+        let Some((applicable, rejected)) =
+            self.applicable_values(node_id, span, candidates, matched)
+        else {
+            return FunctionValue::Failed;
+        };
 
-        let winners: Vec<usize> = matched
+        let winners: Vec<usize> = applicable
             .iter()
-            .map(|(index, _)| *index)
-            .filter(|index| {
-                !matched
+            .filter(|entry| {
+                !applicable
                     .iter()
-                    .any(|(other, _)| Self::value_dominates(candidates, *other, *index))
+                    .any(|other| Self::value_dominates(candidates, other, entry))
             })
+            .map(|entry| entry.index)
             .collect();
         let [winner] = winners.as_slice() else {
             if winners.is_empty() {
+                if self.report_selected_bound_failure(node_id, span, name, explicit, &rejected) {
+                    return FunctionValue::Failed;
+                }
                 self.error(
                     node_id,
                     span,
                     AnalysisErrorKind::NoMatchingFunctionValue {
                         name: name.clone(),
                         expected: ResolvedType::Function(expected.clone()).to_string(),
-                        candidates: eligible
-                            .iter()
-                            .map(|index| Self::describe_value_candidate(&candidates[*index]))
-                            .collect(),
+                        candidates: Self::describe_value_candidates(
+                            candidates, eligible, &rejected,
+                        ),
                     },
                 );
             } else {
@@ -149,11 +178,11 @@ impl<'r> Analyzer<'r> {
             }
             return FunctionValue::Failed;
         };
-        let bindings = matched
+        let bindings = applicable
             .into_iter()
-            .find(|(index, _)| index == winner)
+            .find(|entry| entry.index == *winner)
             .expect("the winner came from the matched set")
-            .1;
+            .bindings;
         self.instantiate_function_value(
             node_id,
             span,
@@ -163,6 +192,34 @@ impl<'r> Analyzer<'r> {
             &bindings,
             Some(expected),
         )
+    }
+
+    /// Drops the candidates whose declared bounds this reference cannot
+    /// prove, or whose bounds a written selector does not name, keeping why.
+    /// `None` means a genuine error was reported while deciding.
+    fn applicable_values(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        candidates: &[OverloadCandidate],
+        prepared: Vec<Prepared>,
+    ) -> Option<Applicable> {
+        let mut applicable = Vec::with_capacity(prepared.len());
+        let mut rejected = Vec::new();
+        for entry in prepared {
+            match self.candidate_applies(
+                node_id,
+                span,
+                &candidates[entry.index],
+                &entry.written,
+                &entry.bindings,
+            ) {
+                Applicability::Applies => applicable.push(entry),
+                Applicability::Rejected(reason) => rejected.push((entry.index, reason)),
+                Applicability::Failed => return None,
+            }
+        }
+        Some((applicable, rejected))
     }
 
     /// Selection with no expected function type. Nothing here can infer a
@@ -175,14 +232,14 @@ impl<'r> Analyzer<'r> {
         name: &Ident,
         candidates: &[OverloadCandidate],
         prepared: Vec<Prepared>,
-        explicit: &[GenericArg],
+        explicit: &[ExprGenericArg],
     ) -> FunctionValue {
         if explicit.is_empty() {
             // An uncalled reference with no expected type still excludes
             // generic declarations: nothing here determines their arguments.
             let concrete: Vec<usize> = prepared
                 .iter()
-                .map(|(index, _)| *index)
+                .map(|entry| entry.index)
                 .filter(|index| candidates[*index].template().is_none())
                 .collect();
             return match (concrete.as_slice(), prepared.len()) {
@@ -197,7 +254,7 @@ impl<'r> Analyzer<'r> {
                 ),
                 ([], 0 | 1) => FunctionValue::Undetermined,
                 ([], _) => {
-                    let among: Vec<usize> = prepared.iter().map(|(index, _)| *index).collect();
+                    let among: Vec<usize> = prepared.iter().map(|entry| entry.index).collect();
                     self.ambiguous_value(node_id, span, name, candidates, &among);
                     FunctionValue::Failed
                 }
@@ -208,38 +265,101 @@ impl<'r> Analyzer<'r> {
             };
         }
 
-        let [(index, bindings)] = prepared.as_slice() else {
-            if prepared.is_empty() {
-                return FunctionValue::Undetermined;
-            }
-            let among: Vec<usize> = prepared.iter().map(|(index, _)| *index).collect();
-            self.ambiguous_value(node_id, span, name, candidates, &among);
-            return FunctionValue::Failed;
-        };
         // Everything the written prefix left open must come from the
         // declaration's own defaults: there is no other information here.
-        let template = candidates[*index]
-            .template()
-            .expect("a written argument list keeps only templates");
-        if let Some(parameter) = template
-            .generics
-            .iter()
-            .zip(bindings)
-            .find(|(param, binding)| binding.is_none() && param.default.is_none())
-            .map(|(param, _)| param.ident.clone())
-        {
-            self.error(
-                node_id,
-                span,
-                AnalysisErrorKind::UndeterminedFunctionValue {
-                    name: name.clone(),
-                    parameter,
-                },
-            );
-            return FunctionValue::Failed;
+        // A list that fits no declaration at all determines nothing, which is
+        // the caller's diagnostic rather than this one's.
+        let fits_nothing = prepared.is_empty();
+        let mut determined = Vec::with_capacity(prepared.len());
+        let mut undetermined = None;
+        for entry in prepared {
+            let template = candidates[entry.index]
+                .template()
+                .expect("a written argument list keeps only templates");
+            match template
+                .generics
+                .iter()
+                .zip(&entry.bindings)
+                .position(|(param, binding)| binding.is_none() && param.default.is_none())
+            {
+                None => determined.push(entry),
+                Some(position) => {
+                    let parameter = template.generics[position].ident.clone();
+                    undetermined.get_or_insert((
+                        entry.written.selectors.get(position).is_some_and(Option::is_some),
+                        parameter,
+                    ));
+                }
+            }
         }
-        let (index, bindings) = (*index, bindings.clone());
-        self.instantiate_function_value(node_id, span, name, candidates, index, &bindings, None)
+        let Some((applicable, rejected)) =
+            self.applicable_values(node_id, span, candidates, determined)
+        else {
+            return FunctionValue::Failed;
+        };
+        let winners: Vec<usize> = applicable
+            .iter()
+            .filter(|entry| {
+                !applicable
+                    .iter()
+                    .any(|other| Self::value_dominates(candidates, other, entry))
+            })
+            .map(|entry| entry.index)
+            .collect();
+        let [winner] = winners.as_slice() else {
+            if !winners.is_empty() {
+                self.ambiguous_value(node_id, span, name, candidates, &winners);
+                return FunctionValue::Failed;
+            }
+            return match undetermined {
+                Some((true, parameter)) => {
+                    self.error(
+                        node_id,
+                        span,
+                        AnalysisErrorKind::UndeterminedBoundSelector {
+                            name: name.clone(),
+                            parameter,
+                        },
+                    );
+                    FunctionValue::Failed
+                }
+                Some((false, parameter)) => {
+                    self.error(
+                        node_id,
+                        span,
+                        AnalysisErrorKind::UndeterminedFunctionValue {
+                            name: name.clone(),
+                            parameter,
+                        },
+                    );
+                    FunctionValue::Failed
+                }
+                None if fits_nothing => FunctionValue::Undetermined,
+                None if self.report_selected_bound_failure(
+                    node_id, span, name, explicit, &rejected,
+                ) => FunctionValue::Failed,
+                None => {
+                    let all: Vec<usize> = (0..candidates.len()).collect();
+                    self.error(
+                        node_id,
+                        span,
+                        AnalysisErrorKind::NoMatchingOverload {
+                            name: name.clone(),
+                            candidates: Self::describe_value_candidates(
+                                candidates, &all, &rejected,
+                            ),
+                        },
+                    );
+                    FunctionValue::Failed
+                }
+            };
+        };
+        let bindings = applicable
+            .into_iter()
+            .find(|entry| entry.index == *winner)
+            .expect("the winner came from the applicable set")
+            .bindings;
+        self.instantiate_function_value(node_id, span, name, candidates, *winner, &bindings, None)
     }
 
     /// The generic arguments that give a template exactly `expected` as its
@@ -291,58 +411,36 @@ impl<'r> Analyzer<'r> {
     }
 
     /// Binds the written positional prefix of a template's generic
-    /// parameters. With `report`, a list that does not fit the declaration is
-    /// diagnosed; without it the candidate is merely rejected.
+    /// parameters, keeping whatever bound selectors it wrote. With `report`,
+    /// a list that does not fit the declaration is diagnosed; without it the
+    /// candidate is merely rejected.
     fn explicit_bindings(
         &mut self,
         node_id: HirId,
         span: Span,
         declared: &[Ident],
         template: &OverloadTemplate,
-        explicit: &[GenericArg],
+        explicit: &[ExprGenericArg],
         report: bool,
-    ) -> Option<Vec<Option<ResolvedGenericArg>>> {
+    ) -> Option<(WrittenGenerics, Vec<Option<ResolvedGenericArg>>)> {
         let mut bindings = vec![None; template.generics.len()];
         if explicit.is_empty() {
-            return Some(bindings);
+            return Some((WrittenGenerics::default(), bindings));
         }
-        if report {
-            let resolved = self.resolve_generic_arg_list(
-                node_id,
-                span,
-                explicit,
-                declared,
-                &template.generics,
-            )?;
-            for (slot, arg) in bindings.iter_mut().zip(resolved) {
-                *slot = Some(arg);
-            }
-            return Some(bindings);
+        let written = if report {
+            self.resolve_written_generics(node_id, span, explicit, declared, &template.generics)?
+        } else {
+            self.try_written_generics(node_id, span, explicit, &template.generics)?
+        };
+        for (slot, binding) in bindings.iter_mut().zip(&written.bindings) {
+            slot.clone_from(binding);
         }
-        if explicit.len() > template.generics.len() {
-            return None;
-        }
-        for (position, written) in explicit.iter().enumerate() {
-            let reveals = &self.reveals;
-            let resolved = self
-                .context
-                .resolve_generic_arg(
-                    written,
-                    Some(&template.generics[position]),
-                    self.resolver,
-                    &self.module_path,
-                    ResolveItemOptions::INDIRECT,
-                    &|origin| reveals.allows(origin),
-                )
-                .ok()?;
-            bindings[position] = Some(resolved);
-        }
-        Some(bindings)
+        Some((written, bindings))
     }
 
     /// Materializes the selected declaration and checks the signature it
-    /// actually produced. Only the winner is instantiated, so a losing
-    /// generic's body, bounds, and defaults are never analyzed.
+    /// actually produced. Only the winner is instantiated, so no losing
+    /// generic's body is ever analyzed.
     #[allow(clippy::too_many_arguments)]
     fn instantiate_function_value(
         &mut self,
@@ -393,15 +491,29 @@ impl<'r> Analyzer<'r> {
 
     /// Whether `left` is strictly more specific than `right`, by the same
     /// rule calls use: a concrete declaration beats a generic one, and among
-    /// generics the stricter bound set wins. Parameter structure never
-    /// participates.
-    fn value_dominates(candidates: &[OverloadCandidate], left: usize, right: usize) -> bool {
-        match (candidates[left].template(), candidates[right].template()) {
+    /// generics the one left unbounded at strictly more of the caller's
+    /// written plain-type positions wins. Parameter structure and bound
+    /// strength never participate.
+    fn value_dominates(candidates: &[OverloadCandidate], left: &Prepared, right: &Prepared) -> bool {
+        match (
+            candidates[left.index].template(),
+            candidates[right.index].template(),
+        ) {
             (None, Some(_)) => true,
-            (Some(left), Some(right)) => {
-                crate::generics::compare_bound_sets(&left.bounds, &right.bounds)
-                    == Some(std::cmp::Ordering::Greater)
-            }
+            (Some(left_template), Some(right_template)) => WrittenGenerics::dominates(
+                &left.written.unbounded_positions(|position| {
+                    !left_template
+                        .bounds
+                        .iter()
+                        .any(|(parameter, _, _)| *parameter == position)
+                }),
+                &right.written.unbounded_positions(|position| {
+                    !right_template
+                        .bounds
+                        .iter()
+                        .any(|(parameter, _, _)| *parameter == position)
+                }),
+            ),
             _ => false,
         }
     }
@@ -434,6 +546,26 @@ impl<'r> Analyzer<'r> {
                     .collect(),
             },
         );
+    }
+
+    /// The candidate list a failure reports, each carrying whatever reason
+    /// ruled it out. Naming the reason beside the candidate is what keeps a
+    /// failed bound visible now that it no longer stops selection.
+    fn describe_value_candidates(
+        candidates: &[OverloadCandidate],
+        among: &[usize],
+        rejected: &[(usize, Rejection)],
+    ) -> Vec<String> {
+        among
+            .iter()
+            .map(|index| {
+                let description = Self::describe_value_candidate(&candidates[*index]);
+                match rejected.iter().find(|(rejected, _)| rejected == index) {
+                    Some((_, reason)) => format!("{description}{}", reason.explain()),
+                    None => description,
+                }
+            })
+            .collect()
     }
 
     /// A candidate as a diagnostic names it. A concrete member is described

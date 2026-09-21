@@ -413,13 +413,15 @@ impl<'r> Analyzer<'r> {
         let absolute = access.absolute.clone();
         let accessor = self.path_module(&expr_path.path);
         let params = self.item_generic_params_for(&accessor, prefix, &access);
-        let generic_args = self.resolve_generic_arg_list(
+        let written =
+            self.ordinary_generic_args(
             node_id,
             span,
             &expr_path.generic_args,
-            &access.absolute,
-            &params,
+            "a path that does not name a generic function",
         )?;
+        let generic_args =
+            self.resolve_generic_arg_list(node_id, span, &written, &access.absolute, &params)?;
         match self.resolve_item_with_ambient_from(&accessor, prefix, &access, &generic_args) {
             Ok(ResolvedItem::Type(_)) if rest.is_empty() => {
                 self.error(node_id, span, AnalysisErrorKind::NotAValue(absolute));
@@ -898,7 +900,7 @@ impl<'r> Analyzer<'r> {
         span: Span,
         r#type: &ResolvedType,
         rest: &[Ident],
-        explicit: &[GenericArg],
+        explicit: &[ExprGenericArg],
         expected: Option<&ResolvedType>,
         origin: Origin,
     ) -> Option<(CheckedPlaceRoot, ResolvedType)> {

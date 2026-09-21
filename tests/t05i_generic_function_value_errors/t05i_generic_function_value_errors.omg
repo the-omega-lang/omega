@@ -18,8 +18,8 @@ twin<T>(value: *T) => *T { value }
 split<T: A>(value: T) => T { value }
 split<T: B>(value: T) => T { value }
 
-# --- a stricter candidate wins specificity, then fails its own bound.
-#     The less specific declaration is not a fallback ---------------------
+# --- a selector names the bounded declaration, which then fails its own
+#     bound. The unbounded declaration is not a fallback from a selector --
 strict<T>(value: T) => T { value }
 strict<T: A>(value: T) => T { value }
 
@@ -46,7 +46,7 @@ narrow<T>(value: enum T | bool) => bool { true }
 main() => void {
 	equal: (*i32) => *i32 = twin;
 	incomparable: (Both) => Both = split;
-	unsatisfied: (Plain) => Plain = strict;
+	unsatisfied: (Plain) => Plain = strict<Plain: A>;
 	excluded: (i32) => i32 = thing<bool>;
 	too_many := echo<i32, u8>;
 	wrong_kind := stride<i32, u8>;

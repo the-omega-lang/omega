@@ -296,6 +296,17 @@ impl fmt::Display for ResolveError {
                 type_name,
                 spec,
                 missing,
+            } if missing.is_empty() => {
+                write!(
+                    f,
+                    "'{type_name}' does not implement spec '{}'",
+                    spec.as_ref()
+                )
+            }
+            Self::SpecNotImplemented {
+                type_name,
+                spec,
+                missing,
             } => write!(
                 f,
                 "'{type_name}' does not implement spec '{}' (missing: {})",
@@ -592,6 +603,27 @@ pub trait ModuleResolver {
         unreachable!("this resolver supplies no generic overload candidates")
     }
 
+    /// What one generic function declaration would be under a call site's
+    /// bindings, short of materializing it.
+    ///
+    /// Completes what the site left open from the declaration's own
+    /// defaults, reports the bounds each generic parameter then declares --
+    /// resolved in the declaration's own module and owner context -- and
+    /// whether the arguments satisfy them. Neither the declaration's body
+    /// nor its instantiation identity is produced, so preparing a candidate
+    /// that goes on to lose leaves nothing behind.
+    ///
+    /// `Ok(None)` means this resolver cannot answer for `target`, which
+    /// leaves selection with only the information it had before.
+    fn prepare_generic_call(
+        &mut self,
+        target: GenericCallTarget<'_>,
+        arguments: &[Option<ResolvedGenericArg>],
+    ) -> Result<Option<PreparedCall>, ResolveError> {
+        let _ = (target, arguments);
+        Ok(None)
+    }
+
     fn method_overload_candidates(
         &mut self,
         owner: &ResolvedType,
@@ -703,6 +735,80 @@ pub struct OverloadTemplate {
     pub calling_convention: crate::resolved_type::CallingConvention,
     pub is_variadic: bool,
     pub description: String,
+}
+
+/// One bound a declaration makes, as selection compares it: the spec's
+/// declaration identity together with its canonical arguments. Alias and
+/// conjunction spellings are already expanded and declared defaults applied,
+/// so equal keys mean the same declared bound however either side wrote it.
+#[derive(Debug, Clone)]
+pub struct DeclaredBound {
+    pub spec: HirId,
+    pub args: Vec<ResolvedGenericArg>,
+    /// The spec's own name, carried for diagnostics only.
+    pub name: Ident,
+}
+
+// A bound's identity is the spec it names and the arguments it applies, not
+// how either side spelled the name.
+impl PartialEq for DeclaredBound {
+    fn eq(&self, other: &Self) -> bool {
+        self.spec == other.spec && self.args == other.args
+    }
+}
+
+impl Eq for DeclaredBound {}
+
+impl fmt::Display for DeclaredBound {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.name.as_ref())?;
+        if let Some((first, rest)) = self.args.split_first() {
+            write!(f, "<{first}")?;
+            for arg in rest {
+                write!(f, ", {arg}")?;
+            }
+            write!(f, ">")?;
+        }
+        Ok(())
+    }
+}
+
+/// Which generic function declaration a preparation query is about. The
+/// three forms are the three ways a call site already reaches one.
+#[derive(Debug, Clone, Copy)]
+pub enum GenericCallTarget<'a> {
+    /// An overload candidate, by the declaration identity it carries.
+    Declaration(HirId),
+    /// A free generic function named by its absolute path.
+    Function(&'a [Ident]),
+    /// The one generic function an owner declares under this name.
+    Method {
+        owner: &'a ResolvedType,
+        name: &'a Ident,
+        namespace: crate::resolved_type::FunctionNamespace,
+    },
+}
+
+/// The answer to [`ModuleResolver::prepare_generic_call`].
+#[derive(Debug, Clone)]
+pub struct PreparedCall {
+    /// Every generic argument, with the declaration's own defaults applied
+    /// to the positions the site left open.
+    pub arguments: Vec<ResolvedGenericArg>,
+    /// The bounds each generic parameter declares, in declaration order,
+    /// after substitution.
+    pub bounds: Vec<Vec<DeclaredBound>>,
+    /// The first declared bound these arguments do not satisfy. An absent
+    /// conformance is an ordinary reason for a declaration not to apply, not
+    /// an error: another one may still be the declaration meant.
+    pub unmet: Option<UnmetBound>,
+}
+
+#[derive(Debug, Clone)]
+pub struct UnmetBound {
+    pub parameter: Ident,
+    pub r#type: ResolvedType,
+    pub spec: Ident,
 }
 
 pub type OverloadCandidates = Vec<OverloadCandidate>;

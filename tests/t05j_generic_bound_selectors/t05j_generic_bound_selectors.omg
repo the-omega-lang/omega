@@ -1,0 +1,153 @@
+# Explicit generic overload selection: `f<M: A + B>` and `f<spec A + B>` name
+# the declared bound set a call means, under the selection rules in
+# functions.md and generics.md. Every call here prints what its selected body
+# returns, so a wrong selection changes the output rather than only the types.
+#
+# Overlapping declarations deliberately differ in signature: two declarations
+# selected at the same generic arguments would otherwise encode to one linker
+# symbol (docs/issues/compiler-limitations.md).
+import std::io::println;
+import self::provider;
+import self::provider::shared as imported_shared;
+
+alias aliased_shared = provider::shared;
+
+exposed spec A { a_mark(*self) => i32; }
+exposed spec B { b_mark(*self) => i32; }
+alias AB = spec A + B;
+
+# The requested marker: one type satisfying both specs, so nothing about the
+# argument alone chooses between declarations that bound it.
+struct Mark { exposed value: i32; }
+meet A for Mark { a_mark(*self) => i32 { 1 } }
+meet B for Mark { b_mark(*self) => i32 { 2 } }
+
+# A type satisfying only `A`, so the `B` declaration is simply inapplicable.
+struct OnlyA { exposed value: i32; }
+meet A for OnlyA { a_mark(*self) => i32 { 3 } }
+
+pick<T: A>(value: T) => *str { "a" }
+pick<T: B>(value: T) => i32 { 22 }
+pick<T: A + B>(value: T) => bool { true }
+
+# An unbounded declaration alongside a bounded one: a written plain type
+# argument prefers the unbounded slot, and a selector reaches the other.
+rank<T>(value: T) => *str { "unbounded" }
+rank<T: A>(value: T) => i32 { 44 }
+
+# The bounded declaration is the cheaper match -- an adaptable literal is
+# already `i32` -- but `i32` cannot prove its bound, so the higher-cost
+# concrete declaration is the one that applies.
+reach<T: A>(value: T) => *str { "bounded" }
+reach(value: i64) => *str { "concrete" }
+
+# A generic spec, with a defaulted argument and a `comp` argument, so a
+# selector has to compare substituted spec arguments rather than spec names.
+spec Holds<T, comp N: usize = 2> { held(*self) => T; }
+struct Pair { exposed value: i32; }
+meet Holds<i32, 2> for Pair { held(*self) => i32 { self.value } }
+carry<T: Holds<i32>>(value: T) => *str { "held-2" }
+carry<T: Holds<i32, 3>>(value: T) => i32 { 66 }
+alias IntHolds = Holds<i32>;
+alias TypedHolds<U> = Holds<U>;
+aliased_bound<T: IntHolds>(value: T) => *str { "alias-bound" }
+
+# A lone generic declaration still answers to a selector.
+alone<T: A>(value: T) => i32 { 77 }
+
+# A parameter the signature never mentions, completed from its own default
+# after the selector has already chosen the declaration.
+sized<T: A, U = u16>(value: T) => usize { sizeof<U> }
+
+# A declaration the selector rules out is never instantiated, so its body is
+# never analyzed.
+quiet<T: A>(value: T) => i32 { 55 }
+quiet<T: B>(value: T) => *str { missing_in_unselected_body }
+
+# Positional holes: a `spec` selector occupies its slot without binding it,
+# so a later written argument still lands on the later parameter.
+hole<T: A, U>(value: T, other: U) => usize { sizeof<U> }
+
+# A `comp` parameter ahead of a bounded one: it declares no bounds itself, so
+# it neither takes a selector nor hides the bound that follows it from being
+# proved.
+after<comp N: usize, T: A>(value: T) => usize { N }
+after<comp N: usize, T>(value: T) => *str { "unbounded" }
+
+# Selection with no call, driven by an expected function type.
+valued<T: A>(value: T) => i32 { 88 }
+valued<T: B>(value: T) => bool { false }
+
+struct Owner {
+    exposed value: i32;
+    exposed take<T: A>(*self, thing: T) => i32 { 90 + self.value }
+    exposed take<T: B>(*self, thing: T) => bool { true }
+    exposed make<T: A>(thing: T) => i32 { 99 }
+    exposed make<T: B>(thing: T) => *str { "static-b" }
+}
+
+macro selected($value: expr) => { pick<spec A + B>($value) }
+
+main() => void {
+    mark := Mark { value = 1; };
+
+    # --- a written type plus the exact declared bound set -----------------
+    println$("typed: ", pick<Mark: A>(mark), " ", pick<Mark: B>(mark), " ", pick<Mark: A + B>(mark));
+
+    # --- member order and a conjunction alias select identically ----------
+    println$("spelling: ", pick<Mark: B + A>(mark), " ", pick<Mark: AB>(mark));
+
+    # --- `spec ...` selects without binding; the type is still inferred ---
+    println$("inferred: ", pick<spec A>(mark), " ", pick<spec B>(mark), " ", pick<spec AB>(mark));
+
+    # --- only one declaration applies, so no annotation is needed ---------
+    println$("sole: ", pick(OnlyA { value = 1; }));
+
+    # --- a written plain type argument prefers the unbounded declaration --
+    println$("unbounded: ", rank<Mark>(mark), " ", rank<Mark: A>(mark));
+
+    # --- a bound that cannot be proved makes its declaration inapplicable,
+    #     so a viable higher-cost declaration is reached -------------------
+    println$("fallback: ", reach(7));
+
+    # --- substituted spec arguments, including a default and a `comp` -----
+    # A comma inside `<...>` cannot be written directly inside a macro
+    # argument, so these are bound first.
+    pair := Pair { value = 5; };
+    defaulted := carry<Pair: Holds<i32>>(pair);
+    written := carry<Pair: Holds<i32, 2>>(pair);
+    println$("spec-args: ", defaulted, " ", written);
+    println$("spec-alias: ", carry<Pair: IntHolds>(pair), " ", carry<spec TypedHolds<i32>>(pair), " ", aliased_bound<Pair: Holds<i32>>(pair));
+
+    # --- a lone declaration, and a hole followed by a written argument ----
+    println$("alone: ", alone<Mark: A>(mark), " ", alone<spec A>(mark));
+    println$("unused-default: ", sized<spec A>(mark));
+    println$("isolation: ", quiet<spec A>(mark));
+    selected_after := after<3, spec A>(mark);
+    unproved_after := after<3>(7);
+    println$("after-comp: ", selected_after, " ", unproved_after);
+    hole_inferred := hole<spec A, u8>(mark, 3u8);
+    hole_written := hole<Mark: A, u16>(mark, 4u16);
+    println$("holes: ", hole_inferred, " ", hole_written);
+
+    # --- an expected function type, and an expected result ----------------
+    taken: (Mark) => bool = valued<spec B>;
+    println$("value: ", taken(mark), " ", valued<spec A>(mark));
+
+    # --- members, statics, and the unbound member spelling -----------------
+    owner := Owner { value = 1; };
+    println$("member: ", owner.take<Mark: A>(mark), " ", owner.take<spec B>(mark));
+    println$("static: ", Owner::make<Mark: A>(mark), " ", Owner::make<spec B>(mark));
+    println$("unbound: ", Owner::self::take<spec A>(&owner, mark));
+
+    # --- module-qualified, imported, and declared-alias spellings ---------
+    println$("paths: ", provider::shared<Mark: A>(mark), " ", imported_shared<spec A>(mark), " ", aliased_shared<Mark: A>(mark));
+
+    # --- a macro body carries the selector through expansion --------------
+    println$("macro: ", selected$(mark));
+
+    # --- every spelling of one selection is one function ------------------
+    left: (Mark) => bool = valued<Mark: B>;
+    right: (Mark) => bool = valued<spec B>;
+    println$("identity: ", <usize><*void>left == <usize><*void>right);
+}

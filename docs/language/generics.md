@@ -74,6 +74,48 @@ Explicit arguments have the highest authority. They are never re-chosen to satis
 
 An explicitly typed expression or suffixed numeric literal does not silently change type to satisfy an incompatible expectation.
 
+### Bound selectors
+
+A written generic argument on a **function** may also name the bound set the
+declaration it selects must declare at that position. This is how overlapping
+generic overloads are chosen between; see
+[`functions.md`](functions.md) for how selection uses it.
+
+```omega
+f<M: A + B>(x);   # bind this parameter to M, and select the declaration
+                  # whose parameter declares exactly A + B
+f<spec A + B>(x); # select that declaration, and leave the parameter to
+                  # ordinary inference
+```
+
+A selector entry occupies its parameter position like any other written
+argument, so the prefix rule is unchanged: `f<spec A, u8>(...)` selects on the
+first parameter and fixes the second, and positions after the written prefix
+are inferred or defaulted as usual.
+
+A selector is **not** a conformance assertion. It matches the declaration's
+own declared bound set exactly: `f<M: A>` cannot select `f<T>` or
+`f<T: A + B>`, however many specs `M` implements, and no selector ever waives
+a bound check. Two selectors naming the same specs select identically, so
+member order, duplicates, and an alias of a spec conjunction make no
+difference; entailment through a blanket conformance does not add to a
+declaration's declared set. Dependent bounds are compared after substitution,
+including an owner's generic arguments, `Self`, and a bound spec's own generic
+type, `comp`, and defaulted arguments.
+
+`spec ...` binds nothing, so the parameter it occupies must still be
+determined by an argument, an expected result type, an expected function type,
+or the declaration's own default. A uniquely selected bound set is not itself
+a source of a type: with nothing to determine it, the call is an error.
+
+Selectors apply only to a function's generic argument list. Writing one on an
+aggregate constructor, a type or owner application, a spec application, a
+generic default, or a function-pointer value is an error, and a `comp`
+position never accepts one because a `comp` parameter declares no bounds. A
+nested ordinary type such as `*spec A` is an ordinary type argument, not a
+selector. The existing restriction of one written generic argument list per
+path is unchanged.
+
 An anonymous enum that already exists is an ordinary type here. Given `alias Errors = enum ParseError | IoError;` and a value `e: Errors`, calling `identity<T>(x: T) => T` with `e` infers `T = Errors`, and substituting `T = Errors` into `enum T | C` flattens to `enum ParseError | IoError | C`. What inference may **not** do is construct an anonymous enum that no written type established: two arguments of unrelated types `A` and `B` never unify a parameter `T` to `enum A | B`, and the members of an expected anonymous enum are never tried one at a time as inference candidates. See [`enums-and-pattern-matching.md`](enums-and-pattern-matching.md).
 
 ## Compile-time value arguments
@@ -172,10 +214,9 @@ Every rule below the first applies only to a generic that the call left unwritte
 When a call must choose among overload candidates, a generic default cannot make
 a candidate viable: matching the written arguments never consults a default. A
 parameter the arguments do not determine still takes its default once a candidate
-is selected. The viability, adaptation-cost, and specificity rules are defined in
-[`functions.md`](functions.md#overloading), which uses the
-[conformance selection rules](specs-and-conformance.md#blanket-conformances)
-to break minimum-cost ties.
+is applicable, which is also when the default it needs to reach its own bounds is
+resolved. The applicability, adaptation-cost, and preference rules are defined in
+[`functions.md`](functions.md#overloading).
 
 Example:
 

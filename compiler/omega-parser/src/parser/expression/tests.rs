@@ -315,3 +315,90 @@ fn comp_and_reveal_accept_a_cast_operand() {
         );
     }
 }
+
+fn call_generic_args(source: &str) -> Vec<crate::ast::generics::ExprGenericArg> {
+    let stmts = body_statements(source);
+    let Statement::Expression(expr) = &stmts[0] else {
+        panic!("expected an expression statement")
+    };
+    let Expression::FunctionCall(call) = &expr.expression else {
+        panic!("expected a call")
+    };
+    match &call.callee.expression {
+        Expression::Path(path) => path.generic_args.clone(),
+        Expression::FieldAccess(access) => access.generic_args.clone(),
+        _ => panic!("expected a path or member callee"),
+    }
+}
+
+#[test]
+fn a_bound_selector_keeps_both_the_argument_and_the_bounds() {
+    use crate::ast::generics::ExprGenericArg;
+    let args = call_generic_args("f() => void { g<M: A + B>(x); }");
+    let [ExprGenericArg::Bounded { arg, bounds, .. }] = args.as_slice() else {
+        panic!("expected one bounded selector, got {args:?}")
+    };
+    let Some(crate::ast::r#type::Type::Named(path)) = arg.as_type() else {
+        panic!("expected a named type argument")
+    };
+    assert_eq!(path.head.as_ref(), "M");
+    assert_eq!(bounds.len(), 2);
+}
+
+#[test]
+fn an_inferred_selector_binds_nothing() {
+    use crate::ast::generics::ExprGenericArg;
+    let args = call_generic_args("f() => void { g<spec A + B>(x); }");
+    let [ExprGenericArg::Inferred { bounds, .. }] = args.as_slice() else {
+        panic!("expected one inferred selector, got {args:?}")
+    };
+    assert_eq!(bounds.len(), 2);
+}
+
+#[test]
+fn a_leading_spec_only_selects_at_the_top_of_an_argument() {
+    use crate::ast::generics::ExprGenericArg;
+    let args = call_generic_args("f() => void { g<*spec A>(x); }");
+    let [ExprGenericArg::Plain(arg)] = args.as_slice() else {
+        panic!("expected one ordinary argument, got {args:?}")
+    };
+    assert!(matches!(
+        arg.as_type(),
+        Some(crate::ast::r#type::Type::Pointer(_, false))
+    ));
+}
+
+#[test]
+fn selectors_mix_with_ordinary_and_value_arguments() {
+    use crate::ast::generics::ExprGenericArg;
+    let args = call_generic_args("f() => void { g<spec A, u8, 4>(x); }");
+    assert!(matches!(
+        args.as_slice(),
+        [
+            ExprGenericArg::Inferred { .. },
+            ExprGenericArg::Plain(_),
+            ExprGenericArg::Plain(_)
+        ]
+    ));
+}
+
+#[test]
+fn a_selector_reaches_a_member_call_and_a_qualified_path() {
+    use crate::ast::generics::ExprGenericArg;
+    let member = call_generic_args("f() => void { x.m<M: A>(y); }");
+    assert!(matches!(member.as_slice(), [ExprGenericArg::Bounded { .. }]));
+    let qualified = call_generic_args("f() => void { a::b::m<spec A>(y); }");
+    assert!(matches!(
+        qualified.as_slice(),
+        [ExprGenericArg::Inferred { .. }]
+    ));
+}
+
+#[test]
+fn a_selector_list_still_rolls_back_to_comparisons() {
+    // `:` cannot continue an expression here, so the rollback leaves the
+    // original tokens for the comparison rules rather than committing to a
+    // half-parsed argument list.
+    let errors = SourceModule::parse("f() => void { x := a < b : c > d; }").expect_err("must not parse");
+    assert!(!errors.is_empty());
+}
