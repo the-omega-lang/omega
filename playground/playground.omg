@@ -1,63 +1,38 @@
 import std::io::println;
 
-marker ErrorA {}
-marker ErrorB {}
-marker ErrorC {}
-
-my_function_that_errors() => Result<void, enum ErrorA | ErrorB> {
-	return Result::Err { error = ErrorA{}; };
+shared spec A {
+	a() => void;
 }
 
-my_function_that_errors_more() => Result<void, enum ErrorA | ErrorB | ErrorC> {
-	result := my_function_that_errors()?;
-	return Result::Err { error = ErrorC{}; };
+shared spec B {
+	b() => void;
 }
 
-struct MyStruct {
-	exposed number: i32;
-	exposed member_function(*self) => void {
-		println$("hello, this is my pointer: ", <usize>self);
-		println$("my number is: ", self.number);
+marker MyMarker {}
+
+meet A for MyMarker {
+	a() => void {
+		println$("a() called");
 	}
 }
 
-ptr_cast<A, B>(ptr: *B) => *A {
-	<*A>ptr
+meet B for MyMarker {
+	b() => void {
+		println$("b() called");
+	}
 }
 
-enum MyEnum {
-	First, Second, Third
+some_fn<T : A>() => void {
+	T::a();
+}
+
+some_fn<T : B>() => void {
+	T::b();
 }
 
 main() => void {
-	fnptr := MyStruct::self::member_function;
-	mystruct := MyStruct { number = 10; };
-	fnptr(&mystruct);
-
-	shadow := 123;
-	println$("shadow: ", shadow);
-	shadow := "hello";
-	println$("shadow: ", shadow);
-
-	abc := Result<i32, void>::Ok {
-		value = 123;
-	};
-
-	# a := 1;
-	# b := 2;
-	# c := 3;
-	# test := a < b > c;
-
-	ptr := &shadow;
-	ptr2 := ptr_cast<u32>(ptr); # this should work; it currently does not.
-
-	my_enum := MyEnum::First;
-	println$("my enum tag: ", my_enum.tag);
-
-	anon_enum : enum i32 | *str = 10;
-	println$("anonymous enum tag: ", anon_enum.tag);
-
-	panic$("testing the panic macro");
-	# This should give a warning for unreachable code; it does NOT currently.
-	unreachable := 123;
+	MyMarker{};
+	MyMarker::a();
+	MyMarker::b();
+	some_fn<MyMarker>();
 }
