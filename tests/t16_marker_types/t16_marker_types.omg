@@ -10,12 +10,14 @@ marker Tagged<T> {
 
 exposed spec Pingable {
 	ping(*self) => *str;
+	echo(*self) => Beacon;
 }
 
 marker Beacon {}
 
 meet Pingable for Beacon {
 	ping(*self) => *str { "pong" }
+	echo(*self) => Beacon { Beacon {} }
 }
 
 struct HasMarkerField {
@@ -27,6 +29,16 @@ struct HasMarkerField {
 # follows ordinary by-value call semantics.
 take_marker(sink: NullSink) => i32 {
 	sink.write(21)
+}
+
+# Returning a marker transfers no payload bytes either, so the result is a
+# real value of a zero-sized type rather than a `void` result.
+make_marker() => NullSink {
+	NullSink {}
+}
+
+forward<T>(value: T) => T {
+	value
 }
 
 main() => void {
@@ -46,6 +58,13 @@ main() => void {
 	println$("marker-static-dispatch: ", Pingable::ping(&beacon));
 	obj := <*spec Pingable>&beacon;
 	println$("marker-dynamic-dispatch: ", obj.ping());
+
+	# A marker in return position: direct, generic and dynamically dispatched.
+	returned := make_marker();
+	println$("marker-return: ", returned.write(3));
+	println$("marker-return-generic: ", forward<NullSink>(make_marker()).write(4));
+	echoed := obj.echo();
+	println$("marker-return-dynamic: ", Pingable::ping(&echoed));
 
 	# A zero-sized field does not advance the containing object's offset,
 	# so an adjacent zero-sized and non-zero-sized field may share an

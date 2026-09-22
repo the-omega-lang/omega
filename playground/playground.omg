@@ -30,9 +30,22 @@ some_fn<T : B>() => void {
 	T::b();
 }
 
+some_fn_with_value<T : A>(value : T) => T {
+	T::a();
+	value
+}
+
+some_fn_with_value<T : B>(value : T) => T {
+	T::b();
+	value
+}
+
 main() => void {
 	MyMarker{};
 	MyMarker::a();
 	MyMarker::b();
-	some_fn<MyMarker>();
+	some_fn<MyMarker : A>();
+	some_fn<MyMarker : B>();
+	some_fn_with_value<spec A>(MyMarker{});
+	some_fn_with_value<spec B>(MyMarker{});
 }

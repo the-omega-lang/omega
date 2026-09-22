@@ -4,4 +4,7 @@ marker-by-value: 42
 generic-marker: tagged-marker
 marker-static-dispatch: pong
 marker-dynamic-dispatch: pong
+marker-return: 6
+marker-return-generic: 8
+marker-return-dynamic: pong
 zero-sized-offset: true 5

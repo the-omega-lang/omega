@@ -53,10 +53,13 @@ impl AbiReturn {
             return AbiReturn::Void;
         }
         let leaves = layout::leaves_of(return_type, target.pointer_bytes());
-        if leaves.len() > 2 {
-            AbiReturn::Indirect
-        } else {
-            AbiReturn::Direct(leaves)
+        match leaves.len() {
+            // A zero-sized result has no leaves to transfer, so it is returned
+            // exactly like `void`. `Direct(vec![])` would instead ask the
+            // backend for an empty aggregate result that no value can fill.
+            0 => AbiReturn::Void,
+            1..=2 => AbiReturn::Direct(leaves),
+            _ => AbiReturn::Indirect,
         }
     }
 }
@@ -122,6 +125,13 @@ mod tests {
             ),
             AbiReturn::Direct(vec![Leaf::Ptr, Leaf::I32])
         );
+    }
+
+    #[test]
+    fn a_zero_sized_result_returns_like_void() {
+        let ret = ResolvedType::SizedArray(Box::new(ResolvedType::I64), 0);
+        assert!(layout::leaves_of(&ret, Target::DEFAULT.pointer_bytes()).is_empty());
+        assert_eq!(AbiReturn::for_type(Target::DEFAULT, &ret), AbiReturn::Void);
     }
 
     #[test]

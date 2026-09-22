@@ -78,8 +78,8 @@ impl<'ctx> Codegen<'ctx> {
                 self.mark_guarded_call(call, fn_type);
 
                 if matches!(
-                    *fn_type.return_type,
-                    ResolvedType::Void | ResolvedType::Never
+                    crate::abi::AbiReturn::for_type(self.target, &fn_type.return_type),
+                    crate::abi::AbiReturn::Void
                 ) {
                     return vec![];
                 }
@@ -175,8 +175,8 @@ impl<'ctx> Codegen<'ctx> {
                 self.mark_guarded_call(call, fn_type);
 
                 if matches!(
-                    *fn_type.return_type,
-                    ResolvedType::Void | ResolvedType::Never
+                    crate::abi::AbiReturn::for_type(self.target, &fn_type.return_type),
+                    crate::abi::AbiReturn::Void
                 ) {
                     return vec![];
                 }
