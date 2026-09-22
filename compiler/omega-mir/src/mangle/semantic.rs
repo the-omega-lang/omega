@@ -2,9 +2,13 @@ use omega_analyzer::resolved_type::{
     CallingConvention, CompIntType, CompScalar, ResolvedFunctionType, ResolvedGenericArg,
     ResolvedType,
 };
+use omega_analyzer::template::{
+    TemplateArg, TemplateBound, TemplateDescriptor, TemplateParam, TemplateType,
+};
 use omega_mangle::{
-    FunctionSignature, MangleConvention, MangleGenericArg, MangleIntType, ManglePath, MangleType,
-    MangleValue, Namespace,
+    FunctionSignature, MangleConvention, MangleGenericArg, MangleIntType, ManglePath,
+    MangleTemplate, MangleTemplateArg, MangleTemplateBound, MangleTemplateParam,
+    MangleTemplateType, MangleType, MangleValue, Namespace,
 };
 use omega_parser::prelude::Ident;
 
@@ -199,4 +203,88 @@ fn named_type(
     variant: Option<u32>,
 ) -> MangleType {
     MangleType::Named(nominal_path(module, name, generic_args), variant)
+}
+
+pub(super) fn mangle_template(descriptor: &TemplateDescriptor) -> MangleTemplate {
+    MangleTemplate {
+        generics: descriptor
+            .generics
+            .iter()
+            .map(|generic| match generic {
+                TemplateParam::Type(bounds) => {
+                    MangleTemplateParam::Type(bounds.iter().map(mangle_bound).collect())
+                }
+                TemplateParam::Comp(value_type) => {
+                    MangleTemplateParam::Comp(mangle_template_type(value_type))
+                }
+            })
+            .collect(),
+        params: descriptor.params.iter().map(mangle_template_type).collect(),
+        return_type: mangle_template_type(&descriptor.return_type),
+        is_variadic: descriptor.is_variadic,
+        convention: mangle_convention(descriptor.convention),
+    }
+}
+
+fn mangle_bound(bound: &TemplateBound) -> MangleTemplateBound {
+    MangleTemplateBound {
+        spec: nominal_path(&bound.module_path, &bound.name, &[]),
+        args: bound.args.iter().map(mangle_template_arg).collect(),
+    }
+}
+
+fn mangle_template_arg(arg: &TemplateArg) -> MangleTemplateArg {
+    match arg {
+        TemplateArg::Type(ty) => MangleTemplateArg::Type(mangle_template_type(ty)),
+        TemplateArg::Value(value) => MangleTemplateArg::Value(mangle_value(value)),
+        TemplateArg::ValueParam(index) => MangleTemplateArg::Param(parameter_index(*index)),
+    }
+}
+
+fn parameter_index(index: usize) -> u32 {
+    u32::try_from(index)
+        .expect("omega-mangle cannot represent generic parameter indices above u32::MAX")
+}
+
+fn mangle_template_type(ty: &TemplateType) -> MangleTemplateType {
+    match ty {
+        TemplateType::Param(index) => MangleTemplateType::Param(parameter_index(*index)),
+        TemplateType::Fixed(fixed) => MangleTemplateType::Fixed(mangle_type(fixed)),
+        TemplateType::Pointer(inner, mutable) => {
+            MangleTemplateType::Pointer(Box::new(mangle_template_type(inner)), *mutable)
+        }
+        TemplateType::Slice(inner, mutable) => {
+            MangleTemplateType::Slice(Box::new(mangle_template_type(inner)), *mutable)
+        }
+        TemplateType::Array(inner, mutable) => {
+            MangleTemplateType::Array(Box::new(mangle_template_type(inner)), *mutable)
+        }
+        TemplateType::SizedArray(inner, length) => MangleTemplateType::SizedArray(
+            Box::new(mangle_template_type(inner)),
+            Box::new(mangle_template_arg(length)),
+        ),
+        TemplateType::SpecObject(members, mutable) => {
+            MangleTemplateType::SpecObject(members.iter().map(mangle_bound).collect(), *mutable)
+        }
+        TemplateType::AnonymousEnum(members) => {
+            MangleTemplateType::AnonymousEnum(members.iter().map(mangle_template_type).collect())
+        }
+        TemplateType::Function(params, return_type, convention, variadic) => {
+            MangleTemplateType::Function(
+                params.iter().map(mangle_template_type).collect(),
+                Box::new(mangle_template_type(return_type)),
+                *variadic,
+                mangle_convention(*convention),
+            )
+        }
+        TemplateType::Nominal(absolute, args) => {
+            let (name, module) = absolute
+                .split_last()
+                .expect("an absolute item path always ends in the item's own name");
+            MangleTemplateType::Nominal(
+                nominal_path(module, name, &[]),
+                args.iter().map(mangle_template_arg).collect(),
+            )
+        }
+    }
 }

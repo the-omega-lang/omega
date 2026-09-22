@@ -15,6 +15,15 @@ meet B for Mark { b_mark(*self) => i32 { 2 } }
 struct Plain { exposed value: i32; }
 struct Box<T> { exposed value: T; }
 
+# An alias that declares a bound on its own parameter. Whether `i32` meets it
+# is the caller's obligation, settled where the selector was written: it
+# cannot depend on which declarations the name being called offers, and a
+# conjunction alias must be checked before expansion erases the wrapper that
+# declares it.
+spec Holds<T> { held(*self) => T; }
+alias Restricted<U: A> = Holds<U>;
+alias RestrictedBoth<U: A> = spec A + B;
+
 # Only the conjunction is declared, so neither half selects it.
 both<T: A + B>(value: T) => i32 { 1 }
 
@@ -30,6 +39,16 @@ reversed<T: A>(value: T) => i32 { 3 }
 # unbounded-position set contains once both positions are written.
 pairwise<T, U: B>(a: T, b: U) => i32 { 4 }
 pairwise<T: A, U>(a: T, b: U) => *str { "second" }
+
+restricted<T: Holds<i32>>(value: T) => i32 { 7 }
+restricted<T: B>(value: T) => i32 { 8 }
+
+# The same written selector against three declarations in a different order:
+# neither the extra candidate nor the ordering changes whether it is valid,
+# nor how often that is reported.
+reordered<T: A + B>(value: T) => i32 { 9 }
+reordered<T: B>(value: T) => i32 { 10 }
+reordered<T: Holds<i32>>(value: T) => i32 { 11 }
 
 marked<T: Empty>(value: T) => i32 { 5 }
 lone<T: A>(value: T) => i32 { 6 }
@@ -56,9 +75,19 @@ main() => void {
     holed<spec A>(1);
     # A selector never applies to a `comp` position.
     comped<4: A, Mark>(mark);
-    # Names that are not specs, or not found at all.
+    # An alias-owned bound the written argument does not meet, reported once
+    # whether the name offers one declaration or several.
+    restricted<Mark: Restricted<i32>>(mark);
+    reordered<Mark: Restricted<i32>>(mark);
+    reordered<Mark: RestrictedBoth<i32>>(mark);
+    # Names that are not specs, or not found at all, against an overloaded
+    # name as well as a lone one.
     lone<Mark: Plain>(mark);
     lone<Mark: Missing>(mark);
+    either<Mark: Missing>(mark);
+    either<Mark: Plain>(mark);
+    # A spec the caller cannot see.
+    either<Mark: self::hidden::Hidden>(mark);
     # More arguments than the declaration accepts.
     lone<Mark: A, u8>(mark);
     # A declaration with no generic parameters has no bounds to name.

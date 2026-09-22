@@ -20,6 +20,7 @@ pub mod resolver;
 pub mod runtime_checks;
 pub mod similarity;
 pub mod target;
+pub mod template;
 pub mod type_key;
 
 pub use target::{Arch, Os, Target, TargetParseError};

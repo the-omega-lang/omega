@@ -728,7 +728,7 @@ pub struct OverloadTemplate {
     pub params: Vec<crate::generics::pattern::TypePattern>,
     pub return_type: crate::generics::pattern::TypePattern,
     pub comp_types: Vec<Option<crate::generics::pattern::TypePattern>>,
-    pub bounds: Vec<(usize, HirId, Vec<crate::generics::pattern::ArgumentPattern>)>,
+    pub bounds: Vec<(usize, crate::generics::pattern::SpecPattern)>,
     /// The ABI half of the signature every instantiation will have. A value
     /// reference must compare it against the expected function type, so it
     /// travels with the pattern rather than being assumed at the use site.

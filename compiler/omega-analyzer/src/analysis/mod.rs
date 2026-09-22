@@ -1378,27 +1378,34 @@ impl<'r> Analyzer<'r> {
     }
 
     /// Checks the bounds every alias template applied by `typ` declares on
-    /// its own generic parameters. Normalization is structural and cannot do
-    /// this itself: whether an argument satisfies a bound is a conformance
-    /// question, and the expanded target no longer mentions the alias's
-    /// parameter list.
+    /// its own generic parameters, and reports whether they all held.
+    /// Normalization is structural and cannot do this itself: whether an
+    /// argument satisfies a bound is a conformance question, and the expanded
+    /// target no longer mentions the alias's parameter list.
+    ///
+    /// The result matters where the obligation is the *caller's*, as in a
+    /// written bound selector: a resolved spec comes back either way, so
+    /// having reported the failure is not enough to stop a caller that would
+    /// otherwise go on using it.
     pub(crate) fn check_alias_generic_bounds(
         &mut self,
         id: HirId,
         span: Span,
         typ: &Type,
         module: &[Ident],
-    ) {
+    ) -> bool {
         let applied = match crate::aliases::applied_alias_bounds(&mut *self.resolver, module, typ) {
             Ok(applied) => applied,
             Err(error) => {
                 self.error(id, span, AnalysisErrorKind::ModuleResolution(error));
-                return;
+                return false;
             }
         };
+        let mut met = true;
         for (bound, argument) in applied {
             let Some(concrete) = self.resolve_type_or_error_in(id, span, &argument, true, module)
             else {
+                met = false;
                 continue;
             };
             if let Some(Err((spec, missing))) =
@@ -1413,8 +1420,10 @@ impl<'r> Analyzer<'r> {
                         missing,
                     }),
                 );
+                met = false;
             }
         }
+        met
     }
 
     pub(crate) fn resolve_generic_arg_in(
@@ -1450,6 +1459,9 @@ impl<'r> Analyzer<'r> {
         indirect: bool,
         module: &[Ident],
     ) -> Option<ResolvedType> {
+        // An unmet alias obligation is reported, but the expansion it
+        // applies is still a usable type here; the caller that owns the
+        // obligation is the one that has to stop.
         self.check_alias_generic_bounds(id, span, typ, module);
         let reveals = &self.reveals;
         match self.context.resolve_type(

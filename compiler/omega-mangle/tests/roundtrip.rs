@@ -1,6 +1,7 @@
 use omega_mangle::{
-    FunctionSignature, MangleConvention, MangleGenericArg, MangleIntType, ManglePath, MangleType,
-    MangleValue, Namespace, Symbol, decode, demangle, encode,
+    FunctionSignature, MangleConvention, MangleGenericArg, MangleIntType, ManglePath,
+    MangleTemplate, MangleTemplateArg, MangleTemplateBound, MangleTemplateParam,
+    MangleTemplateType, MangleType, MangleValue, Namespace, Symbol, decode, demangle, encode,
 };
 
 fn sig(params: Vec<MangleType>, return_type: MangleType) -> FunctionSignature {
@@ -604,4 +605,206 @@ fn a_mixed_generic_path_is_usable_as_a_named_type() {
         vendor_suffix: None,
     };
     assert_round_trips(&symbol);
+}
+
+fn spec(module: &str, name: &str) -> ManglePath {
+    nested(
+        nested(root("pkg"), Namespace::Type, module),
+        Namespace::Type,
+        name,
+    )
+}
+
+fn bound(spec: ManglePath, args: Vec<MangleTemplateArg>) -> MangleTemplateBound {
+    MangleTemplateBound { spec, args }
+}
+
+/// `pick<#0: bounds>(#0) => i32`, the shape two selected overloads share.
+fn pick(bounds: Vec<MangleTemplateBound>, args: Vec<MangleType>) -> Symbol {
+    let path = nested(root("pkg"), Namespace::Value, "pick");
+    let template = MangleTemplate {
+        generics: vec![MangleTemplateParam::Type(bounds)],
+        params: vec![MangleTemplateType::Param(0)],
+        return_type: MangleTemplateType::Fixed(MangleType::I32),
+        is_variadic: false,
+        convention: MangleConvention::Omega,
+    };
+    Symbol {
+        path: generic(
+            ManglePath::Template(Box::new(path), Box::new(template)),
+            args.clone(),
+        ),
+        signature: Some(sig(args, MangleType::I32)),
+        vendor_suffix: None,
+    }
+}
+
+#[test]
+fn two_declarations_at_one_instantiation_are_two_symbols() {
+    let a = pick(vec![bound(spec("m", "A"), vec![])], vec![MangleType::I32]);
+    let b = pick(vec![bound(spec("m", "B"), vec![])], vec![MangleType::I32]);
+    let a_mangled = assert_round_trips(&a);
+    let b_mangled = assert_round_trips(&b);
+    assert_ne!(a_mangled, b_mangled);
+    // The demangled form has to say which declaration it is, not only that
+    // one was instantiated at `i32`.
+    assert!(demangle(&a_mangled).unwrap().contains("pkg::m::A"));
+    assert!(demangle(&b_mangled).unwrap().contains("pkg::m::B"));
+}
+
+#[test]
+fn the_same_short_spec_name_in_two_modules_stays_distinct() {
+    let here = pick(
+        vec![bound(spec("here", "A"), vec![])],
+        vec![MangleType::I32],
+    );
+    let there = pick(
+        vec![bound(spec("there", "A"), vec![])],
+        vec![MangleType::I32],
+    );
+    assert_ne!(assert_round_trips(&here), assert_round_trips(&there));
+}
+
+#[test]
+fn a_symbolic_bound_argument_is_not_the_concrete_type_it_is_instantiated_with() {
+    // `<T: Holds<T>>` and `<T: Holds<i32>>` both instantiate at `i32`; only
+    // the descriptor keeps them apart.
+    let holds = spec("m", "Holds");
+    let symbolic = pick(
+        vec![bound(
+            holds.clone(),
+            vec![MangleTemplateArg::Type(MangleTemplateType::Param(0))],
+        )],
+        vec![MangleType::I32],
+    );
+    let fixed = pick(
+        vec![bound(
+            holds,
+            vec![MangleTemplateArg::Type(MangleTemplateType::Fixed(
+                MangleType::I32,
+            ))],
+        )],
+        vec![MangleType::I32],
+    );
+    assert_ne!(assert_round_trips(&symbolic), assert_round_trips(&fixed));
+}
+
+#[test]
+fn every_nested_template_shape_round_trips() {
+    let template = MangleTemplate {
+        generics: vec![
+            MangleTemplateParam::Type(vec![bound(
+                spec("m", "Holds"),
+                vec![
+                    MangleTemplateArg::Type(MangleTemplateType::Param(0)),
+                    MangleTemplateArg::Param(1),
+                    MangleTemplateArg::Value(MangleValue::Int {
+                        r#type: MangleIntType::USize,
+                        value: -3,
+                    }),
+                ],
+            )]),
+            MangleTemplateParam::Comp(MangleTemplateType::Fixed(MangleType::USize)),
+            MangleTemplateParam::Type(vec![]),
+        ],
+        params: vec![
+            MangleTemplateType::Pointer(Box::new(MangleTemplateType::Param(0)), true),
+            MangleTemplateType::Slice(Box::new(MangleTemplateType::Param(2)), false),
+            MangleTemplateType::Array(Box::new(MangleTemplateType::Fixed(MangleType::U8)), true),
+            MangleTemplateType::SizedArray(
+                Box::new(MangleTemplateType::Param(0)),
+                Box::new(MangleTemplateArg::Param(1)),
+            ),
+            MangleTemplateType::SpecObject(
+                vec![
+                    bound(spec("m", "A"), vec![]),
+                    bound(
+                        spec("m", "B"),
+                        vec![MangleTemplateArg::Type(MangleTemplateType::Param(2))],
+                    ),
+                ],
+                false,
+            ),
+            MangleTemplateType::AnonymousEnum(vec![
+                MangleTemplateType::Param(0),
+                MangleTemplateType::Fixed(MangleType::Void),
+            ]),
+            MangleTemplateType::Function(
+                vec![MangleTemplateType::Param(2)],
+                Box::new(MangleTemplateType::Fixed(MangleType::Never)),
+                true,
+                MangleConvention::C,
+            ),
+            MangleTemplateType::Nominal(
+                nested(root("pkg"), Namespace::Type, "Box"),
+                vec![MangleTemplateArg::Type(MangleTemplateType::Param(0))],
+            ),
+        ],
+        return_type: MangleTemplateType::Param(2),
+        is_variadic: true,
+        convention: MangleConvention::SysV64,
+    };
+    let symbol = Symbol {
+        path: generic(
+            ManglePath::Template(
+                Box::new(nested(root("pkg"), Namespace::Value, "every")),
+                Box::new(template),
+            ),
+            vec![MangleType::I32],
+        ),
+        signature: Some(sig(vec![MangleType::I32], MangleType::Void)),
+        vendor_suffix: None,
+    };
+    assert_round_trips(&symbol);
+}
+
+#[test]
+fn a_truncated_or_invalid_descriptor_is_rejected() {
+    let symbol = pick(vec![bound(spec("m", "A"), vec![])], vec![MangleType::I32]);
+    let mangled = encode(&symbol);
+    for cut in 1..mangled.len() {
+        // Truncation must fail cleanly rather than decode to a shorter name.
+        let truncated = &mangled[..cut];
+        assert_ne!(decode(truncated), Some(symbol.clone()));
+    }
+
+    // A parameter reference no declared parameter answers.
+    let out_of_range = MangleTemplate {
+        generics: vec![MangleTemplateParam::Type(vec![])],
+        params: vec![MangleTemplateType::Param(4)],
+        return_type: MangleTemplateType::Fixed(MangleType::Void),
+        is_variadic: false,
+        convention: MangleConvention::Omega,
+    };
+    assert!(!out_of_range.references_are_valid());
+
+    // A type position naming a `comp` parameter, and the reverse.
+    let wrong_kind = MangleTemplate {
+        generics: vec![MangleTemplateParam::Comp(MangleTemplateType::Fixed(
+            MangleType::USize,
+        ))],
+        params: vec![MangleTemplateType::Param(0)],
+        return_type: MangleTemplateType::Fixed(MangleType::Void),
+        is_variadic: false,
+        convention: MangleConvention::Omega,
+    };
+    assert!(!wrong_kind.references_are_valid());
+}
+
+/// Byte fixtures of symbols produced before the template path form existed.
+/// They are literals on purpose: an encoder change that silently migrated
+/// them would be an ABI break for every object already compiled.
+const FREE_FUNCTION_FIXTURE: &str = "_omg_NvC5mymod3fooEv";
+const GENERIC_FUNCTION_FIXTURE: &str = "_omg_INvC5mymod3summEmmEm";
+
+#[test]
+fn a_non_template_symbol_still_decodes_unchanged() {
+    // The pre-template encodings are untouched by the new path form.
+    for mangled in [FREE_FUNCTION_FIXTURE, GENERIC_FUNCTION_FIXTURE] {
+        assert!(decode(mangled).is_some(), "{mangled} must still decode");
+        assert!(!matches!(
+            decode(mangled).unwrap().path,
+            ManglePath::Template(..)
+        ));
+    }
 }

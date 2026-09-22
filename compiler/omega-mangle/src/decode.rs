@@ -4,8 +4,9 @@ use std::str;
 use crate::base62;
 use crate::grammar::*;
 use crate::symbol::{
-    FunctionSignature, MangleConvention, MangleGenericArg, MangleIntType, ManglePath, MangleType,
-    MangleValue, Symbol,
+    FunctionSignature, MangleConvention, MangleGenericArg, MangleIntType, ManglePath,
+    MangleTemplate, MangleTemplateArg, MangleTemplateBound, MangleTemplateParam,
+    MangleTemplateType, MangleType, MangleValue, Symbol,
 };
 
 pub fn decode(mangled: &str) -> Option<Symbol> {
@@ -121,6 +122,11 @@ impl Decoder<'_> {
                 let parent = self.parse_path()?;
                 ManglePath::MixedGeneric(Box::new(parent), self.parse_generic_arg_list()?)
             }
+            TAG_TEMPLATE => {
+                self.pos += 1;
+                let parent = self.parse_path()?;
+                ManglePath::Template(Box::new(parent), Box::new(self.parse_template()?))
+            }
             TAG_TYPE_PATH => {
                 self.pos += 1;
                 ManglePath::Type(Box::new(self.parse_type()?))
@@ -130,6 +136,136 @@ impl Decoder<'_> {
 
         self.path_substitutions.insert(start, path.clone());
         Some(path)
+    }
+
+    fn parse_template(&mut self) -> Option<MangleTemplate> {
+        let mut generics = Vec::new();
+        loop {
+            if self.consume_if(TAG_LIST_END) {
+                break;
+            }
+            generics.push(match self.next()? {
+                TAG_TEMPLATE_PARAM_TYPE => MangleTemplateParam::Type(self.parse_bounds()?),
+                TAG_TEMPLATE_PARAM_COMP => MangleTemplateParam::Comp(self.parse_template_type()?),
+                _ => return None,
+            });
+        }
+
+        let convention = self.parse_convention();
+        let is_variadic = self.consume_if(TAG_VARIADIC);
+        let mut params = Vec::new();
+        loop {
+            if self.consume_if(TAG_LIST_END) {
+                break;
+            }
+            params.push(self.parse_template_type()?);
+        }
+        let template = MangleTemplate {
+            generics,
+            params,
+            return_type: self.parse_template_type()?,
+            is_variadic,
+            convention,
+        };
+        // A symbolic reference to a parameter this descriptor does not
+        // declare, or declares with the other kind, is not a name any
+        // encoder produces.
+        template.references_are_valid().then_some(template)
+    }
+
+    fn parse_bounds(&mut self) -> Option<Vec<MangleTemplateBound>> {
+        let mut bounds = Vec::new();
+        loop {
+            if self.consume_if(TAG_LIST_END) {
+                return Some(bounds);
+            }
+            self.peek()?;
+            bounds.push(MangleTemplateBound {
+                spec: self.parse_path()?,
+                args: self.parse_template_args()?,
+            });
+        }
+    }
+
+    fn parse_template_args(&mut self) -> Option<Vec<MangleTemplateArg>> {
+        let mut args = Vec::new();
+        loop {
+            if self.consume_if(TAG_LIST_END) {
+                return Some(args);
+            }
+            args.push(self.parse_template_arg()?);
+        }
+    }
+
+    fn parse_template_arg(&mut self) -> Option<MangleTemplateArg> {
+        Some(match self.next()? {
+            TAG_ARG_TYPE => MangleTemplateArg::Type(self.parse_template_type()?),
+            TAG_ARG_VALUE => MangleTemplateArg::Value(self.parse_value()?),
+            TAG_ARG_PARAM => MangleTemplateArg::Param(self.parse_index()?),
+            _ => return None,
+        })
+    }
+
+    fn parse_index(&mut self) -> Option<u32> {
+        u32::try_from(base62::decode(self.bytes, &mut self.pos)?).ok()
+    }
+
+    fn parse_template_type(&mut self) -> Option<MangleTemplateType> {
+        Some(match self.next()? {
+            TAG_TEMPLATE_TYPE_PARAM => MangleTemplateType::Param(self.parse_index()?),
+            TAG_TEMPLATE_FIXED => MangleTemplateType::Fixed(self.parse_type()?),
+            TAG_POINTER => self.parse_wrapped_template(false, MangleTemplateType::Pointer)?,
+            TAG_POINTER_MUT => self.parse_wrapped_template(true, MangleTemplateType::Pointer)?,
+            TAG_SLICE => self.parse_wrapped_template(false, MangleTemplateType::Slice)?,
+            TAG_SLICE_MUT => self.parse_wrapped_template(true, MangleTemplateType::Slice)?,
+            TAG_ARRAY => self.parse_wrapped_template(false, MangleTemplateType::Array)?,
+            TAG_ARRAY_MUT => self.parse_wrapped_template(true, MangleTemplateType::Array)?,
+            TAG_SIZED_ARRAY => MangleTemplateType::SizedArray(
+                Box::new(self.parse_template_type()?),
+                Box::new(self.parse_template_arg()?),
+            ),
+            TAG_SPEC_OBJECT_SHAPE => MangleTemplateType::SpecObject(self.parse_bounds()?, false),
+            TAG_SPEC_OBJECT_SHAPE_MUT => MangleTemplateType::SpecObject(self.parse_bounds()?, true),
+            TAG_ANONYMOUS_ENUM => {
+                let mut members = Vec::new();
+                loop {
+                    if self.consume_if(TAG_LIST_END) {
+                        break;
+                    }
+                    members.push(self.parse_template_type()?);
+                }
+                MangleTemplateType::AnonymousEnum(members)
+            }
+            TAG_FUNCTION => {
+                let convention = self.parse_convention();
+                let variadic = self.consume_if(TAG_VARIADIC);
+                let mut params = Vec::new();
+                loop {
+                    if self.consume_if(TAG_LIST_END) {
+                        break;
+                    }
+                    params.push(self.parse_template_type()?);
+                }
+                MangleTemplateType::Function(
+                    params,
+                    Box::new(self.parse_template_type()?),
+                    variadic,
+                    convention,
+                )
+            }
+            TAG_TEMPLATE_NOMINAL => {
+                MangleTemplateType::Nominal(self.parse_path()?, self.parse_template_args()?)
+            }
+            _ => return None,
+        })
+    }
+
+    fn parse_wrapped_template(
+        &mut self,
+        mutable: bool,
+        wrap: fn(Box<MangleTemplateType>, bool) -> MangleTemplateType,
+    ) -> Option<MangleTemplateType> {
+        Some(wrap(Box::new(self.parse_template_type()?), mutable))
     }
 
     fn parse_type(&mut self) -> Option<MangleType> {

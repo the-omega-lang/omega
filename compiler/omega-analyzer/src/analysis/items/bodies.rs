@@ -55,6 +55,7 @@ impl<'r> Analyzer<'r> {
             conformance_owner: None,
             primitive_target: None,
             method_owner: None,
+            template: None,
             naked: annotations.naked,
             runtime_checks: None,
         })
@@ -104,6 +105,7 @@ impl<'r> Analyzer<'r> {
             conformance_owner: None,
             primitive_target: None,
             method_owner: None,
+            template: None,
             naked: true,
             runtime_checks: None,
         })

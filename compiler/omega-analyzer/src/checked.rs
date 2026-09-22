@@ -152,6 +152,12 @@ pub struct CheckedFunctionDef {
     /// rather than inside its owner's definition and therefore has to carry
     /// the owner identity its symbol is built from.
     pub method_owner: Option<CheckedMethodOwner>,
+    /// The declaration this instantiation came from, for a function with
+    /// generic parameters of its own. Explicit bound selection can reach two
+    /// declarations of one name at the same concrete arguments, so the
+    /// symbol needs the declaration's own identity as well. See
+    /// [`crate::template`].
+    pub template: Option<crate::template::TemplateDescriptor>,
     pub naked: bool,
     /// Present when this body reaches an operation whose runtime invariant is
     /// checked, and carries the resolved panic support those checks call. See

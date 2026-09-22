@@ -2,6 +2,60 @@
 
 Implementation caveats migrated out of architecture chapters. These are non-normative and should be removed when resolved.
 
+## Generic declaration descriptor normalization
+
+Two gaps remain in the declaration descriptor used to mangle generic functions.
+They concern the new descriptor, not the separately tracked omission of spec
+module paths from conformance/vtable symbols.
+
+- **Spec defaults lose their declaration context in patterns.**
+  `analysis/calls/pattern.rs::with_declared_defaults` copies a spec's default
+  syntax into the function's context. `overload_argument_pattern` then resolves
+  it there instead of in the spec's module. For example:
+
+  ```omega
+  # other.omg
+  exposed marker Value {}
+  exposed spec Holds<T = Value> {}
+
+  # main.omg
+  import self::other;
+  import self::other::Holds;
+  marker M {}
+  meet Holds<other::Value> for M {}
+  pick<T: Holds>() => i32 { 1 }
+  main() => void { x := pick<M>(); }
+  ```
+
+  This valid program reaches the assertion in
+  `omega-driver/src/bodies.rs::template_descriptor`; spelling the bound as
+  `Holds<other::Value>` compiles. Descriptor construction suppresses its
+  diagnostics and guards failure only with `debug_assert!`; with assertions
+  disabled, the code instead permits a generic body to carry `template: None`.
+  Default resolution must preserve declaration context without capturing the
+  function's own parameter names, and descriptor failure must never permit
+  emission without the required declaration identity.
+
+- **Equivalent type spellings produce different descriptor bytes.**
+  `template.rs::convert_type` preserves both anonymous-enum source order and
+  the distinction between `TypePattern::Fixed` and a structurally identical
+  `TypePattern::Nominal`. Consequently, changing `enum i32 | i64` to
+  `enum i64 | i32` in a parameter alias renames a generic function without
+  changing its concrete arguments or signature. Likewise, with
+  `struct Box<T = i32> { value: T; }`, changing the parameter type of
+  `pick<U>(x: Box)` to `Box<i32>` changes the symbol for `pick<i32>`.
+  Independent clients compiled against the same declared provider identity,
+  with only the enum alias's member order changed, link successfully but
+  observe unequal addresses for that same function instantiation. Canonical
+  template construction needs one representation for equivalent fixed and
+  structural types and canonical anonymous-enum members, while retaining
+  symbolic references to the function's own parameters. Add semantic and
+  cross-process address regressions; wire-model round trips alone do not
+  exercise this normalization boundary.
+
+These require a focused follow-up at the semantic-pattern/descriptor boundary:
+correcting the emitted declaration identity changes affected generic symbols.
+
 
 ## Parsing, macro expansion, and the HIR
 
@@ -60,74 +114,6 @@ Implementation caveats migrated out of architecture chapters. These are non-norm
   `MirItem::ForeignBinding` for non-function data is also implemented: a
   real linker-visible external global with no initializer/local section, its
   storage genuinely living in another translation unit.
-
-## Two selected generic overloads can collide on one linker symbol
-
-A generic function's symbol is its path, its generic arguments, and its
-signature. Nothing in it names *which* declaration of an overloaded name was
-instantiated, because until explicit bound selection existed no program could
-reach two of them with the same arguments: ranking always produced one winner
-per argument list.
-
-Bound selectors remove that ranking, so this is now reachable:
-
-```omega
-spec A { a(*self) => i32; }
-spec B { b(*self) => i32; }
-struct M { exposed v: i32; }
-meet A for M { a(*self) => i32 { 1 } }
-meet B for M { b(*self) => i32 { 2 } }
-
-pick<T: A>(value: T) => i32 { 10 }
-pick<T: B>(value: T) => i32 { 20 }
-
-main() => void {
-    a := pick<M: A>(M { v = 1; });
-    b := pick<M: B>(M { v = 1; });
-}
-```
-
-Both instantiations are `pick<M>` with signature `(M) => i32`, so both encode
-to one symbol. In a single compilation, codegen rejects the duplicate symbol.
-Selection itself is correct: the two calls choose different declarations and
-instantiate under distinct item keys.
-
-Across separate compilations this can silently execute the wrong function.
-If two client packages each instantiate one overload from an imported package,
-both emit weak definitions with the same symbol. Each compilation succeeds,
-and the linker merges the definitions: a client selecting the B overload can
-execute A's body. A reproduced program whose clients should return `10` and
-`20` instead prints `10 10`. This blocks shipping bound selection; the fix
-must be tested across independently compiled clients as well as in one build.
-
-It bites only when the selected declarations agree on *both* the generic
-arguments and the resulting signature. Overloads whose instantiations differ
-in any parameter or return type link normally, which is why the conformance
-cases in `tests/t05j_generic_bound_selectors/` give their overlapping
-declarations distinct signatures.
-
-Resolving it means giving the symbol a declaration-distinguishing component,
-which is a mangling/ABI change with its own audit
-(see [`../architecture/symbol-mangling.md`](../architecture/symbol-mangling.md));
-it was deliberately not attempted alongside the selection work.
-
-## Overload probing can discard errors in bound selectors
-
-`Analyzer::try_written_generics` wraps the whole written-list resolution in
-`without_diagnostics`, including selector resolution. This can accept an
-invalid selector when an alias-owned bound emits an error but still returns a
-resolved spec. For example, given `alias Restricted<U: A> = Holds<U>`, a
-selector `Restricted<i32>` is invalid unless `i32` conforms to A. A lone
-`f<T: Holds<i32>>` correctly rejects it; adding an overload `f<T: B>` makes
-the same call compile by discarding the alias-bound diagnostic. This also
-affects overloaded function values, which use the same preparation helper.
-
-Caller-owned selector names and alias obligations need validation outside
-candidate-specific diagnostic suppression. Candidate kind/signature mismatch
-may eliminate a candidate; an invalid selector must remain a source error.
-Unknown selector names currently also degrade to a generic no-match message
-when the same suppression discards their lookup errors.
-
 
 ## Compile-time evaluation fuel limit
 

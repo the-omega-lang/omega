@@ -1,5 +1,5 @@
 use super::*;
-use crate::generics::pattern::{ArgumentPattern, TypePattern};
+use crate::generics::pattern::{ArgumentPattern, SpecPattern, TypePattern};
 
 impl Analyzer<'_> {
     pub fn overload_template(&mut self, function: &HirFunctionDef) -> Option<OverloadTemplate> {
@@ -23,6 +23,25 @@ impl Analyzer<'_> {
                 }
             };
             for bound in expanded {
+                // `expand_bounds` flattens conjunctions but hands back what
+                // was written for anything else, so that alias obligations
+                // stay checkable at their own spelling. A pattern needs the
+                // spec the bound actually names.
+                let bound = match crate::aliases::expand_type_alias(
+                    self.resolver,
+                    &self.module_path,
+                    bound,
+                ) {
+                    Ok(bound) => bound,
+                    Err(error) => {
+                        self.error(
+                            function.id,
+                            function.span,
+                            AnalysisErrorKind::ModuleResolution(error),
+                        );
+                        return None;
+                    }
+                };
                 let (path, args) = match &bound {
                     Type::Named(path) => (path, &[][..]),
                     Type::Generic(path, args) => (path, args.as_slice()),
@@ -51,7 +70,8 @@ impl Analyzer<'_> {
                     }
                 };
                 let spec = spec.borrow();
-                let args = args
+                let written = Self::with_declared_defaults(args, &spec.generics);
+                let args = written
                     .iter()
                     .enumerate()
                     .map(|(index, arg)| {
@@ -64,7 +84,15 @@ impl Analyzer<'_> {
                         )
                     })
                     .collect::<Option<Vec<_>>>()?;
-                let key = (parameter, spec.id, args);
+                let key = (
+                    parameter,
+                    SpecPattern {
+                        spec: spec.id,
+                        module_path: spec.module_path.clone(),
+                        name: spec.name.clone(),
+                        args,
+                    },
+                );
                 if !bounds.contains(&key) {
                     bounds.push(key);
                 }
@@ -131,6 +159,48 @@ impl Analyzer<'_> {
                 crate::error::raw_type_display(&function.return_type)
             ),
         })
+    }
+
+    /// The identity of a generic function *declaration*, taken in the
+    /// context it is declared in and before its own generic parameters are
+    /// substituted. `None` for a declaration with no generic parameters of
+    /// its own, whose ordinary symbol already identifies it.
+    pub fn template_descriptor(
+        &mut self,
+        function: &HirFunctionDef,
+    ) -> Option<crate::template::TemplateDescriptor> {
+        let template = self.overload_template(function)?;
+        if template.generics.is_empty() {
+            return None;
+        }
+        crate::template::TemplateDescriptor::of(&template)
+    }
+
+    /// A written generic-argument list, padded with the declared defaults it
+    /// left out. A bound, a spec-object member and a nominal application all
+    /// need this: `Holds<T>` and `Holds<T, 2>` name one thing wherever `2` is
+    /// the declared default, so a pattern that kept only what was written
+    /// would compare unequal to one that spelled the default out.
+    fn with_declared_defaults(
+        written: &[GenericArg],
+        declared: &[HirGenericParam],
+    ) -> Vec<GenericArg> {
+        let mut args = written.to_vec();
+        for parameter in &declared[args.len().min(declared.len())..] {
+            let Some(default) = &parameter.default else {
+                break;
+            };
+            let substitution: Vec<_> = declared
+                .iter()
+                .zip(&args)
+                .map(|(param, arg)| (param.ident.clone(), arg.clone()))
+                .collect();
+            args.push(crate::aliases::substitute_generic_arg(
+                default,
+                &substitution,
+            ));
+        }
+        args
     }
 
     fn pattern_item_path(&mut self, id: HirId, span: Span, path: &Path) -> Option<Vec<Ident>> {
@@ -233,7 +303,8 @@ impl Analyzer<'_> {
                             }
                         };
                         let spec = spec.borrow();
-                        let args = args
+                        let written = Self::with_declared_defaults(args, &spec.generics);
+                        let args = written
                             .iter()
                             .enumerate()
                             .map(|(index, arg)| {
@@ -246,7 +317,12 @@ impl Analyzer<'_> {
                                 )
                             })
                             .collect::<Option<Vec<_>>>()?;
-                        let key = (spec.id, args);
+                        let key = SpecPattern {
+                            spec: spec.id,
+                            module_path: spec.module_path.clone(),
+                            name: spec.name.clone(),
+                            args,
+                        };
                         if !patterns.contains(&key) {
                             patterns.push(key);
                         }
@@ -302,21 +378,7 @@ impl Analyzer<'_> {
                         return None;
                     }
                 };
-                let mut written = args.clone();
-                for parameter in &declared[written.len().min(declared.len())..] {
-                    let Some(default) = &parameter.default else {
-                        break;
-                    };
-                    let substitution: Vec<_> = declared
-                        .iter()
-                        .zip(&written)
-                        .map(|(param, arg)| (param.ident.clone(), arg.clone()))
-                        .collect();
-                    written.push(crate::aliases::substitute_generic_arg(
-                        default,
-                        &substitution,
-                    ));
-                }
+                let written = Self::with_declared_defaults(args, &declared);
                 let args = written
                     .iter()
                     .enumerate()

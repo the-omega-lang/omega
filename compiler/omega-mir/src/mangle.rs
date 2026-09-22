@@ -3,20 +3,40 @@ mod semantic;
 use omega_analyzer::annotations::ManglingMode;
 use omega_analyzer::checked::{ExternFunctionKind, ExternFunctionRef};
 use omega_analyzer::resolved_type::{ResolvedFunctionType, ResolvedGenericArg, ResolvedType};
+use omega_analyzer::template::TemplateDescriptor;
 use omega_mangle::{ManglePath, Namespace, Symbol};
 use omega_parser::prelude::Ident;
-use semantic::{generic_path, module_path, nominal_path, owner_path, signature};
+use semantic::{generic_path, mangle_template, module_path, nominal_path, owner_path, signature};
 
 pub use omega_mangle::encode;
 
 pub fn free_function_symbol(
     module: &[Ident],
     name: &Ident,
+    template: Option<&TemplateDescriptor>,
     generic_args: &[ResolvedGenericArg],
     fn_type: &ResolvedFunctionType,
 ) -> Symbol {
     let path = value_path(module_path(module), name);
-    function_symbol(generic_path(path, generic_args), fn_type)
+    function_symbol(
+        generic_path(template_path(path, template), generic_args),
+        fn_type,
+    )
+}
+
+/// The declaration identity a generic function's symbol carries, between the
+/// path that names it and its concrete arguments.
+///
+/// Two declarations of one name can be selected at the same arguments with
+/// the same resulting signature, so without this they would encode to one
+/// weak symbol and separately compiled callers would silently share a body.
+/// A declaration with no generic parameters of its own has nothing to
+/// disambiguate and keeps its existing symbol.
+fn template_path(path: ManglePath, template: Option<&TemplateDescriptor>) -> ManglePath {
+    match template {
+        Some(template) => ManglePath::Template(Box::new(path), Box::new(mangle_template(template))),
+        None => path,
+    }
 }
 
 pub fn global_symbol(module: &[Ident], name: &Ident) -> Symbol {
@@ -27,18 +47,23 @@ pub fn global_symbol(module: &[Ident], name: &Ident) -> Symbol {
 /// own, which an instantiated generic method needs in its path for the same
 /// reason a generic free function does: two instantiations of one
 /// declaration are two symbols.
+#[allow(clippy::too_many_arguments)]
 pub fn method_symbol(
     module: &[Ident],
     owner_name: &Ident,
     owner_generic_args: &[ResolvedGenericArg],
     method_name: &Ident,
+    template: Option<&TemplateDescriptor>,
     generic_args: &[ResolvedGenericArg],
     fn_type: &ResolvedFunctionType,
 ) -> Symbol {
     let owner = nominal_path(module, owner_name, owner_generic_args);
     function_symbol(
         generic_path(
-            associated_function_path(owner, method_name, fn_type),
+            template_path(
+                associated_function_path(owner, method_name, fn_type),
+                template,
+            ),
             generic_args,
         ),
         fn_type,
@@ -74,6 +99,7 @@ pub fn glued_symbol(
         spec_name,
         &[],
         function_name,
+        None,
         &[],
         fn_type,
     ))
@@ -82,19 +108,25 @@ pub fn glued_symbol(
 pub fn primitive_method_symbol(
     target: &ResolvedType,
     method_name: &Ident,
+    template: Option<&TemplateDescriptor>,
+    generic_args: &[ResolvedGenericArg],
     fn_type: &ResolvedFunctionType,
 ) -> Symbol {
+    let path = associated_function_path(owner_path(target), method_name, fn_type);
     function_symbol(
-        associated_function_path(owner_path(target), method_name, fn_type),
+        generic_path(template_path(path, template), generic_args),
         fn_type,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn conformance_method_symbol(
     target: &ResolvedType,
     spec_name: &Ident,
     spec_args: &[ResolvedGenericArg],
     method_name: &Ident,
+    template: Option<&TemplateDescriptor>,
+    generic_args: &[ResolvedGenericArg],
     fn_type: &ResolvedFunctionType,
 ) -> Symbol {
     // NOTE: the current checked extern/conformance model does not carry the spec module path
@@ -102,8 +134,9 @@ pub fn conformance_method_symbol(
     // ABI-changing fix is tracked in docs/issues/known-issues.md rather than hidden in a refactor.
     let spec = type_path(owner_path(target), spec_name);
     let spec = generic_path(spec, spec_args);
+    let path = associated_function_path(spec, method_name, fn_type);
     function_symbol(
-        associated_function_path(spec, method_name, fn_type),
+        generic_path(template_path(path, template), generic_args),
         fn_type,
     )
 }
@@ -162,9 +195,14 @@ pub fn extern_function_ref_symbol(extern_fn: &ExternFunctionRef) -> String {
             | ExternFunctionKind::Primitive { .. }
             | ExternFunctionKind::Conform { .. },
         ) => unreachable!("'@symbol(mangle = disabled)' is rejected on methods during analysis"),
+        // An extern reference is a *nongeneric* external declaration (see
+        // `ExternFunctionKind`); a concrete instantiation of an imported
+        // generic template is emitted locally from its own checked body,
+        // where the declaration's descriptor is available.
         (ManglingMode::Enabled, ExternFunctionKind::Free(name)) => encode(&free_function_symbol(
             &extern_fn.module_path,
             name,
+            None,
             &[],
             &extern_fn.fn_type,
         )),
@@ -179,6 +217,7 @@ pub fn extern_function_ref_symbol(extern_fn: &ExternFunctionRef) -> String {
             type_name,
             &[],
             method_name,
+            None,
             &[],
             &extern_fn.fn_type,
         )),
@@ -191,6 +230,8 @@ pub fn extern_function_ref_symbol(extern_fn: &ExternFunctionRef) -> String {
         ) => encode(&primitive_method_symbol(
             target,
             method_name,
+            None,
+            &[],
             &extern_fn.fn_type,
         )),
         (
@@ -206,6 +247,8 @@ pub fn extern_function_ref_symbol(extern_fn: &ExternFunctionRef) -> String {
             spec_name,
             spec_args,
             method_name,
+            None,
+            &[],
             &extern_fn.fn_type,
         )),
     }
@@ -248,6 +291,7 @@ mod tests {
     use super::*;
     use omega_analyzer::annotations::SymbolPolicy;
     use omega_analyzer::resolved_type::ResolvedFunctionParam;
+    use omega_analyzer::template::{TemplateBound, TemplateParam, TemplateType};
 
     fn ident(name: &str) -> Ident {
         Ident(name.to_owned())
@@ -290,6 +334,7 @@ mod tests {
         let symbol = free_function_symbol(
             &[ident("pkg"), ident("math")],
             &ident("sum"),
+            None,
             &[ResolvedGenericArg::Type(ResolvedType::U32)],
             &fn_type(
                 vec![ResolvedType::U32, ResolvedType::U32],
@@ -306,6 +351,7 @@ mod tests {
             encode(&free_function_symbol(
                 &[ident("pkg")],
                 &ident("take"),
+                None,
                 &[ResolvedGenericArg::Comp(CompScalar::Int {
                     r#type: CompIntType::USize,
                     value,
@@ -322,6 +368,7 @@ mod tests {
         let symbol = free_function_symbol(
             &[ident("pkg")],
             &ident("take"),
+            None,
             &[ResolvedGenericArg::Type(ResolvedType::U32)],
             &fn_type(vec![], ResolvedType::Void),
         );
@@ -343,6 +390,7 @@ mod tests {
                 &ident("Thing"),
                 &[],
                 &ident("echo"),
+                None,
                 &[ResolvedGenericArg::Type(argument.clone())],
                 &member_fn_type(owner.clone(), vec![argument.clone()], argument),
             )
@@ -367,6 +415,7 @@ mod tests {
             &ident("Thing"),
             &[],
             &ident("same"),
+            None,
             &[],
             &fn_type,
         );
@@ -378,6 +427,8 @@ mod tests {
         let symbol = primitive_method_symbol(
             &ResolvedType::I32,
             &ident("abs"),
+            None,
+            &[],
             &fn_type(vec![ResolvedType::I32], ResolvedType::I32),
         );
         assert_adapter_round_trip(symbol);
@@ -424,6 +475,7 @@ mod tests {
             &ident("Thing"),
             &[],
             &ident("same"),
+            None,
             &[],
             &fn_type(vec![owner.clone()], ResolvedType::I32),
         );
@@ -432,6 +484,7 @@ mod tests {
             &ident("Thing"),
             &[],
             &ident("same"),
+            None,
             &[],
             &member_fn_type(owner, vec![], ResolvedType::I32),
         );
@@ -451,6 +504,7 @@ mod tests {
             &ident("Thing"),
             &[],
             &ident("same"),
+            None,
             &[],
             &member_fn_type(owner, vec![], ResolvedType::I32),
         );
@@ -473,9 +527,10 @@ mod tests {
         let member = member_fn_type(ResolvedType::I32, vec![], ResolvedType::I32);
         let r#static = fn_type(vec![ResolvedType::I32], ResolvedType::I32);
 
-        let primitive_member = primitive_method_symbol(&ResolvedType::I32, &ident("abs"), &member);
+        let primitive_member =
+            primitive_method_symbol(&ResolvedType::I32, &ident("abs"), None, &[], &member);
         let primitive_static =
-            primitive_method_symbol(&ResolvedType::I32, &ident("abs"), &r#static);
+            primitive_method_symbol(&ResolvedType::I32, &ident("abs"), None, &[], &r#static);
         assert_ne!(encode(&primitive_member), encode(&primitive_static));
         assert_adapter_round_trip(primitive_member);
 
@@ -484,6 +539,8 @@ mod tests {
             &ident("Show"),
             &[],
             &ident("show"),
+            None,
+            &[],
             &member,
         );
         let conform_static = conformance_method_symbol(
@@ -491,6 +548,8 @@ mod tests {
             &ident("Show"),
             &[],
             &ident("show"),
+            None,
+            &[],
             &r#static,
         );
         assert_ne!(encode(&conform_member), encode(&conform_static));
@@ -510,6 +569,7 @@ mod tests {
             &ident("Thing"),
             &[],
             &ident("same"),
+            None,
             &[],
             &fn_type,
         ));
@@ -527,6 +587,87 @@ mod tests {
             symbol: SymbolPolicy::ordinary(),
         });
         assert_eq!(definition, reference);
+    }
+
+    fn template(bounds: Vec<TemplateBound>) -> TemplateDescriptor {
+        TemplateDescriptor {
+            generics: vec![TemplateParam::Type(bounds)],
+            params: vec![TemplateType::Param(0)],
+            return_type: TemplateType::Fixed(ResolvedType::I32),
+            is_variadic: false,
+            convention: omega_analyzer::resolved_type::CallingConvention::Omega,
+        }
+    }
+
+    fn bound(name: &str, args: Vec<omega_analyzer::template::TemplateArg>) -> TemplateBound {
+        TemplateBound {
+            module_path: vec![ident("pkg")],
+            name: ident(name),
+            args,
+        }
+    }
+
+    #[test]
+    fn a_template_qualified_function_round_trips_and_precedes_its_arguments() {
+        let symbol = free_function_symbol(
+            &[ident("pkg")],
+            &ident("pick"),
+            Some(&template(vec![bound("A", vec![])])),
+            &[ResolvedGenericArg::Type(ResolvedType::U32)],
+            &fn_type(vec![ResolvedType::U32], ResolvedType::I32),
+        );
+        // The concrete application is outermost, so the descriptor qualifies
+        // the declaration rather than the instantiation.
+        let ManglePath::Generic(inner, _) = &symbol.path else {
+            panic!("an instantiation's path ends in its concrete arguments");
+        };
+        assert!(matches!(inner.as_ref(), ManglePath::Template(..)));
+        assert_adapter_round_trip(symbol);
+    }
+
+    #[test]
+    fn two_declarations_at_one_instantiation_produce_two_symbols() {
+        let symbol_for = |descriptor: TemplateDescriptor| {
+            encode(&free_function_symbol(
+                &[ident("pkg")],
+                &ident("pick"),
+                Some(&descriptor),
+                &[ResolvedGenericArg::Type(ResolvedType::U32)],
+                &fn_type(vec![ResolvedType::U32], ResolvedType::I32),
+            ))
+        };
+        let a = symbol_for(template(vec![bound("A", vec![])]));
+        let b = symbol_for(template(vec![bound("B", vec![])]));
+        assert_ne!(a, b);
+        // A declaration with none of its own keeps the symbol it already had.
+        assert_ne!(
+            a,
+            encode(&free_function_symbol(
+                &[ident("pkg")],
+                &ident("pick"),
+                None,
+                &[ResolvedGenericArg::Type(ResolvedType::U32)],
+                &fn_type(vec![ResolvedType::U32], ResolvedType::I32),
+            ))
+        );
+    }
+
+    #[test]
+    fn a_symbolic_bound_argument_is_not_the_type_it_is_instantiated_with() {
+        use omega_analyzer::template::TemplateArg;
+        let symbol_for = |argument: TemplateArg| {
+            encode(&free_function_symbol(
+                &[ident("pkg")],
+                &ident("pick"),
+                Some(&template(vec![bound("Holds", vec![argument])])),
+                &[ResolvedGenericArg::Type(ResolvedType::U32)],
+                &fn_type(vec![ResolvedType::U32], ResolvedType::I32),
+            ))
+        };
+        assert_ne!(
+            symbol_for(TemplateArg::Type(TemplateType::Param(0))),
+            symbol_for(TemplateArg::Type(TemplateType::Fixed(ResolvedType::U32))),
+        );
     }
 
     #[test]

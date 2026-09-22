@@ -8,6 +8,10 @@ pub const TAG_GENERIC: u8 = b'I';
 /// A generic application carrying at least one compile-time value argument.
 pub const TAG_GENERIC_MIXED: u8 = b'i';
 pub const TAG_BACKREF: u8 = b'B';
+/// A template-qualified function path: the declaration's structural
+/// identity, encoded between the path that names it and its concrete
+/// generic application.
+pub const TAG_TEMPLATE: u8 = b'w';
 pub const TAG_LIST_END: u8 = b'E';
 
 pub const TAG_NAMESPACE_TYPE: u8 = b't';
@@ -39,6 +43,22 @@ pub const TAG_ANONYMOUS_ENUM_REFINED: u8 = b'Z';
 /// so a value argument can never be read as a type.
 pub const TAG_ARG_TYPE: u8 = b'p';
 pub const TAG_ARG_VALUE: u8 = b'q';
+/// A reference to the declaration's own `comp` parameter, in an argument
+/// position of a template descriptor.
+pub const TAG_ARG_PARAM: u8 = b'e';
+
+/// Tags read only inside a template descriptor. Composite shapes reuse the
+/// ordinary type letters, which is unambiguous because a template type is
+/// parsed by its own production: only these four introducers are new, and a
+/// concrete leaf is reached through `TAG_TEMPLATE_FIXED` rather than by
+/// falling through.
+pub const TAG_TEMPLATE_PARAM_TYPE: u8 = b'r';
+pub const TAG_TEMPLATE_PARAM_COMP: u8 = b'u';
+pub const TAG_TEMPLATE_TYPE_PARAM: u8 = b'g';
+pub const TAG_TEMPLATE_FIXED: u8 = b'o';
+/// A nominal application whose arguments may mention the declaration's own
+/// parameters, inside a template descriptor.
+pub const TAG_TEMPLATE_NOMINAL: u8 = b'N';
 /// Precedes the base62 magnitude of a negative integer value.
 pub const TAG_VALUE_NEGATIVE: u8 = b'k';
 

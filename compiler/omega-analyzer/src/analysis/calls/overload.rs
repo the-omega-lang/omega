@@ -343,6 +343,10 @@ impl<'r> Analyzer<'r> {
         implicit: usize,
     ) -> Option<(usize, Option<ResolvedMethod>, Vec<CheckedExprNode>)> {
         use crate::generics::pattern::TypePattern;
+        // What the caller wrote is settled before any declaration is looked
+        // at, so an invalid selector is this call's error rather than a
+        // reason to keep trying candidates.
+        let validated = self.validate_written_generics(node_id, span, explicit)?;
         let mut fixed = Vec::with_capacity(args.len());
         for arg in args {
             fixed.push(if Self::adaptable_literal(arg) {
@@ -374,16 +378,19 @@ impl<'r> Analyzer<'r> {
                     continue;
                 }
                 let template = template.clone();
+                if validated.len() > template.generics.len() {
+                    continue;
+                }
                 let Some(prefix) =
-                    self.try_written_generics(node_id, span, explicit, &template.generics)
+                    self.bind_written_generics(node_id, span, &validated, &template.generics, false)
                 else {
                     continue;
                 };
                 written = prefix;
                 bindings.resize(template.generics.len(), None);
                 for (slot, binding) in bindings.iter_mut().zip(&written.bindings) {
-            slot.clone_from(binding);
-        }
+                    slot.clone_from(binding);
+                }
                 if let Some(expected) = expected {
                     template.return_type.infer(expected, &mut bindings);
                 }
@@ -578,7 +585,7 @@ impl<'r> Analyzer<'r> {
             !template
                 .bounds
                 .iter()
-                .any(|(parameter, _, _)| *parameter == position)
+                .any(|(parameter, _)| *parameter == position)
         })
     }
 

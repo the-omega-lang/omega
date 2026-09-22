@@ -101,14 +101,35 @@ impl TestWorkspace {
 
     /// The symbols of the instantiations of `name`, which are the definitions
     /// whose demangled path names it.
+    ///
+    /// The declaration descriptor is dropped here: these assertions are about
+    /// *which instantiations exist*, not which declaration each came from.
+    /// `definitions` keeps the real symbols for the cases that need them.
     fn instantiations_of(&self, name: &str) -> Vec<String> {
         let needle = format!("::{name}<");
         self.definitions()
             .into_iter()
             .map(|(symbol, _)| omega_mangle::demangle(&symbol).unwrap_or(symbol))
+            .map(|symbol| without_descriptor(&symbol))
             .filter(|symbol| symbol.contains(&needle))
             .collect()
     }
+}
+
+/// A demangled symbol with any `{...}` declaration descriptor removed.
+/// Nothing else a symbol renders uses braces.
+pub fn without_descriptor(symbol: &str) -> String {
+    let mut out = String::with_capacity(symbol.len());
+    let mut depth = 0usize;
+    for character in symbol.chars() {
+        match character {
+            '{' => depth += 1,
+            '}' => depth -= 1,
+            _ if depth == 0 => out.push(character),
+            _ => {}
+        }
+    }
+    out
 }
 
 impl Drop for TestWorkspace {
@@ -181,7 +202,8 @@ fn an_instantiation_is_weak_so_two_packages_can_define_it() {
         .definitions()
         .into_iter()
         .filter(|(symbol, _)| {
-            omega_mangle::demangle(symbol).is_some_and(|name| name.contains("::echo<"))
+            omega_mangle::demangle(symbol)
+                .is_some_and(|name| without_descriptor(&name).contains("::echo<"))
         })
         .collect();
     let [(_, linkage)] = instantiated.as_slice() else {
@@ -511,9 +533,9 @@ fn deciding_applicability_does_not_instantiate_a_losing_declaration() {
 
 #[test]
 fn a_selector_chooses_between_declarations_the_arguments_cannot() {
-    // Both declarations apply to `Mark`, so the selector is what decides;
-    // their signatures differ so that both can be emitted at once (see
-    // docs/issues/compiler-limitations.md).
+    // Both declarations apply to `Mark` with one signature, so the selector
+    // is the only thing that decides -- and the only thing that keeps the two
+    // instantiations apart once they are emitted.
     let workspace = TestWorkspace::new(
         r#"
         spec A { a_mark(*self) => i32; }
@@ -524,7 +546,7 @@ fn a_selector_chooses_between_declarations_the_arguments_cannot() {
         struct Holder {
             exposed value: i32;
             exposed pick<T: A>(*self, thing: T) => i32 { 1 }
-            exposed pick<T: B>(*self, thing: T) => *str { "b" }
+            exposed pick<T: B>(*self, thing: T) => i32 { 2 }
         }
         main() => void {
             holder := Holder { value = 1; };
@@ -539,6 +561,62 @@ fn a_selector_chooses_between_declarations_the_arguments_cannot() {
         2,
         "each selector reached a different declaration",
     );
+    let symbols: Vec<String> = workspace
+        .definitions()
+        .into_iter()
+        .map(|(symbol, _)| symbol)
+        .filter(|symbol| {
+            omega_mangle::demangle(symbol)
+                .is_some_and(|name| without_descriptor(&name).contains("::pick<"))
+        })
+        .collect();
+    let [first, second] = symbols.as_slice() else {
+        panic!("expected two instantiations, got {symbols:#?}");
+    };
+    assert_ne!(
+        first, second,
+        "two declarations instantiated at the same arguments with the same \
+         signature must still be two linker symbols",
+    );
+}
+
+/// Both declarations offer `pick`, and neither can make `Restricted<i32>`
+/// valid: `i32` does not meet the bound the alias declares on its own
+/// parameter. Candidate probing must not swallow that.
+const INVALID_SELECTOR_SOURCE: &str = r#"
+    spec A { a_mark(*self) => i32; }
+    spec B { b_mark(*self) => i32; }
+    spec Holds<T> { held(*self) => T; }
+    alias Restricted<U: A> = Holds<U>;
+    struct Mark { exposed value: i32; }
+    meet Holds<i32> for Mark { held(*self) => i32 { self.value } }
+    meet B for Mark { b_mark(*self) => i32 { 2 } }
+    pick<T: Holds<i32>>(value: T) => i32 { 1 }
+    pick<T: B>(value: T) => i32 { 2 }
+"#;
+
+#[test]
+fn an_invalid_selector_stays_an_error_however_many_declarations_exist() {
+    for reference in [
+        "used := pick<Mark: Restricted<i32>>(Mark { value = 1; });",
+        "used: (Mark) => i32 = pick<Mark: Restricted<i32>>;",
+    ] {
+        let workspace = TestWorkspace::new(&format!(
+            "{INVALID_SELECTOR_SOURCE}
+ main() => void {{ {reference} }}
+"
+        ));
+        let errors = resolve_errors(&workspace.expect_errors());
+        assert_eq!(
+            errors.len(),
+            1,
+            "one invalid written selector earns exactly one diagnostic: {errors:#?}",
+        );
+        assert!(
+            errors[0].contains("does not implement spec 'A'"),
+            "the reported cause must be the alias-owned bound that failed: {errors:#?}",
+        );
+    }
 }
 
 #[test]

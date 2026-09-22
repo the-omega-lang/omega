@@ -28,6 +28,10 @@ pub enum ManglePath {
     /// Each element carries an explicit argument tag, so a value can never be
     /// confused with a type.
     MixedGeneric(Box<ManglePath>, Vec<MangleGenericArg>),
+    /// A generic function declaration's structural identity, applied to the
+    /// path that names it and encoded *before* its concrete arguments. See
+    /// [`MangleTemplate`].
+    Template(Box<ManglePath>, Box<MangleTemplate>),
     Type(Box<MangleType>),
 }
 
@@ -162,4 +166,127 @@ pub struct Symbol {
     pub path: ManglePath,
     pub signature: Option<FunctionSignature>,
     pub vendor_suffix: Option<String>,
+}
+
+/// The structural identity of a generic function *declaration*, before its
+/// own generic parameters are substituted.
+///
+/// Two declarations of one name reachable at the same concrete arguments --
+/// which explicit bound selection makes possible -- differ here, so they
+/// stay two linker symbols instead of folding onto one weak definition.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MangleTemplate {
+    /// The declaration's own generic parameters, in declared order.
+    pub generics: Vec<MangleTemplateParam>,
+    pub params: Vec<MangleTemplateType>,
+    pub return_type: MangleTemplateType,
+    pub is_variadic: bool,
+    pub convention: MangleConvention,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum MangleTemplateParam {
+    /// A type parameter and the exact bound set it declares, in the
+    /// producer's canonical order.
+    Type(Vec<MangleTemplateBound>),
+    /// A `comp` parameter and its declared value type.
+    Comp(MangleTemplateType),
+}
+
+impl MangleTemplateParam {
+    fn is_comp(&self) -> bool {
+        matches!(self, Self::Comp(_))
+    }
+}
+
+/// One spec application: its full declared package/module path and the
+/// symbolic arguments applied to it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MangleTemplateBound {
+    pub spec: ManglePath,
+    pub args: Vec<MangleTemplateArg>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum MangleTemplateArg {
+    Type(MangleTemplateType),
+    Value(MangleValue),
+    /// A reference to the declaration's own `comp` parameter at this index.
+    Param(u32),
+}
+
+/// A type as the declaration writes it: concrete leaves stay concrete, and
+/// every mention of the declaration's own parameters is a position, so two
+/// declarations whose parameters differ only in name are one identity while
+/// `<M: A>` and a bound fixed to `i32` stay distinct.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum MangleTemplateType {
+    /// A reference to the declaration's own type parameter at this index.
+    Param(u32),
+    Fixed(MangleType),
+    Pointer(Box<Self>, bool),
+    Slice(Box<Self>, bool),
+    Array(Box<Self>, bool),
+    SizedArray(Box<Self>, Box<MangleTemplateArg>),
+    SpecObject(Vec<MangleTemplateBound>, bool),
+    AnonymousEnum(Vec<Self>),
+    Function(Vec<Self>, Box<Self>, bool, MangleConvention),
+    Nominal(ManglePath, Vec<MangleTemplateArg>),
+}
+
+impl MangleTemplate {
+    /// Whether every symbolic reference in this descriptor names one of its
+    /// own parameters, with the kind that parameter declares. A decoder
+    /// rejects a descriptor that fails this; an encoder never builds one.
+    pub fn references_are_valid(&self) -> bool {
+        self.generics.iter().all(|generic| match generic {
+            MangleTemplateParam::Type(bounds) => {
+                bounds.iter().all(|bound| self.bound_is_valid(bound))
+            }
+            MangleTemplateParam::Comp(value_type) => self.type_is_valid(value_type),
+        }) && self.params.iter().all(|param| self.type_is_valid(param))
+            && self.type_is_valid(&self.return_type)
+    }
+
+    fn bound_is_valid(&self, bound: &MangleTemplateBound) -> bool {
+        bound.args.iter().all(|arg| self.arg_is_valid(arg))
+    }
+
+    fn arg_is_valid(&self, arg: &MangleTemplateArg) -> bool {
+        match arg {
+            MangleTemplateArg::Type(ty) => self.type_is_valid(ty),
+            MangleTemplateArg::Value(_) => true,
+            MangleTemplateArg::Param(index) => self
+                .generics
+                .get(*index as usize)
+                .is_some_and(MangleTemplateParam::is_comp),
+        }
+    }
+
+    fn type_is_valid(&self, ty: &MangleTemplateType) -> bool {
+        match ty {
+            MangleTemplateType::Param(index) => self
+                .generics
+                .get(*index as usize)
+                .is_some_and(|generic| !generic.is_comp()),
+            MangleTemplateType::Fixed(_) => true,
+            MangleTemplateType::Pointer(inner, _)
+            | MangleTemplateType::Slice(inner, _)
+            | MangleTemplateType::Array(inner, _) => self.type_is_valid(inner),
+            MangleTemplateType::SizedArray(inner, length) => {
+                self.type_is_valid(inner) && self.arg_is_valid(length)
+            }
+            MangleTemplateType::SpecObject(members, _) => {
+                members.iter().all(|member| self.bound_is_valid(member))
+            }
+            MangleTemplateType::AnonymousEnum(members) => {
+                members.iter().all(|member| self.type_is_valid(member))
+            }
+            MangleTemplateType::Function(params, return_type, _, _) => {
+                params.iter().all(|param| self.type_is_valid(param))
+                    && self.type_is_valid(return_type)
+            }
+            MangleTemplateType::Nominal(_, args) => args.iter().all(|arg| self.arg_is_valid(arg)),
+        }
+    }
 }

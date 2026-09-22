@@ -55,6 +55,8 @@ optional vendor suffix
 - package/module root;
 - nested type/value namespaces;
 - generic application;
+- template-qualified function path (a generic function's declaration identity, see
+  [Declaration identity](#declaration-identity));
 - structural-type owner (needed for conform methods on unnamed targets such as primitives/slices).
 
 `MangleType` mirrors externally identity-relevant semantic type shapes without depending on `ResolvedType` directly.
@@ -98,6 +100,68 @@ The first mangled path segment is the **declared package root identity**, not an
 Nested modules and item owners extend that path deterministically.
 
 Separately compiled packages must be invoked with identities that agree with the source imports and symbols they expect to link.
+
+## Declaration identity
+
+A generic function's path, concrete arguments and signature identify its
+*instantiation*. They do not identify which **declaration** was instantiated,
+and explicit bound selection makes that reachable: `pick<M: A>` and
+`pick<M: B>` can both exist, both be instantiated at `M`, and both produce
+`(M) => i32`. Folded onto one weak symbol, separately compiled clients each
+emitting one of them would link successfully and execute whichever body the
+linker kept.
+
+`ManglePath::Template` closes that. A generic function's path carries a
+`MangleTemplate` between the path that names it and its concrete generic
+application, so the declaration is fixed before the instantiation is:
+
+```text
+pkg::pick { <#0: pkg::A>(#0) => i32 } <pkg::M>
+^^^^^^^^^                              ^^^^^^^
+name                                   instantiation
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+          declaration
+```
+
+The descriptor holds the declaration's own effective generic parameter list
+(type versus `comp`, with each `comp` parameter's declared value type), each
+type parameter's exact declared bound set, and the parameter/return type
+patterns together with calling convention and variadic flag. A method's owner
+context is already fixed by the owner path and the `self` segment, so the
+descriptor covers only the function's own parameters.
+
+It is built **before those parameters are substituted**. That is the whole
+point: `<T: Holds<T>>` and `<T: Holds<M>>` are two declarations even though
+one call instantiates either at `M`, and a symbol derived from substituted
+bounds could not say which. Every mention of an own parameter is therefore a
+*position*, with an explicit tag for the type and value cases so a symbolic
+reference can never read as a concrete leaf. The decoder rejects a position no
+declared parameter answers, or one whose kind disagrees.
+
+What is deliberately **not** identity: parameter names, parameter descriptors,
+source order, source location, visibility, bodies, the declaration's own
+default expressions, and how many overloads happen to exist or be visible.
+Aliases (including generic and conjunction aliases), spec defaults,
+equivalent compile-time arguments and static-spec parameter sugar are
+normalized by the analyzer's existing machinery before the descriptor is
+taken, and unordered bound/conjunction members are sorted by a structural key
+that observes no `HirId`, address, or discovery order. A declaration's
+identity is therefore stable across independent compilations and across
+physical checkout paths that declare the same package identity, which is what
+lets two packages emit one instantiation as one weak definition.
+
+A declaration with no generic parameters of its own has nothing to
+disambiguate and carries no descriptor, so every ordinary function, method,
+conformance method, primitive method, global, vtable, gap/glue symbol, and
+`@symbol`-controlled name is byte-identical to before. Adding the descriptor
+migrated generic function/method symbols only; old and new generic objects are
+not a supported combination.
+
+`ExternFunctionRef` represents *nongeneric* external declarations, so it never
+carries a descriptor. A concrete instantiation of an imported generic template
+is emitted from the local compilation's own checked body, where the
+declaration's descriptor is available -- that is what keeps the two sides of a
+separate compilation naming the same thing.
 
 ## Generic identity
 
@@ -150,6 +214,12 @@ Weak       independently regenerable definition; duplicates may be folded
 ```
 
 Weak linkage is used when separate compilations can legitimately generate byte-equivalent definitions under the same symbol, especially concrete generic/template instantiations and monomorphized conform methods.
+
+Weak folding is therefore only sound while one symbol means one body. That is
+exactly what [Declaration identity](#declaration-identity) guarantees:
+instantiations that may be folded are instantiations of the *same declaration
+at the same arguments*, and two declarations reachable at one argument list
+are two symbols rather than two candidate definitions of one.
 
 A hand-written concrete declaration that should exist exactly once remains strong so a duplicate is diagnosed by the link model rather than silently folded.
 

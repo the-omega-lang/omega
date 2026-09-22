@@ -108,6 +108,26 @@ determined by an argument, an expected result type, an expected function type,
 or the declaration's own default. A uniquely selected bound set is not itself
 a source of a type: with nothing to determine it, the call is an error.
 
+Whether a written selector is **valid** belongs to the caller, not to the
+declarations it might reach. Its spec names must resolve and be visible where
+it is written, and an alias used in it must satisfy the bounds that alias
+declares on its own parameters -- the same mandatory check any other use of
+that alias gets, which [`aliases.md`](aliases.md) owns. That verdict is the
+same whether the name offers one declaration or ten, and adding, removing,
+hiding, or reordering declarations never turns an invalid selector into an
+accepted one. An invalid selector is an error at the call, not a reason to
+select something else:
+
+```omega
+alias Restricted<U: A> = Holds<U>;
+
+f<M: Restricted<i32>>(x);   # error unless `i32` implements `A`,
+                            # whatever declarations of `f` exist
+```
+
+Failing to *match* any declaration is the separate outcome described above,
+and only that one depends on which declarations exist.
+
 Selectors apply only to a function's generic argument list. Writing one on an
 aggregate constructor, a type or owner application, a spec application, a
 generic default, or a function-pointer value is an error, and a `comp`

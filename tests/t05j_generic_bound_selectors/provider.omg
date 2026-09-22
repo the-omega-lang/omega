@@ -4,4 +4,4 @@ import super::A;
 import super::B;
 
 exposed shared<T: A>(value: T) => i32 { 111 }
-exposed shared<T: B>(value: T) => *str { "provider-b" }
+exposed shared<T: B>(value: T) => i32 { 222 }

@@ -28,6 +28,33 @@ impl BoundSelector {
     }
 }
 
+/// A written generic-argument list after caller validation. See
+/// [`Analyzer::validate_written_generics`].
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ValidatedGenerics {
+    entries: Vec<ValidatedEntry>,
+}
+
+impl ValidatedGenerics {
+    pub(crate) fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ValidatedEntry {
+    /// Kept so a plain argument can still be read against the parameter kind
+    /// of whichever declaration it reaches.
+    written: ExprGenericArg,
+    selector: Option<BoundSelector>,
+    /// The type a typed selector fixes, resolved in the caller's context.
+    fixed: Option<ResolvedGenericArg>,
+}
+
 /// A written generic-argument list, split into what it binds and what it
 /// demands of the declaration it selects.
 #[derive(Debug, Clone, Default)]
@@ -104,6 +131,62 @@ impl<'r> Analyzer<'r> {
         written.iter().map(|entry| entry.plain().cloned()).collect()
     }
 
+    /// Settles everything a written list means to the *caller*: every
+    /// selector's names, their visibility, the obligations the aliases in
+    /// them carry, and the concrete type a typed selector fixes.
+    ///
+    /// None of that depends on which declarations happen to be in scope, so
+    /// it is decided once, here, rather than per candidate under suppressed
+    /// diagnostics. Adding, hiding, or reordering overloads therefore cannot
+    /// make an invalid selector acceptable, nor report it twice. `None`
+    /// means the list is wrong and the reason was reported: the call or
+    /// value reference must stop rather than resolve some other way.
+    pub(crate) fn validate_written_generics(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        written: &[ExprGenericArg],
+    ) -> Option<ValidatedGenerics> {
+        let mut entries = Vec::with_capacity(written.len());
+        let mut ok = true;
+        for entry in written {
+            let selector_span = entry.selector_span().unwrap_or(span);
+            let selector = match entry.selector() {
+                None => None,
+                Some(bounds) => match self.resolve_bound_selector(node_id, selector_span, bounds) {
+                    Some(selector) => Some(selector),
+                    None => {
+                        ok = false;
+                        continue;
+                    }
+                },
+            };
+            // A type written beside a selector is caller-owned: a selector
+            // never lands on a `comp` parameter, so that type means the same
+            // whatever declaration the entry reaches. A plain argument's
+            // kind, and a value written where only a selector could put one,
+            // are still the candidate's to judge.
+            let fixed = match (&selector, entry.arg()) {
+                (Some(_), Some(arg @ GenericArg::Type(_))) => {
+                    match self.resolve_generic_arg_validated(node_id, span, arg, None) {
+                        (true, Some(resolved)) => Some(resolved),
+                        _ => {
+                            ok = false;
+                            continue;
+                        }
+                    }
+                }
+                _ => None,
+            };
+            entries.push(ValidatedEntry {
+                written: entry.clone(),
+                selector,
+                fixed,
+            });
+        }
+        ok.then_some(ValidatedGenerics { entries })
+    }
+
     /// Resolves a written list against the generic parameters it applies to,
     /// reporting what does not fit. `owner` names the declaration only so an
     /// excess argument can be reported against it.
@@ -116,32 +199,28 @@ impl<'r> Analyzer<'r> {
         params: &[HirGenericParam],
     ) -> Option<WrittenGenerics> {
         self.check_generic_arity(node_id, span, owner, params, written.len())?;
-        self.written_generics(node_id, span, written, params, true)
+        let validated = self.validate_written_generics(node_id, span, written)?;
+        self.bind_written_generics(node_id, span, &validated, params, true)
     }
 
-    /// The same, as a candidate filter: nothing is reported, and a list that
-    /// does not fit simply means this is not the declaration meant.
-    pub(crate) fn try_written_generics(
+    /// Applies an already-validated list to one declaration's parameters.
+    ///
+    /// Only what depends on *this* declaration is decided here: parameter
+    /// kind, arity, and how a plain argument reads against the slot it
+    /// lands on. Nothing resolves a selector name or rechecks an alias
+    /// constraint, so a candidate can be rejected without its rejection
+    /// changing what the caller wrote. With `report`, a list that does not
+    /// fit is diagnosed against this declaration; without it, not fitting
+    /// simply means this is not the declaration meant.
+    pub(crate) fn bind_written_generics(
         &mut self,
         node_id: HirId,
         span: Span,
-        written: &[ExprGenericArg],
-        params: &[HirGenericParam],
-    ) -> Option<WrittenGenerics> {
-        if written.len() > params.len() {
-            return None;
-        }
-        self.without_diagnostics(|this| this.written_generics(node_id, span, written, params, false))
-    }
-
-    fn written_generics(
-        &mut self,
-        node_id: HirId,
-        span: Span,
-        written: &[ExprGenericArg],
+        validated: &ValidatedGenerics,
         params: &[HirGenericParam],
         report: bool,
     ) -> Option<WrittenGenerics> {
+        let written = &validated.entries;
         let mut result = WrittenGenerics {
             bindings: vec![None; written.len()],
             selectors: vec![None; written.len()],
@@ -150,11 +229,11 @@ impl<'r> Analyzer<'r> {
         let mut ok = true;
         for (position, entry) in written.iter().enumerate() {
             let param = params.get(position);
-            if entry.selector().is_some() && param.is_some_and(HirGenericParam::is_comp) {
+            if entry.selector.is_some() && param.is_some_and(HirGenericParam::is_comp) {
                 if report {
                     self.error(
                         node_id,
-                        entry.selector_span().unwrap_or(span),
+                        entry.written.selector_span().unwrap_or(span),
                         AnalysisErrorKind::BoundSelectorOnCompParam {
                             parameter: param.unwrap().ident.clone(),
                         },
@@ -163,26 +242,30 @@ impl<'r> Analyzer<'r> {
                 ok = false;
                 continue;
             }
-            if let Some(arg) = entry.arg() {
-                match self.resolve_generic_arg_or_error(node_id, span, arg, param) {
-                    Some(resolved) => result.bindings[position] = Some(resolved),
-                    None => ok = false,
+            match (&entry.fixed, entry.written.arg()) {
+                (Some(fixed), _) => result.bindings[position] = Some(fixed.clone()),
+                (None, Some(arg)) => {
+                    let resolved = if report {
+                        self.resolve_generic_arg_or_error(node_id, span, arg, param)
+                    } else {
+                        self.without_diagnostics(|this| {
+                            this.resolve_generic_arg_or_error(node_id, span, arg, param)
+                        })
+                    };
+                    match resolved {
+                        Some(resolved) => result.bindings[position] = Some(resolved),
+                        None => ok = false,
+                    }
                 }
+                (None, None) => {}
             }
-            match entry.selector() {
+            match &entry.selector {
                 None => {
                     if !param.is_some_and(HirGenericParam::is_comp) {
                         result.plain_type_positions.push(position);
                     }
                 }
-                Some(bounds) => match self.resolve_bound_selector(
-                    node_id,
-                    entry.selector_span().unwrap_or(span),
-                    bounds,
-                ) {
-                    Some(selector) => result.selectors[position] = Some(selector),
-                    None => ok = false,
-                },
+                Some(selector) => result.selectors[position] = Some(selector.clone()),
             }
         }
         ok.then_some(result)
@@ -203,6 +286,16 @@ impl<'r> Analyzer<'r> {
             .collect::<Vec<_>>()
             .join(" + ");
         let module = self.module_path.clone();
+        // An alias carries its own bounds, and expanding a conjunction alias
+        // below erases the wrapper that declares them, so they are checked
+        // at the spelling that wrote them -- once, before expansion.
+        let mut met = true;
+        for bound in written {
+            met &= self.check_alias_generic_bounds(node_id, span, bound, &module);
+        }
+        if !met {
+            return None;
+        }
         let expanded = match crate::aliases::expand_bounds(&mut *self.resolver, &module, written) {
             Ok(expanded) => expanded,
             Err(error) => {
@@ -212,7 +305,7 @@ impl<'r> Analyzer<'r> {
         };
         let mut required: Vec<DeclaredBound> = Vec::with_capacity(expanded.len());
         for bound in &expanded {
-            let (_, key) = self.bound_key(node_id, span, bound)?;
+            let (_, key) = self.expanded_bound_key(node_id, span, bound)?;
             if !required.contains(&key) {
                 required.push(key);
             }
@@ -224,10 +317,10 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    /// One bound as a canonical key, with the spec it names. Aliases are
-    /// expanded before extracting arguments; declared defaults are then applied so
-    /// that the same bound compares equal whether or not a defaulted
-    /// argument was written out.
+    /// One bound as a canonical key, with the spec it names. The bounds the
+    /// aliases in it declare are checked first, and an unmet one makes this
+    /// no key at all: a resolved spec comes back either way, so returning it
+    /// would let a caller proceed on an obligation that failed.
     pub fn bound_key(
         &mut self,
         node_id: HirId,
@@ -235,7 +328,24 @@ impl<'r> Analyzer<'r> {
         bound: &Type,
     ) -> Option<(Rc<RefCell<ResolvedSpecType>>, DeclaredBound)> {
         let module = self.module_path.clone();
-        self.check_alias_generic_bounds(node_id, span, bound, &module);
+        if !self.check_alias_generic_bounds(node_id, span, bound, &module) {
+            return None;
+        }
+        self.expanded_bound_key(node_id, span, bound)
+    }
+
+    /// The same, for a bound whose alias obligations the caller already
+    /// checked at the spelling that wrote them. Aliases are expanded before
+    /// extracting arguments; declared defaults are then applied so that the
+    /// same bound compares equal whether or not a defaulted argument was
+    /// written out.
+    fn expanded_bound_key(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        bound: &Type,
+    ) -> Option<(Rc<RefCell<ResolvedSpecType>>, DeclaredBound)> {
+        let module = self.module_path.clone();
         let expanded = match crate::aliases::expand_type_alias(self.resolver, &module, bound.clone()) {
             Ok(expanded) => expanded,
             Err(error) => {

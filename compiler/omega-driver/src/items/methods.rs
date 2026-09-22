@@ -222,6 +222,12 @@ impl Driver {
             unreachable!("a method query resolves a function");
         };
         let annotations = self.items.function_annotations[&decl_id].clone();
+        let descriptor = self.template_descriptor(
+            key,
+            &template.function,
+            &template.function.generics,
+            &template.owner_substitution,
+        );
         let substitution = Self::method_substitution(&template, &key.generic_args);
         let declared = self
             .items
@@ -237,6 +243,7 @@ impl Driver {
         });
         let mut checked = run.result?;
         checked.generic_args = key.generic_args.clone();
+        checked.template = descriptor;
         if let Some(owner) = template.conformance_owner {
             checked.conformance_owner = Some(owner);
         } else {

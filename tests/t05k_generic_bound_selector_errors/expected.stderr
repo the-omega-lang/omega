@@ -1,7 +1,7 @@
 error: no declaration of 'both' declares the bounds 'A'
-  --> tests/t05k_generic_bound_selector_errors/t05k_generic_bound_selector_errors.omg:44:10
+  --> tests/t05k_generic_bound_selector_errors/t05k_generic_bound_selector_errors.omg:63:10
    |
-44 |     both<Mark: A>(mark);
+63 |     both<Mark: A>(mark);
    |          ^^^^^^^ no declaration of `both` declares exactly these bounds
    |
    = note: selected: A
@@ -9,9 +9,9 @@ error: no declaration of 'both' declares the bounds 'A'
    = help: a selector names a declaration's own bound set exactly -- it does not assert a conformance, so it neither reaches a stricter declaration nor falls back to a weaker one
 
 error: no declaration of 'either' declares the bounds 'A + B'
-  --> tests/t05k_generic_bound_selector_errors/t05k_generic_bound_selector_errors.omg:46:12
+  --> tests/t05k_generic_bound_selector_errors/t05k_generic_bound_selector_errors.omg:65:12
    |
-46 |     either<Mark: A + B>(mark);
+65 |     either<Mark: A + B>(mark);
    |            ^^^^^^^^^^^ no declaration of `either` declares exactly these bounds
    |
    = note: selected: A + B
@@ -20,98 +20,142 @@ error: no declaration of 'either' declares the bounds 'A + B'
    = help: a selector names a declaration's own bound set exactly -- it does not assert a conformance, so it neither reaches a stricter declaration nor falls back to a weaker one
 
 error: ambiguous reference to overloaded 'either'
-  --> tests/t05k_generic_bound_selector_errors/t05k_generic_bound_selector_errors.omg:47:5
+  --> tests/t05k_generic_bound_selector_errors/t05k_generic_bound_selector_errors.omg:66:5
    |
-47 |     either(mark);
+66 |     either(mark);
    |     ^^^^^^^^^^^^ reference to `either` is ambiguous
    |
    = note: candidate: <T: A>(value: T) => i32
    = note: candidate: <T: B>(value: T) => *str
 
 error: ambiguous reference to overloaded 'reversed'
-  --> tests/t05k_generic_bound_selector_errors/t05k_generic_bound_selector_errors.omg:48:5
+  --> tests/t05k_generic_bound_selector_errors/t05k_generic_bound_selector_errors.omg:67:5
    |
-48 |     reversed(mark);
+67 |     reversed(mark);
    |     ^^^^^^^^^^^^^^ reference to `reversed` is ambiguous
    |
    = note: candidate: <T: B>(value: T) => *str
    = note: candidate: <T: A>(value: T) => i32
 
 error: ambiguous reference to overloaded 'pairwise'
-  --> tests/t05k_generic_bound_selector_errors/t05k_generic_bound_selector_errors.omg:50:5
+  --> tests/t05k_generic_bound_selector_errors/t05k_generic_bound_selector_errors.omg:69:5
    |
-50 |     pairwise<Mark, Mark>(mark, mark);
+69 |     pairwise<Mark, Mark>(mark, mark);
    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ reference to `pairwise` is ambiguous
    |
    = note: candidate: <T, U: B>(a: T, b: U) => i32
    = note: candidate: <T: A, U>(a: T, b: U) => *str
 
 error: 'Mark' does not implement spec 'Empty'
-  --> tests/t05k_generic_bound_selector_errors/t05k_generic_bound_selector_errors.omg:52:5
+  --> tests/t05k_generic_bound_selector_errors/t05k_generic_bound_selector_errors.omg:71:5
    |
-52 |     marked<Mark: Empty>(mark);
+71 |     marked<Mark: Empty>(mark);
    |     ^^^^^^^^^^^^^^^^^^^^^^^^^ does not implement this spec
    |
    = note: no conformance to it is declared for this type
 
 error: 'Plain' does not implement spec 'A' (missing: a_mark)
-  --> tests/t05k_generic_bound_selector_errors/t05k_generic_bound_selector_errors.omg:54:5
+  --> tests/t05k_generic_bound_selector_errors/t05k_generic_bound_selector_errors.omg:73:5
    |
-54 |     lone<Plain: A>(Plain { value = 1; });
+73 |     lone<Plain: A>(Plain { value = 1; });
    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ does not implement this spec
    |
    = note: missing: a_mark
 
 error: 'holed' cannot be instantiated here: 'T' is not determined
-  --> tests/t05k_generic_bound_selector_errors/t05k_generic_bound_selector_errors.omg:56:5
+  --> tests/t05k_generic_bound_selector_errors/t05k_generic_bound_selector_errors.omg:75:5
    |
-56 |     holed<spec A>(1);
+75 |     holed<spec A>(1);
    |     ^^^^^^^^^^^^^^^^ `T` is not determined here
    |
    = help: `spec ...` selects a declaration without binding its parameter -- write the type for `holed`'s position, or give this call an argument or expected type that determines it
 
 error: 'N' is a 'comp' parameter and declares no bounds
-  --> tests/t05k_generic_bound_selector_errors/t05k_generic_bound_selector_errors.omg:58:12
+  --> tests/t05k_generic_bound_selector_errors/t05k_generic_bound_selector_errors.omg:77:12
    |
-58 |     comped<4: A, Mark>(mark);
+77 |     comped<4: A, Mark>(mark);
    |            ^^^^ `N` binds a compile-time value
    |
    = help: only a type parameter declares bounds, so only a type position accepts a selector
 
-error: 'Plain' is not a spec
-  --> tests/t05k_generic_bound_selector_errors/t05k_generic_bound_selector_errors.omg:60:10
+error: 'i32' does not implement spec 'A' (missing: a_mark)
+  --> tests/t05k_generic_bound_selector_errors/t05k_generic_bound_selector_errors.omg:80:16
    |
-60 |     lone<Mark: Plain>(mark);
+80 |     restricted<Mark: Restricted<i32>>(mark);
+   |                ^^^^^^^^^^^^^^^^^^^^^ does not implement this spec
+   |
+   = note: missing: a_mark
+
+error: 'i32' does not implement spec 'A' (missing: a_mark)
+  --> tests/t05k_generic_bound_selector_errors/t05k_generic_bound_selector_errors.omg:81:15
+   |
+81 |     reordered<Mark: Restricted<i32>>(mark);
+   |               ^^^^^^^^^^^^^^^^^^^^^ does not implement this spec
+   |
+   = note: missing: a_mark
+
+error: 'i32' does not implement spec 'A' (missing: a_mark)
+  --> tests/t05k_generic_bound_selector_errors/t05k_generic_bound_selector_errors.omg:82:15
+   |
+82 |     reordered<Mark: RestrictedBoth<i32>>(mark);
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^ does not implement this spec
+   |
+   = note: missing: a_mark
+
+error: 'Plain' is not a spec
+  --> tests/t05k_generic_bound_selector_errors/t05k_generic_bound_selector_errors.omg:85:10
+   |
+85 |     lone<Mark: Plain>(mark);
    |          ^^^^^^^^^^^ not a spec
    |
    = help: a spec name is required here -- `spec *...`'s pointee, a generic bound, and a bound selector all name one
 
 error: cannot find type 'Missing' in this scope
-  --> tests/t05k_generic_bound_selector_errors/t05k_generic_bound_selector_errors.omg:61:10
+  --> tests/t05k_generic_bound_selector_errors/t05k_generic_bound_selector_errors.omg:86:10
    |
-61 |     lone<Mark: Missing>(mark);
+86 |     lone<Mark: Missing>(mark);
    |          ^^^^^^^^^^^^^ not found in this scope
 
-error: 't05k_generic_bound_selector_errors::lone' expects 1 generic argument(s), found 2
-  --> tests/t05k_generic_bound_selector_errors/t05k_generic_bound_selector_errors.omg:63:5
+error: cannot find type 'Missing' in this scope
+  --> tests/t05k_generic_bound_selector_errors/t05k_generic_bound_selector_errors.omg:87:12
    |
-63 |     lone<Mark: A, u8>(mark);
+87 |     either<Mark: Missing>(mark);
+   |            ^^^^^^^^^^^^^ not found in this scope
+
+error: 'Plain' is not a spec
+  --> tests/t05k_generic_bound_selector_errors/t05k_generic_bound_selector_errors.omg:88:12
+   |
+88 |     either<Mark: Plain>(mark);
+   |            ^^^^^^^^^^^ not a spec
+   |
+   = help: a spec name is required here -- `spec *...`'s pointee, a generic bound, and a bound selector all name one
+
+error: 't05k_generic_bound_selector_errors::hidden::Hidden' is not visible here
+  --> tests/t05k_generic_bound_selector_errors/t05k_generic_bound_selector_errors.omg:90:12
+   |
+90 |     either<Mark: self::hidden::Hidden>(mark);
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^ not visible from this module
+
+error: 't05k_generic_bound_selector_errors::lone' expects 1 generic argument(s), found 2
+  --> tests/t05k_generic_bound_selector_errors/t05k_generic_bound_selector_errors.omg:92:5
+   |
+92 |     lone<Mark: A, u8>(mark);
    |     ^^^^^^^^^^^^^^^^^^^^^^^ expected 1 generic argument
 
 error: a bound selector cannot be written on a path that does not name a generic function
-  --> tests/t05k_generic_bound_selector_errors/t05k_generic_bound_selector_errors.omg:65:11
+  --> tests/t05k_generic_bound_selector_errors/t05k_generic_bound_selector_errors.omg:94:11
    |
-65 |     plain<i32: A>(1);
+94 |     plain<i32: A>(1);
    |           ^^^^^^ this selector applies to a path that does not name a generic function
    |
    = help: `T: A + B` and `spec A + B` choose between generic function declarations -- write an ordinary generic argument here
 
 error: a bound selector cannot be written on an aggregate constructor
-  --> tests/t05k_generic_bound_selector_errors/t05k_generic_bound_selector_errors.omg:67:18
+  --> tests/t05k_generic_bound_selector_errors/t05k_generic_bound_selector_errors.omg:96:18
    |
-67 |     boxed := Box<i32: A> { value = 1; };
+96 |     boxed := Box<i32: A> { value = 1; };
    |                  ^^^^^^ this selector applies to an aggregate constructor
    |
    = help: `T: A + B` and `spec A + B` choose between generic function declarations -- write an ordinary generic argument here
 
-error: could not compile the program due to 14 previous errors
+error: could not compile the program due to 20 previous errors

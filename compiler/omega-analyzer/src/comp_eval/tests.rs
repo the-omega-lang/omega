@@ -350,6 +350,7 @@ fn calling_another_function_interprets_its_own_body() {
         conformance_owner: None,
         primitive_target: None,
         method_owner: None,
+        template: None,
         naked: false,
         runtime_checks: None,
     };
@@ -524,6 +525,7 @@ fn call_returning(body: CheckedBlock, return_type: ResolvedType) -> (CheckedExpr
         conformance_owner: None,
         primitive_target: None,
         method_owner: None,
+        template: None,
         naked: false,
         runtime_checks: None,
     };

@@ -506,6 +506,8 @@ Once concrete arguments are known, the ordinary `ItemKey` path resolves/checks t
 
 Concrete instantiations declared in extern packages may still be emitted by the local compilation that uses them. The checked program creates/finds a `CheckedModule` using the **template's declaring module path** and places the instantiation there. This is an identity invariant, not presentation: MIR incorporates the containing module path into the symbol name, so assigning an extern-owned instantiation to an arbitrary local module would change its linker identity.
 
+Body assembly attaches the same kind of fact: a function with generic parameters of its own gets a `TemplateDescriptor` naming the declaration it came from, built in the declaration's own context -- the owner instantiation for a method, nothing for a free function -- so that the function's *own* parameters are still open when it is taken. `check_item_body` and `check_method_body` therefore derive it in a separate analyzer run from the one that checks the body under the concrete substitution, because that substitution is exactly what would erase it. Errors from that run are dropped: it derives an identity from a declaration whose signature and bounds the query path already checked, and every way it could fail is reported by the path that owns it. See [`symbol-mangling.md`](symbol-mangling.md#declaration-identity) for what the descriptor is for.
+
 ## Specs, conformances, and primitives
 
 Specs have a canonical args-independent declaration cell because their raw member/dependency declarations are substituted later against a concrete use.
@@ -594,6 +596,7 @@ The driver relies on a few ordering and memoization rules that are not obvious f
 - Explicit/otherwise-higher-precedence conformances are selected before an overridden blanket/template body is analyzed. Diagnostics must not leak from a conformance body that can never be selected or emitted.
 - A body is checked only for an item whose signature reached the resolved query state. Skipping a body whose signature failed is what keeps recovery from checking against fabricated semantic data; the signature's own failure is already reported.
 - Local and extern modules have different emission ownership. A concrete generic instantiation whose template lives in an extern package is still materialized by the local compilation that requested it; it must not be dropped merely because its template module is absent from the local-module output map.
+- A generic function's checked body carries the descriptor of the declaration it was instantiated from, and the two sides of a separate compilation derive it from the same declaration source. It is what makes a weakly linked instantiation mean one body, so a path that materializes a generic body without it would silently reintroduce cross-package symbol collisions between overloads a selector distinguishes.
 
 These are implementation invariants, not language semantics. If the query/conformance architecture changes, update this section with the new invariant rather than recreating long explanatory comments throughout the driver.
 

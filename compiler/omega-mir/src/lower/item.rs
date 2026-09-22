@@ -104,7 +104,7 @@ fn foreign_binding_symbol(declaration: &CheckedForeignBinding, path: &[Ident]) -
             unreachable!("only function-valued gap declarations use glued mangling")
         }
         (ManglingMode::Enabled, ResolvedType::Function(fn_type)) => mangle::encode(
-            &mangle::free_function_symbol(path, &declaration.ident, &[], fn_type),
+            &mangle::free_function_symbol(path, &declaration.ident, None, &[], fn_type),
         ),
         (ManglingMode::Enabled, _) => mangle::global_symbol_string(path, &declaration.ident),
     }
@@ -169,6 +169,7 @@ fn foreign_function_symbol(function: &CheckedForeignFunctionDef, path: &[Ident])
         ManglingMode::Enabled => mangle::encode(&mangle::free_function_symbol(
             path,
             &function.name,
+            None,
             &[],
             &function.fn_type(),
         )),
@@ -220,6 +221,7 @@ fn lower_function(
         conformance_owner,
         primitive_target,
         method_owner: _,
+        template: _,
         naked,
         runtime_checks,
     } = function;
@@ -305,6 +307,7 @@ fn free_function_symbol(function: &CheckedFunctionDef, path: &[Ident], entry: &[
             &owner.name,
             &owner.generic_args,
             &function.name,
+            function.template.as_ref(),
             &function.generic_args,
             &function.fn_type(),
         ));
@@ -339,15 +342,24 @@ fn free_function_symbol(function: &CheckedFunctionDef, path: &[Ident], entry: &[
                 &owner.spec_name,
                 &owner.spec_args,
                 &function.name,
+                function.template.as_ref(),
+                &function.generic_args,
                 &function.fn_type(),
             ))
         }
-        (ManglingMode::Enabled, None, Some(target)) => mangle::encode(
-            &mangle::primitive_method_symbol(target, &function.name, &function.fn_type()),
-        ),
+        (ManglingMode::Enabled, None, Some(target)) => {
+            mangle::encode(&mangle::primitive_method_symbol(
+                target,
+                &function.name,
+                function.template.as_ref(),
+                &function.generic_args,
+                &function.fn_type(),
+            ))
+        }
         (ManglingMode::Enabled, None, None) => mangle::encode(&mangle::free_function_symbol(
             path,
             &function.name,
+            function.template.as_ref(),
             &function.generic_args,
             &function.fn_type(),
         )),
@@ -380,6 +392,7 @@ fn method_symbol(
             owner_name,
             owner_generic_args,
             &function.name,
+            function.template.as_ref(),
             &function.generic_args,
             &function.fn_type(),
         )),

@@ -627,10 +627,40 @@ impl<'r> Analyzer<'r> {
         arg: &GenericArg,
         param: Option<&HirGenericParam>,
     ) -> Option<ResolvedGenericArg> {
+        self.resolve_generic_arg_validated(node_id, span, arg, param)
+            .1
+    }
+
+    /// The same, also reporting whether every alias-owned obligation the
+    /// argument applies was met. A caller that owns those obligations -- the
+    /// type written in a bound selector -- must stop when they were not;
+    /// ordinary argument resolution keeps its reported error and carries on
+    /// with the expansion.
+    pub(super) fn resolve_generic_arg_validated(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        arg: &GenericArg,
+        param: Option<&HirGenericParam>,
+    ) -> (bool, Option<ResolvedGenericArg>) {
+        let mut valid = true;
         if let GenericArg::Type(written) = arg {
             let module = self.module_path.clone();
-            self.check_alias_generic_bounds(node_id, span, written, &module);
+            valid = self.check_alias_generic_bounds(node_id, span, written, &module);
         }
+        (
+            valid,
+            self.resolve_generic_arg_inner(node_id, span, arg, param),
+        )
+    }
+
+    fn resolve_generic_arg_inner(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        arg: &GenericArg,
+        param: Option<&HirGenericParam>,
+    ) -> Option<ResolvedGenericArg> {
         let reveals = &self.reveals;
         match self.context.resolve_generic_arg(
             arg,

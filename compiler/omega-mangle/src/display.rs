@@ -1,6 +1,7 @@
 use crate::decode::decode;
 use crate::symbol::{
-    MangleConvention, MangleGenericArg, ManglePath, MangleType, MangleValue, Symbol,
+    MangleConvention, MangleGenericArg, ManglePath, MangleTemplate, MangleTemplateArg,
+    MangleTemplateBound, MangleTemplateParam, MangleTemplateType, MangleType, MangleValue, Symbol,
 };
 
 pub fn demangle(mangled: &str) -> Option<String> {
@@ -54,7 +55,125 @@ fn render_path(path: &ManglePath) -> String {
                 .collect();
             format!("{}<{}>", render_path(parent), args.join(", "))
         }
+        ManglePath::Template(parent, template) => {
+            format!("{}{{{}}}", render_path(parent), render_template(template))
+        }
         ManglePath::Type(ty) => render_type(ty),
+    }
+}
+
+/// The declaration a template-qualified symbol names, rendered so that two
+/// overloads reachable at the same concrete arguments read differently.
+///
+/// Braces delimit it because nothing else in a rendered symbol uses them, so
+/// a reader -- or a tool that only wants the instantiated path -- can find
+/// and skip the whole descriptor without parsing it.
+fn render_template(template: &MangleTemplate) -> String {
+    let generics: Vec<String> = template
+        .generics
+        .iter()
+        .enumerate()
+        .map(|(index, generic)| match generic {
+            MangleTemplateParam::Type(bounds) if bounds.is_empty() => format!("#{index}"),
+            MangleTemplateParam::Type(bounds) => format!(
+                "#{index}: {}",
+                bounds
+                    .iter()
+                    .map(render_bound)
+                    .collect::<Vec<_>>()
+                    .join(" + ")
+            ),
+            MangleTemplateParam::Comp(value_type) => {
+                format!("comp #{index}: {}", render_template_type(value_type))
+            }
+        })
+        .collect();
+    let mut params: Vec<String> = template.params.iter().map(render_template_type).collect();
+    if template.is_variadic {
+        params.push("...".to_string());
+    }
+    format!(
+        "<{}>{}({}) => {}",
+        generics.join(", "),
+        render_convention_prefix(template.convention),
+        params.join(", "),
+        render_template_type(&template.return_type)
+    )
+}
+
+fn render_bound(bound: &MangleTemplateBound) -> String {
+    let path = render_path(&bound.spec);
+    if bound.args.is_empty() {
+        return path;
+    }
+    format!("{path}<{}>", render_template_args(&bound.args))
+}
+
+fn render_template_args(args: &[MangleTemplateArg]) -> String {
+    args.iter()
+        .map(|arg| match arg {
+            MangleTemplateArg::Type(ty) => render_template_type(ty),
+            MangleTemplateArg::Value(value) => render_value(value),
+            MangleTemplateArg::Param(index) => format!("#{index}"),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn render_template_type(ty: &MangleTemplateType) -> String {
+    match ty {
+        MangleTemplateType::Param(index) => format!("#{index}"),
+        MangleTemplateType::Fixed(fixed) => render_type(fixed),
+        MangleTemplateType::Pointer(inner, false) => format!("*{}", render_template_type(inner)),
+        MangleTemplateType::Pointer(inner, true) => {
+            format!("*mut {}", render_template_type(inner))
+        }
+        MangleTemplateType::Slice(inner, false) => format!("*[]{}", render_template_type(inner)),
+        MangleTemplateType::Slice(inner, true) => {
+            format!("*mut []{}", render_template_type(inner))
+        }
+        MangleTemplateType::Array(inner, false) => format!("*[?]{}", render_template_type(inner)),
+        MangleTemplateType::Array(inner, true) => {
+            format!("*mut [?]{}", render_template_type(inner))
+        }
+        MangleTemplateType::SizedArray(inner, length) => format!(
+            "[{}]{}",
+            render_template_args(std::slice::from_ref(length.as_ref())),
+            render_template_type(inner)
+        ),
+        MangleTemplateType::SpecObject(members, mutable) => format!(
+            "*{}spec {}",
+            if *mutable { "mut " } else { "" },
+            members
+                .iter()
+                .map(render_bound)
+                .collect::<Vec<_>>()
+                .join(" + ")
+        ),
+        MangleTemplateType::AnonymousEnum(members) => format!(
+            "enum {}",
+            members
+                .iter()
+                .map(render_template_type)
+                .collect::<Vec<_>>()
+                .join(" | ")
+        ),
+        MangleTemplateType::Function(params, return_type, variadic, convention) => {
+            let mut params: Vec<String> = params.iter().map(render_template_type).collect();
+            if *variadic {
+                params.push("...".to_string());
+            }
+            format!(
+                "{}({}) => {}",
+                render_convention_prefix(*convention),
+                params.join(", "),
+                render_template_type(return_type)
+            )
+        }
+        MangleTemplateType::Nominal(path, args) if args.is_empty() => render_path(path),
+        MangleTemplateType::Nominal(path, args) => {
+            format!("{}<{}>", render_path(path), render_template_args(args))
+        }
     }
 }
 

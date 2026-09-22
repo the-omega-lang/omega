@@ -163,6 +163,8 @@ impl Driver {
                     .get(&decl_id)
                     .cloned()
                     .unwrap_or_default();
+                let template =
+                    self.template_descriptor(key, f, &generics, &GenericSubstitution::new());
                 let run = self.with_analyzer_in(
                     key.module(),
                     &substitution,
@@ -172,6 +174,7 @@ impl Driver {
                 );
                 run.result.map(|mut checked| {
                     checked.generic_args = key.generic_args.clone();
+                    checked.template = template;
                     CheckedBody {
                         item: CheckedItem::FunctionDefinition(checked),
                         warnings: run.warnings,
@@ -225,6 +228,38 @@ impl Driver {
             HirItem::Import(_) => unreachable!("imports are filtered out before this is called"),
             HirItem::Alias(_) => unreachable!("aliases never get an item key, so never a body"),
         }
+    }
+
+    /// The declaration identity an instantiation's symbol carries.
+    ///
+    /// Taken under `enclosing` alone -- the owner instantiation for a method,
+    /// nothing for a free function -- so the declaration's *own* generic
+    /// parameters are still open. That is exactly what distinguishes two
+    /// declarations one selector could have chosen between, and substituting
+    /// them first would erase it.
+    ///
+    /// Errors are dropped: this derives an identity from a declaration whose
+    /// signature and bounds were already checked, and whatever could be wrong
+    /// with it is reported by the path that owns it.
+    pub(crate) fn template_descriptor(
+        &mut self,
+        key: &ItemKey,
+        function: &omega_hir::HirFunctionDef,
+        generics: &[HirGenericParam],
+        enclosing: &GenericSubstitution,
+    ) -> Option<omega_analyzer::template::TemplateDescriptor> {
+        if generics.is_empty() {
+            return None;
+        }
+        let site = AnalysisSite::new(function.id, function.span);
+        let run = self.with_analyzer(key.module(), enclosing, site, |analyzer| {
+            analyzer.without_diagnostics(|analyzer| analyzer.template_descriptor(function))
+        });
+        debug_assert!(
+            run.result.is_some(),
+            "a generic declaration whose signature checked has a template identity"
+        );
+        run.result
     }
 
     fn check_aggregate_body<C: CheckedAggregate>(

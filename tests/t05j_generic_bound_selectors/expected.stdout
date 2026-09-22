@@ -1,20 +1,21 @@
-typed: a 22 true
-spelling: true true
-inferred: a 22 true
-sole: a
-unbounded: unbounded 44
+typed: 10 20 30
+spelling: 30 30
+inferred: 10 20 30
+sole: 10
+marker: 10 20
+unbounded: 33 44
 fallback: concrete
-spec-args: held-2 held-2
-spec-alias: held-2 held-2 alias-bound
+spec-args: 55 55
+spec-alias: 55 55 alias-bound
 alone: 77 77
 unused-default: 2
-isolation: 55
-after-comp: 3 unbounded
+isolation: 50
+after-comp: 3 103
 holes: 1 2
-value: false 88
-member: 91 true
-static: 99 static-b
+value: 89 88
+member: 91 95
+static: 99 98
 unbound: 91
-paths: 111 111 111
-macro: true
-identity: true
+paths: 111 111 111 222
+macro: 30
+identity: true true

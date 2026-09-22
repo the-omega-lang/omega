@@ -9,6 +9,7 @@ pub use decode::decode;
 pub use display::demangle;
 pub use encode::encode;
 pub use symbol::{
-    FunctionSignature, MangleConvention, MangleGenericArg, MangleIntType, ManglePath, MangleType,
-    MangleValue, Namespace, Symbol,
+    FunctionSignature, MangleConvention, MangleGenericArg, MangleIntType, ManglePath,
+    MangleTemplate, MangleTemplateArg, MangleTemplateBound, MangleTemplateParam,
+    MangleTemplateType, MangleType, MangleValue, Namespace, Symbol,
 };

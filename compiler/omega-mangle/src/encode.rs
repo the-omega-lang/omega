@@ -3,7 +3,10 @@ use std::fmt::Write as _;
 
 use crate::base62;
 use crate::grammar::*;
-use crate::symbol::{MangleGenericArg, ManglePath, MangleType, MangleValue, Symbol};
+use crate::symbol::{
+    MangleGenericArg, ManglePath, MangleTemplate, MangleTemplateArg, MangleTemplateBound,
+    MangleTemplateParam, MangleTemplateType, MangleType, MangleValue, Symbol,
+};
 
 struct Encoder {
     out: String,
@@ -104,6 +107,11 @@ impl Encoder {
                 }
                 self.push_tag(TAG_LIST_END);
             }
+            ManglePath::Template(parent, template) => {
+                self.push_tag(TAG_TEMPLATE);
+                self.encode_path(parent);
+                self.encode_template(template);
+            }
             ManglePath::Type(ty) => {
                 self.push_tag(TAG_TYPE_PATH);
                 self.encode_type(ty);
@@ -131,6 +139,138 @@ impl Encoder {
             self.push_tag(TAG_VALUE_NEGATIVE);
         }
         self.out.push_str(&base62::encode(magnitude));
+    }
+
+    fn encode_template(&mut self, template: &MangleTemplate) {
+        debug_assert!(
+            template.references_are_valid(),
+            "a template descriptor only ever references its own parameters"
+        );
+        for generic in &template.generics {
+            match generic {
+                MangleTemplateParam::Type(bounds) => {
+                    self.push_tag(TAG_TEMPLATE_PARAM_TYPE);
+                    self.encode_bounds(bounds);
+                }
+                MangleTemplateParam::Comp(value_type) => {
+                    self.push_tag(TAG_TEMPLATE_PARAM_COMP);
+                    self.encode_template_type(value_type);
+                }
+            }
+        }
+        self.push_tag(TAG_LIST_END);
+
+        if let Some(tag) = convention_tag(template.convention) {
+            self.push_tag(tag);
+        }
+        if template.is_variadic {
+            self.push_tag(TAG_VARIADIC);
+        }
+        for param in &template.params {
+            self.encode_template_type(param);
+        }
+        self.push_tag(TAG_LIST_END);
+        self.encode_template_type(&template.return_type);
+    }
+
+    fn encode_bounds(&mut self, bounds: &[MangleTemplateBound]) {
+        for bound in bounds {
+            self.encode_path(&bound.spec);
+            self.encode_template_args(&bound.args);
+        }
+        self.push_tag(TAG_LIST_END);
+    }
+
+    fn encode_template_args(&mut self, args: &[MangleTemplateArg]) {
+        for arg in args {
+            self.encode_template_arg(arg);
+        }
+        self.push_tag(TAG_LIST_END);
+    }
+
+    fn encode_template_arg(&mut self, arg: &MangleTemplateArg) {
+        match arg {
+            MangleTemplateArg::Type(ty) => {
+                self.push_tag(TAG_ARG_TYPE);
+                self.encode_template_type(ty);
+            }
+            MangleTemplateArg::Value(value) => {
+                self.push_tag(TAG_ARG_VALUE);
+                self.encode_value(value);
+            }
+            MangleTemplateArg::Param(index) => {
+                self.push_tag(TAG_ARG_PARAM);
+                self.out.push_str(&base62::encode(u64::from(*index)));
+            }
+        }
+    }
+
+    fn encode_template_type(&mut self, ty: &MangleTemplateType) {
+        match ty {
+            MangleTemplateType::Param(index) => {
+                self.push_tag(TAG_TEMPLATE_TYPE_PARAM);
+                self.out.push_str(&base62::encode(u64::from(*index)));
+            }
+            MangleTemplateType::Fixed(fixed) => {
+                self.push_tag(TAG_TEMPLATE_FIXED);
+                self.encode_type(fixed);
+            }
+            MangleTemplateType::Pointer(inner, mutable) => {
+                self.push_tag(if *mutable {
+                    TAG_POINTER_MUT
+                } else {
+                    TAG_POINTER
+                });
+                self.encode_template_type(inner);
+            }
+            MangleTemplateType::Slice(inner, mutable) => {
+                self.push_tag(if *mutable { TAG_SLICE_MUT } else { TAG_SLICE });
+                self.encode_template_type(inner);
+            }
+            MangleTemplateType::Array(inner, mutable) => {
+                self.push_tag(if *mutable { TAG_ARRAY_MUT } else { TAG_ARRAY });
+                self.encode_template_type(inner);
+            }
+            MangleTemplateType::SizedArray(inner, length) => {
+                self.push_tag(TAG_SIZED_ARRAY);
+                self.encode_template_type(inner);
+                self.encode_template_arg(length);
+            }
+            MangleTemplateType::SpecObject(members, mutable) => {
+                self.push_tag(if *mutable {
+                    TAG_SPEC_OBJECT_SHAPE_MUT
+                } else {
+                    TAG_SPEC_OBJECT_SHAPE
+                });
+                self.encode_bounds(members);
+            }
+            MangleTemplateType::AnonymousEnum(members) => {
+                self.push_tag(TAG_ANONYMOUS_ENUM);
+                for member in members {
+                    self.encode_template_type(member);
+                }
+                self.push_tag(TAG_LIST_END);
+            }
+            MangleTemplateType::Function(params, return_type, variadic, convention) => {
+                self.push_tag(TAG_FUNCTION);
+                if let Some(tag) = convention_tag(*convention) {
+                    self.push_tag(tag);
+                }
+                if *variadic {
+                    self.push_tag(TAG_VARIADIC);
+                }
+                for param in params {
+                    self.encode_template_type(param);
+                }
+                self.push_tag(TAG_LIST_END);
+                self.encode_template_type(return_type);
+            }
+            MangleTemplateType::Nominal(path, args) => {
+                self.push_tag(TAG_TEMPLATE_NOMINAL);
+                self.encode_path(path);
+                self.encode_template_args(args);
+            }
+        }
     }
 
     fn encode_types(&mut self, types: &[MangleType]) {

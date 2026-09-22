@@ -13,7 +13,21 @@ pub enum TypePattern {
     Nominal(Vec<Ident>, Vec<ArgumentPattern>),
     Function(Vec<Self>, Box<Self>, CallingConvention, bool),
     AnonymousEnum(Vec<Self>),
-    SpecObject(Vec<(omega_hir::HirId, Vec<ArgumentPattern>)>, bool),
+    SpecObject(Vec<SpecPattern>, bool),
+}
+
+/// One spec application a pattern names.
+///
+/// The declaration's `HirId` is what matching compares; the spec's own
+/// declared path is carried beside it because a linker symbol needs a
+/// cross-compilation identity, and it is only available here, where the
+/// resolved spec is in hand.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpecPattern {
+    pub spec: omega_hir::HirId,
+    pub module_path: Vec<Ident>,
+    pub name: Ident,
+    pub args: Vec<ArgumentPattern>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -199,11 +213,12 @@ impl TypePattern {
             ) => {
                 mutable == found_mut
                     && members.len() == shape.members.len()
-                    && members.iter().all(|(id, args)| {
+                    && members.iter().all(|spec| {
                         shape.members.iter().any(|member| {
-                            member.spec.borrow().id == *id
-                                && args.len() == member.spec_args.len()
-                                && args
+                            member.spec.borrow().id == spec.spec
+                                && spec.args.len() == member.spec_args.len()
+                                && spec
+                                    .args
                                     .iter()
                                     .zip(&member.spec_args)
                                     .all(|(pattern, found)| pattern.identical(found, bindings))
@@ -291,11 +306,12 @@ impl TypePattern {
             ) => {
                 mutable == found_mut
                     && members.len() == shape.members.len()
-                    && members.iter().all(|(id, args)| {
+                    && members.iter().all(|spec| {
                         shape.members.iter().any(|member| {
-                            member.spec.borrow().id == *id
-                                && args.len() == member.spec_args.len()
-                                && args
+                            member.spec.borrow().id == spec.spec
+                                && spec.args.len() == member.spec_args.len()
+                                && spec
+                                    .args
                                     .iter()
                                     .zip(&member.spec_args)
                                     .all(|(pattern, found)| pattern.matches(found, bindings))

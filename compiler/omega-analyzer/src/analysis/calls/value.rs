@@ -61,6 +61,12 @@ impl<'r> Analyzer<'r> {
         // than taken as evidence that it was not the declaration meant.
         let report = eligible.len() == 1;
 
+        // The selector names and alias obligations the reference wrote are
+        // the caller's, whatever this name turns out to offer.
+        let Some(validated) = self.validate_written_generics(node_id, span, explicit) else {
+            return FunctionValue::Failed;
+        };
+
         let mut prepared: Vec<Prepared> = Vec::new();
         for &index in &eligible {
             let Some(template) = candidates[index].template().cloned() else {
@@ -71,7 +77,7 @@ impl<'r> Analyzer<'r> {
                 });
                 continue;
             };
-            match self.explicit_bindings(node_id, span, declared, &template, explicit, report) {
+            match self.explicit_bindings(node_id, span, declared, &template, &validated, report) {
                 Some((written, bindings)) => prepared.push(Prepared {
                     index,
                     written,
@@ -420,18 +426,20 @@ impl<'r> Analyzer<'r> {
         span: Span,
         declared: &[Ident],
         template: &OverloadTemplate,
-        explicit: &[ExprGenericArg],
+        explicit: &ValidatedGenerics,
         report: bool,
     ) -> Option<(WrittenGenerics, Vec<Option<ResolvedGenericArg>>)> {
-        let mut bindings = vec![None; template.generics.len()];
+        let mut bindings: Vec<Option<ResolvedGenericArg>> = vec![None; template.generics.len()];
         if explicit.is_empty() {
             return Some((WrittenGenerics::default(), bindings));
         }
-        let written = if report {
-            self.resolve_written_generics(node_id, span, explicit, declared, &template.generics)?
-        } else {
-            self.try_written_generics(node_id, span, explicit, &template.generics)?
-        };
+        if report {
+            self.check_generic_arity(node_id, span, declared, &template.generics, explicit.len())?;
+        } else if explicit.len() > template.generics.len() {
+            return None;
+        }
+        let written =
+            self.bind_written_generics(node_id, span, explicit, &template.generics, report)?;
         for (slot, binding) in bindings.iter_mut().zip(&written.bindings) {
             slot.clone_from(binding);
         }
@@ -505,13 +513,13 @@ impl<'r> Analyzer<'r> {
                     !left_template
                         .bounds
                         .iter()
-                        .any(|(parameter, _, _)| *parameter == position)
+                        .any(|(parameter, _)| *parameter == position)
                 }),
                 &right.written.unbounded_positions(|position| {
                     !right_template
                         .bounds
                         .iter()
-                        .any(|(parameter, _, _)| *parameter == position)
+                        .any(|(parameter, _)| *parameter == position)
                 }),
             ),
             _ => false,
