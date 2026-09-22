@@ -77,6 +77,10 @@ fn without_descriptor(symbol: &str) -> String {
 /// The one symbol `source` emits for `main::<name>`.
 fn symbol_of(source: &str, name: &str) -> String {
     let package = TestPackage::new(source);
+    package_symbol(&package, name)
+}
+
+fn package_symbol(package: &TestPackage, name: &str) -> String {
     let prefix = format!("main::{name}");
     let matching: Vec<String> = package
         .symbols()
@@ -90,6 +94,98 @@ fn symbol_of(source: &str, name: &str) -> String {
         panic!("expected exactly one definition of '{name}', got {matching:#?}");
     };
     symbol.clone()
+}
+
+#[test]
+fn anonymous_enum_template_members_are_a_flat_unordered_set() {
+    let program = |typ: &str| {
+        format!(
+            "alias Both<X> = enum X | i64;
+         pick<T>(value: {typ}) => i32 {{ 1 }}
+         main() => void {{ f: (enum i32 | i64) => i32 = pick<i32>; }}"
+        )
+    };
+    let expected = symbol_of(&program("enum T | i64"), "pick");
+    for typ in ["enum i64 | T", "enum T | i64 | T", "enum Both<T> | i64"] {
+        assert_eq!(expected, symbol_of(&program(typ), "pick"), "{typ}");
+    }
+    assert_ne!(expected, symbol_of(&program("enum i32 | i64"), "pick"));
+}
+
+#[test]
+fn defaulted_nominal_types_have_one_template_representation() {
+    let program = |typ: &str| {
+        format!(
+            "struct Box<T = i32> {{ value: T; }}
+         pick<U>(value: {typ}) => i32 {{ 1 }}
+         main() => void {{ f: (*Box<i32>) => i32 = pick<i32>; }}"
+        )
+    };
+    assert_eq!(
+        symbol_of(&program("*Box"), "pick"),
+        symbol_of(&program("*Box<i32>"), "pick"),
+    );
+}
+
+#[test]
+fn spec_defaults_keep_their_module_and_cannot_capture_function_parameters() {
+    let symbol = |bound: &str| {
+        let package = TestPackage::new(&format!(
+            "import self::other;
+             import self::other::Holds;
+             marker M {{}}
+             meet Holds<other::Value, 2, other::Value, 2> for M {{}}
+             pick<Value, comp Count: usize, T: {bound}>() => i32 {{ 1 }}
+             main() => void {{ x := pick<i32, 3, M>(); }}"
+        ));
+        fs::write(
+            package.0.join("other.omg"),
+            "exposed marker Value {}
+             comp Count := 2usize;
+             exposed spec Holds<U = Value, comp N: usize = Count, V = U, comp K: usize = N> {}",
+        )
+        .unwrap();
+        package_symbol(&package, "pick")
+    };
+    assert_eq!(
+        symbol("Holds"),
+        symbol("Holds<other::Value, 2, other::Value, 2>")
+    );
+}
+
+#[test]
+fn spec_defaults_preserve_symbolic_type_and_value_arguments() {
+    let program = |bound: &str| {
+        format!(
+            "spec Holds<U, comp N: usize, V = U, comp K: usize = N> {{}}
+         marker M {{}}
+         meet Holds<M, 2, M, 2> for M {{}}
+         pick<T: {bound}, comp N: usize>() => i32 {{ 1 }}
+         main() => void {{ x := pick<M, 2>(); }}"
+        )
+    };
+    assert_eq!(
+        symbol_of(&program("Holds<T, N>"), "pick"),
+        symbol_of(&program("Holds<T, N, T, N>"), "pick"),
+    );
+}
+
+#[test]
+fn substituted_comp_defaults_use_each_destination_slots_type() {
+    let program = |bound: &str| {
+        format!(
+            "struct Box<comp N: usize> {{ value: i32; }}
+         spec Holds<comp N: u8, comp K: usize = N, U = Box<N>> {{}}
+         marker M {{}}
+         meet Holds<2, 2, Box<2>> for M {{}}
+         pick<T: {bound}>() => i32 {{ 1 }}
+         main() => void {{ x := pick<M>(); }}"
+        )
+    };
+    assert_eq!(
+        symbol_of(&program("Holds<2>"), "pick"),
+        symbol_of(&program("Holds<2, 2, Box<2>>"), "pick"),
+    );
 }
 
 /// `Mark` conforms to `A`, to `B`, and to `Holds<Mark>` at the spec's default

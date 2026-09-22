@@ -1,7 +1,7 @@
 use super::*;
 use crate::generics::GenericSubstitution;
-use crate::resolver::{DeclaredBound, GenericCallTarget};
 use crate::resolved_type::ResolvedSpecType;
+use crate::resolver::{DeclaredBound, GenericCallTarget};
 use omega_parser::prelude::ExprGenericArg;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -346,13 +346,14 @@ impl<'r> Analyzer<'r> {
         bound: &Type,
     ) -> Option<(Rc<RefCell<ResolvedSpecType>>, DeclaredBound)> {
         let module = self.module_path.clone();
-        let expanded = match crate::aliases::expand_type_alias(self.resolver, &module, bound.clone()) {
-            Ok(expanded) => expanded,
-            Err(error) => {
-                self.error(node_id, span, AnalysisErrorKind::ModuleResolution(error));
-                return None;
-            }
-        };
+        let expanded =
+            match crate::aliases::expand_type_alias(self.resolver, &module, bound.clone()) {
+                Ok(expanded) => expanded,
+                Err(error) => {
+                    self.error(node_id, span, AnalysisErrorKind::ModuleResolution(error));
+                    return None;
+                }
+            };
         let (spec, mut args) = self.resolve_spec_reference(node_id, span, &expanded)?;
         let (id, name, params, module) = {
             let cell = spec.borrow();
@@ -363,23 +364,32 @@ impl<'r> Analyzer<'r> {
                 cell.module_path.clone(),
             )
         };
-        // A spec's defaults belong to the spec's own module, not to whichever
-        // site is naming the bound.
-        let saved = std::mem::replace(&mut self.module_path, module);
-        for param in &params[args.len().min(params.len())..] {
-            let Some(default) = param.default.clone() else {
-                break;
-            };
-            let substitution = GenericSubstitution::zip(params.iter().map(|p| &p.ident), &args);
-            let Some(resolved) =
-                self.resolve_default_generic_arg(node_id, span, param, &default, &substitution)
-            else {
-                self.module_path = saved;
-                return None;
-            };
-            args.push(resolved);
+        if args.len() < params.len() {
+            // A spec's defaults belong to the spec's own module, not to whichever
+            // site is naming the bound.
+            let saved = std::mem::replace(&mut self.module_path, module);
+            let saved_context = std::mem::replace(&mut self.context, Context::new(self.target));
+            let completed = (|| {
+                for param in &params[args.len().min(params.len())..] {
+                    let Some(default) = param.default.clone() else {
+                        break;
+                    };
+                    let substitution =
+                        GenericSubstitution::zip(params.iter().map(|p| &p.ident), &args);
+                    args.push(self.resolve_default_generic_arg(
+                        node_id,
+                        span,
+                        param,
+                        &default,
+                        &substitution,
+                    )?);
+                }
+                Some(())
+            })();
+            self.context = saved_context;
+            self.module_path = saved;
+            completed?;
         }
-        self.module_path = saved;
         Some((
             spec,
             DeclaredBound {

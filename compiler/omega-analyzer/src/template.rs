@@ -15,7 +15,9 @@
 //! part of it: they do not change which declaration a caller selected.
 
 use crate::generics::pattern::{ArgumentPattern, SpecPattern, TypePattern};
-use crate::resolved_type::{CallingConvention, CompScalar, ResolvedType};
+use crate::resolved_type::{
+    CallingConvention, CompIntType, CompScalar, ResolvedGenericArg, ResolvedType,
+};
 use crate::resolver::OverloadTemplate;
 use omega_parser::prelude::Ident;
 
@@ -112,8 +114,9 @@ impl TemplateDescriptor {
 /// structural in exactly the sense [`crate::type_key`] requires: it observes
 /// no `HirId`, allocation address, or discovery order, so two compilations
 /// of one declaration agree.
-fn canonicalize(bounds: &mut [TemplateBound]) {
+fn canonicalize(bounds: &mut Vec<TemplateBound>) {
     bounds.sort_by_cached_key(bound_key);
+    bounds.dedup();
 }
 
 fn bound_key(bound: &TemplateBound) -> String {
@@ -242,13 +245,13 @@ fn convert_arg(arg: &ArgumentPattern) -> TemplateArg {
         ArgumentPattern::Value(value) => TemplateArg::Value(*value),
         // Only a `comp` parameter ever reaches an argument slot as a bare
         // parameter reference; a type parameter arrives as `Type(Parameter)`.
-        ArgumentPattern::Parameter(index) => TemplateArg::ValueParam(*index),
+        ArgumentPattern::Parameter(index, _) => TemplateArg::ValueParam(*index),
     }
 }
 
 fn convert_type(pattern: &TypePattern) -> TemplateType {
     match pattern {
-        TypePattern::Fixed(ty) => TemplateType::Fixed(ty.clone()),
+        TypePattern::Fixed(ty) => convert_fixed(ty),
         TypePattern::Parameter(index) => TemplateType::Param(*index),
         TypePattern::Pointer(inner, mutable) => {
             TemplateType::Pointer(Box::new(convert_type(inner)), *mutable)
@@ -271,13 +274,118 @@ fn convert_type(pattern: &TypePattern) -> TemplateType {
             *convention,
             *variadic,
         ),
-        TypePattern::AnonymousEnum(members) => {
-            TemplateType::AnonymousEnum(members.iter().map(convert_type).collect())
-        }
+        TypePattern::AnonymousEnum(members) => canonical_enum(members.iter().map(convert_type)),
         TypePattern::SpecObject(members, mutable) => {
             let mut members: Vec<TemplateBound> = members.iter().map(convert_bound).collect();
             canonicalize(&mut members);
             TemplateType::SpecObject(members, *mutable)
         }
+    }
+}
+
+fn canonical_enum(members: impl Iterator<Item = TemplateType>) -> TemplateType {
+    let mut flattened = Vec::new();
+    for member in members {
+        match member {
+            TemplateType::AnonymousEnum(inner) => flattened.extend(inner),
+            TemplateType::Fixed(ResolvedType::AnonymousEnum { shape, .. }) => {
+                flattened.extend(shape.members().iter().map(convert_fixed));
+            }
+            member => flattened.push(member),
+        }
+    }
+    flattened.sort_by_cached_key(|member| {
+        let mut key = String::new();
+        write_type(&mut key, member);
+        key
+    });
+    flattened.dedup();
+    TemplateType::AnonymousEnum(flattened)
+}
+
+fn convert_resolved_arg(arg: &ResolvedGenericArg) -> TemplateArg {
+    match arg {
+        ResolvedGenericArg::Type(ty) => TemplateArg::Type(convert_fixed(ty)),
+        ResolvedGenericArg::Comp(value) => TemplateArg::Value(*value),
+    }
+}
+
+fn convert_nominal(module: &[Ident], name: &Ident, args: &[ResolvedGenericArg]) -> TemplateType {
+    TemplateType::Nominal(
+        module
+            .iter()
+            .cloned()
+            .chain(std::iter::once(name.clone()))
+            .collect(),
+        args.iter().map(convert_resolved_arg).collect(),
+    )
+}
+
+// A fixed leaf may come from an owner substitution or an omitted nominal
+// default. Its structure must agree with the same type written explicitly.
+fn convert_fixed(ty: &ResolvedType) -> TemplateType {
+    match ty {
+        ResolvedType::Pointer { pointee, mutable } => {
+            TemplateType::Pointer(Box::new(convert_fixed(pointee)), *mutable)
+        }
+        ResolvedType::Slice { item, mutable } => {
+            TemplateType::Slice(Box::new(convert_fixed(item)), *mutable)
+        }
+        ResolvedType::Array(item, mutable) => {
+            TemplateType::Array(Box::new(convert_fixed(item)), *mutable)
+        }
+        ResolvedType::SizedArray(item, size) => TemplateType::SizedArray(
+            Box::new(convert_fixed(item)),
+            Box::new(TemplateArg::Value(CompScalar::Int {
+                r#type: CompIntType::USize,
+                value: i128::from(*size),
+            })),
+        ),
+        ResolvedType::Function(function) if function.self_mode.is_none() => TemplateType::Function(
+            function.param_types().map(convert_fixed).collect(),
+            Box::new(convert_fixed(&function.return_type)),
+            function.calling_convention,
+            function.is_variadic,
+        ),
+        ResolvedType::Struct(cell) => {
+            let cell = cell.borrow();
+            convert_nominal(&cell.module_path, &cell.name, &cell.generic_args)
+        }
+        ResolvedType::Union(cell) => {
+            let cell = cell.borrow();
+            convert_nominal(&cell.module_path, &cell.name, &cell.generic_args)
+        }
+        ResolvedType::Enum {
+            cell,
+            variant: None,
+        } => {
+            let cell = cell.borrow();
+            convert_nominal(&cell.module_path, &cell.name, &cell.generic_args)
+        }
+        ResolvedType::Spec(cell) => {
+            let cell = cell.borrow();
+            convert_nominal(&cell.module_path, &cell.name, &cell.generic_args)
+        }
+        ResolvedType::SpecObject { shape, mutable } => {
+            let mut bounds = shape
+                .members
+                .iter()
+                .map(|member| {
+                    let spec = member.spec.borrow();
+                    TemplateBound {
+                        module_path: spec.module_path.clone(),
+                        name: spec.name.clone(),
+                        args: member.spec_args.iter().map(convert_resolved_arg).collect(),
+                    }
+                })
+                .collect();
+            canonicalize(&mut bounds);
+            TemplateType::SpecObject(bounds, *mutable)
+        }
+        ResolvedType::AnonymousEnum {
+            shape,
+            variant: None,
+        } => canonical_enum(shape.members().iter().map(convert_fixed)),
+        _ => TemplateType::Fixed(ty.clone()),
     }
 }

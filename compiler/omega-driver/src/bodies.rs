@@ -163,8 +163,11 @@ impl Driver {
                     .get(&decl_id)
                     .cloned()
                     .unwrap_or_default();
-                let template =
-                    self.template_descriptor(key, f, &generics, &GenericSubstitution::new());
+                let template = if generics.is_empty() {
+                    None
+                } else {
+                    Some(self.template_descriptor(key, f, &GenericSubstitution::new())?)
+                };
                 let run = self.with_analyzer_in(
                     key.module(),
                     &substitution,
@@ -238,28 +241,25 @@ impl Driver {
     /// declarations one selector could have chosen between, and substituting
     /// them first would erase it.
     ///
-    /// Errors are dropped: this derives an identity from a declaration whose
-    /// signature and bounds were already checked, and whatever could be wrong
-    /// with it is reported by the path that owns it.
+    /// A failure stops body materialization: a generic body cannot be emitted
+    /// without its declaration identity, even in builds without assertions.
     pub(crate) fn template_descriptor(
         &mut self,
         key: &ItemKey,
         function: &omega_hir::HirFunctionDef,
-        generics: &[HirGenericParam],
         enclosing: &GenericSubstitution,
     ) -> Option<omega_analyzer::template::TemplateDescriptor> {
-        if generics.is_empty() {
-            return None;
-        }
         let site = AnalysisSite::new(function.id, function.span);
         let run = self.with_analyzer(key.module(), enclosing, site, |analyzer| {
-            analyzer.without_diagnostics(|analyzer| analyzer.template_descriptor(function))
+            analyzer.template_descriptor(function)
         });
-        debug_assert!(
-            run.result.is_some(),
-            "a generic declaration whose signature checked has a template identity"
-        );
-        run.result
+        if run.failed {
+            return None;
+        }
+        Some(
+            run.result
+                .expect("a valid generic declaration has a template identity"),
+        )
     }
 
     fn check_aggregate_body<C: CheckedAggregate>(

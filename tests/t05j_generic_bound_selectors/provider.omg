@@ -5,3 +5,7 @@ import super::B;
 
 exposed shared<T: A>(value: T) => i32 { 111 }
 exposed shared<T: B>(value: T) => i32 { 222 }
+
+exposed marker DefaultValue {}
+comp DefaultCount := 2usize;
+exposed spec DefaultHolds<T = DefaultValue, comp N: usize = DefaultCount> {}

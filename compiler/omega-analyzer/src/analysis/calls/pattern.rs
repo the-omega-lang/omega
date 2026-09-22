@@ -70,20 +70,14 @@ impl Analyzer<'_> {
                     }
                 };
                 let spec = spec.borrow();
-                let written = Self::with_declared_defaults(args, &spec.generics);
-                let args = written
-                    .iter()
-                    .enumerate()
-                    .map(|(index, arg)| {
-                        self.overload_argument_pattern(
-                            function.id,
-                            function.span,
-                            arg,
-                            generics,
-                            spec.generics.get(index),
-                        )
-                    })
-                    .collect::<Option<Vec<_>>>()?;
+                let args = self.overload_argument_patterns(
+                    function.id,
+                    function.span,
+                    args,
+                    generics,
+                    &spec.generics,
+                    &spec.module_path,
+                )?;
                 let key = (
                     parameter,
                     SpecPattern {
@@ -176,31 +170,44 @@ impl Analyzer<'_> {
         crate::template::TemplateDescriptor::of(&template)
     }
 
-    /// A written generic-argument list, padded with the declared defaults it
-    /// left out. A bound, a spec-object member and a nominal application all
-    /// need this: `Holds<T>` and `Holds<T, 2>` name one thing wherever `2` is
-    /// the declared default, so a pattern that kept only what was written
-    /// would compare unequal to one that spelled the default out.
-    fn with_declared_defaults(
+    fn overload_argument_patterns(
+        &mut self,
+        id: HirId,
+        span: Span,
         written: &[GenericArg],
+        generics: &[HirGenericParam],
         declared: &[HirGenericParam],
-    ) -> Vec<GenericArg> {
-        let mut args = written.to_vec();
-        for parameter in &declared[args.len().min(declared.len())..] {
+        module: &[Ident],
+    ) -> Option<Vec<ArgumentPattern>> {
+        let mut args = written
+            .iter()
+            .enumerate()
+            .map(|(index, arg)| {
+                self.overload_argument_pattern(id, span, arg, generics, declared.get(index), module)
+            })
+            .collect::<Option<Vec<_>>>()?;
+        for index in args.len()..declared.len() {
+            let parameter = &declared[index];
             let Some(default) = &parameter.default else {
                 break;
             };
-            let substitution: Vec<_> = declared
-                .iter()
-                .zip(&args)
-                .map(|(param, arg)| (param.ident.clone(), arg.clone()))
-                .collect();
-            args.push(crate::aliases::substitute_generic_arg(
+            // Resolve before substitution: a default's names belong to its
+            // declaration, even if the function has a parameter of that name.
+            let saved = std::mem::replace(&mut self.module_path, module.to_vec());
+            let saved_context = std::mem::replace(&mut self.context, Context::new(self.target));
+            let pattern = self.overload_argument_pattern(
+                id,
+                span,
                 default,
-                &substitution,
-            ));
+                &declared[..index],
+                Some(parameter),
+                module,
+            );
+            self.context = saved_context;
+            self.module_path = saved;
+            args.push(pattern?.substitute(&args, self.target.pointer_bits())?);
         }
-        args
+        Some(args)
     }
 
     fn pattern_item_path(&mut self, id: HirId, span: Span, path: &Path) -> Option<Vec<Ident>> {
@@ -303,20 +310,14 @@ impl Analyzer<'_> {
                             }
                         };
                         let spec = spec.borrow();
-                        let written = Self::with_declared_defaults(args, &spec.generics);
-                        let args = written
-                            .iter()
-                            .enumerate()
-                            .map(|(index, arg)| {
-                                self.overload_argument_pattern(
-                                    id,
-                                    span,
-                                    arg,
-                                    generics,
-                                    spec.generics.get(index),
-                                )
-                            })
-                            .collect::<Option<Vec<_>>>()?;
+                        let args = self.overload_argument_patterns(
+                            id,
+                            span,
+                            args,
+                            generics,
+                            &spec.generics,
+                            &spec.module_path,
+                        )?;
                         let key = SpecPattern {
                             spec: spec.id,
                             module_path: spec.module_path.clone(),
@@ -345,6 +346,7 @@ impl Analyzer<'_> {
                     {
                         ArgumentPattern::Parameter(
                             generics.iter().position(|p| p.ident == path.head).unwrap(),
+                            CompScalarType::Int(crate::resolved_type::CompIntType::USize),
                         )
                     }
                     _ => {
@@ -378,14 +380,9 @@ impl Analyzer<'_> {
                         return None;
                     }
                 };
-                let written = Self::with_declared_defaults(args, &declared);
-                let args = written
-                    .iter()
-                    .enumerate()
-                    .map(|(index, arg)| {
-                        self.overload_argument_pattern(id, span, arg, generics, declared.get(index))
-                    })
-                    .collect::<Option<_>>()?;
+                let module = &absolute[..absolute.len() - 1];
+                let args =
+                    self.overload_argument_patterns(id, span, args, generics, &declared, module)?;
                 TypePattern::Nominal(absolute, args)
             }
             Type::Function(function) => {
@@ -428,6 +425,7 @@ impl Analyzer<'_> {
         arg: &GenericArg,
         generics: &[HirGenericParam],
         declared: Option<&HirGenericParam>,
+        module: &[Ident],
     ) -> Option<ArgumentPattern> {
         if declared.is_some_and(|p| p.is_comp()) {
             if let GenericArg::Type(Type::Named(path)) = arg
@@ -436,7 +434,12 @@ impl Analyzer<'_> {
                     .iter()
                     .position(|p| p.ident == path.head && p.is_comp())
             {
-                return Some(ArgumentPattern::Parameter(index));
+                let saved_context = std::mem::replace(&mut self.context, Context::new(self.target));
+                let value_type =
+                    self.resolve_type_or_error_in(id, span, declared?.comp_type()?, true, module);
+                self.context = saved_context;
+                let kind = CompScalarType::from_resolved(&value_type?)?;
+                return Some(ArgumentPattern::Parameter(index, kind));
             }
             return match self.resolve_generic_arg_or_error(id, span, arg, declared)? {
                 ResolvedGenericArg::Comp(value) => Some(ArgumentPattern::Value(value)),

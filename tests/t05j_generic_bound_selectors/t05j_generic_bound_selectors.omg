@@ -13,6 +13,10 @@ import self::provider::shared as imported_shared;
 
 alias aliased_shared = provider::shared;
 
+marker DefaultMarker {}
+meet provider::DefaultHolds<provider::DefaultValue, 2> for DefaultMarker {}
+default_bound<DefaultValue, comp DefaultCount: usize, T: provider::DefaultHolds>() => i32 { 919 }
+
 exposed spec A { a_mark(*self) => i32; }
 exposed spec B { b_mark(*self) => i32; }
 alias AB = spec A + B;
@@ -163,4 +167,6 @@ main() => void {
     right: (Mark) => i32 = valued<spec B>;
     other: (Mark) => i32 = valued<Mark: A>;
     println$("identity: ", <usize><*void>left == <usize><*void>right, " ", <usize><*void>left != <usize><*void>other);
+    defaulted := default_bound<i32, 3, DefaultMarker>();
+    println$("declared-default: ", defaulted);
 }

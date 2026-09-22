@@ -1,5 +1,5 @@
 use super::*;
-use crate::resolved_type::{CallingConvention, ResolvedFunctionType};
+use crate::resolved_type::{CallingConvention, CompScalarType, ResolvedFunctionType};
 
 /// A declaration's type shape. Substitution and matching never query the driver.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,10 +34,69 @@ pub struct SpecPattern {
 pub enum ArgumentPattern {
     Type(Box<TypePattern>),
     Value(CompScalar),
-    Parameter(usize),
+    /// The destination slot's type canonicalizes a concrete value substituted
+    /// from a parameter of another integer type.
+    Parameter(usize, CompScalarType),
 }
 
 impl TypePattern {
+    /// Substitutes patterns for another declaration's parameters, without
+    /// resolving the receiving function's still-symbolic parameters.
+    pub(crate) fn substitute(&self, args: &[ArgumentPattern], pointer_bits: u32) -> Option<Self> {
+        let substitute_args = |values: &[ArgumentPattern]| {
+            values
+                .iter()
+                .map(|arg| arg.substitute(args, pointer_bits))
+                .collect::<Option<Vec<_>>>()
+        };
+        let substitute_types = |values: &[Self]| {
+            values
+                .iter()
+                .map(|ty| ty.substitute(args, pointer_bits))
+                .collect::<Option<Vec<_>>>()
+        };
+        Some(match self {
+            Self::Parameter(index) => match args.get(*index)? {
+                ArgumentPattern::Type(ty) => *ty.clone(),
+                _ => return None,
+            },
+            Self::Fixed(_) => self.clone(),
+            Self::Pointer(inner, mutable) => {
+                Self::Pointer(Box::new(inner.substitute(args, pointer_bits)?), *mutable)
+            }
+            Self::Slice(inner, mutable) => {
+                Self::Slice(Box::new(inner.substitute(args, pointer_bits)?), *mutable)
+            }
+            Self::Array(inner, mutable) => {
+                Self::Array(Box::new(inner.substitute(args, pointer_bits)?), *mutable)
+            }
+            Self::SizedArray(inner, length) => Self::SizedArray(
+                Box::new(inner.substitute(args, pointer_bits)?),
+                length.substitute(args, pointer_bits)?,
+            ),
+            Self::Nominal(path, values) => Self::Nominal(path.clone(), substitute_args(values)?),
+            Self::Function(params, result, convention, variadic) => Self::Function(
+                substitute_types(params)?,
+                Box::new(result.substitute(args, pointer_bits)?),
+                *convention,
+                *variadic,
+            ),
+            Self::AnonymousEnum(members) => Self::AnonymousEnum(substitute_types(members)?),
+            Self::SpecObject(members, mutable) => Self::SpecObject(
+                members
+                    .iter()
+                    .map(|member| {
+                        Some(SpecPattern {
+                            args: substitute_args(&member.args)?,
+                            ..member.clone()
+                        })
+                    })
+                    .collect::<Option<_>>()?,
+                *mutable,
+            ),
+        })
+    }
+
     pub fn infer(&self, found: &ResolvedType, bindings: &mut [Option<ResolvedGenericArg>]) {
         match (self, found) {
             (Self::Parameter(index), _) => {
@@ -52,7 +111,7 @@ impl TypePattern {
             (Self::Array(inner, _), ResolvedType::Array(item, _)) => inner.infer(item, bindings),
             (Self::SizedArray(inner, length), ResolvedType::SizedArray(item, size)) => {
                 inner.infer(item, bindings);
-                if let ArgumentPattern::Parameter(index) = length {
+                if let ArgumentPattern::Parameter(index, _) = length {
                     bindings[*index].get_or_insert(ResolvedGenericArg::Comp(CompScalar::Int {
                         r#type: crate::resolved_type::CompIntType::USize,
                         value: i128::from(*size),
@@ -374,12 +433,28 @@ impl TypePattern {
 }
 
 impl ArgumentPattern {
+    pub(crate) fn substitute(&self, args: &[Self], pointer_bits: u32) -> Option<Self> {
+        Some(match self {
+            Self::Parameter(index, kind) => match args.get(*index)? {
+                Self::Value(value) => Self::Value(CompScalar::normalize(
+                    &value.const_value(),
+                    *kind,
+                    pointer_bits,
+                )?),
+                Self::Parameter(index, _) => Self::Parameter(*index, *kind),
+                Self::Type(_) => return None,
+            },
+            Self::Type(ty) => Self::Type(Box::new(ty.substitute(args, pointer_bits)?)),
+            Self::Value(_) => self.clone(),
+        })
+    }
+
     fn infer(&self, found: &ResolvedGenericArg, bindings: &mut [Option<ResolvedGenericArg>]) {
         match (self, found) {
             (Self::Type(pattern), ResolvedGenericArg::Type(found)) => {
                 pattern.infer(found, bindings)
             }
-            (Self::Parameter(index), _) => {
+            (Self::Parameter(index, _), _) => {
                 bindings[*index].get_or_insert_with(|| found.clone());
             }
             _ => {}
@@ -396,7 +471,7 @@ impl ArgumentPattern {
                 pattern.identical(found, bindings)
             }
             (Self::Value(value), ResolvedGenericArg::Comp(found)) => value == found,
-            (Self::Parameter(index), _) => bindings[*index].as_ref() == Some(found),
+            (Self::Parameter(index, _), _) => bindings[*index].as_ref() == Some(found),
             _ => false,
         }
     }
@@ -407,7 +482,7 @@ impl ArgumentPattern {
                 pattern.exact(found, bindings)
             }
             (Self::Value(value), ResolvedGenericArg::Comp(found)) => value == found,
-            (Self::Parameter(index), _) => bindings[*index].as_ref() == Some(found),
+            (Self::Parameter(index, _), _) => bindings[*index].as_ref() == Some(found),
             _ => false,
         }
     }
@@ -415,7 +490,7 @@ impl ArgumentPattern {
     fn length(&self, bindings: &[Option<ResolvedGenericArg>]) -> Option<u32> {
         let value = match self {
             Self::Value(value) => value,
-            Self::Parameter(index) => match bindings.get(*index)?.as_ref()? {
+            Self::Parameter(index, _) => match bindings.get(*index)?.as_ref()? {
                 ResolvedGenericArg::Comp(value) => value,
                 _ => return None,
             },

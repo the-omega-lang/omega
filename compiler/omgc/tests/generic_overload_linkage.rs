@@ -339,3 +339,73 @@ fn the_declared_package_identity_fixes_the_symbol_not_the_checkout_path() {
          what a descriptor's spec paths name"
     );
 }
+
+#[test]
+fn equivalent_parameter_types_keep_one_address_across_compilations() {
+    if !tool_available("cc") {
+        eprintln!("skipping: this case needs the system 'cc'");
+        return;
+    }
+    let workspace = Workspace::new();
+    for (label, members, boxed) in [
+        ("left", "i32 | i64", "Box"),
+        ("right", "i64 | i32 | i64", "Box<i32>"),
+    ] {
+        let provider = format!("types_{label}");
+        workspace.write_package(
+            &provider,
+            &provider,
+            &format!(
+                "exposed alias Arg = enum {members};
+             exposed struct Box<T = i32> {{ value: T; }}
+             exposed pick<T>(value: Arg) => i32 {{ 1 }}
+             exposed take<T>(value: *{boxed}) => i32 {{ 2 }}"
+            ),
+        );
+        workspace.write_package(
+            label,
+            label,
+            &format!(
+                "import provider::Arg;
+             import provider::Box;
+             import provider::pick;
+             import provider::take;
+             @symbol(mangle = disabled)
+             exposed enum_{label}() => usize {{
+                 f: (Arg) => i32 = pick<i32>; <usize><*void>f
+             }}
+             @symbol(mangle = disabled)
+             exposed box_{label}() => usize {{
+                 f: (*Box<i32>) => i32 = take<i32>; <usize><*void>f
+             }}"
+            ),
+        );
+        workspace.compile_client(label, &format!("objects-{label}"), &provider);
+    }
+    fs::write(
+        workspace.0.join("identity.c"),
+        "unsigned long enum_left(void); unsigned long enum_right(void);
+         unsigned long box_left(void); unsigned long box_right(void);
+         int main(void) {
+             if (enum_left() != enum_right()) return 1;
+             if (box_left() != box_right()) return 2;
+             return 0;
+         }",
+    )
+    .unwrap();
+    for objects in [
+        ["objects-left/left.o", "objects-right/right.o"],
+        ["objects-right/right.o", "objects-left/left.o"],
+    ] {
+        workspace.expect_ok(
+            "cc",
+            &["identity.c", objects[0], objects[1], "-o", "identity"],
+        );
+        let run = workspace.run("./identity", &[]);
+        assert!(
+            run.status.success(),
+            "equivalent types split function identity: {:?}",
+            run.status.code()
+        );
+    }
+}

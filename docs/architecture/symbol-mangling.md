@@ -144,8 +144,12 @@ default expressions, and how many overloads happen to exist or be visible.
 Aliases (including generic and conjunction aliases), spec defaults,
 equivalent compile-time arguments and static-spec parameter sugar are
 normalized by the analyzer's existing machinery before the descriptor is
-taken, and unordered bound/conjunction members are sorted by a structural key
-that observes no `HirId`, address, or discovery order. A declaration's
+taken. Defaults are resolved in the declaring module before pattern substitution,
+so neither function nor owner parameters can capture their names. Concrete
+types and equivalent structural patterns use one descriptor representation;
+anonymous-enum members are flattened, deduplicated, and sorted, as are
+unordered bound/conjunction members. Ordering uses structural keys that
+observe no `HirId`, address, or discovery order. A declaration's
 identity is therefore stable across independent compilations and across
 physical checkout paths that declare the same package identity, which is what
 lets two packages emit one instantiation as one weak definition.
