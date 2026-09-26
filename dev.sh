@@ -68,7 +68,7 @@ ${BOLD}Commands${RESET}
   help               Show this message.
 
 ${BOLD}Resource limits${RESET} ${DIM}(override via the environment)${RESET}
-  OMEGA_CPU_PERCENT     ${OMEGA_CPU_PERCENT:-80}
+  OMEGA_CPU_PERCENT     ${OMEGA_CPU_PERCENT:-50}
                         Share of the machine's CPUs the container may use, so
                         a busy agent leaves the host responsive. Set it to
                         ${DIM}off${RESET} for no limit.
@@ -139,7 +139,7 @@ export GIT_USER_NAME GIT_USER_EMAIL
 # Cap how much of the machine a session may take: an agent running a full
 # build should not leave the host unusable. The knob is a percentage, which is
 # how you think about it; compose wants an absolute number of cores.
-cpu_percent="${OMEGA_CPU_PERCENT:-80}"
+cpu_percent="${OMEGA_CPU_PERCENT:-50}"
 case "${cpu_percent}" in
     off|none|unlimited)
         OMEGA_CPUS=0        # 0 means "no limit" to the Docker daemon.
