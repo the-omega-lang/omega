@@ -552,7 +552,7 @@ fn a_selector_chooses_between_declarations_the_arguments_cannot() {
             holder := Holder { value = 1; };
             mark := Mark { value = 2; };
             first := holder.pick<Mark: A>(mark);
-            second := holder.pick<spec B>(mark);
+            second := holder.pick<_ : B>(mark);
         }
         "#,
     );

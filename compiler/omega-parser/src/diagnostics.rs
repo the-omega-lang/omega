@@ -81,6 +81,9 @@ impl ParseError {
             ParseErrorKind::OpenRangeHasEnd => Diagnostic::error("an open range ('..') can't have an end")
                 .with_label(self.span, "an open range ('..') can't have an end")
                 .with_help("did you mean `..=end` (inclusive) or `..<end` (exclusive)?"),
+            ParseErrorKind::InferenceHoleNotAValue => Diagnostic::error("'_' is an inference hole, not a name or a value")
+                .with_label(self.span, "`_` cannot be used as an expression")
+                .with_note("`_` is a reserved token that stands for a type or value the compiler infers"),
             ParseErrorKind::NestingTooDeep { limit } => Diagnostic::error(format!("expression or type nests more than {limit} levels deep"))
                 .with_label(self.span, format!("nesting goes deeper than {limit} levels here"))
                 .with_note("the parser is recursive descent, so each level of nesting costs native stack -- this limit turns what would be a stack overflow into a diagnostic")
@@ -207,6 +210,7 @@ pub enum ParseErrorKind {
     AliasNotAllowedHere,
     RangeMissingEnd,
     OpenRangeHasEnd,
+    InferenceHoleNotAValue,
     ChainedComparison,
     NestingTooDeep {
         limit: usize,

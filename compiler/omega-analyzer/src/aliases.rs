@@ -26,7 +26,7 @@ pub fn substitute_type_params(ty: &Type, subst: &[(Ident, GenericArg)]) -> Type 
             .and_then(GenericArg::as_type)
             .cloned()
             .unwrap_or_else(|| ty.clone()),
-        Type::Named(_) => ty.clone(),
+        Type::Named(_) | Type::Infer => ty.clone(),
         Type::Pointer(inner, mutable) => Type::Pointer(Box::new(recur(inner)), *mutable),
         Type::InferredArray(inner) => Type::InferredArray(Box::new(recur(inner))),
         Type::UnknownSizeArray(inner) => Type::UnknownSizeArray(Box::new(recur(inner))),
@@ -74,7 +74,7 @@ pub fn substitute_generic_arg(arg: &GenericArg, subst: &[(Ident, GenericArg)]) -
             .cloned()
             .unwrap_or_else(|| arg.clone()),
         GenericArg::Type(r#type) => GenericArg::Type(substitute_type_params(r#type, subst)),
-        GenericArg::Value(_) => arg.clone(),
+        GenericArg::Value(_) | GenericArg::Infer => arg.clone(),
     }
 }
 
@@ -274,7 +274,7 @@ fn normalize_generic_arg(
             r#type,
             obligations,
         )?)),
-        GenericArg::Value(_) => Ok(arg.clone()),
+        GenericArg::Value(_) | GenericArg::Infer => Ok(arg.clone()),
     }
 }
 
@@ -296,7 +296,7 @@ fn normalize_type(
         normalize_type(resolver, module_path, placeholders, inner, obligations)
     };
     Ok(match ty {
-        Type::Named(_) => ty.clone(),
+        Type::Named(_) | Type::Infer => ty.clone(),
         Type::Pointer(inner, mutable) => {
             Type::Pointer(Box::new(recur(inner, obligations)?), *mutable)
         }
@@ -312,7 +312,7 @@ fn normalize_type(
             for arg in args {
                 normalized.push(match arg {
                     GenericArg::Type(inner) => GenericArg::Type(recur(inner, obligations)?),
-                    GenericArg::Value(_) => arg.clone(),
+                    GenericArg::Value(_) | GenericArg::Infer => arg.clone(),
                 });
             }
             Type::Generic(path.clone(), normalized)

@@ -335,7 +335,14 @@ fn call_generic_args(source: &str) -> Vec<crate::ast::generics::ExprGenericArg> 
 fn a_bound_selector_keeps_both_the_argument_and_the_bounds() {
     use crate::ast::generics::ExprGenericArg;
     let args = call_generic_args("f() => void { g<M: A + B>(x); }");
-    let [ExprGenericArg::Bounded { arg, bounds, .. }] = args.as_slice() else {
+    let [
+        ExprGenericArg::Bounded {
+            arg,
+            selector: crate::ast::generics::Selector::Bounds(bounds),
+            ..
+        },
+    ] = args.as_slice()
+    else {
         panic!("expected one bounded selector, got {args:?}")
     };
     let Some(crate::ast::r#type::Type::Named(path)) = arg.as_type() else {
@@ -346,17 +353,85 @@ fn a_bound_selector_keeps_both_the_argument_and_the_bounds() {
 }
 
 #[test]
-fn an_inferred_selector_binds_nothing() {
+fn a_hole_selector_binds_nothing() {
     use crate::ast::generics::ExprGenericArg;
-    let args = call_generic_args("f() => void { g<spec A + B>(x); }");
-    let [ExprGenericArg::Inferred { bounds, .. }] = args.as_slice() else {
-        panic!("expected one inferred selector, got {args:?}")
+    use crate::ast::r#type::GenericArg;
+    let args = call_generic_args("f() => void { g<_ : A + B>(x); }");
+    let [
+        ExprGenericArg::Bounded {
+            arg: GenericArg::Infer,
+            selector: crate::ast::generics::Selector::Bounds(bounds),
+            ..
+        },
+    ] = args.as_slice()
+    else {
+        panic!("expected one hole selector, got {args:?}")
     };
     assert_eq!(bounds.len(), 2);
 }
 
 #[test]
-fn a_leading_spec_only_selects_at_the_top_of_an_argument() {
+fn an_inferred_bound_set_keeps_the_argument() {
+    use crate::ast::generics::{ExprGenericArg, Selector};
+    let args = call_generic_args("f() => void { g<M : _>(x); }");
+    let [
+        ExprGenericArg::Bounded {
+            arg,
+            selector: Selector::Infer,
+            ..
+        },
+    ] = args.as_slice()
+    else {
+        panic!("expected one inferred bound set, got {args:?}")
+    };
+    assert!(matches!(
+        arg.as_type(),
+        Some(crate::ast::r#type::Type::Named(_))
+    ));
+}
+
+#[test]
+fn a_fully_inferred_selector_is_a_plain_hole() {
+    use crate::ast::generics::ExprGenericArg;
+    use crate::ast::r#type::GenericArg;
+    let args = call_generic_args("f() => void { g<_ : _, _>(x); }");
+    assert!(matches!(
+        args.as_slice(),
+        [
+            ExprGenericArg::Plain(GenericArg::Infer),
+            ExprGenericArg::Plain(GenericArg::Infer)
+        ]
+    ));
+}
+
+#[test]
+fn a_nested_hole_is_a_type() {
+    use crate::ast::generics::ExprGenericArg;
+    use crate::ast::r#type::{ArrayLength, GenericArg, Type};
+    let args = call_generic_args("f() => void { g<*_, [_]u8>(x); }");
+    let [
+        ExprGenericArg::Plain(GenericArg::Type(Type::Pointer(pointee, false))),
+        ExprGenericArg::Plain(GenericArg::Type(Type::SizedArray(_, ArrayLength::Infer))),
+    ] = args.as_slice()
+    else {
+        panic!("expected a pointer to a hole and an inferred-length array, got {args:?}")
+    };
+    assert_eq!(**pointee, Type::Infer);
+}
+
+#[test]
+fn spec_is_no_longer_a_selector() {
+    use crate::ast::generics::ExprGenericArg;
+    use crate::ast::r#type::{GenericArg, Type};
+    let args = call_generic_args("f() => void { g<spec A>(x); }");
+    assert!(matches!(
+        args.as_slice(),
+        [ExprGenericArg::Plain(GenericArg::Type(Type::SpecStatic(_)))]
+    ));
+}
+
+#[test]
+fn a_pointer_to_a_spec_object_stays_an_argument() {
     use crate::ast::generics::ExprGenericArg;
     let args = call_generic_args("f() => void { g<*spec A>(x); }");
     let [ExprGenericArg::Plain(arg)] = args.as_slice() else {
@@ -371,11 +446,11 @@ fn a_leading_spec_only_selects_at_the_top_of_an_argument() {
 #[test]
 fn selectors_mix_with_ordinary_and_value_arguments() {
     use crate::ast::generics::ExprGenericArg;
-    let args = call_generic_args("f() => void { g<spec A, u8, 4>(x); }");
+    let args = call_generic_args("f() => void { g<_ : A, u8, 4>(x); }");
     assert!(matches!(
         args.as_slice(),
         [
-            ExprGenericArg::Inferred { .. },
+            ExprGenericArg::Bounded { .. },
             ExprGenericArg::Plain(_),
             ExprGenericArg::Plain(_)
         ]
@@ -387,10 +462,10 @@ fn a_selector_reaches_a_member_call_and_a_qualified_path() {
     use crate::ast::generics::ExprGenericArg;
     let member = call_generic_args("f() => void { x.m<M: A>(y); }");
     assert!(matches!(member.as_slice(), [ExprGenericArg::Bounded { .. }]));
-    let qualified = call_generic_args("f() => void { a::b::m<spec A>(y); }");
+    let qualified = call_generic_args("f() => void { a::b::m<_ : A>(y); }");
     assert!(matches!(
         qualified.as_slice(),
-        [ExprGenericArg::Inferred { .. }]
+        [ExprGenericArg::Bounded { .. }]
     ));
 }
 
@@ -401,4 +476,26 @@ fn a_selector_list_still_rolls_back_to_comparisons() {
     // half-parsed argument list.
     let errors = SourceModule::parse("f() => void { x := a < b : c > d; }").expect_err("must not parse");
     assert!(!errors.is_empty());
+}
+
+#[test]
+fn a_hole_is_not_an_expression() {
+    let errors = SourceModule::parse("f() => void { _ := 5; }").expect_err("must not parse");
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, ParseErrorKind::InferenceHoleNotAValue))
+    );
+}
+
+#[test]
+fn a_hole_parses_as_a_spec_reference_for_semantic_rejection() {
+    use crate::ast::r#type::{GenericArg, Type};
+    let args = call_generic_args("f() => void { g<*spec _>(x); }");
+    let [crate::ast::generics::ExprGenericArg::Plain(GenericArg::Type(Type::Pointer(inner, false)))] =
+        args.as_slice()
+    else {
+        panic!("expected a pointer argument, got {args:?}")
+    };
+    assert_eq!(**inner, Type::SpecStatic(vec![Type::Infer]));
 }

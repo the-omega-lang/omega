@@ -12,12 +12,12 @@ impl<'r> Analyzer<'r> {
         // start's type when there is one, so `lo..=255` gives the literal
         // `lo`'s type rather than letting it default to `i32` independently.
         let checked_start = match &range.start {
-            Some(expr) => Some(self.analyze_expr(expr, None)?),
+            Some(expr) => Some(self.analyze_expr(expr, Expected::None)?),
             None => None,
         };
         let checked_end = match (range.end.expr(), &checked_start) {
-            (Some(expr), Some(start)) => Some(self.analyze_expr(expr, Some(&start.r#type))?),
-            (Some(expr), None) => Some(self.analyze_expr(expr, None)?),
+            (Some(expr), Some(start)) => Some(self.analyze_expr(expr, Expected::Exact(&start.r#type))?),
+            (Some(expr), None) => Some(self.analyze_expr(expr, Expected::None)?),
             (None, _) => None,
         };
 

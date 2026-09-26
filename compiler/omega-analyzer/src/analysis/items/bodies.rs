@@ -29,7 +29,7 @@ impl<'r> Analyzer<'r> {
                     !this.in_defer_body,
                     "defer state must not leak between function bodies"
                 );
-                let body = this.analyze_block(&f.body, Some(fn_type.return_type.as_ref()));
+                let body = this.analyze_block(&f.body, Expected::Exact(fn_type.return_type.as_ref()));
                 (params, body)
             });
             this.warn_unused_bindings(scope, true);

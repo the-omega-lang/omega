@@ -491,7 +491,7 @@ impl<'r> Analyzer<'r> {
         index: &HirExprNode,
         mutable: &mut bool,
     ) -> Option<ResolvedType> {
-        let checked_index = self.analyze_expr(index, None)?;
+        let checked_index = self.analyze_expr(index, Expected::None)?;
         let current_type = Self::open_refined_anonymous(projections, &current_type, mutable)
             .unwrap_or(current_type);
         let item_type = match current_type {

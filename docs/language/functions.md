@@ -132,8 +132,9 @@ Selection proceeds in this order:
 - **Preference.** If more than one remains, a concrete declaration beats a
   generic one. Among generics, let `U(c)` be the set of positions at which the
   caller wrote a **plain type argument** and candidate `c` declares no bounds;
-  `a` beats `b` only when `U(a)` strictly contains `U(b)`. Selector positions,
-  positions the caller did not write, and `comp` positions contribute nothing.
+  `a` beats `b` only when `U(a)` strictly contains `U(b)`. Selector positions
+  (including `M : _`), `_` positions, positions the caller did not write, and
+  `comp` positions contribute nothing.
 - **Result.** Exactly one surviving candidate is the selection; none is a
   no-match error, and more than one is ambiguous.
 
@@ -142,7 +143,7 @@ Nonempty bound sets are never ranked against each other. With `f<T: A>` and
 adding `f<T: A + B>` does not resolve it -- an explicit selector does. With
 `f<T>` and `f<T: A>` declared, `f<M>()` prefers the unbounded declaration
 because the caller wrote a plain type argument there, while `f<M: A>()` selects
-the bounded one and an inferred `f(M{})` is ambiguous.
+the bounded one and an inferred `f(M{})` or a written `f<M : _>()` is ambiguous.
 
 An inapplicable candidate produces no diagnostics of its own. Deciding
 applicability reads a candidate's declared bounds and resolves any default it
@@ -209,7 +210,7 @@ thing(10u32);                     # a call: the generic, with no conversion
 
 The rules are:
 
-- Generic arguments written on the **function** segment (`thing<i32>`, `thing<spec A>`) restrict selection to generic declarations. A concrete declaration of the same name is excluded, whether or not a generic one then matches. They are a positional prefix, bound as at a call; the rest are inferred from the expected type.
+- Generic arguments written on the **function** segment (`thing<i32>`, `thing<_ : A>`, `thing<_>`) restrict selection to generic declarations. A concrete declaration of the same name is excluded, whether or not a generic one then matches. They are a positional prefix, bound as at a call; the rest are inferred from the expected type.
 - Matching is exact. Parameter count, parameter types, return type, calling convention, and variadic status must all be identical after substitution, at every depth: no literal adaptation, pointer-mutability weakening, anonymous-enum injection, receiver adaptation, or generated adapter applies. This is stricter than a call, which may pay a conversion cost for an argument; a value has nothing to pay it with. Parameter descriptors are not part of a function type and so never affect selection.
 - A generic parameter the expected signature does not mention takes its declared default. A default never establishes a match, exactly as at a call.
 - A candidate must also be applicable: a written selector must name its declared bound set exactly, and its bounds must be provable. As at a call, an inapplicable declaration never blocks another one.

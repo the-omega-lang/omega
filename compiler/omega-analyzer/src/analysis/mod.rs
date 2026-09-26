@@ -2,6 +2,7 @@ mod abi;
 mod asm;
 mod calls;
 mod consts;
+mod expected;
 mod exprs;
 mod items;
 mod literals;
@@ -19,6 +20,9 @@ pub use specs::PendingSpecMethod;
 use specs::{FlattenedSpecFn, RequirementSignature};
 
 use calls::{CalleeResolution, FunctionValue, Intercepted, Interceptor, ResolvedCallee};
+use crate::generics::pattern::{ArgumentPattern, TypePattern};
+use expected::Expected;
+use items::HoledAnnotation;
 use literals::parse_number_literal;
 
 use crate::target::Target;
@@ -1529,7 +1533,7 @@ impl<'r> Analyzer<'r> {
         for (raw_type, arg) in params.iter().zip(args) {
             let expected =
                 self.expected_for_generic_param(arg.id, arg.span, raw_type, generics, &subst);
-            let checked = self.analyze_expr(arg, expected.as_ref())?;
+            let checked = self.analyze_expr(arg, expected.as_ref().into())?;
             unify_generic_type(generics, raw_type, &checked.r#type, &mut subst);
             checked_args.push(checked);
         }
@@ -1581,18 +1585,31 @@ impl<'r> Analyzer<'r> {
         subst: &GenericSubstitution,
     ) -> Option<ResolvedGenericArg> {
         if !param.is_comp() {
-            let GenericArg::Type(written) = default else {
-                self.error(
-                    id,
-                    span,
-                    AnalysisErrorKind::UnresolvedType(
-                        TypeResolutionError::GenericArgKindMismatch {
-                            param: param.ident.clone(),
-                            expected_value: false,
-                        },
-                    ),
-                );
-                return None;
+            let written = match default {
+                GenericArg::Type(written) => written,
+                GenericArg::Infer => {
+                    self.error(
+                        id,
+                        span,
+                        AnalysisErrorKind::UnresolvedType(
+                            TypeResolutionError::InferenceHoleNotAllowed,
+                        ),
+                    );
+                    return None;
+                }
+                GenericArg::Value(_) => {
+                    self.error(
+                        id,
+                        span,
+                        AnalysisErrorKind::UnresolvedType(
+                            TypeResolutionError::GenericArgKindMismatch {
+                                param: param.ident.clone(),
+                                expected_value: false,
+                            },
+                        ),
+                    );
+                    return None;
+                }
             };
             return self
                 .resolve_under_substitution(id, span, written, subst)
@@ -1628,10 +1645,11 @@ impl<'r> Analyzer<'r> {
         };
         let arg_ok = |arg: &GenericArg| match arg {
             GenericArg::Type(inner) => Self::generic_refs_resolvable(inner, generics, subst),
-            GenericArg::Value(_) => true,
+            GenericArg::Value(_) | GenericArg::Infer => true,
         };
         match raw_type {
             Type::Named(path) => !path.is_unqualified() || name_ok(&path.head),
+            Type::Infer => true,
             Type::Pointer(inner, _)
             | Type::InferredArray(inner)
             | Type::UnknownSizeArray(inner) => {
@@ -1640,7 +1658,7 @@ impl<'r> Analyzer<'r> {
             Type::SizedArray(inner, length) => {
                 (match length {
                     ArrayLength::Path(path) => !path.is_unqualified() || name_ok(&path.head),
-                    ArrayLength::Literal(_) => true,
+                    ArrayLength::Literal(_) | ArrayLength::Infer => true,
                 }) && Self::generic_refs_resolvable(inner, generics, subst)
             }
             Type::Generic(path, args) => {

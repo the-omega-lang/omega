@@ -1,4 +1,5 @@
 use super::*;
+use crate::resolved_type::ResolvedConformance;
 
 impl<'r> Analyzer<'r> {
     pub(crate) fn resolve_spec_qualified_call(
@@ -6,7 +7,7 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         call: &HirFunctionCall,
-        expected: Option<&ResolvedType>,
+        expected: Expected<'_>,
     ) -> Intercepted {
         let HirExpr::Place(callee_place) = &Self::strip_reveal(&call.callee).1.expr else {
             return Intercepted::Declined;
@@ -18,8 +19,9 @@ impl<'r> Analyzer<'r> {
             return Intercepted::Declined;
         };
         if let Some(qualified) = &expr_path.qualified_spec {
-            return self
-                .resolve_fully_qualified_spec_call(node_id, span, call, expr_path, qualified);
+            return self.resolve_fully_qualified_spec_call(
+                node_id, span, call, expr_path, qualified, expected,
+            );
         }
         let path = &expr_path.path;
         let segments = path.segments();
@@ -124,7 +126,7 @@ impl<'r> Analyzer<'r> {
                 &spec_args,
                 method_name,
                 declared,
-                expected,
+                expected.exact(),
             );
         }
         let Some(first) = call.args.first() else {
@@ -234,7 +236,7 @@ impl<'r> Analyzer<'r> {
             {
                 let checked = if index == 0 {
                     adapted_first.clone()
-                } else if let Some(checked) = self.analyze_expr(arg, Some(expected)) {
+                } else if let Some(checked) = self.analyze_expr(arg, Expected::Exact(expected)) {
                     checked
                 } else {
                     ok = false;
@@ -285,17 +287,46 @@ impl<'r> Analyzer<'r> {
         call: &HirFunctionCall,
         expr_path: &ExprPath,
         qualified: &QualifiedSpecPath,
+        expected: Expected<'_>,
     ) -> Intercepted {
         debug_assert!(expr_path.path.tail.is_empty() && expr_path.generic_args.is_empty());
         let method_name = expr_path.path.head.clone();
 
-        let Some((spec, spec_args)) = self.resolve_spec_reference(node_id, span, &qualified.spec)
-        else {
-            return Intercepted::Claimed(None);
-        };
-        let Some(target) = self.resolve_type_or_error(node_id, span, &qualified.target, true)
-        else {
-            return Intercepted::Claimed(None);
+        // `<_ : P>::f` is `P::f`, whose `Self` comes from the receiver or the
+        // expected type; `<S : _>::f` names the one conformed spec of `S`
+        // that declares `f`. Nothing infers both halves at once.
+        let (target, (spec, spec_args)) = match (&qualified.target, &qualified.spec) {
+            (Type::Infer, Type::Infer) => {
+                self.error(
+                    node_id,
+                    span,
+                    AnalysisErrorKind::UnresolvedType(TypeResolutionError::InferenceHoleNotAllowed),
+                );
+                return Intercepted::Claimed(None);
+            }
+            (target, Type::Infer) => {
+                let Some(target) = self.resolve_type_or_error(node_id, span, target, true) else {
+                    return Intercepted::Claimed(None);
+                };
+                let Some(spec) = self.infer_qualified_spec(node_id, span, &target, &method_name)
+                else {
+                    return Intercepted::Claimed(None);
+                };
+                (Some(target), spec)
+            }
+            (target, spec) => {
+                let Some(spec) = self.resolve_spec_reference(node_id, span, spec) else {
+                    return Intercepted::Claimed(None);
+                };
+                let target = match target {
+                    Type::Infer => None,
+                    target => match self.resolve_type_or_error(node_id, span, target, true) {
+                        Some(target) => Some(target),
+                        None => return Intercepted::Claimed(None),
+                    },
+                };
+                (target, spec)
+            }
         };
 
         let Some(flattened) =
@@ -338,7 +369,7 @@ impl<'r> Analyzer<'r> {
                 &spec_args,
                 &method_name,
                 declared,
-                Some(&target),
+                target.as_ref().or(expected.exact()),
             );
         }
         self.resolve_instance_spec_call(
@@ -348,8 +379,77 @@ impl<'r> Analyzer<'r> {
             &spec,
             &spec_args,
             &method_name,
-            Some(&target),
+            target.as_ref(),
         )
+    }
+
+    /// The spec `<target : _>::function` names: the one conformance of
+    /// `target` whose spec declares `function`. Inherent functions are not
+    /// candidates, because the slot names a spec. Specs that reach the same
+    /// declaration through refinement count once.
+    fn infer_qualified_spec(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        target: &ResolvedType,
+        function: &Ident,
+    ) -> Option<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedGenericArg>)> {
+        let conformances = match self.resolver.conformances_for_type(target) {
+            Ok(conformances) => conformances,
+            Err(err) => {
+                self.error(node_id, span, AnalysisErrorKind::ModuleResolution(err));
+                return None;
+            }
+        };
+        let mut found: Vec<(ResolvedConformance, Rc<RefCell<ResolvedSpecType>>)> = Vec::new();
+        for conform in conformances {
+            let declaring = self.without_diagnostics(|this| {
+                let flattened = this.flatten_spec(
+                    node_id,
+                    span,
+                    &conform.spec,
+                    &conform.spec_args,
+                    &ResolvedType::Void,
+                )?;
+                flattened
+                    .into_iter()
+                    .find(|declared| &declared.name == function)
+                    .map(|declared| declared.spec)
+            });
+            let Some(declaring) = declaring else { continue };
+            if !found.iter().any(|(_, seen)| Rc::ptr_eq(seen, &declaring)) {
+                found.push((conform, declaring));
+            }
+        }
+        match found.as_slice() {
+            [(conform, _)] => Some((conform.spec.clone(), conform.spec_args.clone())),
+            [] => {
+                self.error(
+                    node_id,
+                    span,
+                    AnalysisErrorKind::QualifiedSpecNotInferable {
+                        target: target.to_string(),
+                        function: function.clone(),
+                    },
+                );
+                None
+            }
+            _ => {
+                self.error(
+                    node_id,
+                    span,
+                    AnalysisErrorKind::QualifiedSpecAmbiguous {
+                        target: target.to_string(),
+                        function: function.clone(),
+                        specs: found
+                            .iter()
+                            .map(|(conform, _)| conform.spec.borrow().name.clone())
+                            .collect(),
+                    },
+                );
+                None
+            }
+        }
     }
 
     fn require_requirement_visible(
@@ -506,7 +606,7 @@ impl<'r> Analyzer<'r> {
             let mut checked_args = Vec::with_capacity(call.args.len());
             let mut ok = true;
             for (arg, expected) in call.args.iter().zip(method.fn_type.param_types()) {
-                let Some(checked) = self.analyze_expr(arg, Some(expected)) else {
+                let Some(checked) = self.analyze_expr(arg, Expected::Exact(expected)) else {
                     ok = false;
                     continue;
                 };
@@ -632,7 +732,7 @@ impl<'r> Analyzer<'r> {
             {
                 let checked = if index == 0 {
                     adapted_first.clone()
-                } else if let Some(checked) = self.analyze_expr(arg, Some(expected)) {
+                } else if let Some(checked) = self.analyze_expr(arg, Expected::Exact(expected)) {
                     checked
                 } else {
                     ok = false;

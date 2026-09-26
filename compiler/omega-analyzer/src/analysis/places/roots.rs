@@ -58,7 +58,7 @@ impl<'r> Analyzer<'r> {
                 Some((root, r#type, mutable))
             }
             HirPlaceRoot::Expr(expr) => {
-                let checked = self.analyze_expr(expr, None)?;
+                let checked = self.analyze_expr(expr, Expected::None)?;
                 let r#type = checked.r#type.clone();
                 Some((CheckedPlaceRoot::Expr(Box::new(checked)), r#type, false))
             }

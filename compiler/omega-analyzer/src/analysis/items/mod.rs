@@ -150,7 +150,7 @@ impl<'r> Analyzer<'r> {
             self.error(w.id, w.span, AnalysisErrorKind::MutCompBinding);
             return None;
         }
-        let checked = self.analyze_expr(&w.value, None)?;
+        let checked = self.analyze_expr(&w.value, Expected::None)?;
         let r#type = checked.r#type.clone();
         let value = self.eval_comp(w.id, &checked)?;
         Some((r#type, value))
@@ -162,7 +162,7 @@ impl<'r> Analyzer<'r> {
         annotations: &[omega_hir::HirAnnotation],
     ) -> Option<CheckedDeclaration> {
         let symbol = self.global_symbol(w.id, annotations);
-        let checked = self.analyze_expr(&w.value, None)?;
+        let checked = self.analyze_expr(&w.value, Expected::None)?;
         self.finish_global_binding(w.id, w.span, &w.ident, w.mutable, symbol, &w.value, checked)
     }
 
@@ -193,25 +193,15 @@ impl<'r> Analyzer<'r> {
         r#type: &Type,
         value: &HirExprNode,
     ) -> Option<(ResolvedType, CheckedExprNode)> {
-        if let Type::InferredArray(item) = r#type {
-            let item_type = self.resolve_type_or_error(decl_id, decl_span, item, true)?;
-            let expected = ResolvedType::SizedArray(Box::new(item_type.clone()), 0);
-            let checked_value = self.analyze_expr(value, Some(&expected))?;
-            let checked_value = self.coerce_to_expected(Some(&expected), checked_value);
-            let ResolvedType::SizedArray(_, size) = &checked_value.r#type else {
-                self.error(
-                    value.id,
-                    value.span,
-                    AnalysisErrorKind::ArraySizeNotInferable,
-                );
-                return None;
+        let (resolved_type, checked_value) =
+            match self.rewrite_annotation_holes(decl_id, decl_span, r#type) {
+                Some(holed) => self.check_holed_initializer(decl_id, decl_span, &holed, value)?,
+                None => {
+                    let resolved_type = self.resolve_type_or_error(decl_id, decl_span, r#type, true)?;
+                    let checked_value = self.analyze_expr(value, Expected::Exact(&resolved_type))?;
+                    (resolved_type, checked_value)
+                }
             };
-            let resolved_type = ResolvedType::SizedArray(Box::new(item_type), *size);
-            return Some((resolved_type, checked_value));
-        }
-
-        let resolved_type = self.resolve_type_or_error(decl_id, decl_span, r#type, true)?;
-        let checked_value = self.analyze_expr(value, Some(&resolved_type))?;
         let checked_value = self.coerce_to_expected(Some(&resolved_type), checked_value);
         if !Self::value_type_compatible(&resolved_type, &checked_value.r#type) {
             self.error(
@@ -475,7 +465,7 @@ impl<'r> Analyzer<'r> {
         let ((params, checked_body), scope) = self.with_scope(|this| {
             let params = this.analyze_all(&f.params, Self::analyze_param);
             this.current_return_type = (*fn_type.return_type).clone();
-            let checked_body = this.analyze_block(body, Some(fn_type.return_type.as_ref()));
+            let checked_body = this.analyze_block(body, Expected::Exact(fn_type.return_type.as_ref()));
             (params, checked_body)
         });
         self.warn_unused_bindings(scope, true);
@@ -1304,6 +1294,9 @@ impl<'r> Analyzer<'r> {
 }
 
 mod bodies;
+mod holes;
+
+pub(super) use holes::HoledAnnotation;
 
 #[cfg(test)]
 mod tests;

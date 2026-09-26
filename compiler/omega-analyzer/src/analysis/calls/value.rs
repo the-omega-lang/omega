@@ -291,10 +291,7 @@ impl<'r> Analyzer<'r> {
                 None => determined.push(entry),
                 Some(position) => {
                     let parameter = template.generics[position].ident.clone();
-                    undetermined.get_or_insert((
-                        entry.written.selectors.get(position).is_some_and(Option::is_some),
-                        parameter,
-                    ));
+                    undetermined.get_or_insert((entry.written.is_hole(position), parameter));
                 }
             }
         }
@@ -322,7 +319,7 @@ impl<'r> Analyzer<'r> {
                     self.error(
                         node_id,
                         span,
-                        AnalysisErrorKind::UndeterminedBoundSelector {
+                        AnalysisErrorKind::UndeterminedInferenceHole {
                             name: name.clone(),
                             parameter,
                         },

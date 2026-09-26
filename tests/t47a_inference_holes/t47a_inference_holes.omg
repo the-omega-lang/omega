@@ -1,0 +1,158 @@
+# Inference holes: every `_` is solved by the inference its position already
+# has (generics.md "Inference holes"). Each line prints values or sizes that
+# only come out right when the hole was solved as specified.
+import std::io::println;
+import core::option::Option;
+import core::iterator::{ Iterator, ToIterator };
+
+exposed spec SpecThree { three(*self) => i32; }
+meet SpecThree for i32 { three(*self) => i32 { 3 } }
+
+# --- function generic arguments ------------------------------------------
+@suppress(unused_parameter)
+some_fn(value: i32) => *str { "concrete" }
+@suppress(unused_parameter)
+some_fn<T>(value: T) => *str { "generic" }
+
+@suppress(unused_parameter)
+f<T, U>(a: T, b: U) => usize { sizeof<U> }
+@suppress(unused_parameter)
+f<T, U, V>(a: T, b: U, c: V) => usize { sizeof<U> + sizeof<V> }
+
+@suppress(unused_parameter)
+thing<T, U: SpecThree>(a: T, b: U) => i32 { 1 }
+@suppress(unused_parameter)
+thing<T, U>(a: T, b: U) => i32 { 2 }
+
+@suppress(unused_parameter)
+count<comp N: usize, T>(values: [N]T) => usize { N }
+
+@suppress(unused_parameter)
+defaulted<T, U = u64>(a: T) => usize { sizeof<U> }
+
+@suppress(unused_parameter)
+rank<T>(value: T) => i32 { 33 }
+@suppress(unused_parameter)
+rank<T: SpecThree>(value: T) => i32 { 44 }
+
+# --- aggregates and owner paths --------------------------------------------
+struct Pair<T, U> {
+    exposed a: T;
+    exposed b: U;
+
+    exposed new(a: T, b: U) => Pair<T, U> { Pair<T, U> { a = a; b = b; } }
+}
+
+struct Buffer<comp N: usize, T> {
+    exposed data: [N]T;
+}
+
+make<T, U>(a: T, b: U) => Pair<T, U> { Pair<T, U> { a = a; b = b; } }
+pair_of<T>(v: T) => Pair<T, T> { Pair<T, T> { a = v; b = v; } }
+
+global : [_]u8 = [1, 2];
+
+# --- fully qualified spec calls --------------------------------------------
+exposed spec Make { make() => Self; }
+exposed spec Animal { make_sound(*self) => i32; }
+
+struct Widget { exposed id: i32; }
+meet Make for Widget { make() => Self { Self { id = 9; } } }
+
+struct Dog { exposed id: i32; }
+meet Animal for Dog { make_sound(*self) => i32 { 42 } }
+
+# --- for-in: a source offering two element types ---------------------------
+struct Twice { exposed n: i32; }
+
+struct Wide { left: i32; }
+meet Iterator<Pair<i32, u8>> for Wide {
+    next(*mut self) => Option<Pair<i32, u8>> {
+        if self.left == 0 { return Option<Pair<i32, u8>>::None; }
+        self.left -= 1;
+        Option<Pair<i32, u8>>::Some { value = Pair<i32, u8> { a = self.left; b = 7; }; }
+    }
+}
+
+struct Narrow { left: i32; }
+meet Iterator<i64> for Narrow {
+    next(*mut self) => Option<i64> {
+        if self.left == 0 { return Option<i64>::None; }
+        self.left -= 1;
+        Option<i64>::Some { value = 100i64; }
+    }
+}
+
+meet ToIterator<Pair<i32, u8>> for Twice {
+    to_iterator(*self) => Wide { Wide { left = self.n; } }
+}
+meet ToIterator<i64> for Twice {
+    to_iterator(*self) => Narrow { Narrow { left = self.n; } }
+}
+
+main() => void {
+    # `x : _ = e` is `x := e`.
+    x : _ = 123;
+    mut y : _ = 1u8;
+    y += 1;
+    println$("whole: ", x, " ", y);
+
+    # A `_` argument is written: it selects a generic declaration and keeps
+    # its position, so later arguments still land on later parameters.
+    f2 := f<_, u32>("hello", 123);
+    f3 := f<_, u64, _>("hello", 123, 456u16);
+    println$("arguments: ", some_fn<_>(10), " ", f2, " ", f3);
+
+    t1 := thing<i32 : _, _ : SpecThree>(1, 2);
+    t2 := thing<_, _ : SpecThree>(1, 2);
+    t3 := thing<_, i32>(1, 2);
+    println$("selectors: ", t1, " ", t2, " ", t3);
+
+    values := [1, 2, 3, 4];
+    c := count<_, i32>(values);
+    d := defaulted<_, _>(1);
+    println$("comp-and-default: ", c, " ", d);
+
+    taken: (i32) => i32 = rank<_ : SpecThree>;
+    println$("value: ", rank<i32>(1), " ", taken(1));
+
+    p := Pair<_, u8> { a = 1; b = 2; };
+    q := Pair<_, u8>::new(300, 4);
+    p_check : Pair<i32, u8> = p;
+    q_check : Pair<i32, u8> = q;
+    n : Option<u16> = Option<_>::None;
+    size_pair := sizeof<Pair<i32, u8>>;
+    println$("aggregates: ", p_check.b, " ", q_check.a, " ", size_pair);
+
+    # Annotation holes are solved top-down from the annotation's known parts.
+    v := 7;
+    ptr : *_ = &v;
+    lit : Pair<_, u8> = Pair { a = 1; b = 2; };
+    arr : [_]u8 = [1, 2, 3];
+    buf : Buffer<_, i32> = Buffer { data = [4, 5, 6]; };
+    made : Pair<_, u8> = make(1, 2);
+    same : Pair<_, u8> = pair_of(1);
+    lit_check : Pair<i32, u8> = lit;
+    arr_check : [3]u8 = arr;
+    buf_check : Buffer<3, i32> = buf;
+    made_check : Pair<i32, u8> = made;
+    same_check : Pair<u8, u8> = same;
+    global_check : [2]u8 = global;
+    size_same := sizeof<Pair<u8, u8>>;
+    println$("annotations: ", *ptr, " ", lit_check.b, " ", arr_check[2], " ", buf_check.data[1], " ", made_check.b, " ", same_check.a, " ", size_same, " ", global_check[1]);
+
+    t := Twice { n = 2; };
+    for e : Pair<_, u8> in t {
+        println$("for-pair: ", e.a, " ", e.b);
+    }
+    for r : _ in 0..<2 {
+        println$("for-whole: ", r);
+    }
+
+    dog := Dog { id = 1; };
+    via_self : Widget = <_ : Make>::make();
+    via_spec := <Widget : _>::make();
+    sound := <_ : Animal>::make_sound(&dog);
+    println$("qualified: ", via_self.id, " ", via_spec.id, " ", sound, " ", <Dog : _>::make_sound(&dog), " ", dog.id);
+    <void>n;
+}

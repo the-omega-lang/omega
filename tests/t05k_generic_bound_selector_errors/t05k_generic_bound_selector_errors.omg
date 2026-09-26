@@ -71,8 +71,8 @@ main() => void {
     marked<Mark: Empty>(mark);
     # The selector is right, the conformance is not.
     lone<Plain: A>(Plain { value = 1; });
-    # Nothing determines the type a `spec` selector stands for.
-    holed<spec A>(1);
+    # Nothing determines the type a `_ : A` selector stands for.
+    holed<_ : A>(1);
     # A selector never applies to a `comp` position.
     comped<4: A, Mark>(mark);
     # An alias-owned bound the written argument does not meet, reported once

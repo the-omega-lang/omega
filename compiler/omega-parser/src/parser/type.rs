@@ -15,6 +15,10 @@ pub fn parse_type(p: &mut Parser) -> Option<Type> {
         TokenKind::Enum => parse_anonymous_enum_type(p),
         TokenKind::Foreign => parse_foreign_function_type(p),
         TokenKind::Ident(_) => parse_named_type(p),
+        TokenKind::Underscore => {
+            p.advance();
+            Some(Type::Infer)
+        }
         _ => {
             p.error(ParseErrorKind::Expected {
                 expected: "a type",
@@ -34,11 +38,20 @@ fn parse_pointer_type(p: &mut Parser) -> Option<Type> {
 
 fn parse_spec_static_type(p: &mut Parser) -> Option<Type> {
     p.advance(); // 'spec'
-    let mut members = vec![parse_named_type(p)?];
+    let mut members = vec![parse_spec_member(p)?];
     while p.eat(&TokenKind::Plus) {
-        members.push(parse_named_type(p)?);
+        members.push(parse_spec_member(p)?);
     }
     Some(Type::SpecStatic(members))
+}
+
+/// A spec reference. `_` is kept so that semantic resolution, which knows
+/// nothing is inferred here, can say so.
+fn parse_spec_member(p: &mut Parser) -> Option<Type> {
+    if p.eat(&TokenKind::Underscore) {
+        return Some(Type::Infer);
+    }
+    parse_named_type(p)
 }
 
 /// `enum A | B | ...`. Members are full types, so `|` is consumed only by
@@ -84,6 +97,9 @@ fn parse_array_length(p: &mut Parser) -> Option<ArrayLength> {
     if matches!(p.peek(), TokenKind::Ident(_)) {
         return Some(ArrayLength::Path(parse_path(p)?));
     }
+    if p.eat(&TokenKind::Underscore) {
+        return Some(ArrayLength::Infer);
+    }
     match parse_comp_literal(p) {
         Some(literal) => Some(ArrayLength::Literal(literal)),
         None => {
@@ -118,13 +134,17 @@ fn parse_comp_literal(p: &mut Parser) -> Option<CompLiteral> {
     Some(literal)
 }
 
-/// One written generic argument. A scalar literal is a value; everything
-/// else -- including a bare path -- is kept as type syntax and interpreted
-/// against the declared parameter's kind during resolution.
+/// One written generic argument. A scalar literal is a value; a bare `_` is
+/// a hole of the declared parameter's kind; everything else -- including a
+/// bare path -- is kept as type syntax and interpreted against the declared
+/// parameter's kind during resolution.
 pub(crate) fn parse_generic_arg(p: &mut Parser) -> Option<GenericArg> {
-    match parse_comp_literal(p) {
-        Some(literal) => Some(GenericArg::Value(literal)),
-        None => Some(GenericArg::Type(parse_type(p)?)),
+    if let Some(literal) = parse_comp_literal(p) {
+        return Some(GenericArg::Value(literal));
+    }
+    match parse_type(p)? {
+        Type::Infer => Some(GenericArg::Infer),
+        r#type => Some(GenericArg::Type(r#type)),
     }
 }
 

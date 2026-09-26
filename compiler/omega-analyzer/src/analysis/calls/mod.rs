@@ -17,7 +17,7 @@ pub(crate) enum Intercepted {
 }
 
 pub(super) type Interceptor<'r> =
-    fn(&mut Analyzer<'r>, HirId, Span, &HirFunctionCall, Option<&ResolvedType>) -> Intercepted;
+    fn(&mut Analyzer<'r>, HirId, Span, &HirFunctionCall, Expected<'_>) -> Intercepted;
 
 #[derive(Clone)]
 struct Receiver {
@@ -82,10 +82,6 @@ impl<'r> Analyzer<'r> {
         Some(expr_path)
     }
 
-    fn callee_path(call: &HirFunctionCall) -> Option<&Path> {
-        Self::callee_expr_path(call)?.plain()
-    }
-
     fn checked_call(
         &self,
         node_id: HirId,
@@ -127,7 +123,7 @@ impl<'r> Analyzer<'r> {
         &mut self,
         callee: &HirExprNode,
         args: &[HirExprNode],
-        expected: Option<&ResolvedType>,
+        expected: Expected<'_>,
     ) -> Option<CalleeResolution> {
         // The call analyzer owns the reveal bypass for the whole callee
         // resolution. This function only needs the transparent inner shape.
@@ -143,7 +139,7 @@ impl<'r> Analyzer<'r> {
             _ => None,
         };
         let Some((place, field, field_origin, generic_args)) = member else {
-            let checked = self.analyze_expr(callee, None)?;
+            let checked = self.analyze_expr(callee, Expected::None)?;
             let fn_type = self.require_callable(callee.id, callee.span, checked.r#type.clone())?;
             return Some(CalleeResolution::Ordinary(ResolvedCallee {
                 callee: checked,
@@ -387,7 +383,7 @@ impl<'r> Analyzer<'r> {
         receiver: &Receiver,
         written_generics: &[ExprGenericArg],
         args: &[HirExprNode],
-        expected: Option<&ResolvedType>,
+        expected: Expected<'_>,
     ) -> Option<Option<CalleeResolution>> {
         let owner = receiver.r#type.autoderef().clone();
         let template = match self.generic_method_template(
@@ -425,7 +421,7 @@ impl<'r> Analyzer<'r> {
         template: &GenericMethodTemplate,
         written_generics: &[ExprGenericArg],
         args: &[HirExprNode],
-        expected: Option<&ResolvedType>,
+        expected: Expected<'_>,
     ) -> Option<CalleeResolution> {
         let declared = Self::owner_item_path(owner, field);
         let explicit = self.resolve_written_generics(
@@ -929,7 +925,7 @@ impl<'r> Analyzer<'r> {
         let mut ok = true;
         for (arg, param) in args.iter().zip(&param_types) {
             let expected_type = &param.r#type;
-            let Some(checked_arg) = self.analyze_expr(arg, Some(expected_type)) else {
+            let Some(checked_arg) = self.analyze_expr(arg, Expected::Exact(expected_type)) else {
                 ok = false;
                 continue;
             };

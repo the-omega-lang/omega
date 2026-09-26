@@ -319,7 +319,8 @@ impl<'r> Analyzer<'r> {
                     &real_absolute,
                     &sig,
                     &[],
-                    expected,
+                    expected.into(),
+                    GenericSubstitution::new(),
                 )?;
                 self.resolve_item_checked_with_ambient_fallback(
                     std::slice::from_ref(&path.head),
@@ -420,8 +421,30 @@ impl<'r> Analyzer<'r> {
             &expr_path.generic_args,
             "a path that does not name a generic function",
         )?;
-        let generic_args =
-            self.resolve_generic_arg_list(node_id, span, &written, &access.absolute, &params)?;
+        let hole_literal = match rest {
+            [variant] if written.contains(&GenericArg::Infer) => {
+                self.generic_literal_signature_with_ambient(prefix, &absolute, Some(variant))
+            }
+            _ => None,
+        };
+        let generic_args = match hole_literal {
+            Some((real_absolute, sig)) => {
+                self.check_generic_arity(node_id, span, &absolute, &params, written.len())?;
+                let seed = self.written_hole_seed(node_id, span, &written, &sig.generics)?;
+                self.infer_literal_type_args(
+                    node_id,
+                    span,
+                    &real_absolute,
+                    &sig,
+                    &[],
+                    expected.into(),
+                    seed,
+                )?
+            }
+            None => {
+                self.resolve_generic_arg_list(node_id, span, &written, &access.absolute, &params)?
+            }
+        };
         match self.resolve_item_with_ambient_from(&accessor, prefix, &access, &generic_args) {
             Ok(ResolvedItem::Type(_)) if rest.is_empty() => {
                 self.error(node_id, span, AnalysisErrorKind::NotAValue(absolute));
@@ -590,6 +613,30 @@ impl<'r> Analyzer<'r> {
         self.analyze_all(&args, |this, (index, arg)| {
             this.resolve_generic_arg_or_error(node_id, span, arg, params.get(*index))
         })
+    }
+
+    /// What a written list with `_` holes binds, as a seed for inference.
+    /// Each hole leaves its parameter open, exactly as an omitted argument
+    /// would.
+    pub(super) fn written_hole_seed(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        written: &[GenericArg],
+        params: &[HirGenericParam],
+    ) -> Option<GenericSubstitution> {
+        let mut seed = GenericSubstitution::new();
+        let mut ok = true;
+        for (param, arg) in params.iter().zip(written) {
+            if *arg == GenericArg::Infer {
+                continue;
+            }
+            match self.resolve_generic_arg_or_error(node_id, span, arg, Some(param)) {
+                Some(resolved) => seed.push(param.ident.clone(), resolved),
+                None => ok = false,
+            }
+        }
+        ok.then_some(seed)
     }
 
     /// `None` when more arguments were written than the declaration accepts.

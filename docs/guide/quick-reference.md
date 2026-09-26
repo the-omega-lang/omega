@@ -383,9 +383,9 @@ pick<T: A>(value: T) => *str { "a" }
 pick<T: B>(value: T) => i32 { 22 }
 pick<T: A + B>(value: T) => bool { true }
 
-pick<Mark: A>(mark);       # the `A` declaration, with T = Mark
-pick<spec B>(mark);        # the `B` declaration; T is still inferred
-pick<Mark: A + B>(mark);   # the conjunction declaration, exactly
+pick<Mark : A>(mark);      # the `A` declaration, with T = Mark
+pick<_ : B>(mark);         # the `B` declaration; T is still inferred
+pick<Mark : A + B>(mark);  # the conjunction declaration, exactly
 ```
 
 The selector names a declaration's own bound set exactly -- it is not a claim
@@ -393,6 +393,18 @@ that the type conforms, so `pick<Mark: A>` never reaches `pick<T: A + B>` even
 though `Mark` satisfies both. A plain `pick<Mark>(mark)` is ambiguous when more
 than one bounded declaration applies, and prefers an unbounded declaration when
 one exists.
+
+`_` is an inference hole: it leaves exactly that position to inference, and
+is only accepted where leaving it out would already be inferred:
+
+```omega
+size := f<_, u32>("hello", 123);    # first argument inferred, second fixed
+p := Pair<_, u8> { a = 1; b = 2; };  # Pair<i32, u8>
+arr : [_]u8 = [1, 2, 3];             # [3]u8
+q : Pair<_, u8> = make(1, 2);        # known parts steer inference: make<i32, u8>
+x : _ = 10;                          # same as `x := 10`
+w : Widget = <_ : Make>::make();     # same as `Make::make()`
+```
 
 See [`../language/generics.md`](../language/generics.md).
 

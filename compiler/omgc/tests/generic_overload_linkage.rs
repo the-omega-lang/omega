@@ -120,11 +120,11 @@ import provider::pick;\n\
 alias Marker = A;\n\
 \n\
 @symbol(mangle = disabled)\n\
-exposed omega_pick_a_again() => i32 { pick<spec Marker>(M { value = 1; }) }\n\
+exposed omega_pick_a_again() => i32 { pick<_ : Marker>(M { value = 1; }) }\n\
 \n\
 @symbol(mangle = disabled)\n\
 exposed omega_pick_a_again_address() => usize {\n\
-    selected: (M) => i32 = pick<spec Marker>;\n\
+    selected: (M) => i32 = pick<_ : Marker>;\n\
     <usize><*void>selected\n\
 }\n";
 

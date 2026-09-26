@@ -210,7 +210,12 @@ impl Analyzer<'_> {
         Some(args)
     }
 
-    fn pattern_item_path(&mut self, id: HirId, span: Span, path: &Path) -> Option<Vec<Ident>> {
+    pub(crate) fn pattern_item_path(
+        &mut self,
+        id: HirId,
+        span: Span,
+        path: &Path,
+    ) -> Option<Vec<Ident>> {
         let access =
             match self
                 .context
@@ -241,7 +246,7 @@ impl Analyzer<'_> {
         }
     }
 
-    fn overload_type_pattern(
+    pub(crate) fn overload_type_pattern(
         &mut self,
         id: HirId,
         span: Span,

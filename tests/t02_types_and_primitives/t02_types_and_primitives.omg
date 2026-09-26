@@ -82,7 +82,7 @@ main() => void {
 	mut arr: [3]i32 = [1, 2, 3];
 	parr: *[3]i32 = &arr;
 
-	inferred: []i32 = [100, 200, 300];
+	inferred: [_]i32 = [100, 200, 300];
 
 	mut bytes: [4]u8 = [10, 20, 30, 40];
 	mview: *mut []u8 = &mut bytes[0..];

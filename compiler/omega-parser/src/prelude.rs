@@ -11,7 +11,7 @@ pub use crate::ast::expression::{
     PatternValue, RevealExpr, SizeofExpr, SliceExpr, StringExpr, StructLiteralExpr,
     StructLiteralField, TryExpr,
 };
-pub use crate::ast::generics::{ExprGenericArg, GenericParam, GenericParamKind};
+pub use crate::ast::generics::{ExprGenericArg, GenericParam, GenericParamKind, Selector};
 pub use crate::ast::identifier::{
     ExpansionId, ExprPath, Ident, Origin, Path, PathAnchor, QualifiedSpecPath,
 };

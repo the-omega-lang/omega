@@ -46,29 +46,35 @@ impl GenericParam {
     }
 }
 
+/// What a selector demands of the declaration parameter it lands on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Selector {
+    /// `: A + B`: the parameter must declare exactly these bounds.
+    Bounds(Vec<Type>),
+    /// `: _`: the bound set is left to overload resolution, but the entry
+    /// still does not count as a plain type argument.
+    Infer,
+}
+
 /// One generic argument written on a *function* path in expression position.
 ///
 /// Beyond an ordinary argument, a caller may name the exact bound set a
 /// declaration's parameter must declare, which is how overlapping generic
-/// overloads are chosen between. `M: A + B` fixes the slot and constrains
-/// the declaration; `spec A + B` only constrains it, leaving the slot to
-/// ordinary inference.
+/// overloads are chosen between. `M : A + B` fixes the slot and constrains
+/// the declaration; `_ : A + B` only constrains it, leaving the slot to
+/// ordinary inference. `_ : _` is parsed as a plain `_`.
 #[derive(Debug, Clone)]
 pub enum ExprGenericArg {
     Plain(GenericArg),
     Bounded {
         arg: GenericArg,
-        bounds: Vec<Type>,
-        span: Span,
-    },
-    Inferred {
-        bounds: Vec<Type>,
+        selector: Selector,
         span: Span,
     },
 }
 
 // Spans are provenance, not syntax, and expression paths compare
-// structurally; a selector's identity is the argument and the bounds.
+// structurally; a selector's identity is the argument and the selector.
 impl PartialEq for ExprGenericArg {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
@@ -76,18 +82,15 @@ impl PartialEq for ExprGenericArg {
             (
                 Self::Bounded {
                     arg: left,
-                    bounds: left_bounds,
+                    selector: left_selector,
                     ..
                 },
                 Self::Bounded {
                     arg: right,
-                    bounds: right_bounds,
+                    selector: right_selector,
                     ..
                 },
-            ) => left == right && left_bounds == right_bounds,
-            (Self::Inferred { bounds: left, .. }, Self::Inferred { bounds: right, .. }) => {
-                left == right
-            }
+            ) => left == right && left_selector == right_selector,
             _ => false,
         }
     }
@@ -102,29 +105,37 @@ impl ExprGenericArg {
     pub fn plain(&self) -> Option<&GenericArg> {
         match self {
             Self::Plain(arg) => Some(arg),
-            _ => None,
+            Self::Bounded { .. } => None,
         }
     }
 
-    /// What this entry binds, whether or not it also selects.
-    pub fn arg(&self) -> Option<&GenericArg> {
+    /// What this entry binds, whether or not it also selects. A `_` binds
+    /// nothing and leaves the position to inference.
+    pub fn arg(&self) -> &GenericArg {
         match self {
-            Self::Plain(arg) | Self::Bounded { arg, .. } => Some(arg),
-            Self::Inferred { .. } => None,
+            Self::Plain(arg) | Self::Bounded { arg, .. } => arg,
         }
     }
 
-    pub fn selector(&self) -> Option<&[Type]> {
+    pub fn selector(&self) -> Option<&Selector> {
         match self {
             Self::Plain(_) => None,
-            Self::Bounded { bounds, .. } | Self::Inferred { bounds, .. } => Some(bounds),
+            Self::Bounded { selector, .. } => Some(selector),
+        }
+    }
+
+    /// The written bounds of a `: A + B` selector.
+    pub fn selector_bounds(&self) -> Option<&[Type]> {
+        match self.selector() {
+            Some(Selector::Bounds(bounds)) => Some(bounds),
+            _ => None,
         }
     }
 
     pub fn selector_span(&self) -> Option<Span> {
         match self {
             Self::Plain(_) => None,
-            Self::Bounded { span, .. } | Self::Inferred { span, .. } => Some(*span),
+            Self::Bounded { span, .. } => Some(*span),
         }
     }
 }

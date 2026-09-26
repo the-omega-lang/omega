@@ -1340,7 +1340,7 @@ fn rewrite_self(ty: &Type, owner: &Ident, owner_generics: &[Ident]) -> Type {
                     GenericArg::Type(inner) => {
                         GenericArg::Type(rewrite_self(inner, owner, owner_generics))
                     }
-                    GenericArg::Value(_) => arg.clone(),
+                    GenericArg::Value(_) | GenericArg::Infer => arg.clone(),
                 })
                 .collect(),
         ),

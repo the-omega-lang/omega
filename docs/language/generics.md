@@ -64,7 +64,7 @@ ptr_cast<u32>(p);        # first generic fixed, the rest inferred
 sum<i32>(1, 2);
 ```
 
-Written arguments are a **positional prefix** of the declaration's generic parameter list, bound left to right. For `f<A, B, C>`, `f<X>(...)` fixes `A = X` only, and `f<X, Y>(...)` fixes `A = X` and `B = Y`. Generic arguments are never named, skipped, or reordered.
+Written arguments are a **positional prefix** of the declaration's generic parameter list, bound left to right. For `f<A, B, C>`, `f<X>(...)` fixes `A = X` only, and `f<X, Y>(...)` fixes `A = X` and `B = Y`. Generic arguments are never named or reordered; a position is left to inference only by writing `_` there (see [Inference holes](#inference-holes)), so `f<_, Y>(...)` fixes `B = Y` alone.
 
 Because the list is positional, each written argument is read as the kind its parameter declares. A bare path such as `SIZE` is a type where the parameter is a type parameter and a compile-time value where it is a `comp` parameter; a type supplied to a `comp` slot, or a value supplied to a type slot, is a kind error rather than a guess.
 
@@ -82,16 +82,23 @@ generic overloads are chosen between; see
 [`functions.md`](functions.md) for how selection uses it.
 
 ```omega
-f<M: A + B>(x);   # bind this parameter to M, and select the declaration
+f<M : A + B>(x);  # bind this parameter to M, and select the declaration
                   # whose parameter declares exactly A + B
-f<spec A + B>(x); # select that declaration, and leave the parameter to
+f<_ : A + B>(x);  # select that declaration, and leave the parameter to
                   # ordinary inference
+f<M : _>(x);      # bind this parameter to M, and leave the bound set to
+                  # overload resolution
 ```
 
 A selector entry occupies its parameter position like any other written
-argument, so the prefix rule is unchanged: `f<spec A, u8>(...)` selects on the
+argument, so the prefix rule is unchanged: `f<_ : A, u8>(...)` selects on the
 first parameter and fixes the second, and positions after the written prefix
-are inferred or defaulted as usual.
+are inferred or defaulted as usual. `_ : _` means exactly `_`.
+
+`M : _` binds `M` without saying which bound set was meant. It is therefore
+not a plain type argument for the unbounded-position preference
+([`functions.md`](functions.md#overloading)): with `f<T>` and `f<T: A>` both
+applicable, `f<M>` prefers `f<T>`, while `f<M : _>` is ambiguous.
 
 A selector is **not** a conformance assertion. It matches the declaration's
 own declared bound set exactly: `f<M: A>` cannot select `f<T>` or
@@ -103,7 +110,7 @@ declaration's declared set. Dependent bounds are compared after substitution,
 including an owner's generic arguments, `Self`, and a bound spec's own generic
 type, `comp`, and defaulted arguments.
 
-`spec ...` binds nothing, so the parameter it occupies must still be
+`_ : ...` binds nothing, so the parameter it occupies must still be
 determined by an argument, an expected result type, an expected function type,
 or the declaration's own default. A uniquely selected bound set is not itself
 a source of a type: with nothing to determine it, the call is an error.
@@ -131,10 +138,55 @@ and only that one depends on which declarations exist.
 Selectors apply only to a function's generic argument list. Writing one on an
 aggregate constructor, a type or owner application, a spec application, a
 generic default, or a function-pointer value is an error, and a `comp`
-position never accepts one because a `comp` parameter declares no bounds. A
-nested ordinary type such as `*spec A` is an ordinary type argument, not a
-selector. The existing restriction of one written generic argument list per
-path is unchanged.
+position never accepts one because a `comp` parameter declares no bounds.
+`spec A` written as a function generic argument is an error: it is not a type,
+and the selector is spelled `_ : A`. A nested type such as `*spec A` is an
+ordinary type argument. The existing restriction of one written generic
+argument list per path is unchanged.
+
+## Inference holes
+
+`_` is an **inference hole**: it stands for exactly one type or compile-time
+value that the position it occupies already infers. It is not a wildcard. Each
+`_` is a distinct hole, solved by the same inference an omitted argument or
+annotation would get there; it is an error when nothing determines it and an
+ambiguity when more than one result remains. `_` is a reserved token, never a
+name.
+
+A hole is accepted only where leaving the thing out is already inferred:
+
+- **A function generic argument.** `f<_, u32>(...)` leaves the first position
+  to call inference and fixes the second. A `_` is still a *written* argument:
+  it counts toward arity, it restricts overload selection to generic
+  declarations, and it contributes nothing to the unbounded-position
+  preference. It is solved in the [priority order](#defaults-and-function-call-inference)
+  of an omitted argument, so a declared default applies to it. Selector forms
+  are described under [Bound selectors](#bound-selectors).
+- **An aggregate constructor or owner path.** `Pair<_, u8> { a = 1; b = 2; }`,
+  `Pair<_, u8>::new(1, 2)`, and `Option<_>::None` bind what they write and
+  solve each hole as [generic aggregate inference](#generic-aggregate-inference)
+  solves an omitted argument.
+- **A fully qualified spec call.** `<_ : P>::f(...)` and `<S : _>::f(...)`; see
+  [`specs-and-conformance.md`](specs-and-conformance.md#calling-conforming-functions).
+- **An initialized binding's annotation**, anywhere in its type:
+  `x : _ = e`, `p : *_ = &v`, `q : Pair<_, u8> = ...`, `a : [_]u8 = [1, 2, 3]`,
+  and a `for` binding (`for x : Pair<_, u8> in source`). A whole-annotation
+  `x : _ = e` is exactly `x := e`, and `mut x : _ = e` is exactly `mut x := e`.
+  A partial annotation is solved **top-down**: its known parts are the
+  expected type of the initializer, exactly as a complete annotation's type
+  would be, so `a : [_]u8 = [1, 2, 3]` is `[3]u8` with `u8` elements, and
+  `x : Pair<_, u8> = pair_of(1)` for `pair_of<T>(v: T) => Pair<T, T>` solves
+  `T = u8` and the hole with it. Each hole then takes what the checked
+  initializer has at its position, and the binding is checked as if that type
+  had been written. A `for` binding with holes selects the one `ToIterator`
+  element type it matches.
+
+Everywhere else `_` is rejected with a dedicated error, because nothing there
+is inferred: parameter, return, and field types; generic defaults and alias
+right-hand sides; bounds and spec bodies; casts; `spec _` and `*spec _`; a
+declaration without an initializer (`x : _;`); a spec application's arguments
+(`Spec<_>::f`); a spec reference or anonymous-enum member inside an
+annotation; and an array length outside an initialized binding's annotation.
 
 An anonymous enum that already exists is an ordinary type here. Given `alias Errors = enum ParseError | IoError;` and a value `e: Errors`, calling `identity<T>(x: T) => T` with `e` infers `T = Errors`, and substituting `T = Errors` into `enum T | C` flattens to `enum ParseError | IoError | C`. What inference may **not** do is construct an anonymous enum that no written type established: two arguments of unrelated types `A` and `B` never unify a parameter `T` to `enum A | B`, and the members of an expected anonymous enum are never tried one at a time as inference candidates. See [`enums-and-pattern-matching.md`](enums-and-pattern-matching.md).
 

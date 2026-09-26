@@ -123,11 +123,13 @@ An array literal creates a fixed-size array value when used in an ordinary expre
 values : [3]i32 = [1, 2, 3];
 ```
 
-`[N]T` stores `N` values inline. `[]T` may be used on a declaration with an array-literal initializer to infer `N`:
+`[N]T` stores `N` values inline. An initialized binding may write the length as an [inference hole](generics.md#inference-holes), `[_]T`, to take `N` from its initializer:
 
 ```omega
-values : []i32 = [1, 2, 3];   # resulting type: [3]i32
+values : [_]i32 = [1, 2, 3];   # resulting type: [3]i32
 ```
+
+`[]T` never infers a length: outside `*[]T` (a slice) it is not a type.
 
 See [`types-and-primitives.md`](types-and-primitives.md) for the complete array/pointer type forms.
 

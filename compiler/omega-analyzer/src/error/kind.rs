@@ -108,7 +108,11 @@ pub enum AnalysisErrorKind {
         expected: ResolvedType,
         found: ResolvedType,
     },
-    ArraySizeNotInferable,
+    /// A `_` in a binding annotation that the initializer does not
+    /// determine.
+    UninferredHole {
+        annotation: String,
+    },
     ConstSliceCannotBeMutable,
     ConstSliceElementNotConstant,
     ConstSliceElementTypeMismatch {
@@ -445,11 +449,16 @@ pub enum AnalysisErrorKind {
         selector: String,
         candidates: Vec<String>,
     },
-    /// A `spec ...` selector occupies a position but binds nothing, and
-    /// nothing else at this site determines the type it stands for.
-    UndeterminedBoundSelector {
+    /// A `_` occupies a position but binds nothing, and nothing else at this
+    /// site determines what it stands for.
+    UndeterminedInferenceHole {
         name: Ident,
         parameter: Ident,
+    },
+    /// `spec A` written as a function generic argument, which the removed
+    /// selector form spelled. It is never a valid type argument either.
+    SpecSelectorSyntax {
+        bounds: String,
     },
     /// A bound selector named exactly one declaration, and that
     /// declaration's own bound is the thing these arguments cannot prove.
@@ -475,7 +484,8 @@ pub enum AnalysisErrorKind {
         candidates: Vec<ResolvedType>,
     },
     ForLoopElementTypeMismatch {
-        expected: ResolvedType,
+        /// The binding's annotation, as written when it has holes.
+        expected: String,
         available: Vec<ResolvedType>,
     },
     NoSuchSpecFunction {
@@ -586,6 +596,17 @@ pub enum AnalysisErrorKind {
         function: Ident,
         specs: Vec<Ident>,
         namespace: FunctionNamespace,
+    },
+    /// `<S : _>::f` where no spec `S` conforms to declares `f`.
+    QualifiedSpecNotInferable {
+        target: String,
+        function: Ident,
+    },
+    /// `<S : _>::f` where more than one spec `S` conforms to declares `f`.
+    QualifiedSpecAmbiguous {
+        target: String,
+        function: Ident,
+        specs: Vec<Ident>,
     },
     MethodNotInScope {
         method: Ident,
@@ -777,8 +798,8 @@ impl fmt::Display for AnalysisErrorKind {
             Self::ArrayElementTypeMismatch { .. } => {
                 write!(f, "mismatched types in array literal")
             }
-            Self::ArraySizeNotInferable => {
-                write!(f, "cannot infer this array's length")
+            Self::UninferredHole { annotation } => {
+                write!(f, "cannot infer every '_' in '{annotation}'")
             }
             Self::ConstSliceCannotBeMutable => {
                 write!(f, "a compile-time slice cannot be mutable")
@@ -1247,7 +1268,10 @@ impl fmt::Display for AnalysisErrorKind {
                 "no declaration of '{}' declares the bounds '{selector}'",
                 name.as_ref()
             ),
-            Self::UndeterminedBoundSelector { name, parameter } => write!(
+            Self::SpecSelectorSyntax { bounds } => {
+                write!(f, "'spec {bounds}' is not a generic argument")
+            }
+            Self::UndeterminedInferenceHole { name, parameter } => write!(
                 f,
                 "'{}' cannot be instantiated here: '{}' is not determined",
                 name.as_ref(),
@@ -1490,6 +1514,18 @@ impl fmt::Display for AnalysisErrorKind {
                     namespace.spelling(target, function)
                 )
             }
+            Self::QualifiedSpecNotInferable { target, function } => write!(
+                f,
+                "no spec '{target}' conforms to declares '{}'",
+                function.as_ref()
+            ),
+            Self::QualifiedSpecAmbiguous {
+                target, function, ..
+            } => write!(
+                f,
+                "more than one spec '{target}' conforms to declares '{}'",
+                function.as_ref()
+            ),
             Self::MethodNotInScope { method, spec, .. } => {
                 write!(
                     f,

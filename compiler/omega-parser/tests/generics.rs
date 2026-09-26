@@ -339,17 +339,18 @@ fn a_bound_selector_survives_a_nested_closing_angle() {
     let omega_parser::prelude::Expression::Path(path) = &call.callee.expression else {
         panic!("expected a path callee");
     };
-    let [ExprGenericArg::Bounded { bounds, .. }] = path.generic_args.as_slice() else {
+    let [ExprGenericArg::Bounded { .. }] = path.generic_args.as_slice() else {
         panic!("expected one bounded selector");
     };
-    assert!(matches!(bounds.as_slice(), [Type::Generic(_, args)] if args.len() == 1));
+    let bounds = path.generic_args[0].selector_bounds().unwrap();
+    assert!(matches!(bounds, [Type::Generic(_, args)] if args.len() == 1));
 }
 
 #[test]
 fn a_member_call_takes_a_bound_selector() {
     use omega_parser::prelude::ExprGenericArg;
     let omega_parser::prelude::Expression::FunctionCall(call) =
-        body_expression("f() => void { x.method<spec A>(1); }")
+        body_expression("f() => void { x.method<_ : A>(1); }")
     else {
         panic!("expected a call");
     };
@@ -358,14 +359,14 @@ fn a_member_call_takes_a_bound_selector() {
     };
     assert!(matches!(
         access.generic_args.as_slice(),
-        [ExprGenericArg::Inferred { .. }]
+        [ExprGenericArg::Bounded { .. }]
     ));
 }
 
 #[test]
 fn a_selector_without_a_bound_does_not_parse() {
     SourceModule::parse("f() => void { g<M: >(x); }").expect_err("must not parse");
-    SourceModule::parse("f() => void { g<spec>(x); }").expect_err("must not parse");
+    SourceModule::parse("f() => void { g<_ :>(x); }").expect_err("must not parse");
 }
 
 #[test]

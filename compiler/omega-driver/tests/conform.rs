@@ -1661,7 +1661,7 @@ fn inferred_arrays_slices_and_unsized_array_pointers_have_distinct_spellings() {
         takes_slice(value: *[]i32) => i32 { value.length }
         takes_unsized(value: *[?]i32) => i32 { value[1] }
         entry_fn() => i32 {
-            inferred: []i32 = [10, 20, 30];
+            inferred: [_]i32 = [10, 20, 30];
             unsized := <*[?]i32>&inferred;
             slice := &inferred[0..];
             takes_slice(slice) + takes_unsized(unsized)

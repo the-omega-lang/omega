@@ -143,6 +143,23 @@ x : Foo = Default::default();
 
 If the implementing type cannot be inferred unambiguously, use `<Type : Spec>::function(...)`.
 
+Either half of the fully qualified form may be an [inference hole](generics.md#inference-holes):
+
+```omega
+x : Widget = <_ : Make>::make();   # exactly Make::make(): Self from the
+                                   # receiver or the expected type
+<Widget : _>::make();              # the one spec Widget conforms to that
+                                   # declares `make`
+```
+
+`<S : _>::f(...)` names the unique spec among `S`'s conformances that declares
+`f`, and is then exactly `<S : P>::f(...)` for that `P`. Specs that reach the
+same declaration through refinement count once. Inherent functions of `S` are
+not candidates, because the slot names a spec. No candidate is an error, and
+more than one is ambiguous. `<_ : _>::f(...)` is rejected: no shorter spelling
+infers both halves, so neither does this one. A hole inside either half
+(`<S : P<_>>`, `<*_ : P>`) is not inferred.
+
 Conforming instance calls adapt their receiver according to the declared receiver form just like ordinary methods. A value may be referenced for `*self` when legal; a mutable receiver requires a mutable source. Pointer-shaped built-in values such as strings/slices do not gain an extra pointer layer merely because a spec receiver is written `*self`.
 
 Taking a pointer to a temporary receiver may require materializing that temporary. A `*mut self` requirement cannot use a discarded immutable temporary merely to obtain mutability.

@@ -484,3 +484,53 @@ fn an_item_producing_macro_lowers_its_global_with_annotations() {
     };
     assert_eq!(name.as_ref(), "export");
 }
+
+#[test]
+fn a_whole_hole_annotation_lowers_to_a_walrus() {
+    let module = lower("f() => void { mut x : _ = 1; y : _ = 2; }");
+    let f = only_function(&module);
+    let [HirStmt::WalrusDeclaration(x), HirStmt::WalrusDeclaration(y)] = f.body.stmts.as_slice()
+    else {
+        panic!("expected two walrus declarations, got {:?}", f.body.stmts);
+    };
+    assert_eq!(x.ident.as_ref(), "x");
+    assert!(x.mutable && !x.comp);
+    assert_eq!(y.ident.as_ref(), "y");
+    assert!(!y.mutable);
+}
+
+#[test]
+fn a_global_whole_hole_annotation_lowers_to_a_walrus() {
+    let module = lower("exposed mut counter : _ = 0;");
+    let [
+        HirItem::Walrus {
+            walrus, visibility, ..
+        },
+    ] = module.items.as_slice()
+    else {
+        panic!("expected one walrus item, got {:?}", module.items);
+    };
+    assert_eq!(walrus.ident.as_ref(), "counter");
+    assert!(walrus.mutable);
+    assert_eq!(*visibility, Visibility::Exposed);
+}
+
+#[test]
+fn a_nested_hole_annotation_stays_a_typed_declaration() {
+    let module = lower("f() => void { p : *_ = &x; }");
+    let f = only_function(&module);
+    assert!(matches!(
+        f.body.stmts.as_slice(),
+        [HirStmt::DeclarationWithInit(..)]
+    ));
+}
+
+#[test]
+fn a_whole_hole_for_in_binding_type_is_no_annotation() {
+    let module = lower("f() => void { for x : _ in 0..<3 {} }");
+    let f = only_function(&module);
+    let [HirStmt::ForIn(for_in)] = f.body.stmts.as_slice() else {
+        panic!("expected a for-in, got {:?}", f.body.stmts);
+    };
+    assert!(for_in.binding_type.is_none());
+}

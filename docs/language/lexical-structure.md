@@ -16,7 +16,7 @@ identifier-continue = identifier-start | "0".."9" ;
 identifier          = identifier-start, { identifier-continue } ;
 ```
 
-Identifiers are case-sensitive.
+Identifiers are case-sensitive. A lone `_` is not an identifier: it is the reserved inference-hole token (see [`generics.md`](generics.md#inference-holes)). Longer spellings such as `_value` and `__` are ordinary identifiers.
 
 ### Reserved keywords
 
@@ -26,7 +26,7 @@ These words are always tokenized as keywords:
 true false if else match foreign import return
 struct enum union spec
 while loop for break continue defer
-macro alias
+macro alias _
 ```
 
 ### Contextual keywords

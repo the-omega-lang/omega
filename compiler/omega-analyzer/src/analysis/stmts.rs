@@ -5,6 +5,20 @@ enum ForInSource {
     DirectIterator(CheckedExprNode),
 }
 
+enum ForInElement {
+    Exact(ResolvedType),
+    Holed(HoledAnnotation, TypePattern),
+}
+
+impl ForInElement {
+    fn description(&self) -> String {
+        match self {
+            Self::Exact(r#type) => r#type.to_string(),
+            Self::Holed(holed, _) => crate::error::raw_type_display(&holed.written),
+        }
+    }
+}
+
 impl<'r> Analyzer<'r> {
     pub(super) fn expr_diverges(expr: &CheckedExprNode) -> bool {
         expr.r#type == ResolvedType::Never
@@ -73,13 +87,13 @@ impl<'r> Analyzer<'r> {
     pub(super) fn analyze_block(
         &mut self,
         block: &HirBlock,
-        expected: Option<&ResolvedType>,
+        expected: Expected<'_>,
     ) -> Option<CheckedBlock> {
         let ((checked_stmts, checked_tail), scope) = self.with_scope(|this| {
             let stmts = this.analyze_stmts(&block.stmts);
             let tail = block.tail.as_ref().map(|expr| {
                 this.analyze_expr(expr, expected)
-                    .map(|value| this.coerce_to_expected(expected, value))
+                    .map(|value| this.coerce_to_expected(expected.exact(), value))
             });
             (stmts, tail)
         });
@@ -156,7 +170,7 @@ impl<'r> Analyzer<'r> {
     }
 
     fn analyze_walrus(&mut self, w: &HirWalrusDeclaration) -> Option<Vec<CheckedStmt>> {
-        let checked_value = self.analyze_expr(&w.value, None)?;
+        let checked_value = self.analyze_expr(&w.value, Expected::None)?;
         let r#type = checked_value.r#type.clone();
         if r#type == ResolvedType::Never {
             self.error(
@@ -240,7 +254,7 @@ impl<'r> Analyzer<'r> {
                 // spec coercion), and those are still discarded casts.
                 let is_source_cast = matches!(expr.expr, HirExpr::Cast(_));
                 let origin = expr.origin;
-                self.analyze_expr(expr, None).map(|e| {
+                self.analyze_expr(expr, Expected::None).map(|e| {
                     let usable_result =
                         e.r#type != ResolvedType::Void && e.r#type != ResolvedType::Never;
                     if is_source_cast && usable_result {
@@ -269,7 +283,7 @@ impl<'r> Analyzer<'r> {
                     return None;
                 }
                 let return_type = self.current_return_type.clone();
-                let checked = self.analyze_expr(expr, Some(&return_type))?;
+                let checked = self.analyze_expr(expr, Expected::Exact(&return_type))?;
                 let checked = self.coerce_to_expected(Some(&return_type), checked);
                 if !Self::value_type_compatible(&self.current_return_type, &checked.r#type) {
                     self.error(
@@ -286,7 +300,7 @@ impl<'r> Analyzer<'r> {
             }
             HirStmt::WalrusDeclaration(w) => self.analyze_walrus(w),
             HirStmt::While(w) => {
-                let checked_cond = self.analyze_expr(&w.condition, None)?;
+                let checked_cond = self.analyze_expr(&w.condition, Expected::None)?;
                 if checked_cond.r#type != ResolvedType::Bool {
                     self.error(
                         w.id,
@@ -307,7 +321,7 @@ impl<'r> Analyzer<'r> {
                     self.warn(w.id, checked_cond.span, AnalysisWarningKind::PreferLoop);
                 }
                 let checked_body =
-                    self.with_loop(w.id, |this| this.analyze_block(&w.body, None))?;
+                    self.with_loop(w.id, |this| this.analyze_block(&w.body, Expected::None))?;
                 Some(vec![CheckedStmt::While(CheckedWhile {
                     id: w.id,
                     span: w.span,
@@ -317,7 +331,7 @@ impl<'r> Analyzer<'r> {
             }
             HirStmt::Loop(l) => {
                 let checked_body =
-                    self.with_loop(l.id, |this| this.analyze_block(&l.body, None))?;
+                    self.with_loop(l.id, |this| this.analyze_block(&l.body, Expected::None))?;
                 Some(vec![CheckedStmt::Loop(CheckedLoop {
                     id: l.id,
                     span: l.span,
@@ -361,7 +375,7 @@ impl<'r> Analyzer<'r> {
                     self.error(d.id, d.span, AnalysisErrorKind::NestedDeferNotSupported);
                     return None;
                 }
-                let body = self.with_defer_body(|this| this.analyze_block(&d.body, None))?;
+                let body = self.with_defer_body(|this| this.analyze_block(&d.body, Expected::None))?;
                 Some(vec![CheckedStmt::Defer(CheckedDefer {
                     id: d.id,
                     span: d.span,
@@ -380,7 +394,7 @@ impl<'r> Analyzer<'r> {
             ok &= checked_init.is_some();
 
             let checked_condition = match &f.condition {
-                Some(condition) => match this.analyze_expr(condition, None) {
+                Some(condition) => match this.analyze_expr(condition, Expected::None) {
                     Some(checked) if checked.r#type != ResolvedType::Bool => {
                         this.error(
                             f.id,
@@ -407,14 +421,14 @@ impl<'r> Analyzer<'r> {
 
             let checked_post = match &f.post {
                 Some(post) => {
-                    let checked = this.analyze_expr(post, None);
+                    let checked = this.analyze_expr(post, Expected::None);
                     ok &= checked.is_some();
                     checked
                 }
                 None => None,
             };
 
-            let checked_body = this.with_loop(f.id, |this| this.analyze_block(&f.body, None));
+            let checked_body = this.with_loop(f.id, |this| this.analyze_block(&f.body, Expected::None));
             ok &= checked_body.is_some();
 
             if !ok {
@@ -481,16 +495,16 @@ impl<'r> Analyzer<'r> {
     fn classify_for_in_source(&mut self, f: &HirForIn) -> Option<ForInSource> {
         let errors_before = self.errors.len();
         let warnings_before = self.warnings.len();
-        let Some(checked) = self.analyze_expr(&f.iterator, None) else {
+        let Some(checked) = self.analyze_expr(&f.iterator, Expected::None) else {
             return None;
         };
 
         let to_iterator = self.for_in_conformances(&checked.r#type, "ToIterator");
         if !to_iterator.is_empty() {
-            let expected_element = f
-                .binding_type
-                .as_ref()
-                .and_then(|raw| self.resolve_type_or_error(f.id, f.span, raw, true));
+            let element = match &f.binding_type {
+                None => None,
+                Some(raw) => Some(self.for_in_element_annotation(f, raw)?),
+            };
             let available: Vec<ResolvedType> = to_iterator
                 .iter()
                 .filter_map(|conform| {
@@ -500,14 +514,18 @@ impl<'r> Analyzer<'r> {
                         .and_then(|arg| arg.as_type().cloned())
                 })
                 .collect();
-            let candidates: Vec<_> = to_iterator
-                .into_iter()
-                .filter(|conform| {
-                    expected_element.as_ref().is_none_or(|expected| {
-                        conform.spec_args.first().and_then(|arg| arg.as_type()) == Some(expected)
-                    })
-                })
-                .collect();
+            let mut candidates = Vec::new();
+            for conform in to_iterator {
+                let produced = conform.spec_args.first().and_then(|arg| arg.as_type());
+                let matches = match (&element, produced) {
+                    (None, _) => true,
+                    (Some(_), None) => false,
+                    (Some(element), Some(produced)) => self.element_matches(f, element, produced),
+                };
+                if matches {
+                    candidates.push(conform);
+                }
+            }
             if candidates.len() == 1 {
                 let conform = candidates.into_iter().next().expect("length checked");
                 // `to_iterator` is synthesized from the original HIR and will
@@ -522,15 +540,20 @@ impl<'r> Analyzer<'r> {
                     spec_args: conform.spec_args,
                 }));
             }
-            let kind = match expected_element {
-                Some(expected) if candidates.is_empty() => {
+            let kind = match element {
+                Some(element) if candidates.is_empty() => {
                     AnalysisErrorKind::ForLoopElementTypeMismatch {
-                        expected,
+                        expected: element.description(),
                         available,
                     }
                 }
                 _ => AnalysisErrorKind::AmbiguousForLoopElementType {
-                    candidates: available,
+                    candidates: candidates
+                        .iter()
+                        .filter_map(|conform| {
+                            conform.spec_args.first().and_then(|arg| arg.as_type().cloned())
+                        })
+                        .collect(),
                 },
             };
             self.error(f.id, f.span, kind);
@@ -547,6 +570,37 @@ impl<'r> Analyzer<'r> {
             },
         );
         None
+    }
+
+    /// A for-in binding's annotation, which selects among the element types a
+    /// `ToIterator` source offers. With holes it is a pattern the selected
+    /// element type must fill.
+    fn for_in_element_annotation(&mut self, f: &HirForIn, raw: &Type) -> Option<ForInElement> {
+        match self.rewrite_annotation_holes(f.id, f.span, raw) {
+            Some(holed) => {
+                let pattern =
+                    self.overload_type_pattern(f.id, f.span, &holed.rewritten, &holed.holes)?;
+                Some(ForInElement::Holed(holed, pattern))
+            }
+            None => Some(ForInElement::Exact(
+                self.resolve_type_or_error(f.id, f.span, raw, true)?,
+            )),
+        }
+    }
+
+    fn element_matches(
+        &mut self,
+        f: &HirForIn,
+        element: &ForInElement,
+        produced: &ResolvedType,
+    ) -> bool {
+        match element {
+            ForInElement::Exact(expected) => expected == produced,
+            ForInElement::Holed(holed, pattern) => self.without_diagnostics(|this| {
+                this.solve_holes_from(f.id, f.span, holed, pattern, produced)
+                    .is_some_and(|solved| solved == *produced)
+            }),
+        }
     }
 
     fn analyze_for_in_loop(&mut self, f: &HirForIn) -> Option<CheckedStmt> {
@@ -760,7 +814,7 @@ impl<'r> Analyzer<'r> {
 
             let user_stmts = this.analyze_stmts(&f.body.stmts)?;
             let user_tail = match &f.body.tail {
-                Some(tail) => Some(Box::new(this.analyze_expr(tail, None)?)),
+                Some(tail) => Some(Box::new(this.analyze_expr(tail, Expected::None)?)),
                 None => None,
             };
 
@@ -851,7 +905,7 @@ impl<'r> Analyzer<'r> {
                 args: vec![],
             }),
         };
-        self.analyze_expr(&call, None)
+        self.analyze_expr(&call, Expected::None)
     }
 
     fn synthetic_declaration(

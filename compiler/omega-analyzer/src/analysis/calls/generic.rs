@@ -99,7 +99,7 @@ impl<'r> Analyzer<'r> {
         explicit: &WrittenGenerics,
         implicit_params: usize,
         args: &[HirExprNode],
-        expected: Option<&ResolvedType>,
+        expected: Expected<'_>,
     ) -> Option<(ResolvedMethod, Vec<CheckedExprNode>)> {
         // The owner instantiation binds `Self` and the owner's own
         // parameters, which the declaration's written types still name;
@@ -206,7 +206,7 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         call: &HirFunctionCall,
-        expected: Option<&ResolvedType>,
+        expected: Expected<'_>,
     ) -> Intercepted {
         let Some(expr_path) = Self::callee_expr_path(call) else {
             return Intercepted::Declined;
@@ -318,7 +318,7 @@ impl<'r> Analyzer<'r> {
         namespace: FunctionNamespace,
         template: &GenericMethodTemplate,
         explicit: &WrittenGenerics,
-        expected: Option<&ResolvedType>,
+        expected: Expected<'_>,
     ) -> Option<CheckedExprNode> {
         // Reached through its owner rather than an instance, a member's
         // receiver is an ordinary written argument, so nothing is implicit.
@@ -378,16 +378,33 @@ impl<'r> Analyzer<'r> {
     /// `GenericOwner::name(...)` and `GenericOwner::self::name(receiver, ...)`
     /// where the owner's type arguments are inferred from the call. A member
     /// call infers them from its explicit receiver argument like any other.
+    /// An owner list written with `_` holes (`Pair<_, u8>::new(...)`) binds
+    /// what it writes and leaves the holes to the same inference.
     pub(crate) fn resolve_generic_owner_function_call(
         &mut self,
         node_id: HirId,
         span: Span,
         call: &HirFunctionCall,
-        expected: Option<&ResolvedType>,
+        expected: Expected<'_>,
     ) -> Intercepted {
-        let Some(path) = Self::callee_path(call) else {
+        let Some(expr_path) = Self::callee_expr_path(call) else {
             return Intercepted::Declined;
         };
+        let written = if expr_path.generic_args.is_empty() {
+            Vec::new()
+        } else {
+            match Self::plain_generic_args(&expr_path.generic_args) {
+                Some(written)
+                    if expr_path.args_at == 0
+                        && expr_path.qualified_spec.is_none()
+                        && written.contains(&GenericArg::Infer) =>
+                {
+                    written
+                }
+                _ => return Intercepted::Declined,
+            }
+        };
+        let path = &expr_path.path;
         let (namespace, member) = match path.tail.as_slice() {
             [member] => (FunctionNamespace::Static, member),
             [segment, member] if segment.as_ref() == FunctionNamespace::MEMBER_SEGMENT => {
@@ -458,6 +475,7 @@ impl<'r> Analyzer<'r> {
             member,
             namespace,
             &sig,
+            &written,
             expected,
             path.origin,
         ))
@@ -497,17 +515,26 @@ impl<'r> Analyzer<'r> {
     /// by the ordinary result check rather than reinterpreted.
     fn seed_from_expected(
         explicit: GenericSubstitution,
-        expected: Option<&ResolvedType>,
+        expected: Expected<'_>,
         generics: &GenericParams<'_>,
         return_type: &Type,
     ) -> GenericSubstitution {
         let mut seed = explicit;
-        if let Some(expected) = expected {
-            let mut inferred = GenericSubstitution::new();
-            unify_generic_type(generics, return_type, expected, &mut inferred);
-            for (generic, resolved) in inferred.iter() {
-                seed.bind_if_absent(generic, || resolved.widened());
+        let mut inferred = GenericSubstitution::new();
+        match expected {
+            Expected::None => return seed,
+            Expected::Exact(expected) => {
+                unify_generic_type(generics, return_type, expected, &mut inferred)
             }
+            Expected::Pattern(expected) => crate::generics::unify_generic_pattern(
+                generics,
+                return_type,
+                expected,
+                &mut inferred,
+            ),
+        }
+        for (generic, resolved) in inferred.iter() {
+            seed.bind_if_absent(generic, || resolved.widened());
         }
         seed
     }
@@ -553,26 +580,25 @@ impl<'r> Analyzer<'r> {
         member: &Ident,
         namespace: FunctionNamespace,
         sig: &GenericOwnerFunctionSignature,
-        expected: Option<&ResolvedType>,
+        written: &[GenericArg],
+        expected: Expected<'_>,
         origin: Origin,
     ) -> Option<CheckedExprNode> {
-        let comp_types = self.comp_param_types(
+        self.check_generic_arity(
             node_id,
             span,
+            &owner.absolute,
             &sig.owner_generics,
-            &GenericSubstitution::new(),
-        );
+            written.len(),
+        )?;
+        let seed = self.written_hole_seed(node_id, span, written, &sig.owner_generics)?;
+        let comp_types = self.comp_param_types(node_id, span, &sig.owner_generics, &seed);
         let generics = self.generic_params(&sig.owner_generics, &comp_types);
         let (checked_args, subst) = self.infer_generic_args(
             &generics,
             &sig.params,
             &call.args,
-            Self::seed_from_expected(
-                GenericSubstitution::new(),
-                expected,
-                &generics,
-                &sig.return_type,
-            ),
+            Self::seed_from_expected(seed, expected, &generics, &sig.return_type),
         )?;
 
         let generic_args = match resolve_inferred_generic_args(&generics, &subst) {
@@ -674,7 +700,7 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         call: &HirFunctionCall,
-        expected: Option<&ResolvedType>,
+        expected: Expected<'_>,
     ) -> Intercepted {
         let Some(expr_path) = Self::callee_expr_path(call) else {
             return Intercepted::Declined;
@@ -753,7 +779,7 @@ impl<'r> Analyzer<'r> {
         access: &ItemAccess,
         sig: &GenericSignature,
         explicit: &WrittenGenerics,
-        expected: Option<&ResolvedType>,
+        expected: Expected<'_>,
     ) -> Option<CheckedExprNode> {
         // Written arguments bind the declaration's generics left to right;
         // inference only ever fills what is left, including the position a

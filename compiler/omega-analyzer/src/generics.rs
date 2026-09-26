@@ -5,6 +5,9 @@ use omega_parser::prelude::{ArrayLength, GenericArg, GenericParamKind, Ident, Ty
 
 pub mod pattern;
 
+#[cfg(test)]
+mod tests;
+
 pub fn compare_bound_sets<T: PartialEq>(
     candidate: &[T],
     incumbent: &[T],
@@ -250,6 +253,75 @@ pub fn unify_generic_type(
     }
 }
 
+/// [`unify_generic_type`] against an expectation pattern whose parameters
+/// are holes. Only the pattern's known parts bind anything: a declaration
+/// parameter that meets a hole stays open for the call's own inference, and
+/// the hole is solved later from the checked result.
+pub fn unify_generic_pattern(
+    generics: &GenericParams<'_>,
+    raw: &Type,
+    expected: &pattern::TypePattern,
+    subst: &mut GenericSubstitution,
+) {
+    use pattern::{ArgumentPattern, TypePattern};
+    match (raw, expected) {
+        (_, TypePattern::Fixed(concrete)) => unify_generic_type(generics, raw, concrete, subst),
+        (Type::Pointer(inner, _), TypePattern::Slice(item, _))
+            if matches!(inner.as_ref(), Type::InferredArray(_)) =>
+        {
+            let Type::InferredArray(elem) = inner.as_ref() else {
+                unreachable!()
+            };
+            unify_generic_pattern(generics, elem, item, subst);
+        }
+        (Type::Pointer(inner, _), TypePattern::Array(item, _))
+            if matches!(inner.as_ref(), Type::UnknownSizeArray(_)) =>
+        {
+            let Type::UnknownSizeArray(elem) = inner.as_ref() else {
+                unreachable!()
+            };
+            unify_generic_pattern(generics, elem, item, subst);
+        }
+        (Type::Pointer(inner, _), TypePattern::Pointer(pointee, _)) => {
+            unify_generic_pattern(generics, inner, pointee, subst)
+        }
+        (Type::SizedArray(inner, length), TypePattern::SizedArray(item, known_length)) => {
+            if let ArrayLength::Path(path) = length
+                && path.is_unqualified()
+                && let ArgumentPattern::Value(CompScalar::Int { value, .. }) = known_length
+                && let Ok(value) = u32::try_from(*value)
+                && let Some(arg) = generics.normalize_length(&path.head, value)
+            {
+                subst.bind_if_absent(&path.head, || arg);
+            }
+            unify_generic_pattern(generics, inner, item, subst)
+        }
+        (Type::Function(f), TypePattern::Function(params, result, _, _)) => {
+            for (p, expected) in f.params.iter().zip(params) {
+                unify_generic_pattern(generics, &p.r#type, expected, subst);
+            }
+            unify_generic_pattern(generics, &f.return_type, result, subst);
+        }
+        (Type::Generic(_, raw_args), TypePattern::Nominal(_, args)) => {
+            for (r, a) in raw_args.iter().zip(args) {
+                match (r, a) {
+                    (GenericArg::Type(raw), ArgumentPattern::Type(expected)) => {
+                        unify_generic_pattern(generics, raw, expected, subst)
+                    }
+                    (GenericArg::Type(Type::Named(path)), ArgumentPattern::Value(value))
+                        if path.is_unqualified()
+                            && generics.comp_type(&path.head) == Some(comp_type_of(value)) =>
+                    {
+                        subst.bind_if_absent(&path.head, || ResolvedGenericArg::Comp(*value));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 fn comp_type_of(value: &CompScalar) -> CompScalarType {
     match value {
         CompScalar::Int { r#type, .. } => CompScalarType::Int(*r#type),
@@ -261,16 +333,24 @@ fn comp_type_of(value: &CompScalar) -> CompScalarType {
 /// The argument list an inference pass produced, in declaration order.
 /// Trailing parameters that stayed unbound are left off so the instantiation
 /// site fills them from their own defaults; an unbound parameter without a
-/// default is reported by name.
+/// default is reported by name. So is an unbound defaulted parameter followed
+/// by a bound one: only a trailing run of defaults can be left to the
+/// instantiation site (see `docs/issues/language-limitations.md`).
 pub fn resolve_inferred_generic_args(
     generics: &GenericParams<'_>,
     subst: &GenericSubstitution,
 ) -> Result<Vec<ResolvedGenericArg>, Ident> {
     let mut args = Vec::with_capacity(generics.params.len());
+    let mut first_defaulted = None;
     for param in generics.params {
         match subst.get(&param.ident) {
+            Some(_) if first_defaulted.is_some() => {
+                return Err(first_defaulted.expect("checked by the guard"));
+            }
             Some(arg) => args.push(arg.widened()),
-            None if param.default.is_some() => break,
+            None if param.default.is_some() => {
+                first_defaulted.get_or_insert_with(|| param.ident.clone());
+            }
             None => return Err(param.ident.clone()),
         }
     }

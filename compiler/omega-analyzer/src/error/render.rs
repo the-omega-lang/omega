@@ -185,9 +185,9 @@ impl AnalysisErrorKind {
             Self::ArrayElementTypeMismatch { expected, found } => d
                 .with_label(span, format!("expected `{expected}`, found `{found}`"))
                 .with_note("every element of an array literal must have the first element's type"),
-            Self::ArraySizeNotInferable => d
-                .with_label(span, "cannot infer this array's length")
-                .with_help("an `[]T`-typed declaration's length is inferred from an array-literal initializer"),
+            Self::UninferredHole { .. } => d
+                .with_label(span, "the initializer does not determine this annotation's `_`")
+                .with_help("write the type or value out in place of the `_`"),
             Self::ConstSliceCannotBeMutable => d
                 .with_label(span, "a compile-time slice cannot be mutable")
                 .with_note("compile-time slice data is embedded directly in the binary, like a string literal")
@@ -598,7 +598,7 @@ impl AnalysisErrorKind {
             Self::BoundSelectorNotAllowed { applied_to } => d
                 .with_label(span, format!("this selector applies to {applied_to}"))
                 .with_help(
-                    "`T: A + B` and `spec A + B` choose between generic function declarations -- \
+                    "`T : A + B` and `_ : A + B` choose between generic function declarations -- \
                      write an ordinary generic argument here",
                 ),
             Self::BoundSelectorOnCompParam { parameter } => d
@@ -616,13 +616,16 @@ impl AnalysisErrorKind {
                      so it neither reaches a stricter declaration nor falls back to a weaker one",
                 )
             }
-            Self::UndeterminedBoundSelector { name, parameter } => d
+            Self::UndeterminedInferenceHole { parameter, .. } => d
                 .with_label(span, format!("`{}` is not determined here", parameter.as_ref()))
                 .with_help(format!(
-                    "`spec ...` selects a declaration without binding its parameter -- write the type for `{}`'s \
-                     position, or give this call an argument or expected type that determines it",
-                    name.as_ref()
+                    "`_` leaves `{}` to inference -- write it out, or give this call an argument or \
+                     expected type that determines it",
+                    parameter.as_ref()
                 )),
+            Self::SpecSelectorSyntax { bounds } => d
+                .with_label(span, "`spec ...` is not a generic argument")
+                .with_help(format!("select on a bound set with `_ : {bounds}`")),
             Self::SelectedBoundNotSatisfied { name, parameter, r#type, spec } => d
                 .with_label(
                     span,
@@ -839,6 +842,27 @@ impl AnalysisErrorKind {
                     None => d,
                 }
             }
+            Self::QualifiedSpecNotInferable { target, function } => d
+                .with_label(span, "`_` cannot name a spec here")
+                .with_note(format!(
+                    "`<{target} : _>::{}` names the conformed spec that declares it; inherent \
+                     functions are not candidates",
+                    function.as_ref()
+                )),
+            Self::QualifiedSpecAmbiguous {
+                target,
+                function,
+                specs,
+            } => {
+                let mut d = d.with_label(span, "`_` could name more than one spec here");
+                for spec in specs {
+                    d = d.with_note(format!(
+                        "candidate: `<{target} : {spec}>::{}`",
+                        function.as_ref()
+                    ));
+                }
+                d.with_help("name the spec you mean")
+            }
             Self::AmbiguousConformanceFunction {
                 target,
                 function,
@@ -1017,9 +1041,12 @@ fn type_resolution_diagnostic(error: &TypeResolutionError, span: Span) -> Diagno
         TypeResolutionError::NeverNotAllowedHere => d
             .with_label(span, "`never` used outside a function's own return type")
             .with_help("there is no such thing as a `never`-typed value -- only a function/method/foreign/gap may declare `=> never`"),
+        TypeResolutionError::InferenceHoleNotAllowed => d
+            .with_label(span, "inference hole in a position that is never inferred")
+            .with_note("`_` is accepted only where leaving the type or value out would infer it: generic arguments, bound selectors, and an initialized binding's annotation outside spec references and anonymous-enum members"),
         TypeResolutionError::BareUnsizedArray => d
             .with_label(span, "unsized array type used on its own")
-            .with_help("write `*[]T` (a slice), or use `[]T` only as a declaration's type annotation with an array-literal initializer to infer its length"),
+            .with_help("write `*[]T` (a slice), or `[_]T` in an initialized binding's annotation to infer the array's length"),
         TypeResolutionError::BareUnknownSizeArray => d
             .with_label(span, "unknown-size array type used on its own")
             .with_help("write `*[?]T` (a pointer to an unsized array) instead"),

@@ -1,0 +1,9 @@
+error: '_' is an inference hole, not a name or a value
+ --> tests/t47c_inference_hole_name/t47c_inference_hole_name.omg:3:5
+  |
+3 |     _ := 5;
+  |     ^ `_` cannot be used as an expression
+  |
+  = note: `_` is a reserved token that stands for a type or value the compiler infers
+
+error: could not compile the program due to 1 previous error

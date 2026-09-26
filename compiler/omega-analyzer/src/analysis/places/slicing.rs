@@ -119,7 +119,7 @@ impl<'r> Analyzer<'r> {
             let Some(bound) = bound else {
                 return Some(None);
             };
-            let checked_bound = this.analyze_expr(bound, Some(&ResolvedType::I32))?;
+            let checked_bound = this.analyze_expr(bound, Expected::Exact(&ResolvedType::I32))?;
             if checked_bound.r#type != ResolvedType::I32 {
                 this.error(
                     bound.id,
@@ -183,7 +183,7 @@ impl<'r> Analyzer<'r> {
         span: Span,
         elements: &[HirExprNode],
         mutable: bool,
-        expected: Option<&ResolvedType>,
+        expected: Expected<'_>,
     ) -> Option<CheckedExprNode> {
         if mutable {
             self.error(node_id, span, AnalysisErrorKind::ConstSliceCannotBeMutable);
@@ -194,12 +194,17 @@ impl<'r> Analyzer<'r> {
             return None;
         }
 
-        let item_type = match expected {
-            Some(ResolvedType::Slice {
+        let item_expected = match expected {
+            Expected::Exact(ResolvedType::Slice {
                 item,
                 mutable: false,
-            }) => item.as_ref().clone(),
-            _ => self.analyze_expr(&elements[0], None)?.r#type.widened(),
+            }) => Expected::Exact(item),
+            Expected::Pattern(TypePattern::Slice(item, false)) => Expected::narrow(item),
+            _ => Expected::None,
+        };
+        let item_type = match item_expected.exact() {
+            Some(item) => item.clone(),
+            None => self.analyze_expr(&elements[0], item_expected)?.r#type.widened(),
         };
 
         let mut values = Vec::with_capacity(elements.len());

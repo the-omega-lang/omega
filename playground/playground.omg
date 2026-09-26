@@ -46,6 +46,6 @@ main() => void {
 	MyMarker::b();
 	some_fn<MyMarker : A>();
 	some_fn<MyMarker : B>();
-	some_fn_with_value<spec A>(MyMarker{});
-	some_fn_with_value<spec B>(MyMarker{});
+	some_fn_with_value<_ : A>(MyMarker{});
+	some_fn_with_value<_ : B>(MyMarker{});
 }

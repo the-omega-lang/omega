@@ -65,7 +65,7 @@ impl Driver {
                 }
                 self.mark_type_import_dependencies(module, &f.return_type, seen);
             }
-            Type::Named(_) => {}
+            Type::Named(_) | Type::Infer => {}
         }
     }
 

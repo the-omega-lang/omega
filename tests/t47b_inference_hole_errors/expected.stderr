@@ -1,0 +1,180 @@
+error: '_' is not allowed here -- nothing is inferred in this position
+  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:14:11
+   |
+14 | bad_param(v: _) => void {}
+   |           ^^^^ inference hole in a position that is never inferred
+   |
+   = note: `_` is accepted only where leaving the type or value out would infer it: generic arguments, bound selectors, and an initialized binding's annotation outside spec references and anonymous-enum members
+
+error: '_' is not allowed here -- nothing is inferred in this position
+  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:16:1
+   |
+16 | bad_return() => _ { 1 }
+   | ^^^^^^^^^^^^^^^^^^^^^^^ inference hole in a position that is never inferred
+   |
+   = note: `_` is accepted only where leaving the type or value out would infer it: generic arguments, bound selectors, and an initialized binding's annotation outside spec references and anonymous-enum members
+
+error: '_' is not allowed here -- nothing is inferred in this position
+  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:18:27
+   |
+18 | struct BadField { exposed f: _; }
+   |                           ^^^^ inference hole in a position that is never inferred
+   |
+   = note: `_` is accepted only where leaving the type or value out would infer it: generic arguments, bound selectors, and an initialized binding's annotation outside spec references and anonymous-enum members
+
+error: '_' is not allowed here -- nothing is inferred in this position
+  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:22:15
+   |
+22 | through_alias(v: Holey) => void {}
+   |               ^^^^^^^^ inference hole in a position that is never inferred
+   |
+   = note: `_` is accepted only where leaving the type or value out would infer it: generic arguments, bound selectors, and an initialized binding's annotation outside spec references and anonymous-enum members
+
+error: '_' is not allowed here -- nothing is inferred in this position
+  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:30:12
+   |
+30 | bad_object(v: *spec _) => void {}
+   |            ^^^^^^^^^^ inference hole in a position that is never inferred
+   |
+   = note: `_` is accepted only where leaving the type or value out would infer it: generic arguments, bound selectors, and an initialized binding's annotation outside spec references and anonymous-enum members
+
+error: '_' is not allowed here -- nothing is inferred in this position
+  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:24:1
+   |
+24 | bad_default<T = _>() => usize { sizeof<T> }
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ inference hole in a position that is never inferred
+   |
+   = note: `_` is accepted only where leaving the type or value out would infer it: generic arguments, bound selectors, and an initialized binding's annotation outside spec references and anonymous-enum members
+
+error: '_' is not allowed here -- nothing is inferred in this position
+  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:27:1
+   |
+27 | bad_spec(v: spec _) => void {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ inference hole in a position that is never inferred
+   |
+   = note: `_` is accepted only where leaving the type or value out would infer it: generic arguments, bound selectors, and an initialized binding's annotation outside spec references and anonymous-enum members
+
+error: cannot use 't47b_inference_hole_errors::bad_default' because of its own error
+  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:58:18
+   |
+58 |     defaulted := bad_default();
+   |                  ^^^^^^^^^^^^^ cannot be used because of its own error
+   |
+   = note: `bad_default`'s own error is reported where it is defined
+
+error: cannot use 't47b_inference_hole_errors::bad_spec' because of its own error
+  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:59:5
+   |
+59 |     bad_spec(1);
+   |     ^^^^^^^^^^^ cannot be used because of its own error
+   |
+   = note: `bad_spec`'s own error is reported where it is defined
+
+error: '_' is not allowed here -- nothing is inferred in this position
+  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:60:5
+   |
+60 |     no_init : _;
+   |     ^^^^^^^^^^^ inference hole in a position that is never inferred
+   |
+   = note: `_` is accepted only where leaving the type or value out would infer it: generic arguments, bound selectors, and an initialized binding's annotation outside spec references and anonymous-enum members
+
+error: '_' is not allowed here -- nothing is inferred in this position
+  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:61:13
+   |
+61 |     cast := <_>5;
+   |             ^^^^ inference hole in a position that is never inferred
+   |
+   = note: `_` is accepted only where leaving the type or value out would infer it: generic arguments, bound selectors, and an initialized binding's annotation outside spec references and anonymous-enum members
+
+error: '_' is not allowed here -- nothing is inferred in this position
+  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:62:16
+   |
+62 |     applied := Holds<_>::held();
+   |                ^^^^^^^^^^^^^^^^ inference hole in a position that is never inferred
+   |
+   = note: `_` is accepted only where leaving the type or value out would infer it: generic arguments, bound selectors, and an initialized binding's annotation outside spec references and anonymous-enum members
+
+error: 'nothing' cannot be instantiated here: 'T' is not determined
+  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:63:21
+   |
+63 |     undetermined := nothing<_>();
+   |                     ^^^^^^^^^^^^ `T` is not determined here
+   |
+   = help: `_` leaves `T` to inference -- write it out, or give this call an argument or expected type that determines it
+
+error: cannot infer every '_' in 'Pair<_, u8>'
+  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:64:5
+   |
+64 |     unsolved : Pair<_, u8> = 5;
+   |     ^^^^^^^^^^^^^^^^^^^^^^ the initializer does not determine this annotation's `_`
+   |
+   = help: write the type or value out in place of the `_`
+
+error: mismatched types: cannot assign 'Pair<i32, i32>' to a target of type 'Pair<i32, u8>'
+  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:65:33
+   |
+65 |     conflicting : Pair<_, u8> = Pair<i32, i32> { a = 1; b = 2; };
+   |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Pair<i32, u8>`, found `Pair<i32, i32>`
+   |
+   = note: Omega has no implicit conversions; the value must have exactly the target's type
+
+error: ambiguous reference to overloaded 'rank'
+  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:66:18
+   |
+66 |     ambiguous := rank<i32 : _>(1);
+   |                  ^^^^^^^^^^^^^^^^ reference to `rank` is ambiguous
+   |
+   = note: candidate: <T>(value: T) => i32
+   = note: candidate: <T: SpecThree>(value: T) => i32
+
+error: 'spec SpecThree' is not a generic argument
+  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:67:17
+   |
+67 |     migrated := rank<spec SpecThree>(1);
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^ `spec ...` is not a generic argument
+   |
+   = help: select on a bound set with `_ : SpecThree`
+
+error: '[]T' is not valid on its own
+  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:68:5
+   |
+68 |     unsized : []i32 = [1, 2];
+   |     ^^^^^^^^^^^^^^^ unsized array type used on its own
+   |
+   = help: write `*[]T` (a slice), or `[_]T` in an initialized binding's annotation to infer the array's length
+
+error: '_' is not allowed here -- nothing is inferred in this position
+  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:69:13
+   |
+69 |     both := <_ : _>::make();
+   |             ^^^^^^^^^^^^^^^ inference hole in a position that is never inferred
+   |
+   = note: `_` is accepted only where leaving the type or value out would infer it: generic arguments, bound selectors, and an initialized binding's annotation outside spec references and anonymous-enum members
+
+error: more than one spec 'Twice' conforms to declares 'make'
+  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:70:18
+   |
+70 |     two_specs := <Twice : _>::make();
+   |                  ^^^^^^^^^^^^^^^^^^^ `_` could name more than one spec here
+   |
+   = note: candidate: `<Twice : Make>::make`
+   = note: candidate: `<Twice : Other>::make`
+   = help: name the spec you mean
+
+error: no spec 'Twice' conforms to declares 'inherent'
+  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:71:22
+   |
+71 |     inherent_only := <Twice : _>::inherent();
+   |                      ^^^^^^^^^^^^^^^^^^^^^^^ `_` cannot name a spec here
+   |
+   = note: `<Twice : _>::inherent` names the conformed spec that declares it; inherent functions are not candidates
+
+error: 'mid' cannot be instantiated here: 'T' is not determined
+  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:72:23
+   |
+72 |     defaulted_hole := mid<_, u8>();
+   |                       ^^^^^^^^^^^^ `T` is not determined here
+   |
+   = help: `_` leaves `T` to inference -- write it out, or give this call an argument or expected type that determines it
+
+error: could not compile the program due to 22 previous errors

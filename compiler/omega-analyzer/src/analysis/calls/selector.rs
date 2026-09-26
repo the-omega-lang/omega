@@ -59,19 +59,26 @@ struct ValidatedEntry {
 /// demands of the declaration it selects.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct WrittenGenerics {
-    /// Positional bindings. A `spec ...` selector occupies its position
-    /// without binding it, so its slot stays `None` for ordinary inference.
+    /// Positional bindings. A `_` occupies its position without binding it,
+    /// so its slot stays `None` for ordinary inference.
     pub(crate) bindings: Vec<Option<ResolvedGenericArg>>,
     /// The selector written at each position, where one was.
     pub(crate) selectors: Vec<Option<BoundSelector>>,
     /// Positions written as a plain type argument, which is what the
     /// unbounded preference ranks. A `comp` position is excluded here: it
     /// declares no bounds either way, so it can never distinguish
-    /// declarations.
+    /// declarations. A `_` and an `M : _` are excluded too: neither says
+    /// anything about the bounds the caller meant.
     plain_type_positions: Vec<usize>,
 }
 
 impl WrittenGenerics {
+    /// Whether `position` was written as a hole, which occupies the position
+    /// without binding it.
+    pub(crate) fn is_hole(&self, position: usize) -> bool {
+        self.bindings.get(position).is_some_and(Option::is_none)
+    }
+
     pub(crate) fn has_selectors(&self) -> bool {
         self.selectors.iter().any(Option::is_some)
     }
@@ -150,8 +157,23 @@ impl<'r> Analyzer<'r> {
         let mut entries = Vec::with_capacity(written.len());
         let mut ok = true;
         for entry in written {
+            if let Some(GenericArg::Type(Type::SpecStatic(bounds))) = entry.plain() {
+                self.error(
+                    node_id,
+                    span,
+                    AnalysisErrorKind::SpecSelectorSyntax {
+                        bounds: bounds
+                            .iter()
+                            .map(crate::error::raw_type_display)
+                            .collect::<Vec<_>>()
+                            .join(" + "),
+                    },
+                );
+                ok = false;
+                continue;
+            }
             let selector_span = entry.selector_span().unwrap_or(span);
-            let selector = match entry.selector() {
+            let selector = match entry.selector_bounds() {
                 None => None,
                 Some(bounds) => match self.resolve_bound_selector(node_id, selector_span, bounds) {
                     Some(selector) => Some(selector),
@@ -166,8 +188,8 @@ impl<'r> Analyzer<'r> {
             // whatever declaration the entry reaches. A plain argument's
             // kind, and a value written where only a selector could put one,
             // are still the candidate's to judge.
-            let fixed = match (&selector, entry.arg()) {
-                (Some(_), Some(arg @ GenericArg::Type(_))) => {
+            let fixed = match (entry.selector(), entry.arg()) {
+                (Some(_), arg @ GenericArg::Type(_)) => {
                     match self.resolve_generic_arg_validated(node_id, span, arg, None) {
                         (true, Some(resolved)) => Some(resolved),
                         _ => {
@@ -229,7 +251,7 @@ impl<'r> Analyzer<'r> {
         let mut ok = true;
         for (position, entry) in written.iter().enumerate() {
             let param = params.get(position);
-            if entry.selector.is_some() && param.is_some_and(HirGenericParam::is_comp) {
+            if entry.written.selector().is_some() && param.is_some_and(HirGenericParam::is_comp) {
                 if report {
                     self.error(
                         node_id,
@@ -244,7 +266,8 @@ impl<'r> Analyzer<'r> {
             }
             match (&entry.fixed, entry.written.arg()) {
                 (Some(fixed), _) => result.bindings[position] = Some(fixed.clone()),
-                (None, Some(arg)) => {
+                (None, GenericArg::Infer) => {}
+                (None, arg) => {
                     let resolved = if report {
                         self.resolve_generic_arg_or_error(node_id, span, arg, param)
                     } else {
@@ -257,15 +280,15 @@ impl<'r> Analyzer<'r> {
                         None => ok = false,
                     }
                 }
-                (None, None) => {}
             }
-            match &entry.selector {
-                None => {
-                    if !param.is_some_and(HirGenericParam::is_comp) {
-                        result.plain_type_positions.push(position);
-                    }
-                }
-                Some(selector) => result.selectors[position] = Some(selector.clone()),
+            if let Some(selector) = &entry.selector {
+                result.selectors[position] = Some(selector.clone());
+            }
+            let plain_type = entry.written.selector().is_none()
+                && *entry.written.arg() != GenericArg::Infer
+                && !param.is_some_and(HirGenericParam::is_comp);
+            if plain_type {
+                result.plain_type_positions.push(position);
             }
         }
         ok.then_some(result)
@@ -400,10 +423,9 @@ impl<'r> Analyzer<'r> {
         ))
     }
 
-    /// What a written list binds, as a substitution. A `spec ...` selector
-    /// occupies its position without binding it, so the name it stands for
-    /// stays open to ordinary inference rather than shifting the arguments
-    /// after it.
+    /// What a written list binds, as a substitution. A `_` occupies its
+    /// position without binding it, so the name it stands for stays open to
+    /// ordinary inference rather than shifting the arguments after it.
     pub(crate) fn written_substitution(
         params: &[HirGenericParam],
         written: &WrittenGenerics,
@@ -479,10 +501,10 @@ impl<'r> Analyzer<'r> {
         )
     }
 
-    /// Reports a generic parameter inference could not determine. A `spec ...`
-    /// entry looks like a written argument but binds nothing, so the position
-    /// it occupies gets its own diagnostic rather than reading as a parameter
-    /// the caller simply never mentioned.
+    /// Reports a generic parameter inference could not determine. A `_` entry
+    /// is a written argument that binds nothing, so the position it occupies
+    /// gets its own diagnostic rather than reading as a parameter the caller
+    /// simply never mentioned.
     pub(crate) fn undetermined_generic_param(
         &mut self,
         node_id: HirId,
@@ -495,9 +517,9 @@ impl<'r> Analyzer<'r> {
         let hole = params
             .iter()
             .position(|param| param.ident == parameter)
-            .is_some_and(|position| written.selectors.get(position).is_some_and(Option::is_some));
+            .is_some_and(|position| written.is_hole(position));
         let kind = if hole {
-            AnalysisErrorKind::UndeterminedBoundSelector {
+            AnalysisErrorKind::UndeterminedInferenceHole {
                 name: name.clone(),
                 parameter,
             }

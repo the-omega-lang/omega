@@ -44,7 +44,7 @@ main() => void {
 
 	# --- fixed array literal vs. inferred-length declaration ----------------
 	explicit_len: [3]i32 = [1, 2, 3];
-	inferred_len: []i32 = [4, 5, 6];
+	inferred_len: [_]i32 = [4, 5, 6];
 	println$("array-len-decl: ", sizeof<[3]i32>, " ", explicit_len[0] + inferred_len[2]);
 
 	# --- compile-time slice literal vs. a bare fixed-array literal ----------

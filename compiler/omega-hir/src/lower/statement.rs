@@ -3,7 +3,9 @@ use crate::hir::{
     HirAsmDescriptor, HirAsmDescriptorKind, HirBlock, HirBreak, HirContinue, HirDefer, HirExpr,
     HirExprNode, HirFor, HirForIn, HirInlineAsm, HirLoop, HirStmt, HirWalrusDeclaration, HirWhile,
 };
-use omega_parser::prelude::{AsmDescriptorKind, CodeblockExpr, Span, Statement, StatementNode};
+use omega_parser::prelude::{
+    AsmDescriptorKind, CodeblockExpr, Span, Statement, StatementNode, Type,
+};
 
 impl Lowerer {
     fn lower_stmt(&mut self, node: &StatementNode) -> HirStmt {
@@ -13,6 +15,9 @@ impl Lowerer {
     fn lower_statement(&mut self, statement: &Statement, span: Span) -> HirStmt {
         match statement {
             Statement::Declaration(decl) => HirStmt::Declaration(self.lower_declaration(decl)),
+            Statement::DeclarationWithInit(decl, value) if decl.r#type == Type::Infer => {
+                HirStmt::WalrusDeclaration(self.lower_inferred_declaration(decl, value, span))
+            }
             Statement::DeclarationWithInit(decl, value) => {
                 HirStmt::DeclarationWithInit(self.lower_declaration(decl), self.lower_expr(value))
             }
@@ -82,7 +87,10 @@ impl Lowerer {
                 span,
                 mutable: f.mutable,
                 binding: f.binding.clone(),
-                binding_type: f.binding_type.clone(),
+                binding_type: f
+                    .binding_type
+                    .clone()
+                    .filter(|r#type| *r#type != Type::Infer),
                 iterator: self.lower_expr(&f.iterator),
                 body: self.lower_block(&f.body),
             }),

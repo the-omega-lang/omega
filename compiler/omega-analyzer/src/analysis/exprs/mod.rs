@@ -8,7 +8,7 @@ impl<'r> Analyzer<'r> {
     pub(super) fn analyze_expr(
         &mut self,
         node: &HirExprNode,
-        expected: Option<&ResolvedType>,
+        expected: Expected<'_>,
     ) -> Option<CheckedExprNode> {
         let id = node.id;
         let span = node.span;
@@ -22,10 +22,10 @@ impl<'r> Analyzer<'r> {
         };
 
         match &node.expr {
-            HirExpr::Place(place) => self.analyze_place_read(id, span, place, expected),
+            HirExpr::Place(place) => self.analyze_place_read(id, span, place, expected.exact()),
             HirExpr::Reveal(reveal) => self.analyze_reveal(id, span, reveal, expected),
             HirExpr::Comp(inner) => self.analyze_comp(id, span, inner, expected),
-            HirExpr::Number(number) => self.analyze_number(id, span, number, expected),
+            HirExpr::Number(number) => self.analyze_number(id, span, number, expected.exact()),
             HirExpr::Bool(b) => literal(ResolvedType::Bool, CheckedExpr::Bool(*b)),
             HirExpr::Char(c) => literal(ResolvedType::Char, CheckedExpr::Char(*c)),
 
@@ -73,13 +73,13 @@ impl<'r> Analyzer<'r> {
             HirExpr::AddressOf(HirAddressOf { base, mutable }) => {
                 self.analyze_address_of(id, span, base, *mutable, expected)
             }
-            HirExpr::Negate(base) => self.analyze_negate(id, span, base, expected),
-            HirExpr::BitNot(base) => self.analyze_bit_not(id, span, base, expected),
+            HirExpr::Negate(base) => self.analyze_negate(id, span, base, expected.exact()),
+            HirExpr::BitNot(base) => self.analyze_bit_not(id, span, base, expected.exact()),
             HirExpr::Not(base) => self.analyze_not(id, span, base),
             HirExpr::Logical(logical) => self.analyze_logical(id, span, logical),
             HirExpr::Increment(base) => self.analyze_incr_decr(id, span, base, BinaryOp::Add),
             HirExpr::Decrement(base) => self.analyze_incr_decr(id, span, base, BinaryOp::Sub),
-            HirExpr::BinaryOp(bin) => self.analyze_binary_expr(id, span, bin, expected),
+            HirExpr::BinaryOp(bin) => self.analyze_binary_expr(id, span, bin, expected.exact()),
             HirExpr::ArrayLiteral(elements) => {
                 self.analyze_array_literal(id, span, elements, expected)
             }
@@ -92,7 +92,7 @@ impl<'r> Analyzer<'r> {
                 None
             }
 
-            HirExpr::Range(range) => self.analyze_range_value(id, span, range, expected),
+            HirExpr::Range(range) => self.analyze_range_value(id, span, range, expected.exact()),
             HirExpr::Try(r#try) => self.analyze_try(id, span, r#try),
         }
     }
@@ -269,7 +269,7 @@ impl<'r> Analyzer<'r> {
         id: HirId,
         span: Span,
         reveal: &HirReveal,
-        expected: Option<&ResolvedType>,
+        expected: Expected<'_>,
     ) -> Option<CheckedExprNode> {
         self.reveals.begin(reveal.origin);
         let result = self.analyze_expr(&reveal.base, expected);
@@ -284,7 +284,7 @@ impl<'r> Analyzer<'r> {
         id: HirId,
         span: Span,
         inner: &HirExprNode,
-        expected: Option<&ResolvedType>,
+        expected: Expected<'_>,
     ) -> Option<CheckedExprNode> {
         let checked = self.analyze_expr(inner, expected)?;
         let r#type = checked.r#type.clone();
@@ -333,7 +333,7 @@ impl<'r> Analyzer<'r> {
         span: Span,
         branches: &[(HirExprNode, HirBlock)],
         else_branch: Option<&HirBlock>,
-        expected: Option<&ResolvedType>,
+        expected: Expected<'_>,
     ) -> Option<CheckedExprNode> {
         let has_else = else_branch.is_some();
 
@@ -341,7 +341,7 @@ impl<'r> Analyzer<'r> {
         let mut checked_blocks: Vec<CheckedBlock> = Vec::with_capacity(branches.len());
         let mut anchor: Option<ResolvedType> = None;
         for (i, (cond, block)) in branches.iter().enumerate() {
-            let checked_cond = self.analyze_expr(cond, None)?;
+            let checked_cond = self.analyze_expr(cond, Expected::None)?;
             if checked_cond.r#type != ResolvedType::Bool {
                 self.error(
                     node_id,
@@ -354,15 +354,15 @@ impl<'r> Analyzer<'r> {
             }
             checked_conds.push(checked_cond);
             let block_expected = if !has_else {
-                None
+                Expected::None
             } else if i == 0 {
                 expected
             } else {
-                anchor.as_ref()
+                anchor.as_ref().into()
             };
             let checked_block = self.analyze_block(block, block_expected)?;
             if has_else && i == 0 {
-                anchor = Some(match expected {
+                anchor = Some(match expected.exact() {
                     Some(t) => t.clone(),
                     None => Self::block_type(&checked_block)
                         .map(|t| t.widened())
@@ -372,7 +372,7 @@ impl<'r> Analyzer<'r> {
             checked_blocks.push(checked_block);
         }
         let checked_else = match else_branch {
-            Some(b) => Some(self.analyze_block(b, anchor.as_ref())?),
+            Some(b) => Some(self.analyze_block(b, anchor.as_ref().into())?),
             None => None,
         };
 
@@ -431,7 +431,7 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         call: &HirFunctionCall,
-        expected: Option<&ResolvedType>,
+        expected: Expected<'_>,
     ) -> Option<CheckedExprNode> {
         let (reveal_origins, _) = Self::strip_reveal(&call.callee);
         if !reveal_origins.is_empty() {
@@ -450,7 +450,7 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         call: &HirFunctionCall,
-        expected: Option<&ResolvedType>,
+        expected: Expected<'_>,
     ) -> Option<CheckedExprNode> {
         let interceptors: [Interceptor<'r>; 6] = [
             Self::resolve_spec_qualified_call,
@@ -499,7 +499,7 @@ impl<'r> Analyzer<'r> {
                     }
 
                     let expected_type = fn_type.params.get(param_index).map(|param| &param.r#type);
-                    let checked_arg = self.analyze_expr(arg, expected_type)?;
+                    let checked_arg = self.analyze_expr(arg, expected_type.into())?;
                     let checked_arg = self.coerce_to_expected(expected_type, checked_arg);
 
                     if let Some(expected_type) = expected_type
@@ -568,7 +568,7 @@ impl<'r> Analyzer<'r> {
         )?;
         self.require_mutable_place(node_id, span, &place.root, &checked_target, target_mutable)?;
 
-        let checked_value = self.analyze_expr(&assignment.value, Some(&target_type))?;
+        let checked_value = self.analyze_expr(&assignment.value, Expected::Exact(&target_type))?;
         let checked_value = self.coerce_to_expected(Some(&target_type), checked_value);
 
         if !Self::value_type_compatible(&target_type, &checked_value.r#type) {
@@ -606,7 +606,7 @@ impl<'r> Analyzer<'r> {
         span: Span,
         base: &HirExprNode,
         mutable: bool,
-        expected: Option<&ResolvedType>,
+        expected: Expected<'_>,
     ) -> Option<CheckedExprNode> {
         self.with_reveal_operand(base, |this, base| {
             this.analyze_address_of_inner(node_id, span, base, mutable, expected)
@@ -619,7 +619,7 @@ impl<'r> Analyzer<'r> {
         span: Span,
         base: &HirExprNode,
         mutable: bool,
-        expected: Option<&ResolvedType>,
+        expected: Expected<'_>,
     ) -> Option<CheckedExprNode> {
         if let HirExpr::Slice(HirSlice {
             base: slice_base,

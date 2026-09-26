@@ -106,7 +106,7 @@ impl<'r> Analyzer<'r> {
                     );
                     return None;
                 }
-                let checked_expr = self.analyze_expr(expr, None)?;
+                let checked_expr = self.analyze_expr(expr, Expected::None)?;
                 if !Self::is_one_register_type(&checked_expr.r#type) {
                     self.error(
                         descriptor.id,
@@ -150,7 +150,7 @@ impl<'r> Analyzer<'r> {
                         projections: Vec::new(),
                     }),
                 };
-                let checked = self.analyze_expr(&synthetic, None)?;
+                let checked = self.analyze_expr(&synthetic, Expected::None)?;
                 let CheckedExpr::Const(value) = checked.kind else {
                     self.error(
                         descriptor.id,

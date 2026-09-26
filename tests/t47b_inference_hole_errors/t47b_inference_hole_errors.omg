@@ -1,0 +1,73 @@
+# Inference-hole diagnostics: `_` outside an inferable position, holes that
+# nothing determines, and the removed `spec A` selector and `[]T` binding.
+
+exposed spec SpecThree { three(*self) => i32; }
+meet SpecThree for i32 { three(*self) => i32 { 3 } }
+
+struct Pair<T, U> {
+    exposed a: T;
+    exposed b: U;
+}
+
+# --- positions where nothing is inferred -----------------------------------
+@suppress(unused_parameter)
+bad_param(v: _) => void {}
+
+bad_return() => _ { 1 }
+
+struct BadField { exposed f: _; }
+
+alias Holey = Pair<_, u8>;
+@suppress(unused_parameter)
+through_alias(v: Holey) => void {}
+
+bad_default<T = _>() => usize { sizeof<T> }
+
+@suppress(unused_parameter)
+bad_spec(v: spec _) => void {}
+
+@suppress(unused_parameter)
+bad_object(v: *spec _) => void {}
+
+spec Holds<T> { held() => T; }
+
+# --- selection and determination ------------------------------------------
+nothing<T>() => usize { sizeof<T> }
+
+@suppress(unused_parameter)
+rank<T>(value: T) => i32 { 33 }
+@suppress(unused_parameter)
+rank<T: SpecThree>(value: T) => i32 { 44 }
+
+mid<T = u16, U = u32>() => usize { sizeof<T> + sizeof<U> }
+
+# --- inferred spec slots ---------------------------------------------------
+exposed spec Make { make() => Self; }
+exposed spec Other { make() => Self; }
+
+struct Twice {
+    exposed id: i32;
+
+    exposed inherent() => i32 { 5 }
+}
+meet Make for Twice { make() => Self { Self { id = 1; } } }
+meet Other for Twice { make() => Self { Self { id = 2; } } }
+
+main() => void {
+    # Defaults and static-spec bounds are resolved where they are used.
+    defaulted := bad_default();
+    bad_spec(1);
+    no_init : _;
+    cast := <_>5;
+    applied := Holds<_>::held();
+    undetermined := nothing<_>();
+    unsolved : Pair<_, u8> = 5;
+    conflicting : Pair<_, u8> = Pair<i32, i32> { a = 1; b = 2; };
+    ambiguous := rank<i32 : _>(1);
+    migrated := rank<spec SpecThree>(1);
+    unsized : []i32 = [1, 2];
+    both := <_ : _>::make();
+    two_specs := <Twice : _>::make();
+    inherent_only := <Twice : _>::inherent();
+    defaulted_hole := mid<_, u8>();
+}

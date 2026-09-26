@@ -12,7 +12,7 @@ mut a : i32 = 10;
 mut a := 10;
 ```
 
-A binding is immutable unless marked `mut`. `:=` infers the binding's type from its initializer; `:` supplies an explicit type. Top-level inferred bindings have additional compile-time requirements described in [`compile-time-evaluation.md`](compile-time-evaluation.md).
+A binding is immutable unless marked `mut`. `:=` infers the binding's type from its initializer; `:` supplies an explicit type. An initialized binding's annotation may leave parts to its initializer with `_` holes (`a : Pair<_, u8> = ...`, `a : [_]u8 = [1, 2, 3]`), and `a : _ = 10` is exactly `a := 10`; see [`generics.md`](generics.md#inference-holes). Top-level inferred bindings have additional compile-time requirements described in [`compile-time-evaluation.md`](compile-time-evaluation.md).
 
 `mut` is contextual syntax. It does not make `mut` globally unavailable as an identifier outside positions where the grammar recognizes a mutability modifier.
 

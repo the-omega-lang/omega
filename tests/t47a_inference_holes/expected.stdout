@@ -1,0 +1,12 @@
+whole: 123 2
+arguments: generic 4 10
+selectors: 1 1 2
+comp-and-default: 4 8
+value: 33 44
+aggregates: 2 300 5
+annotations: 7 2 3 5 2 1 2 2
+for-pair: 1 7
+for-pair: 0 7
+for-whole: 0
+for-whole: 1
+qualified: 9 9 42 42 1

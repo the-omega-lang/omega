@@ -99,7 +99,7 @@ impl<'r> Analyzer<'r> {
                     }
                 }
             }
-            _ => match self.analyze_expr(expr, Some(expected)) {
+            _ => match self.analyze_expr(expr, Expected::Exact(expected)) {
                 Some(checked) if checked.r#type == *expected => self.eval_comp(expr.id, &checked),
                 Some(checked) => mismatch(self, &format!("a value of type `{}`", checked.r#type)),
                 None => None,
@@ -338,7 +338,7 @@ impl<'r> Analyzer<'r> {
             // time slice's elements are just as inherently compile-time-
             // only as an enum header's, so anything the interpreter can
             // resolve is as legitimate an element as a bare literal.
-            _ => match self.analyze_expr(expr, Some(expected)) {
+            _ => match self.analyze_expr(expr, Expected::Exact(expected)) {
                 Some(checked) if checked.r#type == *expected => self.eval_comp(expr.id, &checked),
                 Some(checked) => mismatch(self, &format!("a value of type `{}`", checked.r#type)),
                 None => None,

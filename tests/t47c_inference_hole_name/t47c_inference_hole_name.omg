@@ -1,0 +1,4 @@
+# `_` is a reserved token, never a name.
+main() => void {
+    _ := 5;
+}

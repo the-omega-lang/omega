@@ -283,7 +283,7 @@ impl Driver {
                         written,
                         origin,
                     )),
-                    GenericArg::Value(_) => d.clone(),
+                    GenericArg::Value(_) | GenericArg::Infer => d.clone(),
                 }),
             })
             .collect::<Vec<_>>();
@@ -378,7 +378,7 @@ impl Driver {
                 }
                 self.validate_alias_target(module_path, declared, placeholders, &f.return_type)?;
             }
-            Type::Named(_) => {}
+            Type::Named(_) | Type::Infer => {}
         }
         Ok(())
     }
@@ -989,13 +989,14 @@ impl Driver {
         };
         match ty {
             Type::Named(path) => Type::Named(rebind_path(self, path)),
+            Type::Infer => Type::Infer,
             Type::Generic(path, args) => {
                 let path = rebind_path(self, path);
                 let args = args
                     .iter()
                     .map(|a| match a {
                         GenericArg::Type(inner) => GenericArg::Type(recur(self, inner)),
-                        GenericArg::Value(_) => a.clone(),
+                        GenericArg::Value(_) | GenericArg::Infer => a.clone(),
                     })
                     .collect();
                 Type::Generic(path, args)
@@ -1006,7 +1007,7 @@ impl Driver {
             Type::SizedArray(inner, length) => {
                 let length = match length {
                     ArrayLength::Path(path) => ArrayLength::Path(rebind_path(self, path)),
-                    ArrayLength::Literal(_) => length.clone(),
+                    ArrayLength::Literal(_) | ArrayLength::Infer => length.clone(),
                 };
                 Type::SizedArray(Box::new(recur(self, inner)), length)
             }

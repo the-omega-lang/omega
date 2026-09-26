@@ -36,6 +36,7 @@ pub enum TokenKind {
     Defer,
     Macro,
     Alias,
+    Underscore,
 
     // Multi-char punctuation, maximal-munch (tried longest-first during
     // lexing so e.g. `...` is never mistaken for `..` followed by `.`).
@@ -178,6 +179,7 @@ const FIXED_TOKENS: &[FixedToken] = &[
     keyword("defer", TokenKind::Defer),
     keyword("macro", TokenKind::Macro),
     keyword("alias", TokenKind::Alias),
+    keyword("_", TokenKind::Underscore),
     punctuation("...", TokenKind::DotDotDot),
     punctuation("..=", TokenKind::DotDotEq),
     punctuation("..<", TokenKind::DotDotLt),
@@ -266,7 +268,7 @@ mod identifier_tests {
 
     #[test]
     fn accepts_ordinary_identifier_spellings() {
-        for name in ["foo", "_foo", "foo123", "foo_bar", "_", "A", "z9"] {
+        for name in ["foo", "_foo", "foo123", "foo_bar", "__", "A", "z9"] {
             assert!(is_valid_identifier(name), "expected {name:?} to be valid");
         }
     }
@@ -285,7 +287,7 @@ mod identifier_tests {
 
     #[test]
     fn rejects_reserved_keyword_spellings() {
-        for name in ["if", "else", "struct", "for", "return", "macro"] {
+        for name in ["if", "else", "struct", "for", "return", "macro", "_"] {
             assert!(
                 !is_valid_identifier(name),
                 "expected keyword {name:?} to be invalid"

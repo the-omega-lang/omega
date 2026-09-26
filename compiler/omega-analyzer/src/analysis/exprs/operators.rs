@@ -8,7 +8,7 @@ impl<'r> Analyzer<'r> {
         base: &HirExprNode,
         expected: Option<&ResolvedType>,
     ) -> Option<CheckedExprNode> {
-        let checked_base = self.analyze_expr(base, expected)?;
+        let checked_base = self.analyze_expr(base, expected.into())?;
         if checked_base.r#type == ResolvedType::Never {
             return Some(CheckedExprNode {
                 id: node_id,
@@ -59,7 +59,7 @@ impl<'r> Analyzer<'r> {
         span: Span,
         base: &HirExprNode,
     ) -> Option<CheckedExprNode> {
-        let checked_base = self.analyze_expr(base, Some(&ResolvedType::Bool))?;
+        let checked_base = self.analyze_expr(base, Expected::Exact(&ResolvedType::Bool))?;
         if !matches!(
             checked_base.r#type,
             ResolvedType::Bool | ResolvedType::Never
@@ -102,7 +102,7 @@ impl<'r> Analyzer<'r> {
             LogicalOp::Or => "||",
         };
         let operand = |this: &mut Self, side: &HirExprNode| {
-            let checked = this.analyze_expr(side, Some(&ResolvedType::Bool))?;
+            let checked = this.analyze_expr(side, Expected::Exact(&ResolvedType::Bool))?;
             if !Self::value_type_compatible(&ResolvedType::Bool, &checked.r#type) {
                 this.error(
                     side.id,
@@ -156,7 +156,7 @@ impl<'r> Analyzer<'r> {
         base: &HirExprNode,
         expected: Option<&ResolvedType>,
     ) -> Option<CheckedExprNode> {
-        let checked_base = self.analyze_expr(base, expected)?;
+        let checked_base = self.analyze_expr(base, expected.into())?;
         if checked_base.r#type == ResolvedType::Never {
             return Some(CheckedExprNode {
                 id: node_id,
@@ -212,7 +212,7 @@ impl<'r> Analyzer<'r> {
         } else {
             expected
         };
-        let checked_left = self.analyze_expr(&bin.left, operand_expected)?;
+        let checked_left = self.analyze_expr(&bin.left, operand_expected.into())?;
         // For a non-comparison op, anchor to what `left` will *become*
         // (`arithmetic_repr`), not what it currently is -- otherwise
         // `some_char + 1` fails to compile, since the bare `1` would anchor
@@ -222,7 +222,7 @@ impl<'r> Analyzer<'r> {
         if !bin.op.is_comparison() {
             left_type = left_type.arithmetic_repr().unwrap_or(left_type);
         }
-        let checked_right = self.analyze_expr(&bin.right, operand_expected.or(Some(&left_type)))?;
+        let checked_right = self.analyze_expr(&bin.right, (operand_expected.or(Some(&left_type))).into())?;
         self.analyze_binary_op(node_id, span, bin.op, checked_left, checked_right)
     }
 
@@ -234,7 +234,7 @@ impl<'r> Analyzer<'r> {
         base: &HirExprNode,
     ) -> Option<CheckedExprNode> {
         let target_type = self.resolve_type_or_error(node_id, span, target, true)?;
-        let checked_base = self.analyze_expr(base, None)?;
+        let checked_base = self.analyze_expr(base, Expected::None)?;
 
         // Neither explicit discard nor divergence produces a value to convert.
         if target_type == ResolvedType::Void || checked_base.r#type == ResolvedType::Never {
@@ -839,7 +839,7 @@ impl<'r> Analyzer<'r> {
         )?;
         self.require_mutable_place(node_id, span, &place.root, &checked_place, mutable)?;
 
-        let checked_value = self.analyze_expr(value, Some(&place_type))?;
+        let checked_value = self.analyze_expr(value, Expected::Exact(&place_type))?;
 
         // Type-check/coerce `place op value` exactly as an ordinary binary
         // operator would. `place_read_for_types` is a throwaway placeholder

@@ -100,6 +100,9 @@ pub enum Type {
     /// types. Written order is preserved here; canonical ordering and
     /// deduplication are semantic and happen during type resolution.
     AnonymousEnum(Vec<Type>),
+    /// `_`: an inference hole, solved from context where the position is
+    /// inferable and rejected everywhere else.
+    Infer,
 }
 
 /// A scalar value written directly inside generic-argument or array-length
@@ -119,6 +122,9 @@ pub enum CompLiteral {
 pub enum GenericArg {
     Type(Type),
     Value(CompLiteral),
+    /// A bare `_` argument. Its kind (type or `comp` value) is that of the
+    /// declared parameter at its position.
+    Infer,
 }
 
 impl GenericArg {
@@ -128,7 +134,7 @@ impl GenericArg {
     pub fn as_type(&self) -> Option<&Type> {
         match self {
             Self::Type(r#type) => Some(r#type),
-            Self::Value(_) => None,
+            Self::Value(_) | Self::Infer => None,
         }
     }
 }
@@ -139,10 +145,11 @@ impl From<Type> for GenericArg {
     }
 }
 
-/// A fixed array's written length: a scalar literal, or a path naming a
-/// `comp` binding or `comp` generic parameter.
+/// A fixed array's written length: a scalar literal, a path naming a
+/// `comp` binding or `comp` generic parameter, or an inference hole.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ArrayLength {
     Literal(CompLiteral),
     Path(Path),
+    Infer,
 }

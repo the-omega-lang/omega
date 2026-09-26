@@ -48,7 +48,7 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         call: &HirFunctionCall,
-        expected: Option<&ResolvedType>,
+        expected: Expected<'_>,
     ) -> Intercepted {
         let Some(expr_path) = Self::callee_expr_path(call) else {
             return Intercepted::Declined;
@@ -218,7 +218,7 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         call: &HirFunctionCall,
-        _expected: Option<&ResolvedType>,
+        _expected: Expected<'_>,
     ) -> Intercepted {
         let Some(expr_path) = Self::callee_expr_path(call) else {
             return Intercepted::Declined;
@@ -320,7 +320,7 @@ impl<'r> Analyzer<'r> {
             })
             .collect();
         let (winner, _, args) =
-            self.resolve_overload_candidates(node_id, span, name, &candidates, args, None, &[], 0)?;
+            self.resolve_overload_candidates(node_id, span, name, &candidates, args, Expected::None, &[], 0)?;
         Some((winner, args))
     }
 
@@ -332,7 +332,7 @@ impl<'r> Analyzer<'r> {
         name: &Ident,
         candidates: &[OverloadCandidate],
         args: &[HirExprNode],
-        expected: Option<&ResolvedType>,
+        expected: Expected<'_>,
         explicit: &[ExprGenericArg],
         implicit: usize,
     ) -> Option<(usize, Option<ResolvedMethod>, Vec<CheckedExprNode>)> {
@@ -346,7 +346,7 @@ impl<'r> Analyzer<'r> {
             fixed.push(if Self::adaptable_literal(arg) {
                 None
             } else {
-                Some(self.analyze_expr(arg, None)?)
+                Some(self.analyze_expr(arg, Expected::None)?)
             });
         }
         let argument_type = |index: usize| -> ResolvedType {
@@ -385,7 +385,7 @@ impl<'r> Analyzer<'r> {
                 for (slot, binding) in bindings.iter_mut().zip(&written.bindings) {
                     slot.clone_from(binding);
                 }
-                if let Some(expected) = expected {
+                if let Some(expected) = expected.exact() {
                     template.return_type.infer(expected, &mut bindings);
                 }
                 for (position, pattern) in template.params[implicit..].iter().enumerate() {
@@ -517,7 +517,7 @@ impl<'r> Analyzer<'r> {
         for ((raw, checked), expected) in args.iter().zip(fixed).zip(&parameters) {
             let checked = match checked {
                 Some(checked) => checked,
-                None => self.analyze_expr(raw, Some(expected))?,
+                None => self.analyze_expr(raw, Expected::Exact(expected))?,
             };
             final_args.push(self.coerce_to_expected(Some(expected), checked));
         }
@@ -594,7 +594,10 @@ impl<'r> Analyzer<'r> {
         explicit: &[ExprGenericArg],
         rejected: &[(usize, Rejection)],
     ) -> bool {
-        if explicit.iter().all(|entry| entry.selector().is_none()) {
+        if explicit
+            .iter()
+            .all(|entry| entry.selector_bounds().is_none())
+        {
             return false;
         }
         let mut unmet = None;
@@ -640,7 +643,7 @@ impl<'r> Analyzer<'r> {
             };
             let entry = explicit.get(*position)?;
             Some((
-                entry.selector()?,
+                entry.selector_bounds()?,
                 entry.selector_span().unwrap_or(span),
             ))
         }) && rejected.iter().all(|(_, reason)| matches!(reason, Rejection::Selector(_)))

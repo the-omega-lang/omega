@@ -60,7 +60,7 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         lit: &HirStructLiteral,
-        expected: Option<&ResolvedType>,
+        expected: Expected<'_>,
     ) -> Option<CheckedExprNode> {
         match self.resolve_literal_target(node_id, span, lit, expected)? {
             LiteralTarget::Struct(resolved) => {
@@ -228,7 +228,7 @@ impl<'r> Analyzer<'r> {
                     );
                     return None;
                 }
-                let value = self.analyze_expr(&field.value, Some(&expected))?;
+                let value = self.analyze_expr(&field.value, Expected::Exact(&expected))?;
                 if !Self::value_type_compatible(&expected, &value.r#type) {
                     self.error(
                         node_id,
@@ -308,7 +308,7 @@ impl<'r> Analyzer<'r> {
                 continue;
             }
             let Some(value) = self
-                .analyze_expr(&field.value, Some(&expected))
+                .analyze_expr(&field.value, Expected::Exact(&expected))
                 .map(|value| self.coerce_to_expected(Some(&expected), value))
             else {
                 ok = false;
@@ -356,7 +356,7 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         lit: &HirStructLiteral,
-        expected: Option<&ResolvedType>,
+        expected: Expected<'_>,
     ) -> Option<LiteralTarget> {
         let path = &lit.path;
         if path.plain().is_none() {
@@ -383,8 +383,33 @@ impl<'r> Analyzer<'r> {
                 &path.generic_args,
                 "an aggregate constructor",
             )?;
-            let generic_args =
-                self.resolve_generic_arg_list(node_id, span, &written, &access.absolute, &params)?;
+            let generic_args = if written.contains(&GenericArg::Infer) {
+                self.check_generic_arity(node_id, span, &access.absolute, &params, written.len())?;
+                let Some((real_absolute, sig)) =
+                    self.generic_literal_signature_with_ambient(prefix, &absolute, rest.first())
+                else {
+                    self.error(
+                        node_id,
+                        span,
+                        AnalysisErrorKind::UnresolvedType(
+                            TypeResolutionError::InferenceHoleNotAllowed,
+                        ),
+                    );
+                    return None;
+                };
+                let seed = self.written_hole_seed(node_id, span, &written, &sig.generics)?;
+                self.infer_literal_type_args(
+                    node_id,
+                    span,
+                    &real_absolute,
+                    &sig,
+                    &lit.fields,
+                    expected,
+                    seed,
+                )?
+            } else {
+                self.resolve_generic_arg_list(node_id, span, &written, &access.absolute, &params)?
+            };
             let resolved = match self.resolve_item_with_ambient_from(
                 &accessor,
                 prefix,
@@ -673,7 +698,7 @@ impl<'r> Analyzer<'r> {
         access: &ItemAccess,
         sig: &GenericLiteralSignature,
         lit_fields: &[HirStructLiteralField],
-        expected: Option<&ResolvedType>,
+        expected: Expected<'_>,
         origin: Origin,
     ) -> Option<Result<ResolvedItem, ResolveError>> {
         let generic_args = self.infer_literal_type_args(
@@ -683,10 +708,14 @@ impl<'r> Analyzer<'r> {
             sig,
             lit_fields,
             expected,
+            GenericSubstitution::new(),
         )?;
         Some(self.resolve_item_checked_with_ambient_fallback(prefix, access, &generic_args, origin))
     }
 
+    /// `seed` holds what a written list with holes already binds; the
+    /// expected type and then the fields solve the rest.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn infer_literal_type_args(
         &mut self,
         node_id: HirId,
@@ -694,15 +723,35 @@ impl<'r> Analyzer<'r> {
         absolute: &[Ident],
         sig: &GenericLiteralSignature,
         lit_fields: &[HirStructLiteralField],
-        expected: Option<&ResolvedType>,
+        expected: Expected<'_>,
+        mut seed: GenericSubstitution,
     ) -> Option<Vec<ResolvedGenericArg>> {
-        if let Some(generic_args) = Self::expected_matches_generic_item(expected, absolute) {
-            return Some(generic_args);
+        if let Some(generic_args) = Self::expected_matches_generic_item(expected.exact(), absolute) {
+            if seed.is_empty() {
+                return Some(generic_args);
+            }
+            for (param, arg) in sig.generics.iter().zip(generic_args) {
+                seed.bind_if_absent(&param.ident, || arg);
+            }
         }
-        let comp_types =
-            self.comp_param_types(node_id, span, &sig.generics, &GenericSubstitution::new());
+        if let Expected::Pattern(TypePattern::Nominal(path, args)) = expected
+            && path.as_slice() == absolute
+        {
+            for (param, arg) in sig.generics.iter().zip(args) {
+                let known = match arg {
+                    ArgumentPattern::Type(pattern) => match pattern.as_ref() {
+                        TypePattern::Fixed(r#type) => ResolvedGenericArg::Type(r#type.clone()),
+                        _ => continue,
+                    },
+                    ArgumentPattern::Value(value) => ResolvedGenericArg::Comp(*value),
+                    ArgumentPattern::Parameter(..) => continue,
+                };
+                seed.bind_if_absent(&param.ident, || known);
+            }
+        }
+        let comp_types = self.comp_param_types(node_id, span, &sig.generics, &seed);
         let generics = self.generic_params(&sig.generics, &comp_types);
-        let subst = self.probe_literal_generic_args(sig, &generics, lit_fields)?;
+        let subst = self.probe_literal_generic_args(sig, &generics, lit_fields, seed)?;
         match resolve_inferred_generic_args(&generics, &subst) {
             Ok(generic_args) => Some(generic_args),
             Err(_) => {
@@ -769,10 +818,11 @@ impl<'r> Analyzer<'r> {
         sig: &GenericLiteralSignature,
         generics: &GenericParams<'_>,
         lit_fields: &[HirStructLiteralField],
+        seed: GenericSubstitution,
     ) -> Option<GenericSubstitution> {
         let errors_before = self.errors.len();
         let warnings_before = self.warnings.len();
-        let mut subst = GenericSubstitution::new();
+        let mut subst = seed;
         let mut ok = true;
         for field in lit_fields {
             let Some((_, raw_type)) = sig.fields.iter().find(|(name, _)| name == &field.name)
@@ -786,7 +836,7 @@ impl<'r> Analyzer<'r> {
                 generics,
                 &subst,
             );
-            match self.analyze_expr(&field.value, expected.as_ref()) {
+            match self.analyze_expr(&field.value, expected.as_ref().into()) {
                 Some(checked) => {
                     unify_generic_type(generics, raw_type, &checked.r#type, &mut subst)
                 }
@@ -992,7 +1042,7 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         elements: &[HirExprNode],
-        expected: Option<&ResolvedType>,
+        expected: Expected<'_>,
     ) -> Option<CheckedExprNode> {
         let Some((first, rest)) = elements.split_first() else {
             self.error(node_id, span, AnalysisErrorKind::EmptyArrayLiteral);
@@ -1003,13 +1053,15 @@ impl<'r> Analyzer<'r> {
         // as every element's own expected type, including the first --
         // unlike the bottom-up fallback below, where later elements are
         // checked against the first's inferred type.
-        let declared_item_type = match expected {
-            Some(ResolvedType::SizedArray(item_type, _)) => Some(item_type.as_ref()),
-            _ => None,
+        let item_expected = match expected {
+            Expected::Exact(ResolvedType::SizedArray(item_type, _)) => Expected::Exact(item_type),
+            Expected::Pattern(TypePattern::SizedArray(item, _)) => Expected::narrow(item),
+            _ => Expected::None,
         };
+        let declared_item_type = item_expected.exact();
 
         let checked_first = self
-            .analyze_expr(first, declared_item_type)
+            .analyze_expr(first, item_expected)
             .map(|value| self.coerce_to_expected(declared_item_type, value))?;
         let item_type = declared_item_type
             .cloned()
@@ -1035,7 +1087,7 @@ impl<'r> Analyzer<'r> {
 
         for element in rest {
             let checked_element = self
-                .analyze_expr(element, Some(&item_type))
+                .analyze_expr(element, Expected::Exact(&item_type))
                 .map(|value| self.coerce_to_expected(Some(&item_type), value))?;
             checked_elements.push(check_element(
                 self,

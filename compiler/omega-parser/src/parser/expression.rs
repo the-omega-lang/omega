@@ -6,10 +6,10 @@ use crate::ast::expression::{
     MatchExpr, NegateExpr, NotExpr, Pattern, PatternValue, RevealExpr, SizeofExpr, SliceExpr,
     StringExpr, StructLiteralExpr, StructLiteralField, TryExpr,
 };
-use crate::ast::generics::ExprGenericArg;
+use crate::ast::generics::{ExprGenericArg, Selector};
 use crate::ast::identifier::Origin;
 use crate::ast::range::{RangeEnd, RangeExpr};
-use crate::ast::r#type::Type;
+use crate::ast::r#type::{GenericArg, Type};
 use crate::diagnostics::{ParseErrorKind, Span};
 use crate::lexer::TokenKind;
 use crate::parser::{
@@ -691,6 +691,10 @@ fn parse_primary(p: &mut Parser) -> Option<ExpressionNode> {
                 origin,
             })
         }
+        TokenKind::Underscore => {
+            p.error(ParseErrorKind::InferenceHoleNotAValue);
+            None
+        }
         _ => {
             p.error(ParseErrorKind::Expected {
                 expected: "an expression",
@@ -781,29 +785,25 @@ fn try_parse_generic_args(p: &mut Parser) -> Option<Vec<ExprGenericArg>> {
 
 /// One entry of an expression's generic argument list. Beyond an ordinary
 /// argument it may name the exact bound set the declaration this call selects
-/// must declare at that position, either alongside a written type (`M: A + B`)
-/// or on its own (`spec A + B`), which leaves the slot to inference.
-///
-/// Only a leading `spec` introduces the inferred form: `*spec A` is still an
-/// ordinary dynamic-object type argument.
+/// must declare at that position (`M : A + B`, or `_ : A + B` to leave the
+/// slot to inference), or leave that bound set to inference (`M : _`).
 fn parse_expr_generic_arg(p: &mut Parser) -> Option<ExprGenericArg> {
     let start = p.peek_span();
-    if p.check(&TokenKind::Spec) {
-        p.advance();
-        let bounds = parse_selector_bounds(p)?;
-        return Some(ExprGenericArg::Inferred {
-            bounds,
-            span: start.to(p.last_span()),
-        });
-    }
     let arg = crate::parser::r#type::parse_generic_arg(p)?;
     if !p.eat(&TokenKind::Colon) {
         return Some(ExprGenericArg::Plain(arg));
     }
-    let bounds = parse_selector_bounds(p)?;
+    let selector = if p.eat(&TokenKind::Underscore) {
+        if arg == GenericArg::Infer {
+            return Some(ExprGenericArg::Plain(arg));
+        }
+        Selector::Infer
+    } else {
+        Selector::Bounds(parse_selector_bounds(p)?)
+    };
     Some(ExprGenericArg::Bounded {
         arg,
-        bounds,
+        selector,
         span: start.to(p.last_span()),
     })
 }

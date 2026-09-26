@@ -412,6 +412,7 @@ fn every_parse_error_renders_a_headline_and_a_label() {
         ParseErrorKind::SpecNotAllowedHere,
         ParseErrorKind::RangeMissingEnd,
         ParseErrorKind::OpenRangeHasEnd,
+        ParseErrorKind::InferenceHoleNotAValue,
         ParseErrorKind::ChainedComparison,
         ParseErrorKind::NestingTooDeep { limit: 64 },
         ParseErrorKind::AnnotationNotAllowedHere,

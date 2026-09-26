@@ -139,9 +139,29 @@ file-local, `shared macro` is package-visible, and `exposed macro` is
 visible to importers and the ambient `core` prelude.
 
 
+## Generics
+
+Normative chapter: [`../language/generics.md`](../language/generics.md)
+
+- **A defaulted `_` followed by a written argument is not resolved.** The
+  specification lets a `_` position take its declared default, but only a
+  trailing run of unbound defaulted parameters can currently be left to the
+  instantiation site. For `mid<T = u16, U = u32>`, `mid<_, u8>()` is reported
+  as "`T` is not determined" (the same applies to aggregate and owner paths).
+  Resolving the default at the call needs the declaration's own module, which
+  sits behind the resolver interface (the driver's
+  `complete_overload_arguments`). Before this was made an error, such a list
+  was silently truncated and the later written argument was dropped; this also
+  affected `_ : A` selectors (formerly `spec A`) at a defaulted position.
+
 ## Specs
 
 Normative chapter: [`../language/specs-and-conformance.md`](../language/specs-and-conformance.md)
+
+- **Holes are not inferred inside a spec application.** `Spec<_>::f(...)` and
+  `<S : Spec<_>>::f(...)` are rejected with the ordinary "nothing is inferred
+  here" error, even where the call's arguments would determine the spec's
+  arguments. Write the spec's arguments out.
 
 - **A vtable's real cache/dedup key is its own resolved slot list
   (`Analyzer::type_implements_spec`'s output, one concrete method's

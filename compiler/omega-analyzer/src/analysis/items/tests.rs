@@ -198,3 +198,53 @@ fn an_identifier_value_is_rejected_by_layout() {
     let (errors, _, _) = a.finish();
     assert_eq!(errors.len(), 1);
 }
+
+fn hole_kinds(annotation: &Type) -> Option<(Type, Vec<(String, bool)>)> {
+    let mut resolver = NoResolver;
+    let mut a = analyzer(&mut resolver);
+    let holed = a.rewrite_annotation_holes(id(1), sp(), annotation)?;
+    let kinds = holed
+        .holes
+        .iter()
+        .map(|hole| (hole.ident.as_ref().to_string(), hole.is_comp()))
+        .collect();
+    Some((holed.rewritten, kinds))
+}
+
+#[test]
+fn every_hole_becomes_a_fresh_parameter_of_its_kind() {
+    let annotation = Type::Pointer(
+        Box::new(Type::SizedArray(Box::new(Type::Infer), ArrayLength::Infer)),
+        false,
+    );
+    let (rewritten, kinds) = hole_kinds(&annotation).expect("the annotation has holes");
+    assert_eq!(
+        kinds,
+        vec![("$Hole0".to_string(), true), ("$Hole1".to_string(), false)]
+    );
+    let Type::Pointer(inner, false) = rewritten else {
+        panic!("the pointer shape must survive rewriting");
+    };
+    assert_eq!(
+        *inner,
+        Type::SizedArray(
+            Box::new(Type::Named(Ident("$Hole1".into()).into())),
+            ArrayLength::Path(Ident("$Hole0".into()).into()),
+        )
+    );
+}
+
+#[test]
+fn an_annotation_without_holes_is_not_rewritten() {
+    assert!(hole_kinds(&Type::Named(Ident("i32".into()).into())).is_none());
+}
+
+#[test]
+fn holes_in_spec_references_and_anonymous_enums_are_left_for_rejection() {
+    for annotation in [
+        Type::SpecStatic(vec![Type::Infer]),
+        Type::AnonymousEnum(vec![Type::Named(Ident("i32".into()).into()), Type::Infer]),
+    ] {
+        assert!(hole_kinds(&annotation).is_none());
+    }
+}

@@ -30,7 +30,12 @@ fn fixed_token_registry_drives_lexing_spelling_and_descriptions() {
         assert_eq!(kind.describe(), format!("'{}'", token.spelling));
 
         if token.class == FixedTokenClass::Keyword {
-            assert!(token.spelling.chars().all(|ch| ch.is_ascii_alphabetic()));
+            assert!(
+                token
+                    .spelling
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphabetic() || ch == '_')
+            );
         }
     }
 }

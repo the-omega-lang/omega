@@ -62,7 +62,7 @@ type-path    = path, [ generic-arguments ] ;
 
 generic-arguments = "<", generic-argument, { ",", generic-argument }, ">" ;
 
-generic-argument  = comp-value-literal | type ;
+generic-argument  = comp-value-literal | type ;   (* `type` includes the hole "_" *)
 
 comp-value-literal = [ "-" ], integer-literal
                    | "true" | "false"
@@ -73,21 +73,19 @@ expression-path = path, [ expression-generic-arguments ] ;
 expression-generic-arguments =
       "<", expression-generic-argument, { ",", expression-generic-argument }, ">" ;
 
-expression-generic-argument = generic-argument, [ ":", bound-list ]
-                            | "spec", bound-list ;
+expression-generic-argument = generic-argument, [ ":", ( bound-list | "_" ) ] ;
 
 bound-list = type, { "+", type } ;
 ```
 
 An `expression-generic-argument` written on a **function** path may also
-carry a **bound selector**: `M: A + B` fixes that parameter and requires the
-declaration to declare exactly that bound set, and `spec A + B` requires the
-bound set while leaving the parameter to ordinary inference. Only a leading
-`spec` introduces the second form, so `*spec A` remains an ordinary dynamic
-object type argument. Selectors are legal only on a function's generic
-argument list; `bound-list` is the same conjunction syntax a
-`type-parameter` declares. Their meaning is in
-[`generics.md`](generics.md) and [`functions.md`](functions.md).
+carry a **bound selector**: `M : A + B` fixes that parameter and requires the
+declaration to declare exactly that bound set, `_ : A + B` requires the bound
+set while leaving the parameter to inference, and `M : _` fixes the parameter
+while leaving the bound set to overload resolution. `_ : _` is the same entry
+as `_`. Selectors are legal only on a function's generic argument list;
+`bound-list` is the same conjunction syntax a `type-parameter` declares. Their
+meaning is in [`generics.md`](generics.md) and [`functions.md`](functions.md).
 
 A `generic-argument` is read as the kind its declared parameter binds. A
 scalar literal is syntactically a value, so it is only legal against a `comp`
@@ -182,26 +180,35 @@ must also have a default. Full semantics are in [`generics.md`](generics.md).
 ```ebnf
 type = pointer-type
      | fixed-array-type
-     | inferred-array-type
+     | slice-array-type
      | unknown-size-array-type
      | function-type
      | foreign-function-type
      | spec-type
      | anonymous-enum-type
-     | type-path ;
+     | type-path
+     | "_" ;
 
 pointer-type            = "*", [ "mut" ], type ;
 fixed-array-type        = "[", array-length, "]", type ;
-array-length            = comp-value-literal | path ;
-inferred-array-type     = "[", "]", type ;
+array-length            = comp-value-literal | path | "_" ;
+slice-array-type        = "[", "]", type ;
 unknown-size-array-type = "[", "?", "]", type ;
 
-spec-type = "spec", type-path, { "+", type-path } ;
+spec-type = "spec", spec-member, { "+", spec-member } ;
+spec-member = type-path | "_" ;
 
 anonymous-enum-type = "enum", type, { "|", type } ;
 ```
 
 `spec-type` parses one static conjunction of members; there is no `spec *...` prefix-pointer spelling. `pointer-type = "*", ["mut"], type` already covers a dynamic spec object structurally: `*spec A + B` and `*mut spec A + B` are ordinary `pointer-type`s whose `type` is a `spec-type`. Semantic type resolution recognizes that specific immediate combination and turns it into a dynamic spec-object type; the grammar itself does not distinguish "static" from "dynamic" spec types. See [`specs-and-conformance.md`](specs-and-conformance.md).
+
+`"_"` is an inference hole. The grammar accepts it wherever a `type`, an
+`array-length`, a `spec-member`, or a selector's bound list may appear, and
+semantic analysis rejects it everywhere nothing is inferred; the accepted
+positions are listed in [`generics.md`](generics.md#inference-holes).
+`slice-array-type` denotes a slice only behind a pointer (`*[]T`); it never
+infers an array length.
 
 `anonymous-enum-type` is a structural sum type whose variants are its member
 types; one member (`enum A`) is legal. Each member is a full `type`, and `|`

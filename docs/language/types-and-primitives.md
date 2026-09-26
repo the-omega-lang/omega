@@ -86,7 +86,6 @@ Omega distinguishes these forms:
 *mut T      mutable thin pointer to T
 [N]T        fixed-size array value containing N elements
 *[N]T       pointer to a fixed-size array
-[]T         inferred-size array syntax; legal only in the declaration case below
 *[?]T       thin pointer to unknown-size array storage
 *mut [?]T   mutable form of the same
 *[]T        immutable slice (fat pointer)
@@ -147,13 +146,13 @@ Because no length is stored, slicing one requires an explicit end. A raw `*T` ma
 
 ## Inferred array length
 
-`[]T` is not a general standalone type. It is accepted only as the explicit type of a declaration whose initializer is an array literal:
+`[]T` is not a standalone type; it appears only behind a pointer, as the slice `*[]T`. An initialized binding infers a fixed array's length by writing it as an [inference hole](generics.md#inference-holes):
 
 ```omega
-bytes : []u8 = [10, 20, 30];
+bytes : [_]u8 = [10, 20, 30];
 ```
 
-The declaration's resulting type is `[3]u8`. If the initializer is not an array literal, or its elements cannot satisfy `T`, the declaration is invalid.
+The declaration's resulting type is `[3]u8`. If the initializer does not determine the length, or its elements cannot satisfy `T`, the declaration is invalid.
 
 ## `char`
 

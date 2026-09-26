@@ -30,6 +30,7 @@ pub fn raw_generic_arg_display(arg: &omega_parser::prelude::GenericArg) -> Strin
     match arg {
         GenericArg::Type(r#type) => raw_type_display(r#type),
         GenericArg::Value(literal) => raw_comp_literal_display(literal),
+        GenericArg::Infer => "_".to_string(),
     }
 }
 
@@ -50,6 +51,7 @@ pub(crate) fn raw_array_length_display(length: &omega_parser::prelude::ArrayLeng
     match length {
         ArrayLength::Literal(literal) => raw_comp_literal_display(literal),
         ArrayLength::Path(path) => join(&path.segments()),
+        ArrayLength::Infer => "_".to_string(),
     }
 }
 
@@ -57,6 +59,7 @@ pub fn raw_type_display(ty: &omega_parser::prelude::Type) -> String {
     use omega_parser::prelude::Type;
     match ty {
         Type::Named(path) => join(&path.segments()),
+        Type::Infer => "_".to_string(),
         Type::Generic(path, args) => {
             let args: Vec<String> = args.iter().map(raw_generic_arg_display).collect();
             format!("{}<{}>", join(&path.segments()), args.join(", "))
@@ -172,6 +175,8 @@ pub enum TypeResolutionError {
     SpecStaticNotAllowedHere(Ident),
     SpecUsedAsValueType(Ident),
     NeverNotAllowedHere,
+    /// A `_` in a position where nothing is inferred.
+    InferenceHoleNotAllowed,
     BareUnsizedArray,
     BareUnknownSizeArray,
     UnknownCallingConvention {
@@ -299,6 +304,12 @@ impl fmt::Display for TypeResolutionError {
                 write!(
                     f,
                     "'never' is only allowed as a function/method's own return type"
+                )
+            }
+            Self::InferenceHoleNotAllowed => {
+                write!(
+                    f,
+                    "'_' is not allowed here -- nothing is inferred in this position"
                 )
             }
             Self::BareUnsizedArray => {

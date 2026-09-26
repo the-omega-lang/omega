@@ -62,7 +62,7 @@ impl<'r> Analyzer<'r> {
         // The operand carries its own fallible type; the surrounding expected
         // type describes the unwrapped success value and must not be pushed
         // into it.
-        let operand = self.analyze_expr(&r#try.base, None)?;
+        let operand = self.analyze_expr(&r#try.base, Expected::None)?;
 
         let Some((kind, source_cell)) = canonical_fallible(&operand.r#type) else {
             self.error(

@@ -18,10 +18,10 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         m: &HirMatch,
-        expected: Option<&ResolvedType>,
+        expected: Expected<'_>,
     ) -> Option<CheckedExprNode> {
         let narrow_target = self.narrowable_scrutinee(&m.scrutinee);
-        let checked_scrutinee = self.analyze_expr(&m.scrutinee, None)?;
+        let checked_scrutinee = self.analyze_expr(&m.scrutinee, Expected::None)?;
         let scrutinee_type = checked_scrutinee.r#type.clone();
 
         let (scrutinee_place, prelude_stmts, narrow_binding) =
@@ -188,13 +188,13 @@ impl<'r> Analyzer<'r> {
     fn analyze_match_arm_body(
         &mut self,
         body: &HirExprNode,
-        expected: Option<&ResolvedType>,
+        expected: Expected<'_>,
     ) -> Option<CheckedBlock> {
         if let HirExpr::Codeblock(block) = &body.expr {
             self.analyze_block(block, expected)
         } else {
             let checked = self.analyze_expr(body, expected)?;
-            let checked = self.coerce_to_expected(expected, checked);
+            let checked = self.coerce_to_expected(expected.exact(), checked);
             Some(CheckedBlock {
                 stmts: vec![],
                 tail: Some(Box::new(checked)),
@@ -210,7 +210,7 @@ impl<'r> Analyzer<'r> {
         scrutinee_type: &ResolvedType,
         scrutinee_place: &CheckedPlace,
         narrow_binding: Option<(Ident, Origin, HirId, Storage, bool)>,
-        expected: Option<&ResolvedType>,
+        expected: Expected<'_>,
     ) -> Option<MatchShape> {
         let (cell, through_pointer) = match scrutinee_type {
             ResolvedType::Enum { cell, .. } => (cell.clone(), None),
@@ -399,10 +399,10 @@ impl<'r> Analyzer<'r> {
         &mut self,
         node_id: HirId,
         block: &HirBlock,
-        expected: Option<&ResolvedType>,
+        expected: Expected<'_>,
         reachable: bool,
     ) -> Option<CheckedBlock> {
-        let checked = self.analyze_block(block, if reachable { expected } else { None });
+        let checked = self.analyze_block(block, if reachable { expected } else { Expected::None });
         if !reachable {
             self.warn(node_id, block.span, AnalysisWarningKind::UnreachableCode);
             return None;
@@ -429,7 +429,7 @@ impl<'r> Analyzer<'r> {
         scrutinee_type: &ResolvedType,
         scrutinee_place: &CheckedPlace,
         narrow_binding: Option<(Ident, Origin, HirId, Storage, bool)>,
-        expected: Option<&ResolvedType>,
+        expected: Expected<'_>,
     ) -> Option<MatchShape> {
         let through_pointer = match scrutinee_type {
             ResolvedType::Pointer { mutable, .. } => Some(*mutable),
@@ -772,7 +772,7 @@ impl<'r> Analyzer<'r> {
         m: &HirMatch,
         scrutinee_type: &ResolvedType,
         scrutinee_place: &CheckedPlace,
-        expected: Option<&ResolvedType>,
+        expected: Expected<'_>,
     ) -> Option<MatchShape> {
         let domain = scrutinee_type
             .integer_domain(self.target.pointer_bits())

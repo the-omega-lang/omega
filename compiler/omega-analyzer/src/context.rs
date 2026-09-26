@@ -467,6 +467,7 @@ impl Context {
                 options,
                 reveals,
             )?)),
+            Type::Infer => Err(TypeResolutionError::InferenceHoleNotAllowed),
             Type::InferredArray(_) => Err(TypeResolutionError::BareUnsizedArray),
             Type::UnknownSizeArray(_) => Err(TypeResolutionError::BareUnknownSizeArray),
             Type::SizedArray(item, length) => {
@@ -784,6 +785,9 @@ impl Context {
                     GenericArg::Type(Type::Named(path)) => {
                         self.comp_path_value(path, resolver, module_path, options, reveals)?
                     }
+                    GenericArg::Infer => {
+                        return Err(TypeResolutionError::InferenceHoleNotAllowed);
+                    }
                     GenericArg::Type(_) => {
                         return Err(TypeResolutionError::GenericArgKindMismatch {
                             param: param.ident.clone(),
@@ -808,6 +812,7 @@ impl Context {
             (None, GenericArg::Type(r#type)) => self
                 .resolve_type(r#type.clone(), resolver, module_path, options, reveals)
                 .map(ResolvedGenericArg::Type),
+            (None, GenericArg::Infer) => Err(TypeResolutionError::InferenceHoleNotAllowed),
         }
     }
 
@@ -860,6 +865,7 @@ impl Context {
                 options.through_indirection(),
                 reveals,
             )?,
+            ArrayLength::Infer => return Err(TypeResolutionError::InferenceHoleNotAllowed),
         };
         let written = crate::error::raw_array_length_display(length);
         let invalid = |value: Option<String>, reason| TypeResolutionError::InvalidArrayLength {

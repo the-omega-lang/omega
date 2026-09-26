@@ -7,9 +7,10 @@ use crate::hir::{
     HirWalrusDeclaration,
 };
 use omega_parser::prelude::{
-    AnnotationNode, DeclarationStmt, EnumStmt, ForeignBindingItem, ForeignBlockEntry,
-    ForeignBlockItem, ForeignFunctionItem, FunctionDefinitionStmt, GenericParam, Ident, Item,
-    ItemNode, Param, Path, SelfMode, Span, SpecFunctionStmt, SpecStmt, StructStmt, Type, UnionStmt,
+    AnnotationNode, DeclarationStmt, EnumStmt, ExpressionNode, ForeignBindingItem,
+    ForeignBlockEntry, ForeignBlockItem, ForeignFunctionItem, FunctionDefinitionStmt, GenericParam,
+    Ident, Item, ItemNode, Param, Path, SelfMode, Span, SpecFunctionStmt, SpecStmt, StructStmt,
+    Type, UnionStmt,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -31,6 +32,15 @@ impl Lowerer {
                 decl: self.lower_declaration(decl),
                 annotations: Self::lower_annotations(annotations),
                 visibility: decl.visibility,
+            },
+            Item::DeclarationWithInit {
+                decl,
+                value,
+                annotations,
+            } if decl.r#type == Type::Infer => HirItem::Walrus {
+                annotations: Self::lower_annotations(annotations),
+                visibility: decl.visibility,
+                walrus: self.lower_inferred_declaration(decl, value, node.span),
             },
             Item::DeclarationWithInit {
                 decl,
@@ -164,6 +174,24 @@ impl Lowerer {
             }
         };
         vec![item]
+    }
+
+    /// `x : _ = e` is `x := e` by construction.
+    pub(super) fn lower_inferred_declaration(
+        &mut self,
+        decl: &DeclarationStmt,
+        value: &ExpressionNode,
+        span: Span,
+    ) -> HirWalrusDeclaration {
+        HirWalrusDeclaration {
+            id: self.ids.next(),
+            span,
+            ident: decl.ident.clone(),
+            origin: decl.origin,
+            value: self.lower_expr(value),
+            mutable: decl.mutable,
+            comp: false,
+        }
     }
 
     pub(super) fn lower_declaration(&mut self, decl: &DeclarationStmt) -> HirDeclaration {
