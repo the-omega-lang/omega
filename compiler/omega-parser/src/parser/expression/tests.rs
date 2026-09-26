@@ -461,7 +461,10 @@ fn selectors_mix_with_ordinary_and_value_arguments() {
 fn a_selector_reaches_a_member_call_and_a_qualified_path() {
     use crate::ast::generics::ExprGenericArg;
     let member = call_generic_args("f() => void { x.m<M: A>(y); }");
-    assert!(matches!(member.as_slice(), [ExprGenericArg::Bounded { .. }]));
+    assert!(matches!(
+        member.as_slice(),
+        [ExprGenericArg::Bounded { .. }]
+    ));
     let qualified = call_generic_args("f() => void { a::b::m<_ : A>(y); }");
     assert!(matches!(
         qualified.as_slice(),
@@ -474,7 +477,8 @@ fn a_selector_list_still_rolls_back_to_comparisons() {
     // `:` cannot continue an expression here, so the rollback leaves the
     // original tokens for the comparison rules rather than committing to a
     // half-parsed argument list.
-    let errors = SourceModule::parse("f() => void { x := a < b : c > d; }").expect_err("must not parse");
+    let errors =
+        SourceModule::parse("f() => void { x := a < b : c > d; }").expect_err("must not parse");
     assert!(!errors.is_empty());
 }
 
@@ -492,8 +496,9 @@ fn a_hole_is_not_an_expression() {
 fn a_hole_parses_as_a_spec_reference_for_semantic_rejection() {
     use crate::ast::r#type::{GenericArg, Type};
     let args = call_generic_args("f() => void { g<*spec _>(x); }");
-    let [crate::ast::generics::ExprGenericArg::Plain(GenericArg::Type(Type::Pointer(inner, false)))] =
-        args.as_slice()
+    let [
+        crate::ast::generics::ExprGenericArg::Plain(GenericArg::Type(Type::Pointer(inner, false))),
+    ] = args.as_slice()
     else {
         panic!("expected a pointer argument, got {args:?}")
     };

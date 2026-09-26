@@ -204,7 +204,10 @@ impl<'r> Analyzer<'r> {
         };
         let item_type = match item_expected.exact() {
             Some(item) => item.clone(),
-            None => self.analyze_expr(&elements[0], item_expected)?.r#type.widened(),
+            None => self
+                .analyze_expr(&elements[0], item_expected)?
+                .r#type
+                .widened(),
         };
 
         let mut values = Vec::with_capacity(elements.len());

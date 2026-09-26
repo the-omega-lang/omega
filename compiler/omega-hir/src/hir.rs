@@ -8,8 +8,8 @@ pub use omega_parser::prelude::{
 };
 use omega_parser::prelude::{
     ByteStringExpr, ExprGenericArg, ExprPath, FunctionType, FunctionTypeParam, GenericArg,
-    GenericParamKind, Ident,
-    NumberExpr, Origin, Path, RawConvention, SelfMode, Span, StringExpr, Type, Visibility,
+    GenericParamKind, Ident, NumberExpr, Origin, Path, RawConvention, SelfMode, Span, StringExpr,
+    Type, Visibility,
 };
 
 #[derive(Debug, Clone)]

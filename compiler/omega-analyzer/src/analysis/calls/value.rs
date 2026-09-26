@@ -338,9 +338,11 @@ impl<'r> Analyzer<'r> {
                     FunctionValue::Failed
                 }
                 None if fits_nothing => FunctionValue::Undetermined,
-                None if self.report_selected_bound_failure(
-                    node_id, span, name, explicit, &rejected,
-                ) => FunctionValue::Failed,
+                None if self
+                    .report_selected_bound_failure(node_id, span, name, explicit, &rejected) =>
+                {
+                    FunctionValue::Failed
+                }
                 None => {
                     let all: Vec<usize> = (0..candidates.len()).collect();
                     self.error(
@@ -499,7 +501,11 @@ impl<'r> Analyzer<'r> {
     /// generics the one left unbounded at strictly more of the caller's
     /// written plain-type positions wins. Parameter structure and bound
     /// strength never participate.
-    fn value_dominates(candidates: &[OverloadCandidate], left: &Prepared, right: &Prepared) -> bool {
+    fn value_dominates(
+        candidates: &[OverloadCandidate],
+        left: &Prepared,
+        right: &Prepared,
+    ) -> bool {
         match (
             candidates[left.index].template(),
             candidates[right.index].template(),

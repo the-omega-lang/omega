@@ -299,7 +299,10 @@ impl<'r> Analyzer<'r> {
         let written = if owner_generics_written {
             // A selector is not owner syntax, so this is not the owner-
             // qualified reading; the ordinary path reading reports it.
-            Type::Generic(owner_path, Self::plain_generic_args(&expr_path.generic_args)?)
+            Type::Generic(
+                owner_path,
+                Self::plain_generic_args(&expr_path.generic_args)?,
+            )
         } else {
             Type::Named(owner_path)
         };

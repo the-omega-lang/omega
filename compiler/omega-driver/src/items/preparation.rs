@@ -35,8 +35,7 @@ impl Driver {
             site,
             enclosing,
         } = declaration;
-        let arguments =
-            self.complete_overload_arguments(&key, &function, &enclosing, arguments)?;
+        let arguments = self.complete_overload_arguments(&key, &function, &enclosing, arguments)?;
         let bounds =
             self.declared_bounds_under(&key, site, &enclosing, &function.generics, &arguments)?;
         let unmet = self.first_unmet_bound(&function.generics, &arguments, &bounds);
@@ -138,8 +137,7 @@ impl Driver {
 
         let mut declared = Vec::with_capacity(generic_params.len());
         for param in generic_params {
-            let expanded =
-                omega_analyzer::aliases::expand_bounds(self, &module, param.bounds())?;
+            let expanded = omega_analyzer::aliases::expand_bounds(self, &module, param.bounds())?;
             let mut set: Vec<Bound> = Vec::new();
             for bound in &expanded {
                 let run = self.with_analyzer(&module, &substitution, site, |analyzer| {
@@ -173,10 +171,7 @@ impl Driver {
                 continue;
             };
             for (spec, bound) in set {
-                if self
-                    .conformance_for(&concrete, spec, &bound.args)
-                    .is_none()
-                {
+                if self.conformance_for(&concrete, spec, &bound.args).is_none() {
                     return Some(UnmetBound {
                         parameter: param.ident.clone(),
                         r#type: concrete,

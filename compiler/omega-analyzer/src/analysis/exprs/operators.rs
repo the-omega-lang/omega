@@ -222,7 +222,8 @@ impl<'r> Analyzer<'r> {
         if !bin.op.is_comparison() {
             left_type = left_type.arithmetic_repr().unwrap_or(left_type);
         }
-        let checked_right = self.analyze_expr(&bin.right, (operand_expected.or(Some(&left_type))).into())?;
+        let checked_right =
+            self.analyze_expr(&bin.right, (operand_expected.or(Some(&left_type))).into())?;
         self.analyze_binary_op(node_id, span, bin.op, checked_left, checked_right)
     }
 

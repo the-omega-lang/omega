@@ -467,7 +467,8 @@ impl<'r> Analyzer<'r> {
         let ((params, checked_body), scope) = self.with_scope(|this| {
             let params = this.analyze_all(&f.params, Self::analyze_param);
             this.current_return_type = (*fn_type.return_type).clone();
-            let checked_body = this.analyze_block(body, Expected::Exact(fn_type.return_type.as_ref()));
+            let checked_body =
+                this.analyze_block(body, Expected::Exact(fn_type.return_type.as_ref()));
             (params, checked_body)
         });
         self.warn_unused_bindings(scope, true);

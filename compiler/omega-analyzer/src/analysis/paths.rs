@@ -414,8 +414,7 @@ impl<'r> Analyzer<'r> {
         let absolute = access.absolute.clone();
         let accessor = self.path_module(&expr_path.path);
         let params = self.item_generic_params_for(&accessor, prefix, &access);
-        let written =
-            self.ordinary_generic_args(
+        let written = self.ordinary_generic_args(
             node_id,
             span,
             &expr_path.generic_args,

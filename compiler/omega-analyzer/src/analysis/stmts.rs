@@ -375,7 +375,8 @@ impl<'r> Analyzer<'r> {
                     self.error(d.id, d.span, AnalysisErrorKind::NestedDeferNotSupported);
                     return None;
                 }
-                let body = self.with_defer_body(|this| this.analyze_block(&d.body, Expected::None))?;
+                let body =
+                    self.with_defer_body(|this| this.analyze_block(&d.body, Expected::None))?;
                 Some(vec![CheckedStmt::Defer(CheckedDefer {
                     id: d.id,
                     span: d.span,
@@ -428,7 +429,8 @@ impl<'r> Analyzer<'r> {
                 None => None,
             };
 
-            let checked_body = this.with_loop(f.id, |this| this.analyze_block(&f.body, Expected::None));
+            let checked_body =
+                this.with_loop(f.id, |this| this.analyze_block(&f.body, Expected::None));
             ok &= checked_body.is_some();
 
             if !ok {
@@ -551,7 +553,10 @@ impl<'r> Analyzer<'r> {
                     candidates: candidates
                         .iter()
                         .filter_map(|conform| {
-                            conform.spec_args.first().and_then(|arg| arg.as_type().cloned())
+                            conform
+                                .spec_args
+                                .first()
+                                .and_then(|arg| arg.as_type().cloned())
                         })
                         .collect(),
                 },

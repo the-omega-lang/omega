@@ -16,7 +16,9 @@ impl<'r> Analyzer<'r> {
             None => None,
         };
         let checked_end = match (range.end.expr(), &checked_start) {
-            (Some(expr), Some(start)) => Some(self.analyze_expr(expr, Expected::Exact(&start.r#type))?),
+            (Some(expr), Some(start)) => {
+                Some(self.analyze_expr(expr, Expected::Exact(&start.r#type))?)
+            }
             (Some(expr), None) => Some(self.analyze_expr(expr, Expected::None)?),
             (None, _) => None,
         };

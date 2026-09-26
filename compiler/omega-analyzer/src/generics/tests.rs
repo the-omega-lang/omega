@@ -41,7 +41,10 @@ fn a_known_part_binds_the_parameter_it_meets() {
     let subst = unify(
         &params,
         &pair(named("T"), named("T")),
-        &pair_pattern(TypePattern::Parameter(0), TypePattern::Fixed(ResolvedType::U8)),
+        &pair_pattern(
+            TypePattern::Parameter(0),
+            TypePattern::Fixed(ResolvedType::U8),
+        ),
     );
     assert_eq!(
         subst.get(&Ident("T".into())),

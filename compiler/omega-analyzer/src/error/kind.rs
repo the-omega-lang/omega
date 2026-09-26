@@ -1255,10 +1255,9 @@ impl fmt::Display for AnalysisErrorKind {
                 name.as_ref(),
                 parameter.as_ref()
             ),
-            Self::BoundSelectorNotAllowed { applied_to } => write!(
-                f,
-                "a bound selector cannot be written on {applied_to}"
-            ),
+            Self::BoundSelectorNotAllowed { applied_to } => {
+                write!(f, "a bound selector cannot be written on {applied_to}")
+            }
             Self::BoundSelectorOnCompParam { parameter } => write!(
                 f,
                 "'{}' is a 'comp' parameter and declares no bounds",
@@ -1278,11 +1277,9 @@ impl fmt::Display for AnalysisErrorKind {
                 name.as_ref(),
                 parameter.as_ref()
             ),
-            Self::SelectedBoundNotSatisfied { r#type, spec, .. } => write!(
-                f,
-                "'{type}' does not implement '{}'",
-                spec.as_ref()
-            ),
+            Self::SelectedBoundNotSatisfied { r#type, spec, .. } => {
+                write!(f, "'{type}' does not implement '{}'", spec.as_ref())
+            }
             Self::AmbiguousSelfOverload { name, .. } => {
                 write!(
                     f,

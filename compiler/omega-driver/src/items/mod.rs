@@ -475,8 +475,8 @@ impl ItemQueries {
     }
 }
 
-pub(crate) mod preparation;
 mod methods;
+pub(crate) mod preparation;
 mod resolution;
 
 #[cfg(test)]

@@ -319,8 +319,16 @@ impl<'r> Analyzer<'r> {
                 declaring_module: Vec::new(),
             })
             .collect();
-        let (winner, _, args) =
-            self.resolve_overload_candidates(node_id, span, name, &candidates, args, Expected::None, &[], 0)?;
+        let (winner, _, args) = self.resolve_overload_candidates(
+            node_id,
+            span,
+            name,
+            &candidates,
+            args,
+            Expected::None,
+            &[],
+            0,
+        )?;
         Some((winner, args))
     }
 
@@ -656,7 +664,9 @@ impl<'r> Analyzer<'r> {
                 entry.selector_bounds()?,
                 entry.selector_span().unwrap_or(span),
             ))
-        }) && rejected.iter().all(|(_, reason)| matches!(reason, Rejection::Selector(_)))
+        }) && rejected
+            .iter()
+            .all(|(_, reason)| matches!(reason, Rejection::Selector(_)))
         {
             self.error(
                 node_id,

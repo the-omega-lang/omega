@@ -726,7 +726,8 @@ impl<'r> Analyzer<'r> {
         expected: Expected<'_>,
         mut seed: GenericSubstitution,
     ) -> Option<Vec<ResolvedGenericArg>> {
-        if let Some(generic_args) = Self::expected_matches_generic_item(expected.exact(), absolute) {
+        if let Some(generic_args) = Self::expected_matches_generic_item(expected.exact(), absolute)
+        {
             if seed.is_empty() {
                 return Some(generic_args);
             }
