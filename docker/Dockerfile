@@ -1,9 +1,17 @@
 # syntax=docker/dockerfile:1
 #
-# Reproducible Alpine-based development environment for Omega, with Claude Code,
-# Codex CLI, omp (oh-my-pi) and opencode preinstalled. Every version that
-# matters is a pinned build argument, so a rebuild of this file on any machine
-# produces the same environment.
+# Reproducible Alpine-based development environment for Omega. Every version
+# that matters is a pinned build argument, so a rebuild of this file on any
+# machine produces the same environment.
+#
+# What this image is, exactly: the Omega build toolchain. Rust, LLVM, binutils,
+# just and ruby, all pinned. The agent CLIs (Claude Code, Codex, omp, opencode)
+# are deliberately *not* here -- they release constantly, none of them is
+# pinned to a version by default, and together they measure about a gigabyte,
+# more than LLVM. See docker/install-agents.sh, which puts them in the volumes
+# that already hold their logins. That keeps this image reproducible in the
+# sense the word is worth having, and means a rebuild neither re-downloads them
+# nor silently freezes "stable" at whenever the last rebuild happened.
 #
 # The project source is never COPYed in -- it is bind-mounted at /workspace by
 # `docker/compose.yaml`, so the build context stays tiny and edits on the host
@@ -14,22 +22,15 @@ FROM alpine:${ALPINE_VERSION}
 
 # Pinned versions. Override on the CLI or via the environment, e.g.
 #   RUST_VERSION=1.95.0 ./dev.sh rebuild
-# CLAUDE_CODE_VERSION takes what `claude install` takes: "stable", "latest",
-# or an exact version such as 2.1.220. CODEX_VERSION takes what Codex's own
-# installer takes: "latest" (there is no "stable" channel) or an exact
-# version such as 0.51.0. OMP_VERSION is "latest" (the newest GitHub release)
-# or an exact release tag, which is what omp's installer means by --ref and so
-# carries the leading "v", e.g. v17.2.12. OPENCODE_VERSION is "latest" (the
-# default) or an exact version such as 0.4.2, passed to opencode's installer
-# through its VERSION variable. LLVM_VERSION is an LLVM *major* version and,
-# unlike every other knob here, is constrained from two sides at once: it must
-# be a major Alpine packages (3.23 carries 16, 20 and 21) *and* one the Rust
-# bindings target. See the LLVM layer below.
+# LLVM_VERSION is an LLVM *major* version and, unlike every other knob here, is
+# constrained from two sides at once: it must be a major Alpine packages (3.23
+# carries 16, 20 and 21) *and* one the Rust bindings target. See the LLVM layer
+# below.
+#
+# The agent CLIs have no build argument, because they are not built into this
+# image at all. Their versions are chosen at install time instead; see
+# `./dev.sh update-agents` and docker/install-agents.sh.
 ARG RUST_VERSION=1.94.1
-ARG CLAUDE_CODE_VERSION=stable
-ARG CODEX_VERSION=latest
-ARG OMP_VERSION=latest
-ARG OPENCODE_VERSION=latest
 ARG LLVM_VERSION=21
 
 # The container user is created with the *host* user's uid/gid so that files
@@ -41,25 +42,25 @@ ARG USER_GID=1000
 
 # CLAUDE_CONFIG_DIR / CODEX_HOME: keep all Claude Code / Codex CLI state
 #   (config, credentials, history) inside one directory each, so a single
-#   named volume persists all of it per tool. On the Codex side that covers
-#   state *only*: its installer would also drop the ~300 MB binary payload
-#   under $CODEX_HOME/packages, which the volume would then pin to whichever
-#   version first created it -- see the install layer below.
-# DISABLE_AUTOUPDATER / CODEX_UPDATE_DISABLED: the version of each tool is
-#   pinned by this image. Without these, a session would re-download a large
-#   binary into a container whose home directory is discarded on exit.
-#   `./dev.sh rebuild` is the update path for both.
-# OPENCODE_DISABLE_AUTOUPDATE: same purpose again -- opencode downloads new
-#   releases on startup otherwise. It has no single state directory to point
-#   at: config lives in ~/.config/opencode and credentials/sessions in
-#   ~/.local/share/opencode, so those get a volume each rather than one
-#   consolidating variable. Its own install prefix (~/.opencode/bin, added to
-#   PATH above) is deliberately *not* a volume -- that is the pinned binary,
-#   which belongs to the image.
-# omp needs neither knob: it keeps all of its state under ~/.omp already (one
-#   volume covers config, credentials, sessions and blobs), and it only
-#   updates itself when you explicitly run `omp update` -- which, in a
-#   throwaway container, `./dev.sh rebuild` supersedes.
+#   named volume persists all of it per tool. On the Codex side that volume
+#   also ends up holding the binary itself, since its installer puts the
+#   payload under $CODEX_HOME/packages and makes ~/.local/bin/codex a symlink
+#   into it. That is fine now that no layer here installs codex: the volume is
+#   the only copy, rather than one shadowing an image-owned one.
+# DISABLE_AUTOUPDATER / CODEX_UPDATE_DISABLED / OPENCODE_DISABLE_AUTOUPDATE:
+#   these three tools replace themselves in place on startup otherwise. Their
+#   install prefixes now persist, so that would work -- but it would mean four
+#   tools updating on four schedules, each adding start-up latency, and a
+#   binary being rewritten underneath a session that is already running it
+#   (several containers share these volumes at once). One explicit update path
+#   instead: `./dev.sh update-agents`. That is the model omp already has --
+#   it only moves when you run `omp update` yourself, which is why it is the
+#   one agent here that needs no switch.
+# OPENCODE_DISABLE_AUTOUPDATE is also the odd one in *where* it keeps things:
+#   no single state directory to point at, with config in ~/.config/opencode
+#   and credentials/sessions in ~/.local/share/opencode, so those get a volume
+#   each rather than one consolidating variable. Its install prefix is a third
+#   directory again, ~/.opencode/bin, added to PATH above.
 ENV RUSTUP_HOME=/usr/local/rustup \
     CARGO_HOME=/usr/local/cargo \
     PATH=/home/dev/.local/bin:/home/dev/.opencode/bin:/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
@@ -91,8 +92,9 @@ ENV RUSTUP_HOME=/usr/local/rustup \
 #     automatically; ruby-libs already carries fileutils/open3/pathname, the
 #     only stdlib the runner uses, so no separate stdlib subpackage is
 #     needed.
-# No Node.js and no Bun: Claude Code, Codex CLI, omp and opencode are all
-# installed below as their native single-file builds.
+# No Node.js and no Bun. The agents are installed at run time rather than here
+# (see docker/install-agents.sh), and every one of them has a native
+# single-file build, so neither runtime is needed to install or run them.
 RUN apk add --no-cache \
         bash coreutils findutils grep sed diffutils \
         tar xz gzip which less nano \
@@ -181,37 +183,34 @@ RUN set -eux; \
     adduser -D -u "${USER_UID}" -G "$(getent group "${USER_GID}" | cut -d: -f1)" \
         -s /bin/bash dev
 
-# Where Codex's binary payload goes. Its installer keeps that payload inside
-# CODEX_HOME, which here is a named volume -- so left alone, the first image
-# to populate the volume would pin codex forever and `./dev.sh rebuild` could
-# never move it. The payload belongs to the image, like every other tool's
-# binary, so it gets a path of its own outside every mount. Named with an
-# OMEGA_ prefix because it is ours, not a knob Codex knows about.
-ENV OMEGA_CODEX_PACKAGES=/opt/codex
-
 # Pre-create every path that a named volume mounts over. Docker seeds a fresh
 # named volume from the image's contents *and ownership* of that path, so
-# creating them here (owned by dev) is what keeps the volumes writable
-# without any root-owned-mountpoint fixups at runtime. OMEGA_CODEX_PACKAGES
-# joins them for the ownership half alone -- it is deliberately not a volume,
-# but the codex install below still runs as dev and has to write into it.
+# creating them here (owned by dev) is what keeps the volumes writable without
+# any root-owned-mountpoint fixups at runtime. That now includes the two trees
+# the agents install into -- ~/.local and ~/.opencode -- which stay empty here:
+# the image creates the mountpoints, install-agents.sh fills the volumes.
 RUN mkdir -p \
         /workspace \
         /workspace/target \
-        "${OMEGA_CODEX_PACKAGES}" \
         /home/dev/.claude \
         /home/dev/.codex \
         /home/dev/.omp \
         /home/dev/.config/opencode \
+        /home/dev/.local/bin \
         /home/dev/.local/share/opencode \
+        /home/dev/.opencode/bin \
         /commandhistory \
         "${CARGO_HOME}/registry" \
         "${CARGO_HOME}/git" \
     && touch /commandhistory/.bash_history \
     && chown -R "${USER_UID}:${USER_GID}" \
-        /workspace /home/dev /commandhistory "${CARGO_HOME}" \
-        "${OMEGA_CODEX_PACKAGES}"
+        /workspace /home/dev /commandhistory "${CARGO_HOME}"
 
+# install-agents.sh is deliberately NOT copied in. It runs from the repo at
+# /workspace/docker/, which compose always bind-mounts, so changing how an
+# agent installs takes effect on the next run instead of needing a rebuild --
+# the same reason the agents themselves are not in this image. entrypoint.sh
+# has to be copied, since it is what the image runs.
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod 0755 /usr/local/bin/entrypoint.sh
 
@@ -226,91 +225,6 @@ RUN printf '%s\n' \
     "alias ll='ls -alF --color=auto'" \
     "alias ls='ls --color=auto'" \
     > /home/dev/.bashrc
-
-# Claude Code, installed as the unprivileged user into ~/.local -- the same
-# native build the installer puts on any musl host. It is a self-contained
-# executable that links against nothing but musl libc, so no Node.js runtime
-# and no glibc compatibility shim is involved. Installed after .bashrc is
-# written so that anything the installer appends there survives.
-RUN curl -fsSL https://claude.ai/install.sh | bash -s -- "${CLAUDE_CODE_VERSION}" \
-    && claude --version
-
-# Codex CLI, installed the same way and for the same reason: its own native
-# installer lays down a self-contained Rust binary (musl on this base image)
-# -- no Node.js involved, same as Claude Code. CODEX_NON_INTERACTIVE skips
-# the installer's PATH-editing prompts (PATH is already correct);
-# CODEX_RELEASE pins the version.
-#
-# What ~/.local/bin gets is only a symlink; the installer puts the real
-# payload at $CODEX_HOME/packages/standalone. CODEX_HOME is therefore
-# overridden for this layer alone, so the payload lands in the image rather
-# than in the volume that mounts over /home/dev/.codex at run time -- the
-# runtime CODEX_HOME set above is unaffected, and Codex keeps reading its
-# credentials and sessions from the volume. entrypoint.sh points
-# $CODEX_HOME/packages back here, which also heals volumes created before
-# this split existed.
-#
-# The script is fetched to a file rather than piped, because every setting
-# here is passed through the environment and `VAR=x curl ... | sh` puts VAR on
-# curl -- the first command of the pipeline -- where the installer never sees
-# it. That silently defeated CODEX_VERSION for as long as this layer has
-# existed, and would defeat CODEX_HOME too.
-#
-# Neither knob fails loudly on its own, so both are asserted: the symlink must
-# resolve into the image, and a pinned version must be the version installed.
-# A future installer that stops honouring CODEX_HOME has to break this build
-# rather than quietly restore a codex that no rebuild can move.
-RUN curl -fsSL https://chatgpt.com/codex/install.sh -o /tmp/codex-install.sh \
-    && CODEX_HOME="${OMEGA_CODEX_PACKAGES}" \
-       CODEX_RELEASE="${CODEX_VERSION}" \
-       CODEX_NON_INTERACTIVE=1 \
-       sh /tmp/codex-install.sh \
-    && rm -f /tmp/codex-install.sh \
-    && case "$(readlink -f /home/dev/.local/bin/codex)" in \
-           "${OMEGA_CODEX_PACKAGES}"/*) ;; \
-           *) echo "codex payload is outside ${OMEGA_CODEX_PACKAGES}" >&2; exit 1 ;; \
-       esac \
-    && codex --version \
-    && { [ "${CODEX_VERSION}" = "latest" ] \
-         || codex --version | grep -qF "${CODEX_VERSION}"; }
-
-# omp (oh-my-pi), third of the four. `--binary` is not the installer's default
-# but is what keeps this image free of a Bun toolchain: left to itself the
-# installer builds from source whenever it finds (or can install) Bun. The
-# binary path resolves to omp's linux-musl release asset on Alpine and drops it
-# in ~/.local/bin, already on PATH above, then smoke-tests `omp --version`
-# itself -- so a musl build that cannot start fails this layer rather than the
-# first session. "latest" means the newest release; anything else is passed as
-# --ref, which in binary mode must name an existing release tag.
-RUN set -eux; \
-    if [ "${OMP_VERSION}" = "latest" ]; then \
-        set -- --binary; \
-    else \
-        set -- --binary --ref "${OMP_VERSION}"; \
-    fi; \
-    curl -fsSL https://omp.sh/install | sh -s -- "$@"; \
-    omp --version
-
-# opencode, fourth and last. Its installer detects musl on its own (it looks
-# for /etc/alpine-release, then falls back to `ldd --version`) and fetches the
-# opencode-linux-<arch>-musl asset, another self-contained binary with no Node
-# or Bun behind it. Unlike the other three it installs into ~/.opencode/bin
-# rather than ~/.local/bin, which is why that directory is on PATH above.
-# The installer takes its version from VERSION; leaving it unset means the
-# newest release, so it is only passed when actually pinned. Fetched to a file
-# and run with the environment on `bash`, for the reason spelled out in the
-# codex layer above: piping would put VERSION on curl instead, which is where
-# this pin used to go missing.
-RUN set -eux; \
-    curl -fsSL https://opencode.ai/install -o /tmp/opencode-install.sh; \
-    if [ "${OPENCODE_VERSION}" = "latest" ]; then \
-        bash /tmp/opencode-install.sh; \
-    else \
-        VERSION="${OPENCODE_VERSION}" bash /tmp/opencode-install.sh; \
-        opencode --version | grep -qF "${OPENCODE_VERSION}"; \
-    fi; \
-    rm -f /tmp/opencode-install.sh; \
-    opencode --version
 
 WORKDIR /workspace
 

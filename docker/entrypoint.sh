@@ -18,19 +18,17 @@ if [ -n "${GIT_USER_EMAIL:-}" ]; then
     git config --global user.email "${GIT_USER_EMAIL}"
 fi
 
-# Codex keeps its binary payload under $CODEX_HOME/packages, but $CODEX_HOME
-# is a named volume and Docker seeds one only while it is empty -- so a volume
-# created by an older image would keep serving that old codex no matter what
-# `./dev.sh rebuild` installs. The image owns the payload instead (see
-# OMEGA_CODEX_PACKAGES in docker/Dockerfile); point the volume at it, which
-# both fixes the pin and drops the stale copy an existing volume still holds.
-# Only the binaries are touched here: credentials, sessions, skills and
-# plugins are elsewhere under $CODEX_HOME and are left alone.
-if [ -n "${CODEX_HOME:-}" ] && [ -d "${OMEGA_CODEX_PACKAGES:-}/packages" ]; then
-    if [ ! -L "${CODEX_HOME}/packages" ]; then
-        rm -rf "${CODEX_HOME}/packages"
-    fi
-    ln -sfn "${OMEGA_CODEX_PACKAGES}/packages" "${CODEX_HOME}/packages"
-fi
+# The agent CLIs are not in the image -- they live in the volumes that hold
+# their logins (see docker/install-agents.sh). Install one the first time it is
+# actually asked for, which is normally once per machine: `./dev.sh run just
+# test-all` and `./dev.sh shell` then cost nothing, and someone who only ever
+# runs `claude` never downloads the other three.
+# Invoked through `bash` rather than executed, so a host that does not preserve
+# the executable bit on the bind mount still works.
+case "${1:-}" in
+    claude|codex|omp|opencode)
+        bash /workspace/docker/install-agents.sh --if-missing "$1"
+        ;;
+esac
 
 exec "$@"

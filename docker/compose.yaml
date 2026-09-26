@@ -12,10 +12,6 @@ services:
       args:
         ALPINE_VERSION: ${ALPINE_VERSION:-3.23}
         RUST_VERSION: ${RUST_VERSION:-1.94.1}
-        CLAUDE_CODE_VERSION: ${CLAUDE_CODE_VERSION:-stable}
-        CODEX_VERSION: ${CODEX_VERSION:-latest}
-        OMP_VERSION: ${OMP_VERSION:-latest}
-        OPENCODE_VERSION: ${OPENCODE_VERSION:-latest}
         LLVM_VERSION: ${LLVM_VERSION:-21}
         USER_UID: ${HOST_UID:-1000}
         USER_GID: ${HOST_GID:-1000}
@@ -48,6 +44,12 @@ services:
       - AWS_PROFILE
       - GIT_USER_NAME
       - GIT_USER_EMAIL
+      # Read by install-agents.sh, not by the build. Unset means each tool's
+      # own default channel; set one to roll a bad release back.
+      - CLAUDE_CODE_VERSION
+      - CODEX_VERSION
+      - OMP_VERSION
+      - OPENCODE_VERSION
       - TERM
       - COLORTERM
 
@@ -55,15 +57,24 @@ services:
       # The repo itself. Edits are shared both ways, live.
       - ..:/workspace
 
+      # Where three of the four agents install themselves: ~/.local/bin holds
+      # claude, codex (a symlink) and omp, with claude's versioned payload
+      # under ~/.local/share/claude. The image ships these directories empty
+      # -- install-agents.sh fills them, so an image rebuild never re-downloads
+      # a gigabyte of agent, and updating an agent never rebuilds the image.
+      - agents:/home/dev/.local
+
+      # opencode installs into a prefix of its own rather than ~/.local/bin.
+      - opencode-bin:/home/dev/.opencode
+
       # Claude Code's entire state: login/credentials, settings, session
       # history, todos. This is what makes `claude` remember you across runs.
       - claude-config:/home/dev/.claude
 
       # Same idea for Codex CLI: login/credentials and session state, so
-      # `codex` remembers you across runs too. Its binary is *not* in here,
-      # even though Codex installs it under CODEX_HOME by default: the image
-      # keeps that (see OMEGA_CODEX_PACKAGES in Dockerfile), or this volume
-      # would pin codex to whatever version first created it.
+      # `codex` remembers you across runs too. This one also holds codex's
+      # binary payload, under $CODEX_HOME/packages, which is where its own
+      # installer puts it and what ~/.local/bin/codex points at.
       - codex-config:/home/dev/.codex
 
       # And for omp, whose ~/.omp holds config, credentials, session
@@ -73,9 +84,9 @@ services:
 
       # opencode splits its state across two directories rather than one:
       # settings in ~/.config/opencode, and credentials/sessions in
-      # ~/.local/share/opencode. Both are volumes so a login survives; its
-      # binary (~/.opencode/bin) deliberately is not, since that is pinned by
-      # the image.
+      # ~/.local/share/opencode. The second nests inside the `agents` volume
+      # above; Docker resolves the longest matching path first, so it stays a
+      # volume of its own and survives an agent reinstall.
       - opencode-config:/home/dev/.config/opencode
       - opencode-data:/home/dev/.local/share/opencode
 
@@ -95,6 +106,8 @@ services:
       - history:/commandhistory
 
 volumes:
+  agents:
+  opencode-bin:
   claude-config:
   codex-config:
   omp-config:

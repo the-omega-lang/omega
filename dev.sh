@@ -13,6 +13,7 @@
 #   ./dev.sh opencode     start opencode inside the container
 #   ./dev.sh shell        interactive shell inside the container
 #   ./dev.sh run cargo t  run any command inside the container
+#   ./dev.sh update-agents  update the agent CLIs (no image rebuild)
 #
 # See docker/README.md for the full story.
 set -euo pipefail
@@ -51,13 +52,19 @@ ${BOLD}Commands${RESET}
   run <cmd...>       Run one command in the container, e.g.
                      ${DIM}./dev.sh run cargo test${RESET}
                      ${DIM}./dev.sh run just build-exe${RESET}
+  update-agents [agent...]
+                     Update the agent CLIs to their current release, or just
+                     the ones named. They live in volumes, not in the image,
+                     so this needs no rebuild. ${DIM}(installs happen on first
+                     use anyway; this is how you move an already-installed
+                     one forward, or roll it back with a version below)${RESET}
   build              Build the image if it is missing or out of date.
   rebuild            Rebuild the image from scratch, pulling a fresh base
-                     image. Use this to pick up a new release of any of the
-                     four agents.
+                     image. This is the Rust/LLVM toolchain only; for the
+                     agents use ${BOLD}update-agents${RESET}.
   down               Remove any leftover containers (volumes are kept).
   clean              Remove containers ${BOLD}and all volumes${RESET}: build cache,
-                     cargo cache, shell history and your agent logins.
+                     cargo cache, shell history, the agents and their logins.
   help               Show this message.
 
 ${BOLD}Resource limits${RESET} ${DIM}(override via the environment)${RESET}
@@ -68,20 +75,27 @@ ${BOLD}Resource limits${RESET} ${DIM}(override via the environment)${RESET}
 
   ${DIM}e.g. OMEGA_CPU_PERCENT=50 ./dev.sh${RESET}
 
-${BOLD}Version pins${RESET} ${DIM}(override via the environment, then rebuild)${RESET}
+${BOLD}Toolchain pins${RESET} ${DIM}(override via the environment, then rebuild)${RESET}
   ALPINE_VERSION        ${ALPINE_VERSION:-3.23}
   RUST_VERSION          ${RUST_VERSION:-1.94.1}
-  CLAUDE_CODE_VERSION   ${CLAUDE_CODE_VERSION:-stable}
-  CODEX_VERSION         ${CODEX_VERSION:-latest}
-  OMP_VERSION           ${OMP_VERSION:-latest}
-  OPENCODE_VERSION      ${OPENCODE_VERSION:-latest}
   LLVM_VERSION          ${LLVM_VERSION:-21}
 
   ${DIM}e.g. RUST_VERSION=1.95.0 ./dev.sh rebuild${RESET}
 
+${BOLD}Agent versions${RESET} ${DIM}(override via the environment, then update-agents)${RESET}
+  CLAUDE_CODE_VERSION   ${CLAUDE_CODE_VERSION:-latest (newest release)}
+  CODEX_VERSION         ${CODEX_VERSION:-latest (default channel)}
+  OMP_VERSION           ${OMP_VERSION:-latest (default channel)}
+  OPENCODE_VERSION      ${OPENCODE_VERSION:-latest (default channel)}
+
+  ${DIM}Unset means the newest release. Set one to hold or roll back, e.g.
+  CLAUDE_CODE_VERSION=2.1.220 ./dev.sh update-agents claude${RESET}
+
 The repo is bind-mounted at /workspace, so edits inside and outside the
 container are the same files. Build output goes to a Docker volume instead of
 the host's target/, so container (musl) and host (glibc) builds never collide.
+The agents live in volumes too, so they update independently of the image --
+and the first run of one installs it.
 EOF
 }
 
@@ -173,6 +187,10 @@ case "${command}" in
         [ $# -gt 0 ] || die "'run' needs a command, e.g. ./dev.sh run cargo test"
         compose run --rm "${SERVICE}" "$@"
         ;;
+    update-agents|update)
+        compose run --rm "${SERVICE}" \
+            bash /workspace/docker/install-agents.sh "$@"
+        ;;
     build)
         compose build "$@"
         ;;
@@ -184,8 +202,9 @@ case "${command}" in
         compose down --remove-orphans
         ;;
     clean)
-        printf 'This deletes the cargo cache, container build output, shell history\n'
-        printf 'and your Claude Code, Codex, omp and opencode logins for this project.\n'
+        printf 'This deletes the cargo cache, container build output, shell history,\n'
+        printf 'the four agent CLIs and your Claude Code, Codex, omp and opencode\n'
+        printf 'logins for this project. The agents reinstall on next use.\n'
         printf 'Continue? [y/N] '
         read -r reply || reply=""
         case "${reply}" in
