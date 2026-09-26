@@ -93,7 +93,6 @@ pub struct Analyzer<'r> {
     in_naked_asm: bool,
     suppressed: Vec<Vec<Ident>>,
     reveals: visibility::RevealState,
-    current_owner: Option<HirId>,
     field_usage: crate::dead_code::FieldUsage,
     bounds: Vec<ResolvedBound>,
 }
@@ -499,7 +498,6 @@ impl<'r> Analyzer<'r> {
             in_naked_asm: false,
             suppressed: vec![],
             reveals: visibility::RevealState::default(),
-            current_owner: None,
             field_usage: crate::dead_code::FieldUsage::default(),
             bounds: bounds.to_vec(),
         }
@@ -721,13 +719,6 @@ impl<'r> Analyzer<'r> {
         self.suppressed
             .pop()
             .expect("suppression frame just pushed");
-        result
-    }
-
-    fn with_owner<T>(&mut self, owner: HirId, f: impl FnOnce(&mut Self) -> T) -> T {
-        let previous = self.current_owner.replace(owner);
-        let result = f(self);
-        self.current_owner = previous;
         result
     }
 

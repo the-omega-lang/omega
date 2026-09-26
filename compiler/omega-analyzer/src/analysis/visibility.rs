@@ -85,28 +85,6 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// Member access uses the rights of the member token's own origin. The
-    /// owner-only rule for a `hidden` member therefore does not lend the
-    /// analyzed declaration's privilege to a member name a macro authored
-    /// elsewhere; such a name is only ever authorized by a `reveal` the macro
-    /// body wrote itself.
-    pub(crate) fn check_member_visibility(
-        &mut self,
-        visibility: Visibility,
-        declaring_module: &[Ident],
-        owner_id: HirId,
-        origin: Origin,
-    ) -> bool {
-        let allowed = match visibility {
-            Visibility::Hidden => self.current_owner == Some(owner_id) && origin.0.is_none(),
-            _ => Self::visibility_allows(visibility, declaring_module, &self.origin_module(origin)),
-        };
-        if allowed {
-            return true;
-        }
-        self.revealed(origin)
-    }
-
     /// The origins of the `reveal` prefixes wrapping `expr`, outermost
     /// first, and the expression underneath all of them.
     pub(super) fn strip_reveal(expr: &HirExprNode) -> (Vec<Origin>, &HirExprNode) {

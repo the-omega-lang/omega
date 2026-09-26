@@ -638,6 +638,7 @@ pub trait ModuleResolver {
                 decl_id: method.decl_id,
                 signature: crate::resolver::OverloadSignature::Concrete(method.fn_type),
                 visibility: method.visibility,
+                declaring_module: method.declaring_module,
             })
             .collect())
     }
@@ -698,6 +699,7 @@ pub struct OverloadCandidate {
     pub decl_id: HirId,
     pub signature: OverloadSignature,
     pub visibility: Visibility,
+    pub declaring_module: Vec<Ident>,
 }
 
 #[derive(Debug, Clone)]

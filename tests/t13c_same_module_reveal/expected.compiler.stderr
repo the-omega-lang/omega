@@ -1,0 +1,9 @@
+warning: unnecessary 'reveal'
+  --> tests/t13c_same_module_reveal/vault/vault.omg:12:5
+   |
+12 |     reveal v.secret
+   |     ^^^^^^^^^^^^^^^ this 'reveal' never suppresses anything
+   |
+   = help: remove 'reveal' -- every check inside it would already pass without it
+   = note: suppress this with '@suppress(unnecessary_reveal)'
+

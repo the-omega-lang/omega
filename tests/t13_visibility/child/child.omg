@@ -32,9 +32,6 @@ exposed struct Box {
 		Self { visible_field = v; hidden_field = h; }
 	}
 
-	# A hidden method is visible only from methods of its exact declaring
-	# owner; an unrelated free function in the same module cannot reach it
-	# without `reveal`.
 	hidden_double(*self) => i32 {
 		self.hidden_field * 2
 	}
@@ -44,8 +41,22 @@ exposed struct Box {
 	}
 }
 
+# Hidden members are visible throughout their declaring module, not only
+# inside the owner's own methods.
+exposed read_box_internals(b: *Box) => i32 {
+	b.hidden_field + b.hidden_double()
+}
+
+exposed make_box_directly(v: i32, h: i32) => Box {
+	Box { visible_field = v; hidden_field = h; }
+}
+
 shared spec Mammal {
 	breathe(*self) => i32;
+}
+
+meet Mammal for Box {
+	breathe(*self) => i32 { self.hidden_field }
 }
 
 exposed struct Dog {
@@ -60,10 +71,10 @@ shared spec Greeter {
 	# No modifier: inherits the spec's own visibility (shared).
 	name(*self) => i32;
 
-	# Explicitly hidden: narrower than the spec itself, reachable only
-	# from other methods of this same spec -- here, `greet`'s default
-	# body below. This is the one place writing `hidden` is not
-	# redundant, since the spec's own default here is `shared`.
+	# Explicitly hidden: narrower than the spec itself, reachable
+	# throughout this module but not from other modules of the package.
+	# Writing `hidden` is not redundant here, since the spec's own
+	# default is `shared`.
 	hidden double_name(*self) => i32 {
 		self.name() * 2
 	}
@@ -75,6 +86,30 @@ shared spec Greeter {
 
 meet Greeter for Dog {
 	name(*self) => i32 { self.id }
+}
+
+doubled_name_of<T: Greeter>(value: *T) => i32 {
+	value.double_name()
+}
+
+exposed call_double_name_generically(dog: *Dog) => i32 {
+	doubled_name_of(dog)
+}
+
+# `scaled` is a hook only this module calls. Its default body is checked in
+# this module, so it reaches `hidden_helper` even when the conformance is
+# written in another module, which may implement `count` but never call
+# `scaled`.
+exposed spec Counter {
+	count(*self) => i32;
+
+	hidden scaled(*self) => i32 {
+		hidden_helper(self.count())
+	}
+}
+
+exposed scaled_total<T: Counter>(value: *T) => i32 {
+	value.scaled() + 1
 }
 
 # A hidden alias: `reveal` on the import is the only way to bind this name

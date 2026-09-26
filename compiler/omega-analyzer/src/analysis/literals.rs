@@ -3,7 +3,6 @@ use super::*;
 struct LiteralTargetFields {
     owner: Ident,
     declaring_module: Vec<Ident>,
-    owner_id: HirId,
     base: ResolvedType,
     declared: Vec<ResolvedField>,
 }
@@ -74,12 +73,10 @@ impl<'r> Analyzer<'r> {
                 let declared = cell.borrow().fields.clone();
                 let struct_name = cell.borrow().name.clone();
                 let declaring_module = cell.borrow().module_path.clone();
-                let owner_id = cell.borrow().id;
                 let base = resolved.clone();
                 let target = LiteralTargetFields {
                     owner: struct_name,
                     declaring_module,
-                    owner_id,
                     base: base.clone(),
                     declared,
                 };
@@ -98,7 +95,7 @@ impl<'r> Analyzer<'r> {
                 })
             }
             LiteralTarget::EnumVariant(cell, variant_index) => {
-                let (enum_name, variant_name, declared, header_names, declaring_module, owner_id) = {
+                let (enum_name, variant_name, declared, header_names, declaring_module) = {
                     let e = cell.borrow();
                     let v = &e.variants[variant_index];
                     let header_names: Vec<Ident> =
@@ -115,7 +112,6 @@ impl<'r> Analyzer<'r> {
                         declared,
                         header_names,
                         e.module_path.clone(),
-                        e.id,
                     )
                 };
                 if declared.is_empty() {
@@ -139,7 +135,6 @@ impl<'r> Analyzer<'r> {
                 let target = LiteralTargetFields {
                     owner: variant_name,
                     declaring_module,
-                    owner_id,
                     base,
                     declared,
                 };
@@ -182,7 +177,6 @@ impl<'r> Analyzer<'r> {
                 let declared = cell.borrow().fields.clone();
                 let union_name = cell.borrow().name.clone();
                 let declaring_module = cell.borrow().module_path.clone();
-                let owner_id = cell.borrow().id;
 
                 if lit.fields.is_empty() {
                     self.error(
@@ -223,12 +217,7 @@ impl<'r> Analyzer<'r> {
                     );
                     return None;
                 };
-                if !self.check_member_visibility(
-                    visibility,
-                    &declaring_module,
-                    owner_id,
-                    field.name_origin,
-                ) {
+                if !self.check_visibility(visibility, &declaring_module, field.name_origin) {
                     self.error(
                         node_id,
                         field.name_span,
@@ -277,11 +266,9 @@ impl<'r> Analyzer<'r> {
         let LiteralTargetFields {
             owner,
             declaring_module,
-            owner_id,
             base,
             declared,
         } = target;
-        let owner_id = *owner_id;
         let mut seen: HashMap<Ident, Span> = HashMap::new();
         let mut checked_fields = Vec::with_capacity(fields.len());
         let mut ok = true;
@@ -308,12 +295,7 @@ impl<'r> Analyzer<'r> {
                 ok = false;
                 continue;
             };
-            if !self.check_member_visibility(
-                visibility,
-                declaring_module,
-                owner_id,
-                field.name_origin,
-            ) {
+            if !self.check_visibility(visibility, declaring_module, field.name_origin) {
                 self.error(
                     node_id,
                     field.name_span,

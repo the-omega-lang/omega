@@ -1,5 +1,5 @@
 use omega_analyzer::Target;
-use omega_analyzer::error::AnalysisWarningKind;
+use omega_analyzer::error::{AnalysisErrorKind, AnalysisWarningKind};
 use omega_driver::{CompileError, Driver, ExternRoot};
 use omega_parser::diagnostics::ParseErrorKind;
 use omega_parser::prelude::Ident;
@@ -23,6 +23,10 @@ impl TestPackage {
         fs::create_dir_all(&root).expect("create test package");
         fs::write(root.join("main.omg"), source).expect("write root module");
         Self(root)
+    }
+
+    fn child(&self, name: &str, source: &str) {
+        fs::write(self.0.join(format!("{name}.omg")), source).expect("write child module");
     }
 
     fn result(&self) -> Result<omega_driver::CompiledProgram, Vec<CompileError>> {
@@ -65,6 +69,40 @@ fn core_root() -> PathBuf {
         .join("../../runtime/core")
         .canonicalize()
         .expect("runtime/core exists")
+}
+
+/// Compiles `root` against bare extern packages, without the real `core`.
+fn compile_bare(
+    root: &TestPackage,
+    root_name: &str,
+    externs: &[(&str, &TestPackage)],
+) -> Result<omega_driver::CompiledProgram, Vec<CompileError>> {
+    let externs = externs
+        .iter()
+        .map(|(name, package)| ExternRoot {
+            name: Ident(name.to_string()),
+            dir: package.0.clone(),
+        })
+        .collect();
+    Driver::new(
+        root.0.clone(),
+        Some(Ident(root_name.to_string())),
+        externs,
+        Target::DEFAULT,
+    )
+    .expect("construct driver")
+    .compile(&[Ident(root_name.to_string())])
+}
+
+fn method_not_visible_count(errors: &[CompileError]) -> usize {
+    errors
+        .iter()
+        .flat_map(|error| match error {
+            CompileError::Analysis { errors, .. } => errors.as_slice(),
+            _ => &[],
+        })
+        .filter(|error| matches!(error.kind, AnalysisErrorKind::MethodNotVisible { .. }))
+        .count()
 }
 
 fn has_parse_error(errors: &[CompileError], predicate: impl Fn(&ParseErrorKind) -> bool) -> bool {
@@ -148,7 +186,7 @@ fn an_explicit_hidden_on_an_ordinary_field_is_redundant() {
 
         entry_fn() => i32 {
             b := Box::new(1);
-            reveal b.data
+            b.data
         }
         "#,
     )
@@ -160,4 +198,103 @@ fn an_explicit_hidden_on_an_ordinary_field_is_redundant() {
         )),
         "explicit 'hidden' on an already-hidden field should warn"
     );
+}
+
+fn api_library() -> TestPackage {
+    TestPackage::new(
+        r#"
+        exposed spec Api {
+            shared tag(*self) => i32;
+        }
+
+        exposed tag_of<T: Api>(value: *T) => i32 {
+            value.tag()
+        }
+        "#,
+    )
+}
+
+#[test]
+fn another_package_may_implement_a_shared_requirement_the_spec_s_package_calls() {
+    let library = api_library();
+    let consumer = TestPackage::new(
+        r#"
+        import lib::{ Api, tag_of };
+        struct Dog { exposed id: i32; }
+        meet Api for Dog { tag(*self) => i32 { self.id } }
+        entry_fn() => i32 {
+            dog := Dog { id = 1; };
+            tag_of(&dog)
+        }
+        "#,
+    );
+    if let Err(errors) = compile_bare(&consumer, "main", &[("lib", &library)]) {
+        panic!("expected this to compile, got: {errors:#?}");
+    }
+}
+
+#[test]
+fn a_shared_requirement_is_checked_against_the_spec_s_package_not_the_receiver_s() {
+    let library = api_library();
+    let consumer = TestPackage::new(
+        r#"
+        import lib::Api;
+        struct Dog { exposed id: i32; }
+        meet Api for Dog { tag(*self) => i32 { self.id } }
+        local_tag_of<T: Api>(value: *T) => i32 { value.tag() }
+        entry_fn() => i32 {
+            dog := Dog { id = 1; };
+            local_tag_of(&dog) + Api::tag(&dog)
+        }
+        "#,
+    );
+    let Err(errors) = compile_bare(&consumer, "main", &[("lib", &library)]) else {
+        panic!("a shared requirement of another package's spec is not callable here");
+    };
+    assert_eq!(method_not_visible_count(&errors), 2, "{errors:#?}");
+}
+
+#[test]
+fn a_shared_primitive_method_is_callable_from_another_core_module() {
+    let core = TestPackage::new(
+        r#"
+        import self::ints::use_secret;
+        entry_fn() => i32 { 7i32.twice() + use_secret() }
+        "#,
+    );
+    core.child(
+        "ints",
+        r#"
+        primitive i32 {
+            shared twice(*self) => i32 { *self * 2 }
+            hidden secret(*self) => i32 { *self }
+        }
+
+        exposed use_secret() => i32 { 1i32.secret() }
+        "#,
+    );
+    if let Err(errors) = compile_bare(&core, "core", &[]) {
+        panic!("expected this to compile, got: {errors:#?}");
+    }
+}
+
+#[test]
+fn a_hidden_primitive_method_is_not_callable_from_another_core_module() {
+    let core = TestPackage::new(
+        r#"
+        entry_fn() => i32 { 7i32.secret() }
+        "#,
+    );
+    core.child(
+        "ints",
+        r#"
+        primitive i32 {
+            hidden secret(*self) => i32 { *self }
+        }
+        "#,
+    );
+    let Err(errors) = compile_bare(&core, "core", &[]) else {
+        panic!("a hidden primitive method is not callable from another module");
+    };
+    assert_eq!(method_not_visible_count(&errors), 1, "{errors:#?}");
 }

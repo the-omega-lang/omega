@@ -12,6 +12,14 @@ import self::child::{
 	reveal secrets::{ HiddenTemplate, HiddenPair },
 };
 
+struct Tally {
+	exposed n: i32;
+}
+
+meet child::Counter for Tally {
+	count(*self) => i32 { self.n }
+}
+
 main() => void {
 	# `exposed` and `shared` are both reachable across modules within the
 	# same top-level package.
@@ -25,10 +33,13 @@ main() => void {
 	h := child::make_hidden(3);
 	println$("hidden-accessor: ", h.data, " ", child::call_hidden_helper(4));
 
-	# The hidden field/method require an exposed accessor from inside the
-	# owning type, or an explicit `reveal` at this use site.
+	# From another module, the hidden field/method require an exposed
+	# accessor from their declaring module, or an explicit `reveal` at this
+	# use site.
 	mut box := child::Box::new(5, 6);
 	println$("box-visible-hidden: ", box.visible_field, " ", box.call_hidden_double());
+	println$("box-module-internals: ", child::read_box_internals(&box), " ", child::make_box_directly(7, 8).visible_field);
+	println$("meet-reads-hidden-field: ", Mammal::breathe(&box));
 	println$("reveal-hidden-field: ", reveal box.hidden_field);
 	reveal box.hidden_field = 99;
 	println$("reveal-after-mutate: ", reveal box.hidden_field);
@@ -45,16 +56,23 @@ main() => void {
 
 	# `greet` has no modifier, so it inherits `Greeter`'s own visibility
 	# (shared) and is callable directly. `double_name` is explicitly
-	# `hidden`, narrower than the spec -- it is reachable from `greet`'s
-	# own default body (proven by `greet`'s result), but from here, an
-	# unrelated location outside the spec, it needs `reveal` just like an
-	# ordinary hidden struct member would.
+	# `hidden`, narrower than the spec -- it is reachable throughout the
+	# spec's module (proven by `greet`'s default body and by a generic call
+	# there), but from this module it needs `reveal` just like an ordinary
+	# hidden struct member would.
 	println$(
 		"spec-hidden-member-visibility: ",
 		Greeter::greet(&dog),
 		" ",
+		child::call_double_name_generically(&dog),
+		" ",
 		reveal Greeter::double_name(&dog)
 	);
+
+	# This module implements `Counter` but only `child` calls its hidden
+	# `scaled` hook, whose default body resolves in `child`.
+	tally := Tally { n = 5; };
+	println$("cross-module-default-body: ", child::scaled_total(&tally));
 
 	# `reveal` on an import is the whole gate: the alias's own visibility is
 	# not checked a second time when the lazily-bound name is finally

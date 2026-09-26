@@ -866,8 +866,6 @@ impl<'r> Analyzer<'r> {
                 Some(OwnerFunctions {
                     name: owner.name.clone(),
                     functions: owner.functions.clone(),
-                    module_path: owner.module_path.clone(),
-                    id: owner.id,
                     variants: None,
                 })
             }
@@ -876,8 +874,6 @@ impl<'r> Analyzer<'r> {
                 Some(OwnerFunctions {
                     name: owner.name.clone(),
                     functions: owner.functions.clone(),
-                    module_path: owner.module_path.clone(),
-                    id: owner.id,
                     variants: None,
                 })
             }
@@ -886,8 +882,6 @@ impl<'r> Analyzer<'r> {
                 Some(OwnerFunctions {
                     name: owner.name.clone(),
                     functions: owner.functions.clone(),
-                    module_path: owner.module_path.clone(),
-                    id: owner.id,
                     variants: Some(owner.variants.iter().map(|v| v.name.clone()).collect()),
                 })
             }
@@ -912,8 +906,6 @@ impl<'r> Analyzer<'r> {
                 Some(OwnerFunctions {
                     name: Ident(other.to_string()),
                     functions,
-                    module_path: Vec::new(),
-                    id: node_id,
                     variants: None,
                 })
             }
@@ -955,8 +947,6 @@ impl<'r> Analyzer<'r> {
         }
 
         let owner = self.owner_functions(node_id, span, r#type)?;
-        let mut owner_module_path = owner.module_path.clone();
-        let mut owner_id = owner.id;
         let mut candidates = namespace.select(&owner.functions, member);
 
         // An inherent declaration wins over a conforming one, but only
@@ -996,10 +986,7 @@ impl<'r> Analyzer<'r> {
                 );
                 return None;
             }
-            if let Some((conform, method)) = providers.into_iter().next() {
-                let spec = conform.spec.borrow();
-                owner_module_path = spec.module_path.clone();
-                owner_id = spec.id;
+            if let Some((_, method)) = providers.into_iter().next() {
                 candidates = vec![method];
             }
         }
@@ -1056,6 +1043,7 @@ impl<'r> Analyzer<'r> {
                 decl_id: method.decl_id,
                 signature: OverloadSignature::Concrete(method.fn_type.clone()),
                 visibility: method.visibility,
+                declaring_module: method.declaring_module.clone(),
             })
             .collect();
         selection.extend(templates);
@@ -1083,18 +1071,18 @@ impl<'r> Analyzer<'r> {
             }
             return None;
         };
-        if !self.check_member_visibility(
-            selection[candidate].visibility,
-            &owner_module_path,
-            owner_id,
-            origin,
-        ) {
+        let chosen = &selection[candidate];
+        if !self.check_visibility(chosen.visibility, &chosen.declaring_module, origin) {
+            let base = match candidates.get(candidate) {
+                Some(method) => method.visibility_owner(r#type),
+                None => r#type.clone(),
+            };
             self.error(
                 node_id,
                 span,
                 AnalysisErrorKind::MethodNotVisible {
                     method: member.clone(),
-                    base: r#type.clone(),
+                    base,
                 },
             );
             return None;
@@ -1173,8 +1161,6 @@ impl<'r> Analyzer<'r> {
 struct OwnerFunctions {
     name: Ident,
     functions: Vec<(Ident, ResolvedMethod)>,
-    module_path: Vec<Ident>,
-    id: HirId,
     variants: Option<Vec<Ident>>,
 }
 

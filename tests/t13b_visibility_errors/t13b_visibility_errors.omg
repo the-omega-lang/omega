@@ -1,0 +1,42 @@
+import self::api::{ Vault, Api, Dog };
+
+read_hidden_field(v: *Vault) => i32 {
+	v.secret
+}
+
+call_hidden_method(v: *Vault) => i32 {
+	v.peek()
+}
+
+call_through_bound<T: Api>(value: *T) => i32 {
+	value.hook()
+}
+
+call_spec_qualified(dog: *Dog) => i32 {
+	Api::hook(dog)
+}
+
+call_dynamic(dog: *Dog) => i32 {
+	object := <*spec Api>dog;
+	object.hook()
+}
+
+struct Cat {
+	exposed lives: i32;
+}
+
+# Implementing a hidden requirement from another module is allowed; calling
+# it from here is not.
+meet Api for Cat {
+	value(*self) => i32 { self.hook() }
+	hook(*self) => i32 { self.lives }
+}
+
+call_through_conforming_type(dog: *Dog) => i32 {
+	Dog::self::hook(dog)
+}
+
+main() => void {
+	dog := Dog { id = 1; };
+	call_through_bound(&dog);
+}

@@ -234,7 +234,7 @@ fn a_caller_side_reveal_still_authorizes_its_own_substituted_type() {
 }
 
 #[test]
-fn a_macro_authored_member_name_does_not_inherit_the_invocation_site_owner() {
+fn a_macro_authored_member_name_does_not_inherit_the_invocation_site_module() {
     let package = TestPackage::new(
         r#"
         import self::helper::read_tag;
@@ -242,8 +242,8 @@ fn a_macro_authored_member_name_does_not_inherit_the_invocation_site_owner() {
             tag: i32;
 
             exposed make() => Box { Box { tag = 7; } }
-            # `read_tag$` expands inside `Box`'s own method, but the `.tag`
-            # token it writes was authored in `helper`, which owns nothing.
+            # `read_tag$` expands inside `Box`'s own module, but the `.tag`
+            # token it writes was authored in `helper`.
             exposed leak(*self) => i32 { read_tag$(self) }
         }
         entry_fn() => i32 { b := Box::make(); b.leak() }
@@ -255,7 +255,8 @@ fn a_macro_authored_member_name_does_not_inherit_the_invocation_site_owner() {
         exposed macro read_tag($value: expr) => { $value.tag }
         "#,
     );
-    let errors = package.compile_errors("a macro-authored member name has no owner-only privilege");
+    let errors = package
+        .compile_errors("a macro-authored member name has only its definition module's rights");
     assert!(errors.iter().any(|error| matches!(
         error,
         CompileError::Analysis { errors, .. }
@@ -264,6 +265,28 @@ fn a_macro_authored_member_name_does_not_inherit_the_invocation_site_owner() {
                 AnalysisErrorKind::FieldNotVisible { .. }
             ))
     )));
+}
+
+#[test]
+fn a_macro_defined_in_the_owner_s_module_may_name_a_hidden_member() {
+    let package = TestPackage::new(
+        r#"
+        import self::model::{ Box, read_tag };
+        entry_fn() => i32 { b := Box::make(); read_tag$(b) }
+        "#,
+    );
+    package.child(
+        "model",
+        r#"
+        exposed struct Box {
+            tag: i32;
+
+            exposed make() => Box { Box { tag = 7; } }
+        }
+        exposed macro read_tag($value: expr) => { $value.tag }
+        "#,
+    );
+    package.compile();
 }
 
 #[test]

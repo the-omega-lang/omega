@@ -188,9 +188,10 @@ impl Driver {
                         .map(|warning| (path.to_vec(), warning)),
                 );
             }
+            let spec_module = entry.spec.borrow().module_path.clone();
             for pending in &entry.pending {
                 let run = self.with_analyzer_in(
-                    path,
+                    &spec_module,
                     &pending.substitution,
                     &bounds,
                     AnalysisSite::new(pending.id, pending.raw.span),
@@ -203,7 +204,7 @@ impl Driver {
                 warnings.extend(
                     run.warnings
                         .into_iter()
-                        .map(|warning| (path.to_vec(), warning)),
+                        .map(|warning| (spec_module.clone(), warning)),
                 );
             }
         }

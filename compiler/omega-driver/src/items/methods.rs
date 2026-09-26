@@ -33,6 +33,7 @@ impl Driver {
                 decl_id: method.decl_id,
                 signature: omega_analyzer::resolver::OverloadSignature::Concrete(method.fn_type),
                 visibility: method.visibility,
+                declaring_module: method.declaring_module,
             })
             .collect();
         let templates = self.find_generic_methods(owner, name, namespace)?;
@@ -70,11 +71,13 @@ impl Driver {
             );
             let pattern = run.result.ok_or_else(|| template.key.failed())?;
             let decl_id = self.items.fresh_synthetic_id();
+            let declaring_module = template.key.module().clone();
             self.items.decl_id_owner.insert(decl_id, template.key);
             candidates.push(OverloadCandidate {
                 decl_id,
                 signature: omega_analyzer::resolver::OverloadSignature::Template(pattern),
                 visibility: template.function.visibility,
+                declaring_module,
             });
         }
         Ok(candidates)
@@ -171,6 +174,7 @@ impl Driver {
             decl_id,
             fn_type,
             visibility,
+            declaring_module: key.module().to_vec(),
             annotations: self.items.function_annotations[&decl_id].clone(),
             source: None,
         })

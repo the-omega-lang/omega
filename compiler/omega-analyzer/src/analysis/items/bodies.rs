@@ -156,30 +156,12 @@ impl<'r> Analyzer<'r> {
             return_type: pending.raw.return_type.clone(),
             body,
         };
-        // Mirrors `with_owner` in `check_struct_body`/`check_union_body`/
-        // `check_enum_body`: a default body calling a hidden sibling
-        // requirement (`self.other()`) is checked against the conforming
-        // type's owner, not the spec's -- `require_method_visible` resolves
-        // a method's owner from the receiver type (`Self`, substituted to
-        // the conforming type here), never from the declaring spec.
-        let owner = pending
-            .substitution
-            .get(&Ident("Self".to_string()))
-            .and_then(|arg| arg.as_type())
-            .and_then(ResolvedType::declaring_owner)
-            .map(|(_, owner_id)| owner_id);
-        let check = |this: &mut Self| {
-            this.check_function_body(
-                &synthetic,
-                &pending.fn_type,
-                pending.id,
-                &crate::annotations::ResolvedAnnotations::default(),
-            )
-        };
-        match owner {
-            Some(owner) => self.with_owner(owner, check),
-            None => check(self),
-        }
+        self.check_function_body(
+            &synthetic,
+            &pending.fn_type,
+            pending.id,
+            &crate::annotations::ResolvedAnnotations::default(),
+        )
     }
     fn check_method_bodies(
         &mut self,
@@ -228,18 +210,15 @@ impl<'r> Analyzer<'r> {
         s: &HirStructDef,
         cell: &Rc<RefCell<ResolvedStructType>>,
     ) -> Option<CheckedStructDef> {
-        let (owner, fields, methods, suppress) = {
+        let (fields, methods, suppress) = {
             let resolved = cell.borrow();
             (
-                resolved.id,
                 Self::checked_fields(&s.fields, &resolved.fields),
                 resolved.functions.clone(),
                 resolved.suppress.clone(),
             )
         };
-        let functions = self.with_owner(owner, |this| {
-            this.check_method_bodies(&s.functions, &methods, &suppress)
-        })?;
+        let functions = self.check_method_bodies(&s.functions, &methods, &suppress)?;
         Some(CheckedStructDef {
             id: s.id,
             span: s.span,
@@ -255,18 +234,15 @@ impl<'r> Analyzer<'r> {
         u: &HirUnionDef,
         cell: &Rc<RefCell<ResolvedUnionType>>,
     ) -> Option<CheckedUnionDef> {
-        let (owner, fields, methods, suppress) = {
+        let (fields, methods, suppress) = {
             let resolved = cell.borrow();
             (
-                resolved.id,
                 Self::checked_fields(&u.fields, &resolved.fields),
                 resolved.functions.clone(),
                 resolved.suppress.clone(),
             )
         };
-        let functions = self.with_owner(owner, |this| {
-            this.check_method_bodies(&u.functions, &methods, &suppress)
-        })?;
+        let functions = self.check_method_bodies(&u.functions, &methods, &suppress)?;
         Some(CheckedUnionDef {
             id: u.id,
             span: u.span,
@@ -282,17 +258,11 @@ impl<'r> Analyzer<'r> {
         e: &HirEnumDef,
         cell: &Rc<RefCell<ResolvedEnumType>>,
     ) -> Option<CheckedEnumDef> {
-        let (owner, methods, suppress) = {
+        let (methods, suppress) = {
             let resolved = cell.borrow();
-            (
-                resolved.id,
-                resolved.functions.clone(),
-                resolved.suppress.clone(),
-            )
+            (resolved.functions.clone(), resolved.suppress.clone())
         };
-        let functions = self.with_owner(owner, |this| {
-            this.check_method_bodies(&e.functions, &methods, &suppress)
-        })?;
+        let functions = self.check_method_bodies(&e.functions, &methods, &suppress)?;
         Some(CheckedEnumDef {
             id: e.id,
             span: e.span,

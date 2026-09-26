@@ -3,7 +3,6 @@ use super::*;
 struct MemberOwner {
     visibility: Visibility,
     module_path: Vec<Ident>,
-    id: HirId,
 }
 
 struct EnumMember {
@@ -284,7 +283,6 @@ impl<'r> Analyzer<'r> {
         let owner = |visibility| MemberOwner {
             visibility,
             module_path: e.module_path.clone(),
-            id: e.id,
         };
 
         if let Some(member) = EnumHeader::named(e).find_member(field) {
@@ -387,13 +385,9 @@ impl<'r> Analyzer<'r> {
         field: &Ident,
         origin: Origin,
     ) -> Option<ResolvedType> {
-        let (found, owner_module, owner_id) = {
+        let (found, owner_module) = {
             let u = cell.borrow();
-            (
-                Self::find_field(&u.fields, field),
-                u.module_path.clone(),
-                u.id,
-            )
+            (Self::find_field(&u.fields, field), u.module_path.clone())
         };
         let Some((index, r#type, visibility)) = found else {
             self.no_such_field(node_id, span, field, base);
@@ -402,7 +396,6 @@ impl<'r> Analyzer<'r> {
         let owner = MemberOwner {
             visibility,
             module_path: owner_module,
-            id: owner_id,
         };
         self.require_visible_member(node_id, span, field, base, owner, origin)?;
         projections.push(CheckedProjection::UnionField {
@@ -423,13 +416,9 @@ impl<'r> Analyzer<'r> {
         field: &Ident,
         origin: Origin,
     ) -> Option<ResolvedType> {
-        let (found, owner_module, owner_id) = {
+        let (found, owner_module) = {
             let s = cell.borrow();
-            (
-                Self::find_field(&s.fields, field),
-                s.module_path.clone(),
-                s.id,
-            )
+            (Self::find_field(&s.fields, field), s.module_path.clone())
         };
         let Some((index, r#type, visibility)) = found else {
             self.no_such_field(node_id, span, field, base);
@@ -438,7 +427,6 @@ impl<'r> Analyzer<'r> {
         let owner = MemberOwner {
             visibility,
             module_path: owner_module,
-            id: owner_id,
         };
         self.require_visible_member(node_id, span, field, base, owner, origin)?;
         projections.push(CheckedProjection::FieldAccess {
@@ -469,7 +457,7 @@ impl<'r> Analyzer<'r> {
         owner: MemberOwner,
         origin: Origin,
     ) -> Option<()> {
-        if self.check_member_visibility(owner.visibility, &owner.module_path, owner.id, origin) {
+        if self.check_visibility(owner.visibility, &owner.module_path, origin) {
             return Some(());
         }
         self.error(

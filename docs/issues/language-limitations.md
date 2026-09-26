@@ -14,8 +14,7 @@ Normative chapter: [`../language/functions.md`](../language/functions.md)
   conformance methods before collecting inherent templates, then ranks both
   together. Writing `Type::pick<i32>` changes the selected declaration, though
   the inherent namespace should take precedence in both cases. Candidate
-  discovery must establish that precedence and preserve each candidate's
-  declaring owner/module for visibility checks before value selection.
+  discovery must establish that precedence before value selection.
 - A deeper `module::Type::function(...)` static-call path (through more
   than one level of module qualification) resolves without overload
   disambiguation at all — a documented, narrow gap distinct from the

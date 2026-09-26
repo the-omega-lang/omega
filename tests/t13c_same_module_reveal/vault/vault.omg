@@ -1,0 +1,13 @@
+exposed struct Vault {
+	secret: i32;
+}
+
+exposed make(v: i32) => Vault {
+	Vault { secret = v; }
+}
+
+# A hidden field is visible throughout its declaring module, so this `reveal`
+# suppresses nothing and warns.
+exposed read_secret(v: *Vault) => i32 {
+	reveal v.secret
+}

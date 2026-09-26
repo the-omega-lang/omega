@@ -16,7 +16,7 @@ Omega has three declaration visibility levels plus a use-site bypass:
 
 - `exposed`: visible from any package.
 - `shared`: visible anywhere in the same top-level package.
-- `hidden`, or no modifier: narrowest visibility; the exact scope depends on whether the declaration is a top-level item or a member.
+- `hidden`, or no modifier: visible throughout the exact declaring module (one source file), for top-level items and members alike.
 - `reveal`: explicitly bypasses an otherwise-applicable visibility restriction at a particular use site.
 
 `exposed`, `shared`, `hidden`, and `reveal` are contextual syntax rather than globally reserved words.
@@ -33,9 +33,9 @@ Whether an emitted symbol is visible outside the linked image it belongs to is d
 
 ## Hidden items and hidden members
 
-A hidden top-level item is visible throughout its exact declaring module.
+`hidden` has one meaning for every declaration kind: the declaration is visible throughout its exact declaring module and invisible from every other module without `reveal`.
 
-A hidden field or method is narrower: it is visible only from methods of the exact declaring struct/union/enum/marker owner. An unrelated free function in the same module cannot access that hidden member without `reveal`.
+For a field or an inherent method, the declaring module is the module that declares its struct/union/enum/marker owner. Any code in that module -- free functions, struct literals, `meet` bodies, other types' methods -- may use the owner's hidden members. To seal a type's fields completely, declare the type alone in its module.
 
 ## `shared`
 
@@ -100,7 +100,7 @@ exposed macro panic($message: expr...) => {
 
 Syntax substituted by the caller keeps the caller's origin and is checked with the caller's rights. This cuts both ways for `reveal`: a `reveal` authorizes only references sharing its own origin, so a caller's `reveal some_macro$()` cannot reach anything inside the expansion, and a `reveal` the macro body writes cannot reach into the caller's substituted arguments. A macro body that needs a declaration genuinely invisible at its definition site writes its own `reveal`; a body that reaches something it is not allowed to see and does not reveal it fails with the ordinary visibility error for the rule it broke.
 
-The `hidden` member rule stays owner-only under the same reading: a member name written by a macro body does not inherit the privilege of whatever declaration the expansion happens to land in. A macro is a module-level declaration and owns nothing, so a macro-authored name for a `hidden` member always needs a `reveal` the body writes itself, even when the owner is declared in the macro's own module.
+Member names follow the same rule: a macro-authored name for a field or method is checked with the definition module's rights, whatever module the expansion lands in. A macro defined in a type's own module may therefore name the type's `hidden` members without `reveal`; one defined elsewhere needs a `reveal` the body writes itself.
 
 The same rules apply to a gap function named from a macro body.
 
@@ -119,10 +119,10 @@ shared spec Greeter {
         self.double_name() + 1
     }
 
-    # Narrower than the spec: only reachable from other methods of this
-    # same spec, e.g. `greet`'s default body above. This is the one case
-    # where writing `hidden` is not redundant, since the spec's own
-    # default here is `shared`, not `hidden`.
+    # Narrower than the spec: reachable throughout the spec's module,
+    # e.g. from `greet`'s default body above, but not from other modules
+    # of the package. Writing `hidden` is not redundant here, since the
+    # spec's own default is `shared`, not `hidden`.
     hidden double_name(*self) => i32 {
         self.name() * 2
     }
@@ -145,5 +145,26 @@ meet Mammal for Dog {
 ```
 
 Each requirement keeps the visibility of the spec that declared it (or its own explicit modifier, capped at the spec's visibility), including when reached through a conjunction (`spec A + B`).
+
+A requirement's declaring module is the **spec's** module, never the module of the conforming type or of the `meet`. Its visibility is checked against that module at every call form: method-call syntax through a generic bound, `Spec::name(value)`, fully qualified spec calls, and dynamic dispatch.
+
+Defining is not using. A `meet` anywhere the conformance rules allow may supply a body for a requirement it cannot call. This is the pattern for a hook that only the spec's own module calls:
+
+```omega
+# In module `counting`.
+exposed spec Counter {
+    count(*self) => i32;
+
+    hidden scaled(*self) => i32 {
+        self.count() * 2
+    }
+}
+
+exposed total<T: Counter>(value: *T) => i32 {
+    value.scaled() + 1
+}
+```
+
+Another module may write `meet counting::Counter for Tally { ... }` and pass a `Tally` to `counting::total`, but calling `scaled` on it from there is a visibility error without `reveal`.
 
 Dynamic dispatch must not widen visibility. A method that is inaccessible to a source location through direct dispatch must not become callable there merely by coercing the value to `*spec S`; forming/using the dynamic object remains subject to the requirement's effective visibility.

@@ -103,15 +103,8 @@ impl<'r> Analyzer<'r> {
         ) else {
             return Intercepted::Claimed(None);
         };
-        let (module, owner_id) = owner
-            .declaring_owner()
-            .unwrap_or_else(|| (Vec::new(), node_id));
-        if !self.check_member_visibility(
-            candidates[winner].visibility,
-            &module,
-            owner_id,
-            path.origin,
-        ) {
+        let chosen = &candidates[winner];
+        if !self.check_visibility(chosen.visibility, &chosen.declaring_module, path.origin) {
             self.error(
                 node_id,
                 span,
@@ -323,6 +316,7 @@ impl<'r> Analyzer<'r> {
                 decl_id: *decl_id,
                 signature: crate::resolver::OverloadSignature::Concrete(fn_type.clone()),
                 visibility: Visibility::Exposed,
+                declaring_module: Vec::new(),
             })
             .collect();
         let (winner, _, args) =

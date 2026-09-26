@@ -6,6 +6,7 @@ pub(super) struct FlattenedSpecFn {
     pub(super) raw: RawSpecFunctionSig,
     pub(super) spec_id: HirId,
     pub(super) spec_name: Ident,
+    pub(super) spec: Rc<RefCell<ResolvedSpecType>>,
     pub(super) visibility: Visibility,
     pub(super) substitution: GenericSubstitution,
 }
@@ -200,6 +201,7 @@ impl<'r> Analyzer<'r> {
                                 decl_id: method_ids[index],
                                 fn_type: signature.clone(),
                                 visibility: requirement.visibility,
+                                declaring_module: source.spec.borrow().module_path.clone(),
                                 annotations: annotations.clone(),
                                 source: Some(source.clone()),
                             },
@@ -212,6 +214,7 @@ impl<'r> Analyzer<'r> {
                                 decl_id: minted_id,
                                 fn_type: fn_type.clone(),
                                 visibility: requirement.visibility,
+                                declaring_module: source.spec.borrow().module_path.clone(),
                                 annotations: crate::annotations::ResolvedAnnotations::default(),
                                 source: Some(source.clone()),
                             },
@@ -683,6 +686,7 @@ impl<'r> Analyzer<'r> {
                 raw: raw.clone(),
                 spec_id,
                 spec_name: spec_name.clone(),
+                spec: spec.clone(),
                 visibility: raw.visibility,
                 substitution: substitution.clone(),
             });

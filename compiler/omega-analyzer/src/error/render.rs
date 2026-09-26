@@ -54,6 +54,9 @@ impl AnalysisErrorKind {
             Self::FieldNotVisible { field, base } => d
                 .with_label(span, format!("`{field}` is not visible from this module"))
                 .with_help(format!("mark the field `exposed`/`shared` on `{base}`, or bypass with `reveal`")),
+            Self::MethodNotVisible { method, base: base @ ResolvedType::Spec(_) } => d
+                .with_label(span, format!("`{method}` is not visible from this module"))
+                .with_help(format!("mark the requirement `exposed`/`shared` in spec `{base}`, or bypass with `reveal`")),
             Self::MethodNotVisible { method, base } => d
                 .with_label(span, format!("`{method}` is not visible from this module"))
                 .with_help(format!("mark the method `exposed`/`shared` on `{base}`, or bypass with `reveal`")),

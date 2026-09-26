@@ -32,13 +32,13 @@ error: ambiguous reference to overloaded 'over'
    = note: candidate: (*Thing, a: i32) => i32
    = note: candidate: (*Thing, a: bool) => i32
 
-error: 'hidden_member' on 'Thing' is not visible here
+error: 'hidden_member' on 'Sealed' is not visible here
   --> tests/t29b_type_function_namespace_errors/t29b_type_function_namespace_errors.omg:37:5
    |
-37 |     Thing::self::hidden_member(t)
-   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^ `hidden_member` is not visible from this module
+37 |     Sealed::self::hidden_member(s)
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^ `hidden_member` is not visible from this module
    |
-   = help: mark the method `exposed`/`shared` on `Thing`, or bypass with `reveal`
+   = help: mark the method `exposed`/`shared` on `Sealed`, or bypass with `reveal`
 
 error: 'Thing::self::member_only' is a function; there is nothing to look up inside it
   --> tests/t29b_type_function_namespace_errors/t29b_type_function_namespace_errors.omg:42:5

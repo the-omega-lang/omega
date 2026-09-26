@@ -190,6 +190,7 @@ impl<'r> Analyzer<'r> {
                     receiver.checked,
                     &shape,
                     field,
+                    field_origin,
                     args,
                 ),
             ));
@@ -562,13 +563,7 @@ impl<'r> Analyzer<'r> {
         receiver_type: &ResolvedType,
         method: &ResolvedMethod,
     ) -> Option<()> {
-        let (module_path, owner_id) = receiver_type
-            .autoderef()
-            .declaring_owner()
-            .unwrap_or_else(|| (Vec::new(), callee.id));
-        let visible =
-            self.check_member_visibility(method.visibility, &module_path, owner_id, field_origin);
-        if visible {
+        if self.check_visibility(method.visibility, &method.declaring_module, field_origin) {
             return Some(());
         }
         self.error(
@@ -576,7 +571,7 @@ impl<'r> Analyzer<'r> {
             callee.span,
             AnalysisErrorKind::MethodNotVisible {
                 method: field.clone(),
-                base: receiver_type.clone(),
+                base: method.visibility_owner(receiver_type),
             },
         );
         None
@@ -844,6 +839,7 @@ impl<'r> Analyzer<'r> {
         base: CheckedPlace,
         shape: &crate::resolved_type::ResolvedSpecShape,
         field: &Ident,
+        field_origin: Origin,
         args: &[HirExprNode],
     ) -> Option<CheckedExprNode> {
         let self_placeholder = ResolvedType::Void;
@@ -898,8 +894,20 @@ impl<'r> Analyzer<'r> {
                 return None;
             }
         };
-        let RequirementSignature::Concrete { fn_type, .. } = &flattened[slot_index].signature
-        else {
+        let slot = &flattened[slot_index];
+        let declaring_module = slot.spec.borrow().module_path.clone();
+        if !self.check_visibility(slot.visibility, &declaring_module, field_origin) {
+            self.error(
+                id,
+                span,
+                AnalysisErrorKind::MethodNotVisible {
+                    method: field.clone(),
+                    base: ResolvedType::Spec(slot.spec.clone()),
+                },
+            );
+            return None;
+        }
+        let RequirementSignature::Concrete { fn_type, .. } = &slot.signature else {
             unreachable!("generic requirements cannot reach a dynamic spec-object slot")
         };
         let fn_type = fn_type.clone();

@@ -1,0 +1,5 @@
+exposed struct Sealed {
+	exposed v: i32;
+
+	hidden_member(*self) => i32 { self.v }
+}

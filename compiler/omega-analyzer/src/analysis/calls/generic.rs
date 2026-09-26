@@ -326,13 +326,9 @@ impl<'r> Analyzer<'r> {
             node_id, span, owner, member, namespace, template, explicit, 0, &call.args, expected,
         )?;
 
-        let (owner_module_path, owner_id) = owner
-            .declaring_owner()
-            .unwrap_or_else(|| (Vec::new(), node_id));
-        if !self.check_member_visibility(
+        if !self.check_visibility(
             method.visibility,
-            &owner_module_path,
-            owner_id,
+            &method.declaring_module,
             expr_path.path.origin,
         ) {
             self.error(
@@ -637,10 +633,7 @@ impl<'r> Analyzer<'r> {
             .next()
             .expect("generic_owner_function_signature confirmed this function exists");
 
-        let (owner_module_path, owner_id) = owner_type
-            .declaring_owner()
-            .unwrap_or_else(|| (Vec::new(), node_id));
-        if !self.check_member_visibility(method.visibility, &owner_module_path, owner_id, origin) {
+        if !self.check_visibility(method.visibility, &method.declaring_module, origin) {
             self.error(
                 node_id,
                 span,

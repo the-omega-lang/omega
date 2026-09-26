@@ -1,7 +1,7 @@
+import self::sealed::Sealed;
+
 struct Thing {
 	exposed v: i32;
-
-	hidden_member(*self) => i32 { self.v }
 
 	exposed static_only(other: *Thing) => i32 { other.v }
 	exposed member_only(*self) => i32 { self.v + 1 }
@@ -33,8 +33,8 @@ ambiguous_member_reference() => void {
 }
 
 # The member namespace is not a visibility bypass.
-inaccessible_member(t: *Thing) => i32 {
-	Thing::self::hidden_member(t)
+inaccessible_member(s: *Sealed) => i32 {
+	Sealed::self::hidden_member(s)
 }
 
 # A function has no items of its own in either namespace.

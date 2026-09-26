@@ -1,0 +1,28 @@
+exposed struct Vault {
+	exposed open: i32;
+	secret: i32;
+
+	exposed new(v: i32) => Self {
+		Self { open = v; secret = v; }
+	}
+
+	peek(*self) => i32 {
+		self.secret
+	}
+}
+
+exposed spec Api {
+	value(*self) => i32;
+
+	hidden hook(*self) => i32 {
+		self.value()
+	}
+}
+
+exposed struct Dog {
+	exposed id: i32;
+}
+
+meet Api for Dog {
+	value(*self) => i32 { self.id }
+}

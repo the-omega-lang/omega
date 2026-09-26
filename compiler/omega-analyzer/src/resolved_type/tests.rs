@@ -487,6 +487,7 @@ fn method(self_mode: Option<SelfMode>, receiver: ResolvedType) -> ResolvedMethod
         },
         fn_type,
         visibility: Visibility::Hidden,
+        declaring_module: Vec::new(),
         annotations: crate::annotations::ResolvedAnnotations::default(),
         source: None,
     }

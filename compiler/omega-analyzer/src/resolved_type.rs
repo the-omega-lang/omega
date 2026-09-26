@@ -206,6 +206,10 @@ pub struct ResolvedMethod {
     pub decl_id: HirId,
     pub fn_type: ResolvedFunctionType,
     pub visibility: Visibility,
+    /// The module `visibility` is checked against: the owning aggregate's
+    /// module for inherent methods, the spec's module for spec-sourced ones,
+    /// and the declaring `core` module for primitive-block methods.
+    pub declaring_module: Vec<Ident>,
     pub annotations: crate::annotations::ResolvedAnnotations,
     pub source: Option<ConformanceSource>,
 }
@@ -219,6 +223,15 @@ impl ResolvedMethod {
     /// called through its owner. See [`ResolvedFunctionType::unbound_value`].
     pub fn value_fn_type(&self) -> ResolvedFunctionType {
         self.fn_type.unbound_value()
+    }
+
+    /// Where this function's visibility is declared: its spec for a
+    /// requirement, otherwise the `owner` it was reached through.
+    pub fn visibility_owner(&self, owner: &ResolvedType) -> ResolvedType {
+        match &self.source {
+            Some(source) => ResolvedType::Spec(source.spec.clone()),
+            None => owner.clone(),
+        }
     }
 }
 

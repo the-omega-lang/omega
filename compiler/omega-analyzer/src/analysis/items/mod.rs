@@ -855,6 +855,7 @@ impl<'r> Analyzer<'r> {
                         decl_id,
                         fn_type,
                         visibility: f.visibility,
+                        declaring_module: self.module_path.clone(),
                         annotations,
                         source: None,
                     },

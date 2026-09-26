@@ -1,0 +1,57 @@
+error: 'secret' on 'Vault' is not visible here
+ --> tests/t13b_visibility_errors/t13b_visibility_errors.omg:4:5
+  |
+4 |     v.secret
+  |     ^^^^^^^^ `secret` is not visible from this module
+  |
+  = help: mark the field `exposed`/`shared` on `Vault`, or bypass with `reveal`
+
+error: 'peek' on '*Vault' is not visible here
+ --> tests/t13b_visibility_errors/t13b_visibility_errors.omg:8:5
+  |
+8 |     v.peek()
+  |     ^^^^^^ `peek` is not visible from this module
+  |
+  = help: mark the method `exposed`/`shared` on `*Vault`, or bypass with `reveal`
+
+error: 'hook' on 'Api' is not visible here
+  --> tests/t13b_visibility_errors/t13b_visibility_errors.omg:16:5
+   |
+16 |     Api::hook(dog)
+   |     ^^^^^^^^^^^^^^ `hook` is not visible from this module
+   |
+   = help: mark the requirement `exposed`/`shared` in spec `Api`, or bypass with `reveal`
+
+error: 'hook' on 'Api' is not visible here
+  --> tests/t13b_visibility_errors/t13b_visibility_errors.omg:21:5
+   |
+21 |     object.hook()
+   |     ^^^^^^^^^^^ `hook` is not visible from this module
+   |
+   = help: mark the requirement `exposed`/`shared` in spec `Api`, or bypass with `reveal`
+
+error: 'hook' on 'Api' is not visible here
+  --> tests/t13b_visibility_errors/t13b_visibility_errors.omg:36:5
+   |
+36 |     Dog::self::hook(dog)
+   |     ^^^^^^^^^^^^^^^ `hook` is not visible from this module
+   |
+   = help: mark the requirement `exposed`/`shared` in spec `Api`, or bypass with `reveal`
+
+error: 'hook' on 'Api' is not visible here
+  --> tests/t13b_visibility_errors/t13b_visibility_errors.omg:12:5
+   |
+12 |     value.hook()
+   |     ^^^^^^^^^^ `hook` is not visible from this module
+   |
+   = help: mark the requirement `exposed`/`shared` in spec `Api`, or bypass with `reveal`
+
+error: 'hook' on 'Api' is not visible here
+  --> tests/t13b_visibility_errors/t13b_visibility_errors.omg:31:27
+   |
+31 |     value(*self) => i32 { self.hook() }
+   |                           ^^^^^^^^^ `hook` is not visible from this module
+   |
+   = help: mark the requirement `exposed`/`shared` in spec `Api`, or bypass with `reveal`
+
+error: could not compile the program due to 7 previous errors

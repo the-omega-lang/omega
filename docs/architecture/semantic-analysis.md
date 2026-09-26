@@ -17,7 +17,6 @@ It stores only analysis-local state:
 - loop stack + break facts;
 - active `defer` restrictions;
 - active suppression/reveal state;
-- current aggregate owner for hidden member access;
 - generic/spec bounds available in the body;
 - target;
 - a borrowed `ModuleResolver`.

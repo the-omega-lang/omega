@@ -1,10 +1,13 @@
 cross-module-fields: 1 2
 hidden-accessor: 3 8
 box-visible-hidden: 5 12
+box-module-internals: 18 7
+meet-reads-hidden-field: 6
 reveal-hidden-field: 6
 reveal-after-mutate: 99
 spec-req-visibility: 1
 dynamic-dispatch-visibility: 1
-spec-hidden-member-visibility: 3 2
+spec-hidden-member-visibility: 3 2 2
+cross-module-default-body: 11
 revealed-alias-import: 11 12
 revealed-subtree-import: 13 14

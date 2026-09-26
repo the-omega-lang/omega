@@ -19,6 +19,8 @@ exposed spec Animal {
 
 A function without a body is required. A function with a body is a default implementation that a conformance may use or replace.
 
+A default body is authored in the spec's declaring module, so it resolves names and is checked for visibility there, with `Self` bound to the conforming type -- never in the module of the `meet` that uses it. A default body may therefore call the spec's hidden requirements and hidden items of the spec's module even when the conformance is written elsewhere. See [`visibility.md`](visibility.md#specs-and-conformance).
+
 ### Generic requirements
 
 A requirement may declare its own generic parameters, independently of any parameters on its enclosing spec:

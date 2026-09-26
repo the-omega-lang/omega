@@ -177,6 +177,7 @@ impl Driver {
                                     decl_id: *method_id,
                                     fn_type,
                                     visibility: function.visibility,
+                                    declaring_module: module.to_vec(),
                                     annotations,
                                     source: None,
                                 },

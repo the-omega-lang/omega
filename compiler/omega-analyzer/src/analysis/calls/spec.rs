@@ -100,6 +100,9 @@ impl<'r> Analyzer<'r> {
             );
             return Intercepted::Claimed(None);
         };
+        if !self.require_requirement_visible(node_id, span, declared, path.origin) {
+            return Intercepted::Claimed(None);
+        }
         let RequirementSignature::Concrete { fn_type, .. } = &declared.signature else {
             self.error(
                 node_id,
@@ -311,6 +314,9 @@ impl<'r> Analyzer<'r> {
             );
             return Intercepted::Claimed(None);
         };
+        if !self.require_requirement_visible(node_id, span, declared, expr_path.path.origin) {
+            return Intercepted::Claimed(None);
+        }
         let RequirementSignature::Concrete { fn_type, .. } = &declared.signature else {
             self.error(
                 node_id,
@@ -344,6 +350,28 @@ impl<'r> Analyzer<'r> {
             &method_name,
             Some(&target),
         )
+    }
+
+    fn require_requirement_visible(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        declared: &FlattenedSpecFn,
+        origin: Origin,
+    ) -> bool {
+        let declaring_module = declared.spec.borrow().module_path.clone();
+        if self.check_visibility(declared.visibility, &declaring_module, origin) {
+            return true;
+        }
+        self.error(
+            node_id,
+            span,
+            AnalysisErrorKind::MethodNotVisible {
+                method: declared.name.clone(),
+                base: ResolvedType::Spec(declared.spec.clone()),
+            },
+        );
+        false
     }
 
     fn spec_call_conformance_methods(
