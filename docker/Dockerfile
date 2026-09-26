@@ -214,6 +214,14 @@ RUN mkdir -p \
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod 0755 /usr/local/bin/entrypoint.sh
 
+# Alpine's /etc/profile overwrites PATH with a fixed list, so any login shell
+# (`bash -l`, which is how Codex and some other agents run every command) would
+# lose cargo, the agents and LLVM. profile.d runs after that reset, so pin the
+# image's final PATH back there. Written after every `ENV PATH` above on
+# purpose: this is a build-time snapshot of it.
+RUN printf 'export PATH="%s"\n' "${PATH}" > /etc/profile.d/10-omega-path.sh \
+    && bash -lc 'command -v cargo && command -v rustc && command -v llvm-config'
+
 USER dev
 
 RUN printf '%s\n' \

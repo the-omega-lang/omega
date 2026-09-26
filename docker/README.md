@@ -55,6 +55,10 @@ Built from `alpine:3.23`:
 
 - **Rust 1.94.1** via `rustup` (`x86_64-unknown-linux-musl`), plus `rustfmt`
   and `clippy`. Pinned by build argument, not by whatever Alpine ships.
+  Installed under `/usr/local/cargo/bin`, which is on `PATH` in every shell,
+  login shells included: Alpine's `/etc/profile` resets `PATH`, so
+  `/etc/profile.d/10-omega-path.sh` restores the image's full `PATH` for
+  agents that run commands through `bash -lc`.
 - **build-base / binutils / gdb** — `cc`, `as` and `ld`, which the `justfile`
   and `bin/test-runner` invoke directly to link the object files `omgc`
   emits, and to build the freestanding C helpers a few tests ship.
