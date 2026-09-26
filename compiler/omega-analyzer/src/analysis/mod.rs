@@ -22,7 +22,7 @@ use specs::{FlattenedSpecFn, RequirementSignature};
 use calls::{CalleeResolution, FunctionValue, Intercepted, Interceptor, ResolvedCallee};
 use crate::generics::pattern::{ArgumentPattern, TypePattern};
 use expected::Expected;
-use items::HoledAnnotation;
+use items::{HoledAnnotation, read_back_holes};
 use literals::parse_number_literal;
 
 use crate::target::Target;

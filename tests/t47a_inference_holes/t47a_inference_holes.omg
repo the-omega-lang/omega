@@ -52,12 +52,50 @@ pair_of<T>(v: T) => Pair<T, T> { Pair<T, T> { a = v; b = v; } }
 
 global : [_]u8 = [1, 2];
 
+# Overloaded siblings of a different arity: selection sees the annotation's
+# known parts through the overload engine, and only the winner is emitted.
+hole_make<T, U>(a: T, b: U) => Pair<T, U> { Pair<T, U> { a = a; b = b; } }
+@suppress(unused_parameter)
+hole_make<T>(a: T) => Pair<T, T> { Pair<T, T> { a = a; b = a; } }
+
+hole_pair_of<T>(v: T) => Pair<T, T> { Pair<T, T> { a = v; b = v; } }
+@suppress(unused_parameter)
+hole_pair_of<T>(v: T, w: T) => Pair<T, T> { Pair<T, T> { a = v; b = w; } }
+
+struct Tagged<comp N: usize, T> {
+    exposed v: T;
+}
+tagged<comp N: usize, T>(v: T) => Tagged<N, T> { Tagged<N, T> { v = v; } }
+@suppress(unused_parameter)
+tagged<comp N: usize, T>(v: T, w: T) => Tagged<N, T> { Tagged<N, T> { v = v; } }
+
+alias Bytes = [2]u8;
+
+struct Defaulted<T, U = [2]u8> {
+    exposed a: T;
+    exposed b: U;
+}
+
+struct Dependent<A, B, C = Pair<B, [2]B>> {
+    exposed a: A;
+    exposed b: B;
+    exposed c: C;
+}
+
+@suppress(unused_parameter)
+pick(v: u8) => u8 { 8 }
+@suppress(unused_parameter)
+pick(v: i32) => i32 { 32 }
+
 # --- fully qualified spec calls --------------------------------------------
 exposed spec Make { make() => Self; }
 exposed spec Animal { make_sound(*self) => i32; }
 
 struct Widget { exposed id: i32; }
 meet Make for Widget { make() => Self { Self { id = 9; } } }
+
+exposed spec Build<T> { build() => Self; }
+meet Build<u8> for Widget { build() => Self { Self { id = 8; } } }
 
 struct Dog { exposed id: i32; }
 meet Animal for Dog { make_sound(*self) => i32 { 42 } }
@@ -141,6 +179,46 @@ main() => void {
     size_same := sizeof<Pair<u8, u8>>;
     println$("annotations: ", *ptr, " ", lit_check.b, " ", arr_check[2], " ", buf_check.data[1], " ", made_check.b, " ", same_check.a, " ", size_same, " ", global_check[1]);
 
+    # Known parts of a partial annotation are exact types, however they are
+    # spelled: an array, a nominal type, a function type.
+    known_arr : Pair<_, [2]u8> = Pair { a = 1; b = [2, 3]; };
+    known_arr_check : Pair<i32, [2]u8> = known_arr;
+    known_nom : Pair<_, Pair<u8, u16>> = Pair { a = 1; b = Pair { a = 2; b = 300; }; };
+    known_nom_check : Pair<i32, Pair<u8, u16>> = known_nom;
+    known_fn : Pair<_, (u8) => u8> = Pair { a = 1; b = pick; };
+    known_fn_check : Pair<i32, (u8) => u8> = known_fn;
+    known_alias : Pair<_, Bytes> = Pair { a = 1; b = [4, 5]; };
+    known_alias_check : Pair<i32, [2]u8> = known_alias;
+    known_default : Defaulted<_> = Defaulted { a = 1; b = [6, 7]; };
+    known_default_check : Defaulted<i32, [2]u8> = known_default;
+    known_dependent : Dependent<_, u16> = Dependent { a = 1; b = 2; c = Pair { a = 3; b = [8, 9]; }; };
+    known_dependent_check : Dependent<i32, u16, Pair<u16, [2]u16>> = known_dependent;
+    println$("known-parts: ", known_arr_check.b[1], " ", known_nom_check.b.b, " ", known_fn_check.b(1), " ", known_alias_check.b[1], " ", known_default_check.b[1], " ", known_dependent_check.c.b[1]);
+
+    over : Pair<_, u8> = hole_make(1, 2);
+    over_check : Pair<i32, u8> = over;
+    over_same : Pair<_, u8> = hole_pair_of(1);
+    over_same_check : Pair<u8, u8> = over_same;
+    over_tag : Tagged<3, _> = tagged(7);
+    over_tag_check : Tagged<3, i32> = over_tag;
+    over_same_size := sizeof<Pair<u8, u8>>;
+    println$("overloaded: ", over_check.b, " ", over_same_check.a, " ", over_tag_check.v, " ", over_same_size);
+
+    # Every branch sees the annotation, whatever an earlier one did.
+    first_diverges : Pair<_, u8> = if false { return; } else { hole_make(1, 3) };
+    middle_diverges : Pair<_, u8> = if false { hole_make(1, 4) } else if false { return; } else { hole_make(2, 5) };
+    neither : Pair<_, u8> = if true { hole_make(3, 6) } else { Pair { a = 4; b = 7; } };
+    arms : Pair<_, u8> = match 1 {
+        0 => hole_make(5, 8),
+    } else {
+        hole_make(6, 9)
+    };
+    first_check : Pair<i32, u8> = first_diverges;
+    middle_check : Pair<i32, u8> = middle_diverges;
+    neither_check : Pair<i32, u8> = neither;
+    arms_check : Pair<i32, u8> = arms;
+    println$("branches: ", first_check.b, " ", middle_check.b, " ", neither_check.b, " ", arms_check.b);
+
     t := Twice { n = 2; };
     for e : Pair<_, u8> in t {
         println$("for-pair: ", e.a, " ", e.b);
@@ -153,6 +231,7 @@ main() => void {
     via_self : Widget = <_ : Make>::make();
     via_spec := <Widget : _>::make();
     sound := <_ : Animal>::make_sound(&dog);
-    println$("qualified: ", via_self.id, " ", via_spec.id, " ", sound, " ", <Dog : _>::make_sound(&dog), " ", dog.id);
+    via_generic := <Widget : _>::build();
+    println$("qualified: ", via_self.id, " ", via_spec.id, " ", sound, " ", <Dog : _>::make_sound(&dog), " ", dog.id, " ", via_generic.id);
     <void>n;
 }

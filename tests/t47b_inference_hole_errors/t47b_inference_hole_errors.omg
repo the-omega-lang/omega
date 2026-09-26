@@ -53,6 +53,16 @@ struct Twice {
 meet Make for Twice { make() => Self { Self { id = 1; } } }
 meet Other for Twice { make() => Self { Self { id = 2; } } }
 
+# --- one generic spec, two applications ------------------------------------
+spec P<T> { f() => Self; }
+struct Both { exposed id: i32; }
+meet P<u8> for Both { f() => Self { Self { id = 1; } } }
+meet P<u16> for Both { f() => Self { Self { id = 2; } } }
+
+hole_make<T, U>(a: T, b: U) => Pair<T, U> { Pair<T, U> { a = a; b = b; } }
+@suppress(unused_parameter)
+hole_make<T>(a: T) => Pair<T, T> { Pair<T, T> { a = a; b = a; } }
+
 main() => void {
     # Defaults and static-spec bounds are resolved where they are used.
     defaulted := bad_default();
@@ -70,4 +80,11 @@ main() => void {
     two_specs := <Twice : _>::make();
     inherent_only := <Twice : _>::inherent();
     defaulted_hole := mid<_, u8>();
+    applications := <Both : _>::f();
+    in_spec : Pair<_, *spec Holds<_>> = 1;
+    in_enum : Pair<_, enum i32 | [_]u8> = 1;
+    for r : enum _ | i32 in 0..<2 {}
+    value_slot : Pair<_, 5> = Pair { a = 1; b = 2; };
+    known_conflict : Pair<_, [2]u8> = Pair<i32, [2]i32> { a = 1; b = [2, 3]; };
+    branch_conflict : Pair<_, u8> = if true { hole_make(1, 2) } else { Pair<i32, i32> { a = 3; b = 4; } };
 }

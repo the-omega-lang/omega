@@ -1,0 +1,11 @@
+# A `_` in a spec reference nested inside an otherwise inferable annotation is
+# rejected at compile time. The binding is never read, so nothing else can
+# make this program fail if the annotation is silently dropped.
+struct Pair<T, U> {
+    exposed a: T;
+    exposed b: U;
+}
+
+main() => void {
+    x : Pair<_, *spec _> = 1;
+}

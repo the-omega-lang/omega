@@ -576,10 +576,10 @@ impl<'r> Analyzer<'r> {
     /// `ToIterator` source offers. With holes it is a pattern the selected
     /// element type must fill.
     fn for_in_element_annotation(&mut self, f: &HirForIn, raw: &Type) -> Option<ForInElement> {
-        match self.rewrite_annotation_holes(f.id, f.span, raw) {
+        match self.rewrite_annotation_holes(f.id, f.span, raw).ok()? {
             Some(holed) => {
                 let pattern =
-                    self.overload_type_pattern(f.id, f.span, &holed.rewritten, &holed.holes)?;
+                    self.annotation_type_pattern(f.id, f.span, &holed.rewritten, &holed.holes)?;
                 Some(ForInElement::Holed(holed, pattern))
             }
             None => Some(ForInElement::Exact(
@@ -596,10 +596,13 @@ impl<'r> Analyzer<'r> {
     ) -> bool {
         match element {
             ForInElement::Exact(expected) => expected == produced,
-            ForInElement::Holed(holed, pattern) => self.without_diagnostics(|this| {
-                this.solve_holes_from(f.id, f.span, holed, pattern, produced)
-                    .is_some_and(|solved| solved == *produced)
-            }),
+            ForInElement::Holed(holed, pattern) => read_back_holes(holed, pattern, produced)
+                .is_some_and(|solved| {
+                    self.without_diagnostics(|this| {
+                        this.resolve_solved_annotation(f.id, f.span, holed, &solved)
+                            .is_some_and(|resolved| resolved == *produced)
+                    })
+                }),
         }
     }
 

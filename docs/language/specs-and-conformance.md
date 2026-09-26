@@ -153,8 +153,10 @@ x : Widget = <_ : Make>::make();   # exactly Make::make(): Self from the
 ```
 
 `<S : _>::f(...)` names the unique spec among `S`'s conformances that declares
-`f`, and is then exactly `<S : P>::f(...)` for that `P`. Specs that reach the
-same declaration through refinement count once. Inherent functions of `S` are
+`f`, and is then exactly `<S : P>::f(...)` for that `P`. A candidate is a
+declaring spec together with its generic arguments: conforming to `P<u8>` and
+`P<u16>` gives two candidates. Specs that reach the same declaration through
+refinement count once. Inherent functions of `S` are
 not candidates, because the slot names a spec. No candidate is an error, and
 more than one is ambiguous. `<_ : _>::f(...)` is rejected: no shorter spelling
 infers both halves, so neither does this one. A hole inside either half

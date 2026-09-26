@@ -158,6 +158,14 @@ Normative chapter: [`../language/generics.md`](../language/generics.md)
 
 Normative chapter: [`../language/specs-and-conformance.md`](../language/specs-and-conformance.md)
 
+- **Qualified diagnostics still shorten spec-object and anonymous-enum members.**
+  `ResolvedType::write` does not propagate its `qualified` flag into those
+  shapes. For example, if `S` conforms to both `P<*spec a::X>` and
+  `P<*spec b::X>`, `<S : _>::f()` correctly reports ambiguity but prints
+  two identical `P<*spec X>` candidates, even after qualifying `P` itself.
+  The shared qualified renderer needs to retain member module paths, with
+  a multi-module diagnostic regression; candidate identity is unaffected.
+
 - **Holes are not inferred inside a spec application.** `Spec<_>::f(...)` and
   `<S : Spec<_>>::f(...)` are rejected with the ordinary "nothing is inferred
   here" error, even where the call's arguments would determine the spec's

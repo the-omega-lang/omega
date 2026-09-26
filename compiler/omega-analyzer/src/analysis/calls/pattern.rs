@@ -70,13 +70,14 @@ impl Analyzer<'_> {
                     }
                 };
                 let spec = spec.borrow();
-                let args = self.overload_argument_patterns(
+                let args = self.argument_patterns(
                     function.id,
                     function.span,
                     args,
                     generics,
                     &spec.generics,
                     &spec.module_path,
+                    PatternPurpose::Overload,
                 )?;
                 let key = (
                     parameter,
@@ -170,7 +171,7 @@ impl Analyzer<'_> {
         crate::template::TemplateDescriptor::of(&template)
     }
 
-    fn overload_argument_patterns(
+    fn argument_patterns(
         &mut self,
         id: HirId,
         span: Span,
@@ -178,12 +179,21 @@ impl Analyzer<'_> {
         generics: &[HirGenericParam],
         declared: &[HirGenericParam],
         module: &[Ident],
+        purpose: PatternPurpose<'_>,
     ) -> Option<Vec<ArgumentPattern>> {
         let mut args = written
             .iter()
             .enumerate()
             .map(|(index, arg)| {
-                self.overload_argument_pattern(id, span, arg, generics, declared.get(index), module)
+                self.argument_pattern(
+                    id,
+                    span,
+                    arg,
+                    generics,
+                    declared.get(index),
+                    module,
+                    purpose,
+                )
             })
             .collect::<Option<Vec<_>>>()?;
         for index in args.len()..declared.len() {
@@ -191,18 +201,45 @@ impl Analyzer<'_> {
             let Some(default) = &parameter.default else {
                 break;
             };
+            // An annotation's default sees the arguments before it: those
+            // already known are substituted by name, so only the others stay
+            // open in its pattern.
+            let (known, open) = match purpose {
+                PatternPurpose::Overload => (GenericSubstitution::new(), Vec::new()),
+                PatternPurpose::Annotation { .. } => {
+                    let mut known = GenericSubstitution::new();
+                    let mut open = Vec::with_capacity(index);
+                    for (param, arg) in declared.iter().zip(&args) {
+                        match arg.known() {
+                            Some(arg) => {
+                                known.push(param.ident.clone(), arg);
+                                open.push(false);
+                            }
+                            None => open.push(true),
+                        }
+                    }
+                    (known, open)
+                }
+            };
+            let default_purpose = match purpose {
+                PatternPurpose::Overload => PatternPurpose::Overload,
+                PatternPurpose::Annotation { .. } => PatternPurpose::Annotation { open: &open },
+            };
             // Resolve before substitution: a default's names belong to its
             // declaration, even if the function has a parameter of that name.
             let saved = std::mem::replace(&mut self.module_path, module.to_vec());
             let saved_context = std::mem::replace(&mut self.context, Context::new(self.target));
-            let pattern = self.overload_argument_pattern(
-                id,
-                span,
-                default,
-                &declared[..index],
-                Some(parameter),
-                module,
-            );
+            let pattern = self.with_substitution(&known, |this| {
+                this.argument_pattern(
+                    id,
+                    span,
+                    default,
+                    &declared[..index],
+                    Some(parameter),
+                    module,
+                    default_purpose,
+                )
+            });
             self.context = saved_context;
             self.module_path = saved;
             args.push(pattern?.substitute(&args, self.target.pointer_bits())?);
@@ -253,11 +290,38 @@ impl Analyzer<'_> {
         raw: &Type,
         generics: &[HirGenericParam],
     ) -> Option<TypePattern> {
+        self.type_pattern(id, span, raw, generics, PatternPurpose::Overload)
+    }
+
+    /// The pattern of a binding annotation whose holes were rewritten to
+    /// `holes`. Every part that names no hole is resolved as written.
+    pub(crate) fn annotation_type_pattern(
+        &mut self,
+        id: HirId,
+        span: Span,
+        raw: &Type,
+        holes: &[HirGenericParam],
+    ) -> Option<TypePattern> {
+        let open = vec![true; holes.len()];
+        self.type_pattern(
+            id,
+            span,
+            raw,
+            holes,
+            PatternPurpose::Annotation { open: &open },
+        )
+    }
+
+    fn type_pattern(
+        &mut self,
+        id: HirId,
+        span: Span,
+        raw: &Type,
+        generics: &[HirGenericParam],
+        purpose: PatternPurpose<'_>,
+    ) -> Option<TypePattern> {
         if let Type::Named(path) = raw
-            && path.is_unqualified()
-            && let Some(index) = generics
-                .iter()
-                .position(|p| p.ident == path.head && !p.is_comp())
+            && let Some(index) = purpose.parameter(generics, path, false)
         {
             return Some(TypePattern::Parameter(index));
         }
@@ -273,23 +337,23 @@ impl Analyzer<'_> {
                 return None;
             }
         };
+        if purpose.reports() && !purpose.mentions_open(&raw, generics) {
+            return Some(TypePattern::Fixed(
+                self.resolve_type_or_error(id, span, &raw, true)?,
+            ));
+        }
         Some(match &raw {
-            Type::Named(path)
-                if path.is_unqualified()
-                    && generics
-                        .iter()
-                        .any(|p| p.ident == path.head && !p.is_comp()) =>
-            {
-                TypePattern::Parameter(generics.iter().position(|p| p.ident == path.head).unwrap())
+            Type::Named(path) if purpose.parameter(generics, path, false).is_some() => {
+                TypePattern::Parameter(purpose.parameter(generics, path, false).unwrap())
             }
             Type::Named(_) => TypePattern::Fixed(self.resolve_type_or_error(id, span, &raw, true)?),
             Type::Pointer(inner, mutable) => match inner.as_ref() {
                 Type::InferredArray(item) => TypePattern::Slice(
-                    Box::new(self.overload_type_pattern(id, span, item, generics)?),
+                    Box::new(self.type_pattern(id, span, item, generics, purpose)?),
                     *mutable,
                 ),
                 Type::UnknownSizeArray(item) => TypePattern::Array(
-                    Box::new(self.overload_type_pattern(id, span, item, generics)?),
+                    Box::new(self.type_pattern(id, span, item, generics, purpose)?),
                     *mutable,
                 ),
                 Type::SpecStatic(members) => {
@@ -298,7 +362,20 @@ impl Analyzer<'_> {
                         let (path, args) = match member {
                             Type::Named(path) => (path, &[][..]),
                             Type::Generic(path, args) => (path, args.as_slice()),
-                            _ => return None,
+                            _ => {
+                                if purpose.reports() {
+                                    self.error(
+                                        id,
+                                        span,
+                                        AnalysisErrorKind::UnresolvedType(
+                                            TypeResolutionError::NotASpec(Ident(
+                                                "<spec>".to_string(),
+                                            )),
+                                        ),
+                                    );
+                                }
+                                return None;
+                            }
                         };
                         let absolute = self.pattern_item_path(id, span, path)?;
                         let spec = match self.resolver.spec_declaration(&absolute) {
@@ -315,13 +392,14 @@ impl Analyzer<'_> {
                             }
                         };
                         let spec = spec.borrow();
-                        let args = self.overload_argument_patterns(
+                        let args = self.argument_patterns(
                             id,
                             span,
                             args,
                             generics,
                             &spec.generics,
                             &spec.module_path,
+                            purpose,
                         )?;
                         let key = SpecPattern {
                             spec: spec.id,
@@ -339,18 +417,17 @@ impl Analyzer<'_> {
                     TypePattern::Fixed(ResolvedType::Str { mutable: *mutable })
                 }
                 _ => TypePattern::Pointer(
-                    Box::new(self.overload_type_pattern(id, span, inner, generics)?),
+                    Box::new(self.type_pattern(id, span, inner, generics, purpose)?),
                     *mutable,
                 ),
             },
             Type::SizedArray(inner, length) => {
                 let length = match length {
                     ArrayLength::Path(path)
-                        if path.is_unqualified()
-                            && generics.iter().any(|p| p.ident == path.head && p.is_comp()) =>
+                        if purpose.parameter(generics, path, true).is_some() =>
                     {
                         ArgumentPattern::Parameter(
-                            generics.iter().position(|p| p.ident == path.head).unwrap(),
+                            purpose.parameter(generics, path, true).unwrap(),
                             CompScalarType::Int(crate::resolved_type::CompIntType::USize),
                         )
                     }
@@ -371,7 +448,7 @@ impl Analyzer<'_> {
                     }
                 };
                 TypePattern::SizedArray(
-                    Box::new(self.overload_type_pattern(id, span, inner, generics)?),
+                    Box::new(self.type_pattern(id, span, inner, generics, purpose)?),
                     length,
                 )
             }
@@ -385,29 +462,51 @@ impl Analyzer<'_> {
                         return None;
                     }
                 };
-                let module = &absolute[..absolute.len() - 1];
+                let (module, item) = absolute.split_at(absolute.len() - 1);
+                if purpose.reports() && !declared.is_empty() && args.len() > declared.len() {
+                    self.error(
+                        id,
+                        span,
+                        AnalysisErrorKind::ModuleResolution(
+                            ResolveError::GenericArgCountMismatch {
+                                module: module.to_vec(),
+                                item: item[0].clone(),
+                                expected: declared.len(),
+                                found: args.len(),
+                            },
+                        ),
+                    );
+                    return None;
+                }
                 let args =
-                    self.overload_argument_patterns(id, span, args, generics, &declared, module)?;
+                    self.argument_patterns(id, span, args, generics, &declared, module, purpose)?;
                 TypePattern::Nominal(absolute, args)
             }
             Type::Function(function) => {
-                let convention = match function.convention.as_ref().map(|c| c.name.as_ref()) {
-                    None => CallingConvention::Omega,
-                    Some("c") => CallingConvention::C,
-                    Some("sysv64") => CallingConvention::SysV64,
-                    _ => return None,
+                let convention = match self
+                    .context
+                    .resolve_convention(function.convention.as_ref().map(|c| &c.name))
+                {
+                    Ok(convention) => convention,
+                    Err(error) => {
+                        if purpose.reports() {
+                            self.error(id, span, AnalysisErrorKind::UnresolvedType(error));
+                        }
+                        return None;
+                    }
                 };
                 TypePattern::Function(
                     function
                         .params
                         .iter()
-                        .map(|p| self.overload_type_pattern(id, span, &p.r#type, generics))
+                        .map(|p| self.type_pattern(id, span, &p.r#type, generics, purpose))
                         .collect::<Option<_>>()?,
-                    Box::new(self.overload_type_pattern(
+                    Box::new(self.type_pattern(
                         id,
                         span,
                         &function.return_type,
                         generics,
+                        purpose,
                     )?),
                     convention,
                     function.is_variadic,
@@ -416,14 +515,14 @@ impl Analyzer<'_> {
             Type::AnonymousEnum(members) => TypePattern::AnonymousEnum(
                 members
                     .iter()
-                    .map(|p| self.overload_type_pattern(id, span, p, generics))
+                    .map(|p| self.type_pattern(id, span, p, generics, purpose))
                     .collect::<Option<_>>()?,
             ),
             _ => TypePattern::Fixed(self.resolve_type_or_error(id, span, &raw, true)?),
         })
     }
 
-    fn overload_argument_pattern(
+    fn argument_pattern(
         &mut self,
         id: HirId,
         span: Span,
@@ -431,13 +530,11 @@ impl Analyzer<'_> {
         generics: &[HirGenericParam],
         declared: Option<&HirGenericParam>,
         module: &[Ident],
+        purpose: PatternPurpose<'_>,
     ) -> Option<ArgumentPattern> {
         if declared.is_some_and(|p| p.is_comp()) {
             if let GenericArg::Type(Type::Named(path)) = arg
-                && path.is_unqualified()
-                && let Some(index) = generics
-                    .iter()
-                    .position(|p| p.ident == path.head && p.is_comp())
+                && let Some(index) = purpose.parameter(generics, path, true)
             {
                 let saved_context = std::mem::replace(&mut self.context, Context::new(self.target));
                 let value_type =
@@ -452,10 +549,83 @@ impl Analyzer<'_> {
             };
         }
         let GenericArg::Type(ty) = arg else {
+            if purpose.reports() {
+                // Always an error: a value or `_` where a type is expected.
+                self.resolve_generic_arg_or_error(id, span, arg, declared);
+            }
             return None;
         };
         Some(ArgumentPattern::Type(Box::new(
-            self.overload_type_pattern(id, span, ty, generics)?,
+            self.type_pattern(id, span, ty, generics, purpose)?,
         )))
+    }
+}
+
+/// What a pattern is built for.
+#[derive(Clone, Copy)]
+enum PatternPurpose<'a> {
+    /// An overload declaration: every generic parameter stays symbolic, and
+    /// the shape is also the template's identity.
+    Overload,
+    /// A binding annotation, where only the `open` parameters are unknown.
+    /// Every other part is resolved as written, so it constrains inference
+    /// exactly, and every failure is reported.
+    Annotation { open: &'a [bool] },
+}
+
+impl PatternPurpose<'_> {
+    fn reports(self) -> bool {
+        matches!(self, Self::Annotation { .. })
+    }
+
+    fn is_open(self, index: usize) -> bool {
+        match self {
+            Self::Overload => true,
+            Self::Annotation { open } => open[index],
+        }
+    }
+
+    /// The open parameter of kind `comp` that `path` names.
+    fn parameter(self, generics: &[HirGenericParam], path: &Path, comp: bool) -> Option<usize> {
+        if !path.is_unqualified() {
+            return None;
+        }
+        generics
+            .iter()
+            .position(|p| p.ident == path.head)
+            .filter(|&index| generics[index].is_comp() == comp && self.is_open(index))
+    }
+
+    fn names_open(self, generics: &[HirGenericParam], path: &Path) -> bool {
+        self.parameter(generics, path, false).is_some()
+            || self.parameter(generics, path, true).is_some()
+    }
+
+    fn mentions_open(self, ty: &Type, generics: &[HirGenericParam]) -> bool {
+        match ty {
+            Type::Named(path) => self.names_open(generics, path),
+            Type::Pointer(inner, _)
+            | Type::InferredArray(inner)
+            | Type::UnknownSizeArray(inner) => self.mentions_open(inner, generics),
+            Type::SizedArray(inner, length) => {
+                matches!(length, ArrayLength::Path(path) if self.names_open(generics, path))
+                    || self.mentions_open(inner, generics)
+            }
+            Type::Generic(_, args) => args.iter().any(|arg| {
+                arg.as_type()
+                    .is_some_and(|ty| self.mentions_open(ty, generics))
+            }),
+            Type::Function(function) => {
+                function
+                    .params
+                    .iter()
+                    .any(|param| self.mentions_open(&param.r#type, generics))
+                    || self.mentions_open(&function.return_type, generics)
+            }
+            Type::SpecStatic(members) | Type::AnonymousEnum(members) => members
+                .iter()
+                .any(|member| self.mentions_open(member, generics)),
+            Type::Infer => false,
+        }
     }
 }

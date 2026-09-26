@@ -199,16 +199,30 @@ fn an_identifier_value_is_rejected_by_layout() {
     assert_eq!(errors.len(), 1);
 }
 
-fn hole_kinds(annotation: &Type) -> Option<(Type, Vec<(String, bool)>)> {
+/// The rewritten annotation and each hole's name and `comp`-ness, `Ok(None)`
+/// without holes, or every error preparation reported.
+#[allow(clippy::type_complexity)]
+fn hole_kinds(
+    annotation: &Type,
+) -> Result<Option<(Type, Vec<(String, bool)>)>, Vec<crate::error::AnalysisError>> {
     let mut resolver = NoResolver;
     let mut a = analyzer(&mut resolver);
-    let holed = a.rewrite_annotation_holes(id(1), sp(), annotation)?;
-    let kinds = holed
-        .holes
-        .iter()
-        .map(|hole| (hole.ident.as_ref().to_string(), hole.is_comp()))
-        .collect();
-    Some((holed.rewritten, kinds))
+    let prepared = a.rewrite_annotation_holes(id(1), sp(), annotation);
+    let (errors, _, _) = a.finish();
+    match prepared {
+        Ok(holed) => {
+            assert!(errors.is_empty(), "a prepared annotation reports nothing");
+            Ok(holed.map(|holed| {
+                let kinds = holed
+                    .holes
+                    .iter()
+                    .map(|hole| (hole.ident.as_ref().to_string(), hole.is_comp()))
+                    .collect();
+                (holed.rewritten, kinds)
+            }))
+        }
+        Err(()) => Err(errors),
+    }
 }
 
 #[test]
@@ -217,7 +231,9 @@ fn every_hole_becomes_a_fresh_parameter_of_its_kind() {
         Box::new(Type::SizedArray(Box::new(Type::Infer), ArrayLength::Infer)),
         false,
     );
-    let (rewritten, kinds) = hole_kinds(&annotation).expect("the annotation has holes");
+    let (rewritten, kinds) = hole_kinds(&annotation)
+        .expect("the annotation is valid")
+        .expect("the annotation has holes");
     assert_eq!(
         kinds,
         vec![("$Hole0".to_string(), true), ("$Hole1".to_string(), false)]
@@ -236,15 +252,42 @@ fn every_hole_becomes_a_fresh_parameter_of_its_kind() {
 
 #[test]
 fn an_annotation_without_holes_is_not_rewritten() {
-    assert!(hole_kinds(&Type::Named(Ident("i32".into()).into())).is_none());
+    assert!(matches!(
+        hole_kinds(&Type::Named(Ident("i32".into()).into())),
+        Ok(None)
+    ));
 }
 
+/// A hole in a spec reference or an anonymous-enum member, at any depth and
+/// beside legal holes, fails preparation with one diagnostic of its own
+/// instead of reaching pattern construction.
 #[test]
-fn holes_in_spec_references_and_anonymous_enums_are_left_for_rejection() {
+fn holes_in_spec_references_and_anonymous_enums_are_rejected_once() {
+    let i32_type = || Type::Named(Ident("i32".into()).into());
+    let spec = |arg| Type::Generic(Ident("Holds".into()).into(), vec![arg]);
     for annotation in [
         Type::SpecStatic(vec![Type::Infer]),
-        Type::AnonymousEnum(vec![Type::Named(Ident("i32".into()).into()), Type::Infer]),
+        Type::AnonymousEnum(vec![i32_type(), Type::Infer]),
+        Type::SizedArray(
+            Box::new(Type::Pointer(
+                Box::new(Type::SpecStatic(vec![spec(GenericArg::Infer)])),
+                false,
+            )),
+            ArrayLength::Infer,
+        ),
+        Type::Pointer(
+            Box::new(Type::AnonymousEnum(vec![
+                i32_type(),
+                Type::SizedArray(Box::new(i32_type()), ArrayLength::Infer),
+            ])),
+            false,
+        ),
     ] {
-        assert!(hole_kinds(&annotation).is_none());
+        let errors = hole_kinds(&annotation).expect_err("a forbidden hole is diagnosed");
+        assert_eq!(errors.len(), 1, "one error for `{annotation:?}`");
+        assert!(matches!(
+            errors[0].kind,
+            AnalysisErrorKind::UnresolvedType(TypeResolutionError::InferenceHoleNotAllowed)
+        ));
     }
 }

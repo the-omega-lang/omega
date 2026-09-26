@@ -606,7 +606,8 @@ pub enum AnalysisErrorKind {
     QualifiedSpecAmbiguous {
         target: String,
         function: Ident,
-        specs: Vec<Ident>,
+        /// Each candidate spec application, as displayed.
+        specs: Vec<String>,
     },
     MethodNotInScope {
         method: Ident,

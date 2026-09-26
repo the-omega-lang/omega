@@ -1,0 +1,9 @@
+error: '_' is not allowed here -- nothing is inferred in this position
+  --> tests/t47d_inference_hole_rejection/t47d_inference_hole_rejection.omg:10:5
+   |
+10 |     x : Pair<_, *spec _> = 1;
+   |     ^^^^^^^^^^^^^^^^^^^^ inference hole in a position that is never inferred
+   |
+   = note: `_` is accepted only where leaving the type or value out would infer it: generic arguments, bound selectors, and an initialized binding's annotation outside spec references and anonymous-enum members
+
+error: could not compile the program due to 1 previous error

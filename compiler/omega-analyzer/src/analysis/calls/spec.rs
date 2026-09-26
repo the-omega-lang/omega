@@ -1,5 +1,4 @@
 use super::*;
-use crate::resolved_type::ResolvedConformance;
 
 impl<'r> Analyzer<'r> {
     pub(crate) fn resolve_spec_qualified_call(
@@ -383,10 +382,12 @@ impl<'r> Analyzer<'r> {
         )
     }
 
-    /// The spec `<target : _>::function` names: the one conformance of
-    /// `target` whose spec declares `function`. Inherent functions are not
-    /// candidates, because the slot names a spec. Specs that reach the same
-    /// declaration through refinement count once.
+    /// The spec `<target : _>::function` names: the one spec application
+    /// declaring `function` among those `target` conforms to. Inherent
+    /// functions are not candidates, because the slot names a spec. An
+    /// application is its declaring spec with its generic arguments, as in
+    /// `flatten_spec_into`, so distinct applications of one generic spec are
+    /// distinct candidates.
     fn infer_qualified_spec(
         &mut self,
         node_id: HirId,
@@ -394,6 +395,7 @@ impl<'r> Analyzer<'r> {
         target: &ResolvedType,
         function: &Ident,
     ) -> Option<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedGenericArg>)> {
+        use crate::resolved_type::ResolvedSpecApplication;
         let conformances = match self.resolver.conformances_for_type(target) {
             Ok(conformances) => conformances,
             Err(err) => {
@@ -401,28 +403,30 @@ impl<'r> Analyzer<'r> {
                 return None;
             }
         };
-        let mut found: Vec<(ResolvedConformance, Rc<RefCell<ResolvedSpecType>>)> = Vec::new();
+        let mut found: Vec<ResolvedSpecApplication> = Vec::new();
         for conform in conformances {
             let declaring = self.without_diagnostics(|this| {
-                let flattened = this.flatten_spec(
+                this.flatten_spec(
                     node_id,
                     span,
                     &conform.spec,
                     &conform.spec_args,
                     &ResolvedType::Void,
-                )?;
-                flattened
-                    .into_iter()
-                    .find(|declared| &declared.name == function)
-                    .map(|declared| declared.spec)
+                )
             });
-            let Some(declaring) = declaring else { continue };
-            if !found.iter().any(|(_, seen)| Rc::ptr_eq(seen, &declaring)) {
-                found.push((conform, declaring));
+            for declared in declaring.iter().flatten() {
+                if &declared.name != function {
+                    continue;
+                }
+                let application =
+                    ResolvedSpecApplication::new(declared.spec.clone(), declared.spec_args());
+                if !found.contains(&application) {
+                    found.push(application);
+                }
             }
         }
         match found.as_slice() {
-            [(conform, _)] => Some((conform.spec.clone(), conform.spec_args.clone())),
+            [application] => Some((application.spec.clone(), application.spec_args.clone())),
             [] => {
                 self.error(
                     node_id,
@@ -441,10 +445,7 @@ impl<'r> Analyzer<'r> {
                     AnalysisErrorKind::QualifiedSpecAmbiguous {
                         target: target.to_string(),
                         function: function.clone(),
-                        specs: found
-                            .iter()
-                            .map(|(conform, _)| conform.spec.borrow().name.clone())
-                            .collect(),
+                        specs: distinct_spec_displays(&found),
                     },
                 );
                 None
@@ -774,5 +775,100 @@ impl<'r> Analyzer<'r> {
             method.fn_type,
             checked_args,
         )))
+    }
+}
+
+/// Each application as written in source, module-qualified when two would
+/// otherwise read the same, in a deterministic order.
+fn distinct_spec_displays(
+    applications: &[crate::resolved_type::ResolvedSpecApplication],
+) -> Vec<String> {
+    let plain: Vec<String> = applications.iter().map(ToString::to_string).collect();
+    let mut displays: Vec<String> = applications
+        .iter()
+        .zip(&plain)
+        .map(|(application, display)| {
+            if plain.iter().filter(|other| *other == display).count() > 1 {
+                let spec = application.spec.borrow();
+                let mut qualified = spec
+                    .module_path
+                    .iter()
+                    .chain(std::iter::once(&spec.name))
+                    .map(AsRef::as_ref)
+                    .collect::<Vec<&str>>()
+                    .join("::");
+                if !application.spec_args.is_empty() {
+                    let args = application
+                        .spec_args
+                        .iter()
+                        .map(|arg| match arg {
+                            ResolvedGenericArg::Type(ty) => {
+                                crate::resolved_type::QualifiedType(ty).to_string()
+                            }
+                            ResolvedGenericArg::Comp(value) => value.to_string(),
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    qualified.push_str(&format!("<{args}>"));
+                }
+                qualified
+            } else {
+                display.clone()
+            }
+        })
+        .collect();
+    displays.sort();
+    displays
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::resolved_type::{ResolvedSpecApplication, ResolvedStructType};
+
+    #[test]
+    fn ambiguous_spec_displays_qualify_generic_arguments() {
+        let spec = Rc::new(RefCell::new(ResolvedSpecType {
+            id: HirId {
+                module: omega_hir::ModuleId(0),
+                local: 0,
+            },
+            name: Ident("P".into()),
+            module_path: vec![Ident("pkg".into())],
+            visibility: omega_parser::prelude::Visibility::Exposed,
+            generics: vec![],
+            generic_args: vec![],
+            is_object_safe: true,
+            functions: vec![],
+            suppress: vec![],
+        }));
+        let application = |module: &str, local| {
+            let ty = ResolvedType::Struct(Rc::new(RefCell::new(ResolvedStructType {
+                id: HirId {
+                    module: omega_hir::ModuleId(0),
+                    local,
+                },
+                name: Ident("X".into()),
+                module_path: vec![Ident(module.into())],
+                generic_args: vec![],
+                fields: vec![],
+                functions: vec![],
+                layout: crate::annotations::Layout::default(),
+                suppress: vec![],
+                is_marker: true,
+            })));
+            ResolvedSpecApplication::new(spec.clone(), vec![ResolvedGenericArg::Type(ty)])
+        };
+        let a = application("a", 1);
+        let b = application("b", 2);
+        assert_eq!(distinct_spec_displays(&[a.clone()]), vec!["P<X>"]);
+        assert_eq!(
+            distinct_spec_displays(&[b.clone(), a.clone()]),
+            vec!["pkg::P<a::X>", "pkg::P<b::X>"]
+        );
+        assert_eq!(
+            distinct_spec_displays(&[a.clone(), b.clone()]),
+            distinct_spec_displays(&[b, a])
+        );
     }
 }

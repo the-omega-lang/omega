@@ -5,8 +5,11 @@ comp-and-default: 4 8
 value: 33 44
 aggregates: 2 300 5
 annotations: 7 2 3 5 2 1 2 2
+known-parts: 3 300 8 5 7 9
+overloaded: 2 1 7 2
+branches: 3 5 6 9
 for-pair: 1 7
 for-pair: 0 7
 for-whole: 0
 for-whole: 1
-qualified: 9 9 42 42 1
+qualified: 9 9 42 42 1 8

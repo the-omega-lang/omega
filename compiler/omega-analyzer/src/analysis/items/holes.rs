@@ -13,20 +13,28 @@ pub(crate) struct HoledAnnotation {
 }
 
 impl<'r> Analyzer<'r> {
-    /// Rewrites every hole in `annotation`. `None` means it has none.
+    /// Rewrites every hole in `annotation`. `Ok(None)` means it has none;
+    /// `Err` means a hole sits where nothing is inferred, which is reported.
     pub(crate) fn rewrite_annotation_holes(
         &mut self,
         node_id: HirId,
         span: Span,
         annotation: &Type,
-    ) -> Option<HoledAnnotation> {
+    ) -> Result<Option<HoledAnnotation>, ()> {
         let mut holes = Vec::new();
-        let rewritten = self.rewrite_type_holes(node_id, span, annotation, &mut holes);
-        (!holes.is_empty()).then(|| HoledAnnotation {
+        let Ok(rewritten) = self.rewrite_type_holes(node_id, span, annotation, &mut holes) else {
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::UnresolvedType(TypeResolutionError::InferenceHoleNotAllowed),
+            );
+            return Err(());
+        };
+        Ok((!holes.is_empty()).then(|| HoledAnnotation {
             written: annotation.clone(),
             rewritten,
             holes,
-        })
+        }))
     }
 
     fn rewrite_type_holes(
@@ -35,20 +43,20 @@ impl<'r> Analyzer<'r> {
         span: Span,
         ty: &Type,
         holes: &mut Vec<HirGenericParam>,
-    ) -> Type {
-        match ty {
+    ) -> Result<Type, ()> {
+        Ok(match ty {
             Type::Infer => {
                 Type::Named(fresh_hole(holes, GenericParamKind::Type { bounds: vec![] }).into())
             }
             Type::Pointer(inner, mutable) => Type::Pointer(
-                Box::new(self.rewrite_type_holes(node_id, span, inner, holes)),
+                Box::new(self.rewrite_type_holes(node_id, span, inner, holes)?),
                 *mutable,
             ),
             Type::InferredArray(inner) => Type::InferredArray(Box::new(
-                self.rewrite_type_holes(node_id, span, inner, holes),
+                self.rewrite_type_holes(node_id, span, inner, holes)?,
             )),
             Type::UnknownSizeArray(inner) => Type::UnknownSizeArray(Box::new(
-                self.rewrite_type_holes(node_id, span, inner, holes),
+                self.rewrite_type_holes(node_id, span, inner, holes)?,
             )),
             Type::SizedArray(inner, length) => {
                 let length = match length {
@@ -64,7 +72,7 @@ impl<'r> Analyzer<'r> {
                     length => length.clone(),
                 };
                 Type::SizedArray(
-                    Box::new(self.rewrite_type_holes(node_id, span, inner, holes)),
+                    Box::new(self.rewrite_type_holes(node_id, span, inner, holes)?),
                     length,
                 )
             }
@@ -85,7 +93,7 @@ impl<'r> Analyzer<'r> {
                             GenericArg::Type(Type::Named(fresh_hole(holes, kind).into()))
                         }
                         GenericArg::Type(inner) => {
-                            GenericArg::Type(self.rewrite_type_holes(node_id, span, inner, holes))
+                            GenericArg::Type(self.rewrite_type_holes(node_id, span, inner, holes)?)
                         }
                         GenericArg::Value(_) => arg.clone(),
                     });
@@ -97,7 +105,7 @@ impl<'r> Analyzer<'r> {
                     let mut params = Vec::with_capacity(f.params.len());
                     for param in &f.params {
                         params.push(FunctionTypeParam {
-                            r#type: self.rewrite_type_holes(node_id, span, &param.r#type, holes),
+                            r#type: self.rewrite_type_holes(node_id, span, &param.r#type, holes)?,
                             ..param.clone()
                         });
                     }
@@ -108,15 +116,15 @@ impl<'r> Analyzer<'r> {
                     span,
                     &f.return_type,
                     holes,
-                )),
+                )?),
                 ..f.clone()
             }),
             // Nothing is inferred inside a spec reference, and an anonymous
             // enum's members lose their written positions to canonical
-            // ordering; a hole in either is left for ordinary resolution to
-            // reject.
+            // ordering.
+            Type::SpecStatic(_) | Type::AnonymousEnum(_) if contains_hole(ty) => return Err(()),
             Type::Named(_) | Type::SpecStatic(_) | Type::AnonymousEnum(_) => ty.clone(),
-        }
+        })
     }
 
     /// The generic parameters of the item a written generic type names, found
@@ -146,16 +154,14 @@ impl<'r> Analyzer<'r> {
         annotation: &HoledAnnotation,
         value: &HirExprNode,
     ) -> Option<(ResolvedType, CheckedExprNode)> {
-        let pattern = self.overload_type_pattern(
+        let pattern = self.annotation_type_pattern(
             decl_id,
             decl_span,
             &annotation.rewritten,
             &annotation.holes,
         )?;
         let checked = self.analyze_expr(value, Expected::Pattern(&pattern))?;
-        let resolved =
-            self.solve_holes_from(decl_id, decl_span, annotation, &pattern, &checked.r#type);
-        let Some(resolved) = resolved else {
+        let Some(solved) = read_back_holes(annotation, &pattern, &checked.r#type) else {
             self.error(
                 decl_id,
                 decl_span,
@@ -165,27 +171,61 @@ impl<'r> Analyzer<'r> {
             );
             return None;
         };
+        let resolved = self.resolve_solved_annotation(decl_id, decl_span, annotation, &solved)?;
         Some((resolved, checked))
     }
 
-    /// The annotation with every hole taken from `found`, resolved as if it
-    /// had been written that way. `None` when `found` leaves a hole open.
-    pub(crate) fn solve_holes_from(
+    /// The annotation resolved as if every hole had been written as its
+    /// solution.
+    pub(crate) fn resolve_solved_annotation(
         &mut self,
         id: HirId,
         span: Span,
         annotation: &HoledAnnotation,
-        pattern: &TypePattern,
-        found: &ResolvedType,
+        solved: &[ResolvedGenericArg],
     ) -> Option<ResolvedType> {
-        let mut bindings = vec![None; annotation.holes.len()];
-        pattern.infer(found, &mut bindings);
-        let solved: Vec<ResolvedGenericArg> = bindings.into_iter().collect::<Option<_>>()?;
         let substitution =
-            GenericSubstitution::zip(annotation.holes.iter().map(|hole| &hole.ident), &solved);
+            GenericSubstitution::zip(annotation.holes.iter().map(|hole| &hole.ident), solved);
         self.with_substitution(&substitution, |this| {
             this.resolve_type_or_error(id, span, &annotation.rewritten, true)
         })
+    }
+}
+
+/// Each hole of `annotation` taken from `found`. `None` when `found` leaves a
+/// hole open.
+pub(crate) fn read_back_holes(
+    annotation: &HoledAnnotation,
+    pattern: &TypePattern,
+    found: &ResolvedType,
+) -> Option<Vec<ResolvedGenericArg>> {
+    let mut bindings = vec![None; annotation.holes.len()];
+    pattern.infer(found, &mut bindings);
+    bindings.into_iter().collect()
+}
+
+fn contains_hole(ty: &Type) -> bool {
+    match ty {
+        Type::Infer => true,
+        Type::Named(_) => false,
+        Type::Pointer(inner, _) | Type::InferredArray(inner) | Type::UnknownSizeArray(inner) => {
+            contains_hole(inner)
+        }
+        Type::SizedArray(inner, length) => {
+            matches!(length, ArrayLength::Infer) || contains_hole(inner)
+        }
+        Type::Generic(_, args) => args.iter().any(|arg| match arg {
+            GenericArg::Infer => true,
+            GenericArg::Type(inner) => contains_hole(inner),
+            GenericArg::Value(_) => false,
+        }),
+        Type::Function(f) => {
+            f.params.iter().any(|param| contains_hole(&param.r#type))
+                || contains_hole(&f.return_type)
+        }
+        Type::SpecStatic(members) | Type::AnonymousEnum(members) => {
+            members.iter().any(contains_hole)
+        }
     }
 }
 

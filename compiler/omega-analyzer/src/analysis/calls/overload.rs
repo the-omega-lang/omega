@@ -375,9 +375,13 @@ impl<'r> Analyzer<'r> {
                 if validated.len() > template.generics.len() {
                     continue;
                 }
-                let Some(prefix) =
-                    self.bind_written_generics(node_id, span, &validated, &template.generics, false)
-                else {
+                let Some(prefix) = self.bind_written_generics(
+                    node_id,
+                    span,
+                    &validated,
+                    &template.generics,
+                    false,
+                ) else {
                     continue;
                 };
                 written = prefix;
@@ -385,8 +389,14 @@ impl<'r> Analyzer<'r> {
                 for (slot, binding) in bindings.iter_mut().zip(&written.bindings) {
                     slot.clone_from(binding);
                 }
-                if let Some(expected) = expected.exact() {
-                    template.return_type.infer(expected, &mut bindings);
+                match expected {
+                    Expected::Exact(expected) => {
+                        template.return_type.infer(expected, &mut bindings)
+                    }
+                    Expected::Pattern(expected) => template
+                        .return_type
+                        .infer_from_pattern(expected, &mut bindings),
+                    Expected::None => {}
                 }
                 for (position, pattern) in template.params[implicit..].iter().enumerate() {
                     pattern.infer(&argument_type(position), &mut bindings);

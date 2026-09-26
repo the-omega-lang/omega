@@ -137,6 +137,47 @@ impl TypePattern {
         }
     }
 
+    /// Seeds `bindings` from an expected type that is itself a pattern. The
+    /// expectation's parameters are a separate namespace of unknowns: they
+    /// bind nothing here, and only its fixed parts can bind a parameter of
+    /// this pattern.
+    pub fn infer_from_pattern(&self, expected: &Self, bindings: &mut [Option<ResolvedGenericArg>]) {
+        match (self, expected) {
+            (_, Self::Fixed(expected)) => self.infer(expected, bindings),
+            (Self::Pointer(inner, _), Self::Pointer(expected, _))
+            | (Self::Slice(inner, _), Self::Slice(expected, _))
+            | (Self::Array(inner, _), Self::Array(expected, _)) => {
+                inner.infer_from_pattern(expected, bindings)
+            }
+            (Self::SizedArray(inner, length), Self::SizedArray(expected, expected_length)) => {
+                inner.infer_from_pattern(expected, bindings);
+                length.infer_from_pattern(expected_length, bindings);
+            }
+            (Self::Nominal(path, args), Self::Nominal(expected_path, expected_args))
+                if path == expected_path
+                    && args.len() == expected_args.len()
+                    && args
+                        .iter()
+                        .zip(expected_args)
+                        .all(|(arg, expected)| arg.same_kind(expected)) =>
+            {
+                for (arg, expected) in args.iter().zip(expected_args) {
+                    arg.infer_from_pattern(expected, bindings);
+                }
+            }
+            (
+                Self::Function(params, result, _, _),
+                Self::Function(expected_params, expected_result, _, _),
+            ) if params.len() == expected_params.len() => {
+                for (param, expected) in params.iter().zip(expected_params) {
+                    param.infer_from_pattern(expected, bindings);
+                }
+                result.infer_from_pattern(expected_result, bindings);
+            }
+            _ => {}
+        }
+    }
+
     pub fn resolved(&self, bindings: &[Option<ResolvedGenericArg>]) -> Option<ResolvedType> {
         Some(match self {
             Self::Fixed(ty) => ty.clone(),
@@ -447,6 +488,41 @@ impl ArgumentPattern {
             Self::Type(ty) => Self::Type(Box::new(ty.substitute(args, pointer_bits)?)),
             Self::Value(_) => self.clone(),
         })
+    }
+
+    fn same_kind(&self, other: &Self) -> bool {
+        matches!(
+            (self, other),
+            (Self::Type(_), Self::Type(_))
+                | (
+                    Self::Value(_) | Self::Parameter(_, _),
+                    Self::Value(_) | Self::Parameter(_, _)
+                )
+        )
+    }
+
+    fn infer_from_pattern(&self, expected: &Self, bindings: &mut [Option<ResolvedGenericArg>]) {
+        match (self, expected) {
+            (Self::Type(pattern), Self::Type(expected)) => {
+                pattern.infer_from_pattern(expected, bindings)
+            }
+            (Self::Parameter(index, _), Self::Value(value)) => {
+                bindings[*index].get_or_insert(ResolvedGenericArg::Comp(*value));
+            }
+            _ => {}
+        }
+    }
+
+    /// The argument this pattern denotes when nothing in it is symbolic.
+    pub(crate) fn known(&self) -> Option<ResolvedGenericArg> {
+        match self {
+            Self::Type(pattern) => match pattern.as_ref() {
+                TypePattern::Fixed(ty) => Some(ResolvedGenericArg::Type(ty.clone())),
+                _ => None,
+            },
+            Self::Value(value) => Some(ResolvedGenericArg::Comp(*value)),
+            Self::Parameter(_, _) => None,
+        }
     }
 
     fn infer(&self, found: &ResolvedGenericArg, bindings: &mut [Option<ResolvedGenericArg>]) {

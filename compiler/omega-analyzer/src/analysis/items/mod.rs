@@ -193,15 +193,17 @@ impl<'r> Analyzer<'r> {
         r#type: &Type,
         value: &HirExprNode,
     ) -> Option<(ResolvedType, CheckedExprNode)> {
-        let (resolved_type, checked_value) =
-            match self.rewrite_annotation_holes(decl_id, decl_span, r#type) {
-                Some(holed) => self.check_holed_initializer(decl_id, decl_span, &holed, value)?,
-                None => {
-                    let resolved_type = self.resolve_type_or_error(decl_id, decl_span, r#type, true)?;
-                    let checked_value = self.analyze_expr(value, Expected::Exact(&resolved_type))?;
-                    (resolved_type, checked_value)
-                }
-            };
+        let (resolved_type, checked_value) = match self
+            .rewrite_annotation_holes(decl_id, decl_span, r#type)
+            .ok()?
+        {
+            Some(holed) => self.check_holed_initializer(decl_id, decl_span, &holed, value)?,
+            None => {
+                let resolved_type = self.resolve_type_or_error(decl_id, decl_span, r#type, true)?;
+                let checked_value = self.analyze_expr(value, Expected::Exact(&resolved_type))?;
+                (resolved_type, checked_value)
+            }
+        };
         let checked_value = self.coerce_to_expected(Some(&resolved_type), checked_value);
         if !Self::value_type_compatible(&resolved_type, &checked_value.r#type) {
             self.error(
@@ -1296,7 +1298,7 @@ impl<'r> Analyzer<'r> {
 mod bodies;
 mod holes;
 
-pub(super) use holes::HoledAnnotation;
+pub(super) use holes::{HoledAnnotation, read_back_holes};
 
 #[cfg(test)]
 mod tests;

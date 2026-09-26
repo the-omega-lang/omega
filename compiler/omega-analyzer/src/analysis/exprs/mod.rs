@@ -327,6 +327,18 @@ impl<'r> Analyzer<'r> {
         }
     }
 
+    /// A pattern's known parts hold for every branch, whatever an earlier
+    /// branch produced; otherwise later branches follow the first one.
+    fn later_branch_expected<'a>(
+        expected: Expected<'a>,
+        anchor: Option<&'a ResolvedType>,
+    ) -> Expected<'a> {
+        match expected {
+            Expected::Pattern(_) => expected,
+            Expected::None | Expected::Exact(_) => anchor.into(),
+        }
+    }
+
     fn analyze_if(
         &mut self,
         node_id: HirId,
@@ -358,7 +370,7 @@ impl<'r> Analyzer<'r> {
             } else if i == 0 {
                 expected
             } else {
-                anchor.as_ref().into()
+                Self::later_branch_expected(expected, anchor.as_ref())
             };
             let checked_block = self.analyze_block(block, block_expected)?;
             if has_else && i == 0 {
@@ -372,7 +384,9 @@ impl<'r> Analyzer<'r> {
             checked_blocks.push(checked_block);
         }
         let checked_else = match else_branch {
-            Some(b) => Some(self.analyze_block(b, anchor.as_ref().into())?),
+            Some(b) => {
+                Some(self.analyze_block(b, Self::later_branch_expected(expected, anchor.as_ref()))?)
+            }
             None => None,
         };
 
