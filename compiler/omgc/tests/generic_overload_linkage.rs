@@ -203,7 +203,7 @@ impl Workspace {
     /// Compiles one client on its own, against the package identity
     /// `provider` supplied by `provider_root`.
     fn compile_client(&self, client: &str, objects: &str, provider_root: &str) {
-        let import = format!("--import=provider:{provider_root}");
+        let import = format!("--import=provider={provider_root}");
         self.expect_ok(
             env!("CARGO_BIN_EXE_omgc"),
             &[client, "-o", objects, &import],

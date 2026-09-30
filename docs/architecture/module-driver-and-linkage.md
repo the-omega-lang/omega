@@ -556,7 +556,7 @@ sources            physical local `.omg` files, sorted by relative path
 
 MIR lowering consumes the checked modules only after this whole semantic stage has succeeded.
 
-`sources` is the physical counterpart of `modules`: one `LocalSource` for every source-bearing local `.omg` file, carrying its logical `ModulePath` and its path relative to the package root. It is derived from `ModuleRoots`, so a namespace-only directory has no entry and a declared `<name>:<dir>` identity renames the module path without moving the file path. Native emission granularity is decided from this inventory alone -- see [`mir-and-codegen.md`](mir-and-codegen.md) -- and it never becomes semantic module identity.
+`sources` is the physical counterpart of `modules`: one `LocalSource` for every source-bearing local `.omg` file, carrying its logical `ModulePath` and its path relative to the package root. It is derived from `ModuleRoots`, so a namespace-only directory has no entry and a declared `<name>=<dir>` identity renames the module path without moving the file path. Native emission granularity is decided from this inventory alone -- see [`mir-and-codegen.md`](mir-and-codegen.md) -- and it never becomes semantic module identity.
 
 ## Determinism
 

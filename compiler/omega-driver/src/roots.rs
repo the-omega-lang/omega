@@ -20,7 +20,7 @@ pub struct ExternRoot {
 /// One physical, source-bearing local `.omg` file. `relative_path` is the
 /// file's path below the local package root and is the compiler's stable
 /// native emission identity: it mirrors on-disk layout, so a declared
-/// `<name>:<dir>` identity override never moves it.
+/// `<name>=<dir>` identity override never moves it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalSource {
     pub module: ModulePath,

@@ -32,9 +32,9 @@ playground: build-omgc build-runtime
     @echo "[*] Running playground..."
     rm -rf target/playground target/playground-objects
     ./bin/omgc-debug -v playground/ --target={{HOST_TARGET}} \
-        --import=core:runtime/core/ \
-        --import=std:runtime/std/ \
-        --import=plat:runtime/plat/target/{{HOST_TARGET}}/ \
+        --import=core=runtime/core/ \
+        --import=std=runtime/std/ \
+        --import=plat=runtime/plat/target/{{HOST_TARGET}}/ \
         -o target/playground-objects
     just link-native target/playground-objects target/playground
     ./target/playground
@@ -70,10 +70,10 @@ build-runtime-for TARGET OPT="-O0": build-omgc check-plat-links
     @echo "[*] Building runtime for {{TARGET}} ({{OPT}})..."
     rm -rf {{ARTIFACTS}}/{{TARGET}}/core {{ARTIFACTS}}/{{TARGET}}/plat {{ARTIFACTS}}/{{TARGET}}/std
     ./bin/omgc-debug -v runtime/core/ --target={{TARGET}} {{OPT}} -o {{ARTIFACTS}}/{{TARGET}}/core
-    ./bin/omgc-debug -v plat:runtime/plat/target/{{TARGET}}/ --target={{TARGET}} {{OPT}} \
-        --import=core:runtime/core/ -o {{ARTIFACTS}}/{{TARGET}}/plat
+    ./bin/omgc-debug -v plat=runtime/plat/target/{{TARGET}}/ --target={{TARGET}} {{OPT}} \
+        --import=core=runtime/core/ -o {{ARTIFACTS}}/{{TARGET}}/plat
     ./bin/omgc-debug -v runtime/std/ --target={{TARGET}} {{OPT}} \
-        --import=core:runtime/core/ -o {{ARTIFACTS}}/{{TARGET}}/std
+        --import=core=runtime/core/ -o {{ARTIFACTS}}/{{TARGET}}/std
 
 # Every platform root in the tree, compiled the way its own target compiles
 # it. `omgc` emits objects only, so this proves the packages build and what
@@ -94,8 +94,8 @@ build-runtime-all:
 build-plat-libc: build-omgc
     @echo "[*] Building the libc compatibility platform..."
     rm -rf {{ARTIFACTS}}/{{HOST_TARGET}}/plat-libc
-    ./bin/omgc-debug -v plat:runtime/plat/libc/ --target={{HOST_TARGET}} \
-        --import=core:runtime/core/ -o {{ARTIFACTS}}/{{HOST_TARGET}}/plat-libc
+    ./bin/omgc-debug -v plat=runtime/plat/libc/ --target={{HOST_TARGET}} \
+        --import=core=runtime/core/ -o {{ARTIFACTS}}/{{HOST_TARGET}}/plat-libc
 
 # The platform matrix: every target root compiled for its own target, the
 # hosted link proven free of a C runtime, the atomic glue put under real

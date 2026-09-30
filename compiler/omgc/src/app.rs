@@ -1,22 +1,33 @@
 use crate::cli::{self, Args, Command};
 use omega_analyzer::Target;
 use omega_codegen::{CodegenRequest, EmitKind, EmitOutput, EmittedArtifact};
-use omega_diagnostics::{GREEN, Renderer, SourceRegistry, paint};
+use omega_diagnostics::{Diagnostic, GREEN, Renderer, SourceRegistry, paint};
 use omega_driver::{Driver, basename};
 use omega_mir::EmissionSource;
 use omega_parser::highlight::OmegaHighlighter;
-use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 pub(crate) enum AppError {
-    Message(String),
+    Diagnostics(Vec<Diagnostic>),
     Reported,
+}
+
+impl From<Diagnostic> for AppError {
+    fn from(diagnostic: Diagnostic) -> Self {
+        Self::Diagnostics(vec![diagnostic])
+    }
+}
+
+impl From<Vec<Diagnostic>> for AppError {
+    fn from(diagnostics: Vec<Diagnostic>) -> Self {
+        Self::Diagnostics(diagnostics)
+    }
 }
 
 impl From<String> for AppError {
     fn from(message: String) -> Self {
-        Self::Message(message)
+        Diagnostic::error(message).into()
     }
 }
 
@@ -43,25 +54,33 @@ fn compile(args: Args) -> Result<(), AppError> {
         verbose,
     } = args;
     let start = Instant::now();
-    let colors = std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+    let colors = crate::use_colors(std::io::stderr());
     let renderer = Renderer::new(colors).with_highlighter(Box::new(OmegaHighlighter));
 
     let entry_name = match name.clone() {
         Some(name) => name,
         None => {
             let physical_name = basename(&entry_dir).ok_or_else(|| {
-                AppError::Message(format!(
-                    "'{}' has no usable directory name -- a package root's own module file is \
-                     named after its directory, so name the directory explicitly (a \
-                     '<name>:<dir>' entry argument renames the module, it cannot supply a \
-                     missing directory name)",
+                Diagnostic::error(format!(
+                    "'{}' has no usable directory name",
                     entry_dir.display()
                 ))
+                .with_note(
+                    "a package root's own module file is named after its directory, so the \
+                     directory must be named explicitly",
+                )
+                .with_note(
+                    "a '<name>=<dir>' entry argument renames the module; it cannot supply a \
+                     missing directory name",
+                )
             })?;
             cli::validate_module_name(
                 physical_name.as_ref(),
-                "inferred from the entry directory name; pass <name>:<dir> to override",
-            )?
+                "inferred from the entry directory name",
+            )
+            .map_err(|diagnostic| {
+                diagnostic.with_help("pass <name>=<dir> to declare a different name")
+            })?
         }
     };
 
@@ -160,13 +179,17 @@ fn compile(args: Args) -> Result<(), AppError> {
     write_artifacts(&output_dir, &artifacts, emit, target)?;
 
     if verbose {
-        verbose_step(colors, "Finished", &format!("in {:.2?}", start.elapsed()));
+        verbose_step(
+            colors,
+            "Saved",
+            &format!(
+                "{} artifact(s) to {}/ in {:.2?}",
+                artifacts.len(),
+                output_dir.display(),
+                start.elapsed()
+            ),
+        );
     }
-    println!(
-        "Saved {} artifact(s) to: {}",
-        artifacts.len(),
-        output_dir.display()
-    );
     Ok(())
 }
 
@@ -181,11 +204,13 @@ fn write_artifacts(
     target: Target,
 ) -> Result<(), AppError> {
     if output_dir.exists() && !output_dir.is_dir() {
-        return Err(AppError::Message(format!(
-            "'{}' is not a directory -- '-o' names the output directory that receives one \
-             artifact per source file",
-            output_dir.display()
-        )));
+        return Err(
+            Diagnostic::error(format!("'{}' is not a directory", output_dir.display()))
+                .with_note(
+                    "'-o' names the output directory that receives one artifact per source file",
+                )
+                .into(),
+        );
     }
 
     let extension = emit.extension(target);
@@ -200,7 +225,8 @@ fn write_artifacts(
             EmitOutput::Text(text) => std::fs::write(&path, text),
         });
         write.map_err(|error| {
-            AppError::Message(format!("failed to write '{}': {error}", path.display()))
+            Diagnostic::error(format!("failed to write '{}'", path.display()))
+                .with_note(error.to_string())
         })?;
     }
     Ok(())
@@ -233,7 +259,7 @@ fn render_compile_errors(
     }
 
     let plural = if count == 1 { "error" } else { "errors" };
-    let summary = omega_diagnostics::Diagnostic::error(format!(
+    let summary = Diagnostic::error(format!(
         "could not compile the program due to {count} previous {plural}"
     ));
     eprintln!("{}", renderer.render(&summary, driver.sources()));

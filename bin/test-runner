@@ -44,7 +44,7 @@ end
 # omgc
 OMGC = BIN_DIR.join("omgc-debug")
 OMGC_IMPORTS = RUNTIME_PACKAGES.map do |name, path|
-  "--import=#{name}:#{path}"
+  "--import=#{name}=#{path}"
 end.freeze
 
 module Color

@@ -156,7 +156,7 @@ fn only_exported_symbols_leave_a_shared_library() {
             "consumer",
             "-o",
             "consumer-objects",
-            "--import=shared:shared",
+            "--import=shared=shared",
         ],
     );
     workspace.expect_ok(

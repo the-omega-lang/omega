@@ -87,7 +87,7 @@ def compile(source_dir, target, output, imports:, opt: nil, defines: [])
   args = [OMGC.to_s, source_dir.to_s, "--target=#{target}", "-o", output.to_s]
   args << opt if opt
   defines.each { |definition| args << "-D#{definition}" }
-  imports.each { |name, path| args << "--import=#{name}:#{path}" }
+  imports.each { |name, path| args << "--import=#{name}=#{path}" }
   out, err, status = run(*args)
   [out + err, status]
 end
@@ -179,7 +179,7 @@ TARGETS.each do |target|
     capabilities = (target == "avr-none" ? ["PanicHandler"] : HOSTED_GLUE) + ATOMIC_GLUE
     output = WORK.join("no-startup-#{target}")
     problem = check_without_startup(
-      "plat:#{ROOT.join("runtime", "plat", "target", target)}", target,
+      "plat=#{ROOT.join("runtime", "plat", "target", target)}", target,
       baseline, output, capabilities: capabilities,
       opt: target == "avr-none" ? "-O1" : nil
     )
@@ -188,7 +188,7 @@ TARGETS.each do |target|
   end
 end
 
-libc_source = "plat:#{ROOT.join("runtime", "plat", "libc")}"
+libc_source = "plat=#{ROOT.join("runtime", "plat", "libc")}"
 libc_baseline = WORK.join("libc-default")
 libc_built = false
 check "libc: the platform defines main by default" do
@@ -448,8 +448,8 @@ puts "instruction selection"
 def atomic_assembly(target, opt: nil)
   output = WORK.join("asm-#{target}")
   args = [
-    OMGC.to_s, "plat:#{ROOT.join("runtime", "plat", "target", target)}",
-    "--import=core:#{ROOT.join("runtime", "core")}",
+    OMGC.to_s, "plat=#{ROOT.join("runtime", "plat", "target", target)}",
+    "--import=core=#{ROOT.join("runtime", "core")}",
     "--target=#{target}", "--emit=asm", "-o", output.to_s
   ]
   args << opt if opt

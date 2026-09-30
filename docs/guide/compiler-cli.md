@@ -3,7 +3,7 @@
 Typical shape:
 
 ```text
-omgc [<name>:]<entry-dir> -o <output-dir> [--import=[<name>:]<dir>]...
+omgc [<name>=]<entry-dir> -o <output-dir> [--import=[<name>=]<dir>]...
      [-D<name>[=<literal>]]... [-O<0-3>] [--target=<arch>-<os>]
      [--emit=<obj|ir|asm>] [-v]
 ```
@@ -27,7 +27,7 @@ src/                          target/objects/
 
 Every source-bearing `.omg` file owns an artifact, including one that declares
 nothing; a directory that only groups children declares no module of its own
-and produces none. Layout follows the files on disk, so a `<name>:<dir>`
+and produces none. Layout follows the files on disk, so a `<name>=<dir>`
 identity override renames the module and its symbols without moving any
 output.
 
@@ -38,12 +38,14 @@ object behind. An existing `-o` path that is a regular file is rejected.
 
 ## Package identity
 
-The compiled package and its dependencies use the same `[<name>:]<dir>` spelling. A bare directory takes its identity from the directory basename; `<name>:<dir>` supplies the identity explicitly:
+The compiled package and its dependencies use the same `[<name>=]<dir>` spelling. A bare directory takes its identity from the directory basename; `<name>=<dir>` supplies the identity explicitly:
 
 ```sh
-omgc mathlib:examples/extern_lib/ -o target/mathlib
-omgc app/ --import=mathlib:examples/extern_lib/ -o target/app
+omgc mathlib=examples/extern_lib/ -o target/mathlib
+omgc app/ --import=mathlib=examples/extern_lib/ -o target/app
 ```
+
+As with `-D`, only the **first** `=` separates the name, so `name=./a=b` declares `name` for the directory `./a=b`. A bare directory whose path contains `=` therefore needs an explicit name. `:` has no special meaning, so a Windows path such as `C:\omega\core` is an ordinary bare directory and `core=C:\omega\core` names it.
 
 Source-level meaning is specified in [`../language/modules-and-imports.md`](../language/modules-and-imports.md).
 
@@ -135,7 +137,7 @@ ABI must be given compatible definitions by the build recipe:
 
 ```sh
 omgc runtime/core/ -o target/core -Dsmall_build
-omgc app/ --import=core:runtime/core/ -o target/app -Dsmall_build
+omgc app/ --import=core=runtime/core/ -o target/app -Dsmall_build
 ```
 
 ## Emit modes
@@ -156,8 +158,8 @@ A normal multi-package build compiles each package in a separate `omgc` process 
 omgc runtime/core/ -o target/core
 omgc examples/mathlib/ -o target/mathlib
 omgc examples/dev/ \
-    --import=mathlib:examples/mathlib/ \
-    --import=core:runtime/core/ \
+    --import=mathlib=examples/mathlib/ \
+    --import=core=runtime/core/ \
     -o target/main
 cc -Wl,--gc-sections \
     $(find target/main target/mathlib target/core -name '*.o' | sort) \

@@ -51,7 +51,7 @@ Owning library values use explicit lifetime/free APIs; the compiler does not inj
 
 ### `runtime/plat/*`
 
-`runtime/plat/` is a container of platform implementations, not one magical compiler-known package. Only a directory under `runtime/plat/target/` is ever compiled; it is presented to source under the declared identity `plat` using `plat:<dir>` / `--import=plat:<dir>`.
+`runtime/plat/` is a container of platform implementations, not one magical compiler-known package. Only a directory under `runtime/plat/target/` is ever compiled; it is presented to source under the declared identity `plat` using `plat=<dir>` / `--import=plat=<dir>`.
 
 Selecting a platform implementation is therefore selecting which root is built and registered, not an implicit compiler target hook. The `--target` argument and the chosen root must agree: the target fixes `usize`, layout and the platform together, so every package of one build is compiled for the same one.
 
@@ -168,13 +168,13 @@ Typical repository flow:
 ```text
 omgc runtime/core/ --target=<t>       -> target/<t>/core/**.o
 omgc runtime/std/  --target=<t> \
-     --import=core:...                -> target/<t>/std/**.o
-omgc plat:runtime/plat/target/<t>/ --target=<t> \
-     --import=core:...                -> target/<t>/plat/**.o
+     --import=core=...                -> target/<t>/std/**.o
+omgc plat=runtime/plat/target/<t>/ --target=<t> \
+     --import=core=...                -> target/<t>/plat/**.o
 omgc app/ --target=<t> \
-          --import=core:... \
-          --import=std:... \
-          --import=plat:...           -> target/app/**.o
+          --import=core=... \
+          --import=std=... \
+          --import=plat=...           -> target/app/**.o
 
 system linker -> app executable
 ```

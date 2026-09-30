@@ -1,11 +1,16 @@
 use omega_analyzer::Target;
 use omega_analyzer::compiler_definitions::{CompilerDefinitions, DefinitionValue, decode_literal};
 use omega_codegen::{EmitKind, OptLevel};
-use omega_diagnostics::{BOLD, CYAN, paint};
+use omega_diagnostics::{BOLD, CYAN, Diagnostic, paint};
 use omega_driver::{ExternRoot, basename};
 use omega_parser::prelude::Ident;
-use std::io::IsTerminal;
 use std::path::PathBuf;
+
+const USAGE: &str = "omgc [<name>=]<entry-dir> -o <output-dir> [OPTIONS]";
+
+const MODULE_NAME_RULE: &str = "module names must be valid Omega identifiers (ASCII \
+     letters/digits/underscore, not starting with a digit, and not a reserved keyword); Omega \
+     does not normalize names automatically";
 
 pub(crate) enum Command {
     Help,
@@ -27,7 +32,7 @@ pub(crate) struct Args {
     pub(crate) verbose: bool,
 }
 
-pub(crate) fn parse(args: &[String]) -> Result<Command, String> {
+pub(crate) fn parse(args: &[String]) -> Result<Command, Diagnostic> {
     if args.iter().any(|arg| arg == "-h" || arg == "--help") {
         return Ok(Command::Help);
     }
@@ -35,8 +40,8 @@ pub(crate) fn parse(args: &[String]) -> Result<Command, String> {
     parse_compile(args).map(Command::Compile)
 }
 
-fn parse_compile(args: &[String]) -> Result<Args, String> {
-    let mut entry_dir = None;
+fn parse_compile(args: &[String]) -> Result<Args, Diagnostic> {
+    let mut entry_dir: Option<PathBuf> = None;
     let mut definitions = Vec::new();
     let mut output_dir = None;
     let mut externs = Vec::new();
@@ -51,31 +56,38 @@ fn parse_compile(args: &[String]) -> Result<Args, String> {
         if let Some(value) = arg.strip_prefix("--import=") {
             externs.push(parse_import(arg, value)?);
         } else if arg == "-D" {
-            let definition = iter
-                .next()
-                .ok_or_else(|| "expected a definition after '-D'".to_string())?;
+            let definition = iter.next().ok_or_else(|| {
+                Diagnostic::error("expected a definition after '-D'")
+                    .with_help("write '-D <name>' or '-D <name>=<literal>'")
+            })?;
             definitions.push(parse_definition(&format!("-D {definition}"), definition));
         } else if let Some(value) = arg.strip_prefix("-D") {
             definitions.push(parse_definition(arg, value));
         } else if arg == "-o" {
-            let dir = iter
-                .next()
-                .ok_or_else(|| "expected a directory path after '-o'".to_string())?;
+            let dir = iter.next().ok_or_else(|| {
+                Diagnostic::error("expected a directory path after '-o'")
+                    .with_help("write '-o <output-dir>'")
+            })?;
             output_dir = Some(PathBuf::from(dir));
         } else if let Some(value) = arg.strip_prefix("-O") {
-            opt_level = value.parse()?;
+            opt_level = value.parse().map_err(Diagnostic::error)?;
         } else if let Some(value) = arg.strip_prefix("--target=") {
-            target = Target::parse(value).map_err(|error| error.to_string())?;
+            target = Target::parse(value).map_err(|error| Diagnostic::error(error.to_string()))?;
         } else if let Some(value) = arg.strip_prefix("--emit=") {
-            emit = value.parse()?;
+            emit = value.parse().map_err(Diagnostic::error)?;
         } else if arg == "-v" || arg == "--verbose" {
             verbose = true;
         } else if arg.starts_with('-') {
-            return Err(format!("unknown flag '{arg}'"));
-        } else if entry_dir.is_some() {
-            return Err(format!(
-                "unexpected extra argument '{arg}' (the entry directory was already given)"
-            ));
+            return Err(Diagnostic::error(format!("unknown flag '{arg}'"))
+                .with_help("run 'omgc --help' to list the accepted options"));
+        } else if let Some(first) = &entry_dir {
+            return Err(
+                Diagnostic::error(format!("unexpected extra argument '{arg}'")).with_note(format!(
+                    "the entry directory was already given as '{}'; omgc compiles one \
+                         package per invocation",
+                    first.display()
+                )),
+            );
         } else {
             let (explicit_name, dir) = parse_entry(arg)?;
             name = explicit_name;
@@ -84,9 +96,14 @@ fn parse_compile(args: &[String]) -> Result<Args, String> {
     }
 
     let entry_dir = entry_dir.ok_or_else(|| {
-        "usage: omgc [<name>:]<entry-dir> -o <output-dir> [OPTIONS] (see --help)".to_string()
+        Diagnostic::error("no package directory given")
+            .with_help(format!("usage: {USAGE}"))
+            .with_note("run 'omgc --help' for all options")
     })?;
-    let output_dir = output_dir.ok_or_else(|| "the -o <dir> flag is required".to_string())?;
+    let output_dir = output_dir.ok_or_else(|| {
+        Diagnostic::error("no output directory given")
+            .with_help("pass '-o <output-dir>'; omgc writes one artifact per source file into it")
+    })?;
 
     Ok(Args {
         entry_dir,
@@ -136,41 +153,47 @@ fn parse_definition(spelling: &str, value: &str) -> DefinitionOption {
 pub(crate) fn resolve_definitions(
     target: Target,
     options: &[DefinitionOption],
-) -> Result<CompilerDefinitions, String> {
+) -> Result<CompilerDefinitions, Vec<Diagnostic>> {
     let mut definitions = CompilerDefinitions::new(target);
     let mut spellings: Vec<(&str, &str)> = Vec::new();
-    let mut errors: Vec<String> = Vec::new();
+    let mut errors: Vec<Diagnostic> = Vec::new();
 
     for option in options {
-        let invalid =
-            |reason: String| format!("invalid definition '{}': {reason}", option.spelling);
+        let invalid = |reason: &str| {
+            Diagnostic::error(format!(
+                "invalid definition '{}': {reason}",
+                option.spelling
+            ))
+        };
         if !omega_parser::lexer::is_valid_identifier(&option.name) {
-            errors.push(invalid(format!(
-                "'{}' is not a valid definition name -- a name is a single Omega identifier \
-                 (ASCII letters/digits/underscore, not starting with a digit, and not a keyword)",
-                option.name
-            )));
+            errors.push(
+                invalid(&format!("'{}' is not a valid definition name", option.name)).with_note(
+                    "a definition name is a single Omega identifier (ASCII \
+                     letters/digits/underscore, not starting with a digit, and not a keyword)",
+                ),
+            );
             continue;
         }
         if let Some((_, first)) = spellings.iter().find(|(name, _)| *name == option.name) {
-            errors.push(format!(
-                "definition '{}' is defined more than once ('{first}' and '{}') -- one \
-                 invocation has one value for each definition",
-                option.name, option.spelling
-            ));
+            errors.push(
+                Diagnostic::error(format!(
+                    "definition '{}' is defined more than once ('{first}' and '{}')",
+                    option.name, option.spelling
+                ))
+                .with_note("one invocation has one value for each definition"),
+            );
             continue;
         }
         let value = match option.value.as_deref() {
             None => Ok(DefinitionValue::Bool(true)),
-            Some("") => Err(
-                "a definition needs a value after '='; write '-Dname' for a boolean truth"
-                    .to_string(),
-            ),
+            Some("") => Err(invalid("a definition needs a value after '='")
+                .with_help("write '-Dname' for a boolean truth")),
             Some(text) => omega_parser::prelude::parse_literal(text)
                 .map_err(|error| error.to_string())
                 .and_then(|literal| {
                     decode_literal(&literal, target.pointer_bits()).map_err(|e| e.to_string())
-                }),
+                })
+                .map_err(|reason| invalid(&reason)),
         };
         match value {
             Ok(value) => {
@@ -179,50 +202,64 @@ pub(crate) fn resolve_definitions(
                 // so this is the first and only definition of it.
                 assert!(definitions.define(Ident(option.name.clone()), value));
             }
-            Err(reason) => errors.push(invalid(reason)),
+            Err(diagnostic) => errors.push(diagnostic),
         }
     }
 
     if errors.is_empty() {
         Ok(definitions)
     } else {
-        Err(errors.join("\n"))
+        Err(errors)
     }
 }
 
 /// The compiled package is written like an import: an optional declared
-/// identity, then its root directory (`[<name>:]<dir>`).
-fn parse_entry(arg: &str) -> Result<(Option<Ident>, PathBuf), String> {
-    let (explicit_name, dir) = split_declared_root(arg)
-        .map_err(|reason| format!("invalid entry argument '{arg}': {reason}"))?;
+/// identity, then its root directory (`[<name>=]<dir>`).
+fn parse_entry(arg: &str) -> Result<(Option<Ident>, PathBuf), Diagnostic> {
+    let (explicit_name, dir) = split_declared_root(arg).map_err(|reason| {
+        Diagnostic::error(format!("invalid entry argument '{arg}': {reason}"))
+            .with_help("write '<name>=<dir>', or the bare directory to infer the name")
+    })?;
     let name = explicit_name
         .map(|raw| {
-            validate_module_name(raw.as_ref(), "declared by the entry argument")
-                .map_err(|reason| format!("invalid entry argument '{arg}': {reason}"))
+            validate_module_name(
+                raw.as_ref(),
+                format!("declared by the entry argument '{arg}'"),
+            )
+            .map_err(|diagnostic| diagnostic.with_help("declare a name that is a valid identifier"))
         })
         .transpose()?;
 
     Ok((name, dir))
 }
 
-fn parse_import(flag: &str, value: &str) -> Result<ExternRoot, String> {
-    let (explicit_name, dir) = split_declared_root(value)
-        .map_err(|reason| format!("invalid --import flag '{flag}': {reason}"))?;
+fn parse_import(flag: &str, value: &str) -> Result<ExternRoot, Diagnostic> {
+    let (explicit_name, dir) = split_declared_root(value).map_err(|reason| {
+        Diagnostic::error(format!("invalid --import flag '{flag}': {reason}"))
+            .with_help("write '--import=<name>=<dir>', or '--import=<dir>' to infer the name")
+    })?;
     let name = match explicit_name {
-        Some(raw) => validate_module_name(raw.as_ref(), "declared by --import")
-            .map_err(|reason| format!("invalid --import flag '{flag}': {reason}"))?,
+        Some(raw) => validate_module_name(raw.as_ref(), format!("declared by '{flag}'")).map_err(
+            |diagnostic| diagnostic.with_help("declare a name that is a valid identifier"),
+        )?,
         None => {
             let Some(physical_name) = basename(&dir) else {
-                return Err(format!(
+                return Err(Diagnostic::error(format!(
                     "invalid --import flag '{flag}': '{}' has no usable directory name",
                     dir.display()
+                ))
+                .with_note(
+                    "a package root's own module file is named after its directory, so the \
+                     directory must be named explicitly",
                 ));
             };
             validate_module_name(
                 physical_name.as_ref(),
-                "inferred from the import directory name; pass --import=<name>:<dir> to override",
+                format!("inferred from the directory name in '{flag}'"),
             )
-            .map_err(|reason| format!("invalid --import flag '{flag}': {reason}"))?
+            .map_err(|diagnostic| {
+                diagnostic.with_help("pass --import=<name>=<dir> to declare a different name")
+            })?
         }
     };
 
@@ -233,42 +270,31 @@ fn parse_import(flag: &str, value: &str) -> Result<ExternRoot, String> {
 /// string into a trusted module-identity `Ident`: it must be a spelling the
 /// parser itself could tokenize as an identifier, matching
 /// `docs/language/modules-and-imports.md`'s no-normalization rule.
+///
+/// `origin` says where the spelling came from; callers attach the `help`
+/// that fits it.
 pub(crate) fn validate_module_name(
     name: &str,
-    context: impl std::fmt::Display,
-) -> Result<Ident, String> {
+    origin: impl std::fmt::Display,
+) -> Result<Ident, Diagnostic> {
     if omega_parser::lexer::is_valid_identifier(name) {
         Ok(Ident(name.to_string()))
     } else {
-        Err(format!(
-            "'{name}' ({context}) is not a valid Omega module name -- module names must be valid \
-             Omega identifiers (ASCII letters/digits/underscore, not starting with a digit, and \
-             not a reserved keyword); Omega does not normalize names automatically"
+        Err(Diagnostic::error(format!(
+            "'{name}' ({origin}) is not a valid Omega module name"
         ))
+        .with_note(MODULE_NAME_RULE))
     }
 }
 
+/// Only the first `=` separates the name, as in `-D`, so the directory may
+/// contain one; a bare directory containing `=` therefore needs a name.
 fn split_declared_root(value: &str) -> Result<(Option<Ident>, PathBuf), String> {
-    // A drive letter is part of a bare Windows path, not an explicit module
-    // identity (`C:\\...`). Explicit identities still work with Windows paths:
-    // `core:C:\\...` splits at the first colon.
-    if is_windows_absolute_path(value) {
-        return Ok((None, PathBuf::from(value)));
-    }
-
-    match value.split_once(':') {
-        Some(("", _)) => Err("the name before ':' cannot be empty".to_string()),
+    match value.split_once('=') {
+        Some(("", _)) => Err("the name before '=' cannot be empty".to_string()),
         Some((name, dir)) => Ok((Some(Ident(name.to_string())), PathBuf::from(dir))),
         None => Ok((None, PathBuf::from(value))),
     }
-}
-
-fn is_windows_absolute_path(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    bytes.len() >= 3
-        && bytes[0].is_ascii_alphabetic()
-        && bytes[1] == b':'
-        && matches!(bytes[2], b'\\' | b'/')
 }
 
 fn help_option(colors: bool, flag: &str, desc: &str) {
@@ -277,15 +303,15 @@ fn help_option(colors: bool, flag: &str, desc: &str) {
 }
 
 pub(crate) fn print_help() {
-    let colors = std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+    let colors = crate::use_colors(std::io::stdout());
     println!("{}", paint(colors, BOLD, "omgc"));
     println!("The Omega compiler\n");
     println!("{}", paint(colors, BOLD, "USAGE:"));
-    println!("    omgc [<name>:]<entry-dir> -o <output-dir> [OPTIONS]\n");
+    println!("    {USAGE}\n");
     println!("{}", paint(colors, BOLD, "ARGS:"));
     help_option(
         colors,
-        "[<name>:]<entry-dir>",
+        "[<name>=]<entry-dir>",
         "Root directory of the package to compile (identity defaults to the directory basename)",
     );
     println!();
@@ -316,7 +342,7 @@ pub(crate) fn print_help() {
     );
     help_option(
         colors,
-        "--import=[<name>:]<dir>",
+        "--import=[<name>=]<dir>",
         "Register an external module root (repeatable; name defaults to the directory basename)",
     );
     help_option(colors, "-v, --verbose", "Print progress information");
@@ -327,9 +353,28 @@ pub(crate) fn print_help() {
 mod tests {
     use super::*;
     use omega_analyzer::{Arch, Os};
+    use omega_diagnostics::Footer;
 
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| value.to_string()).collect()
+    }
+
+    fn parse_error(values: &[&str]) -> Diagnostic {
+        match parse(&args(values)) {
+            Ok(_) => panic!("expected {values:?} to be rejected"),
+            Err(diagnostic) => diagnostic,
+        }
+    }
+
+    fn helps(diagnostic: &Diagnostic) -> Vec<&str> {
+        diagnostic
+            .footers
+            .iter()
+            .filter_map(|footer| match footer {
+                Footer::Help(help) => Some(help.as_str()),
+                Footer::Note(_) => None,
+            })
+            .collect()
     }
 
     #[test]
@@ -356,7 +401,7 @@ mod tests {
             "out",
             "-O3",
             "--emit=asm",
-            "--import=core:deps/core",
+            "--import=core=deps/core",
             "--verbose",
         ])) else {
             panic!("expected compile command");
@@ -427,54 +472,90 @@ mod tests {
     }
 
     #[test]
+    fn a_missing_entry_directory_points_at_the_usage() {
+        let diagnostic = parse_error(&["-o", "out"]);
+        assert_eq!(diagnostic.message, "no package directory given");
+        assert!(
+            helps(&diagnostic).iter().any(|help| help.contains(USAGE)),
+            "{:?}",
+            diagnostic.footers
+        );
+    }
+
+    #[test]
+    fn a_missing_output_directory_points_at_the_flag() {
+        let diagnostic = parse_error(&["src"]);
+        assert_eq!(diagnostic.message, "no output directory given");
+        assert!(
+            helps(&diagnostic)
+                .iter()
+                .any(|help| help.contains("-o <output-dir>")),
+            "{:?}",
+            diagnostic.footers
+        );
+    }
+
+    #[test]
+    fn an_unknown_flag_points_at_the_help() {
+        let diagnostic = parse_error(&["src", "-o", "out", "--bogus"]);
+        assert_eq!(diagnostic.message, "unknown flag '--bogus'");
+        assert!(
+            helps(&diagnostic)
+                .iter()
+                .any(|help| help.contains("--help"))
+        );
+    }
+
+    #[test]
     fn rejects_invalid_declared_entry_name() {
         for invalid in ["foo-bar", "0abc", "if", ""] {
-            let Err(err) = parse(&args(&[&format!("{invalid}:src"), "-o", "out"])) else {
-                panic!("expected entry argument '{invalid}:src' to be rejected");
-            };
-            assert!(err.contains(invalid) || invalid.is_empty(), "{err}");
+            let err = parse_error(&[&format!("{invalid}=src"), "-o", "out"]).message;
+            assert!(err.contains(&format!("'{invalid}=src'")), "{err}");
         }
     }
 
     #[test]
     fn rejects_legacy_name_flag_as_unknown() {
-        let Err(err) = parse(&args(&["src", "-o", "out", "--name=my_pkg"])) else {
-            panic!("expected legacy --name flag to be rejected");
-        };
+        let err = parse_error(&["src", "-o", "out", "--name=my_pkg"]).message;
         assert!(err.contains("--name"), "{err}");
     }
 
     #[test]
     fn rejects_legacy_extern_flag_as_unknown() {
-        let Err(err) = parse(&args(&["src", "-o", "out", "--extern=core:deps/core"])) else {
-            panic!("expected legacy --extern flag to be rejected");
-        };
+        let err = parse_error(&["src", "-o", "out", "--extern=core=deps/core"]).message;
         assert!(err.contains("--extern"), "{err}");
     }
 
     #[test]
     fn rejects_invalid_explicit_extern_name() {
-        let Err(err) = parse(&args(&["src", "-o", "out", "--import=foo-bar:deps/core"])) else {
-            panic!("expected invalid explicit extern name to be rejected");
-        };
+        let err = parse_error(&["src", "-o", "out", "--import=foo-bar=deps/core"]).message;
         assert!(err.contains("foo-bar"), "{err}");
     }
 
     #[test]
     fn rejects_invalid_inferred_extern_basename_without_an_override() {
-        let Err(err) = parse(&args(&["src", "-o", "out", "--import=deps/foo-bar"])) else {
-            panic!("expected invalid inferred extern basename to be rejected");
-        };
-        assert!(err.contains("foo-bar"), "{err}");
+        let diagnostic = parse_error(&["src", "-o", "out", "--import=deps/foo-bar"]);
+        assert!(
+            diagnostic.message.contains("foo-bar"),
+            "{}",
+            diagnostic.message
+        );
+        assert!(
+            helps(&diagnostic)
+                .iter()
+                .any(|help| help.contains("--import=<name>=<dir>")),
+            "{:?}",
+            diagnostic.footers
+        );
     }
 
     #[test]
     fn accepts_valid_entry_and_extern_identities() {
         let Ok(Command::Compile(parsed)) = parse(&args(&[
-            "my_pkg:src",
+            "my_pkg=src",
             "-o",
             "out",
-            "--import=core:deps/core",
+            "--import=core=deps/core",
         ])) else {
             panic!("expected compile command");
         };
@@ -559,12 +640,24 @@ mod tests {
         assert_eq!(parsed.opt_level, OptLevel::O2);
     }
 
-    fn resolved(target: Target, values: &[&str]) -> Result<CompilerDefinitions, String> {
+    fn resolved(target: Target, values: &[&str]) -> Result<CompilerDefinitions, Vec<Diagnostic>> {
         resolve_definitions(target, &definitions(values))
     }
 
+    fn resolve_errors(target: Target, values: &[&str]) -> Vec<String> {
+        match resolved(target, values) {
+            Ok(_) => panic!("{values:?} must be rejected"),
+            Err(diagnostics) => diagnostics
+                .into_iter()
+                .map(|diagnostic| diagnostic.message)
+                .collect(),
+        }
+    }
+
     fn resolve_error(values: &[&str]) -> String {
-        resolved(Target::DEFAULT, values).expect_err("these options must be rejected")
+        let messages = resolve_errors(Target::DEFAULT, values);
+        assert_eq!(messages.len(), 1, "{messages:?}");
+        messages.into_iter().next().expect("one message")
     }
 
     #[test]
@@ -623,10 +716,10 @@ mod tests {
     /// Every failure is collected, so one mistake does not hide the next.
     #[test]
     fn every_invalid_option_is_reported() {
-        let message = resolve_error(&["-D0abc", "-Dgood=1", "-Dbad=release"]);
-        assert!(message.contains("0abc"), "{message}");
-        assert!(message.contains("-Dbad=release"), "{message}");
-        assert_eq!(message.lines().count(), 2, "{message}");
+        let messages = resolve_errors(Target::DEFAULT, &["-D0abc", "-Dgood=1", "-Dbad=release"]);
+        assert_eq!(messages.len(), 2, "{messages:?}");
+        assert!(messages[0].contains("0abc"), "{messages:?}");
+        assert!(messages[1].contains("-Dbad=release"), "{messages:?}");
     }
 
     /// Options are decoded once the target is final, so an unused definition
@@ -634,22 +727,45 @@ mod tests {
     #[test]
     fn a_definition_is_validated_against_the_final_target() {
         let narrow = Target::parse("avr-none").expect("valid target");
-        assert!(
-            resolved(narrow, &["-Dunused=65536usize"])
-                .expect_err("16-bit usize cannot hold 65536")
-                .contains("16-bit")
-        );
+        assert!(resolve_errors(narrow, &["-Dunused=65536usize"])[0].contains("16-bit"));
         assert!(resolved(Target::DEFAULT, &["-Dunused=65536usize"]).is_ok());
     }
 
     #[test]
-    fn windows_drive_letter_is_not_parsed_as_a_module_name() {
+    fn a_bare_windows_drive_path_has_no_declared_name() {
         let (name, dir) = split_declared_root(r"C:\omega\core").unwrap();
         assert!(name.is_none());
         assert_eq!(dir, PathBuf::from(r"C:\omega\core"));
 
-        let (name, dir) = split_declared_root(r"core:C:\omega\core").unwrap();
+        let (name, dir) = split_declared_root(r"core=C:\omega\core").unwrap();
         assert_eq!(name.as_ref().map(Ident::as_ref), Some("core"));
         assert_eq!(dir, PathBuf::from(r"C:\omega\core"));
+    }
+
+    /// Only the first `=` separates the name, as in `-D`.
+    #[test]
+    fn a_declared_root_splits_at_the_first_equals() {
+        let (name, dir) = split_declared_root("name=./a=b").unwrap();
+        assert_eq!(name.as_ref().map(Ident::as_ref), Some("name"));
+        assert_eq!(dir, PathBuf::from("./a=b"));
+    }
+
+    #[test]
+    fn an_empty_declared_name_is_rejected() {
+        assert!(split_declared_root("=src").is_err());
+        let err = parse_error(&["src", "-o", "out", "--import==deps/core"]).message;
+        assert!(err.contains("the name before '=' cannot be empty"), "{err}");
+    }
+
+    #[test]
+    fn a_colon_is_part_of_the_path_not_a_name_separator() {
+        let Ok(Command::Compile(parsed)) =
+            parse(&args(&["pkg:src", "-o", "out", "--import=core:deps/core"]))
+        else {
+            panic!("expected compile command");
+        };
+        assert!(parsed.name.is_none());
+        assert_eq!(parsed.entry_dir, PathBuf::from("pkg:src"));
+        assert_eq!(parsed.externs[0].dir, PathBuf::from("core:deps/core"));
     }
 }

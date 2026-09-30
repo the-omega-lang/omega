@@ -147,7 +147,7 @@ fn a_windows_object_target_keeps_the_layout_and_takes_the_platform_extension() {
     );
 }
 
-/// A declared `<name>:<dir>` identity renames the module, and therefore the
+/// A declared `<name>=<dir>` identity renames the module, and therefore the
 /// symbols, but the artifacts stay where the sources are on disk.
 #[test]
 fn a_declared_package_identity_does_not_move_the_output_tree() {
@@ -158,7 +158,7 @@ fn a_declared_package_identity_does_not_move_the_output_tree() {
     )
     .expect("write root module");
 
-    workspace.expect_ok(&["renamed:physical", "-o", "out"]);
+    workspace.expect_ok(&["renamed=physical", "-o", "out"]);
 
     assert_eq!(
         tree(&workspace.path("out")),
@@ -200,10 +200,25 @@ fn the_help_and_usage_text_describe_an_output_directory() {
     let missing_flag = workspace.compile(&["pkg"]);
     assert!(!missing_flag.status.success());
     let stderr = String::from_utf8_lossy(&missing_flag.stderr);
-    assert!(stderr.contains("the -o <dir> flag is required"), "{stderr}");
+    assert!(
+        stderr.contains("error: no output directory given"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("= help: pass '-o <output-dir>'"),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.contains('\x1b'),
+        "piped stderr must not be colored: {stderr:?}"
+    );
 
     let no_arguments = workspace.compile(&[]);
     assert!(!no_arguments.status.success());
     let stderr = String::from_utf8_lossy(&no_arguments.stderr);
+    assert!(
+        stderr.contains("error: no package directory given"),
+        "{stderr}"
+    );
     assert!(stderr.contains("-o <output-dir>"), "{stderr}");
 }

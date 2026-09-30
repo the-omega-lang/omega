@@ -214,7 +214,7 @@ impl fmt::Display for ResolveError {
             Self::UnknownModule(path) => write!(f, "cannot find module '{}'", join(path)),
             Self::UnknownTopLevelPackage(name) => write!(
                 f,
-                "'{}' is not a known top-level package (unprefixed imports are top-level; use `root::`, `self::`, or `super::` for local navigation, or register a dependency with --import={}:<path>)",
+                "'{}' is not a known top-level package (unprefixed imports are top-level; use `root::`, `self::`, or `super::` for local navigation, or register a dependency with --import={}=<path>)",
                 name.as_ref(),
                 name.as_ref()
             ),

@@ -4,7 +4,7 @@
 implementation fragments and, under `target/`, one directory per concrete
 platform. Exactly one of those target directories is compiled per build, and
 it *presents* as the declared identity `plat` purely via a compiler-level
-alias (`plat:<dir>`/`--import=plat:...`) — the project's own files never lie
+alias (`plat=<dir>`/`--import=plat=...`) — the project's own files never lie
 about what they are; only the compiler's view of a root's identity can differ
 from its on-disk name. Unlike `core` ([the core library](core-library.md)),
 `plat` gets no ambient-prelude treatment, no `primitive`-block privilege, and
@@ -137,8 +137,8 @@ platform's `main` adapter. Pass `-Domega_no_startup` to disable them while
 keeping the platform's allocator, console, panic and atomic glue:
 
 ```sh
-omgc plat:runtime/plat/target/x86_64-linux/ --target=x86_64-linux \
-  --import=core:runtime/core/ -Domega_no_startup -o target/plat-no-startup
+omgc plat=runtime/plat/target/x86_64-linux/ --target=x86_64-linux \
+  --import=core=runtime/core/ -Domega_no_startup -o target/plat-no-startup
 ```
 
 The resulting platform objects define no `_start`, `omg_start` or `main`, and
@@ -157,9 +157,9 @@ so the image would fail to load on that reference alone. Link the package
 against the no-startup platform objects instead of the default ones:
 
 ```sh
-omgc mylib/ --target=x86_64-linux --import=core:runtime/core/ \
-  --import=std:runtime/std/ \
-  --import=plat:runtime/plat/target/x86_64-linux/ -o target/mylib
+omgc mylib/ --target=x86_64-linux --import=core=runtime/core/ \
+  --import=std=runtime/std/ \
+  --import=plat=runtime/plat/target/x86_64-linux/ -o target/mylib
 cc -shared -nostdlib -Wl,--gc-sections <objects> -o libmylib.so
 ```
 
@@ -275,8 +275,8 @@ reports over its serial port. No compiler change is involved.
 
 ## The `plat` alias
 
-`<name>:<dir>` as the compiled entry argument (standalone compilation) and
-`--import=<name>:<dir>` (consumption) let a package's *declared* identity
+`<name>=<dir>` as the compiled entry argument (standalone compilation) and
+`--import=<name>=<dir>` (consumption) let a package's *declared* identity
 differ from its root directory's own basename. This is what lets
 `runtime/plat/target/x86_64-linux/` — a directory whose name is not even a
 legal module identifier — present as the package `plat`. The alias applies to
@@ -291,7 +291,7 @@ starts at `plat::arch`, `plat::os` and `plat::common`.
 There is no OS/target conditional-compilation mechanism anywhere in this
 compiler (no `cfg`-equivalent), and there is no compiler-side platform
 selection either. Picking a platform is entirely a build decision: which
-directory `--import=plat:...` points at. The `--target` argument and the
+directory `--import=plat=...` points at. The `--target` argument and the
 platform root must agree, and every package of one build — `core`, `plat`,
 `std` and the application — must be compiled for the same target, since it
 fixes `usize`, layout and the selected platform together.

@@ -194,8 +194,8 @@ fn aligned_allocation_does_not_depend_on_the_raw_allocators_own_alignment() {
         return;
     }
 
-    let core_import = format!("--import=core:{}", runtime_root("core").display());
-    let std_import = format!("--import=std:{}", runtime_root("std").display());
+    let core_import = format!("--import=core={}", runtime_root("core").display());
+    let std_import = format!("--import=std={}", runtime_root("std").display());
     let std_package = runtime_root("std");
     let std_package = std_package.to_string_lossy().into_owned();
 

@@ -95,7 +95,7 @@ Because this happens during checked -> MIR lowering, codegen receives only the f
 
 ## Package/module identity
 
-The first mangled path segment is the **declared package root identity**, not an arbitrary filesystem path. A declared entry identity (`<name>:<dir>`) / `--import=<name>:<dir>` therefore affect source-visible/module ABI identity consistently.
+The first mangled path segment is the **declared package root identity**, not an arbitrary filesystem path. A declared entry identity (`<name>=<dir>`) / `--import=<name>=<dir>` therefore affect source-visible/module ABI identity consistently.
 
 Nested modules and item owners extend that path deterministically.
 

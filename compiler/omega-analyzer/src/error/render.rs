@@ -1080,7 +1080,7 @@ pub fn resolve_error_diagnostic(error: &ResolveError, span: Option<Span>) -> Dia
         }
         ResolveError::UnknownTopLevelPackage(name) => {
             with_label(d, "not a known top-level package".to_string()).with_help(format!(
-                "unprefixed imports are top-level; use `root::`, `self::`, or `super::` to navigate within a package, or pass --import={}:<path> to register a dependency",
+                "unprefixed imports are top-level; use `root::`, `self::`, or `super::` to navigate within a package, or pass --import={}=<path> to register a dependency",
                 name.as_ref()
             ))
         }
