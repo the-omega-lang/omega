@@ -53,7 +53,7 @@ pub use definitions::{
     parse_enum_def, parse_marker_def, parse_spec_def, parse_struct_def, parse_union_def,
 };
 use foreign::parse_foreign_item;
-pub use functions::parse_function_definition;
+pub use functions::{BodyPolicy, parse_function_definition};
 use functions::{
     parse_declaration_or_function_definition, parse_item_declaration_or_walrus,
     parse_optional_generics,

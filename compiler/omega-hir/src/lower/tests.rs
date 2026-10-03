@@ -57,7 +57,7 @@ fn inline_asm_lowers_descriptors_and_raw_body_in_source_order() {
     let HirItem::FunctionDefinition(f) = &hir.items[0] else {
         panic!("expected a function");
     };
-    let HirStmt::InlineAsm(asm) = &f.body.stmts[0] else {
+    let HirStmt::InlineAsm(asm) = &f.body.as_ref().unwrap().stmts[0] else {
         panic!("expected an inline-asm statement");
     };
     assert_eq!(asm.descriptors.len(), 3);

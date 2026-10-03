@@ -1,0 +1,24 @@
+error: cannot evaluate this expression at compile time: a volatile access isn't supported in a compile-time evaluation yet
+  --> tests/t48b_volatile_errors/t48b_volatile_errors.omg:11:21
+   |
+ 8 |     read_volatile(&local)
+   |     --------------------- required by this compile-time call
+...
+11 | comp PEEKED := comp peek();
+   |                     ^^^^^^ cannot be evaluated at compile time
+   |                     ------ required by this compile-time call
+   |
+  --> runtime/core/volatile.omg:3:9
+   |
+ 3 | exposed read_volatile<T>(location: *T) => T;
+   |         ----------------------------------- evaluation stops here
+
+error: mismatched types: expected '*mut u32' for this argument, found '*u32'
+  --> tests/t48b_volatile_errors/t48b_volatile_errors.omg:15:20
+   |
+15 |     write_volatile(location, 1u32);
+   |                    ^^^^^^^^ expected `*mut u32`, found `*u32`
+   |
+   = note: Omega has no implicit conversions; each argument must match its parameter's type exactly
+
+error: could not compile the program due to 2 previous errors

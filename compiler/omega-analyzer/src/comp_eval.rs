@@ -330,6 +330,9 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
             CheckedExpr::Try(r#try) => self.eval_try(r#try, node.span),
             CheckedExpr::SpecCoerce(_) => Err(self.err(node.span, CompErrorKind::DynamicDispatch)),
             CheckedExpr::DynamicCall(_) => Err(self.err(node.span, CompErrorKind::DynamicDispatch)),
+            CheckedExpr::VolatileRead(_) | CheckedExpr::VolatileWrite(_) => {
+                Err(self.err(node.span, CompErrorKind::Unsupported("a volatile access")))
+            }
         }
     }
 

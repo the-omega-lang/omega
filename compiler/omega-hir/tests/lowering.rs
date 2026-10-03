@@ -47,7 +47,7 @@ fn by_value_mut_self_gets_a_shadowing_binding_first() {
     let module = lower("struct S { x: i32; take(mut self) => i32 { self.x } }");
     let f = only_function(&module);
     assert_eq!(f.self_mode, Some(SelfMode::MutValue));
-    let HirStmt::WalrusDeclaration(w) = &f.body.stmts[0] else {
+    let HirStmt::WalrusDeclaration(w) = &f.body.as_ref().unwrap().stmts[0] else {
         panic!("expected the synthesized `mut self := self;` first");
     };
     assert_eq!(w.ident.as_ref(), "self");
@@ -59,7 +59,7 @@ fn plain_by_value_self_gets_no_shadow() {
     let module = lower("struct S { x: i32; take(self) => i32 { self.x } }");
     let f = only_function(&module);
     assert!(
-        !matches!(f.body.stmts.first(), Some(HirStmt::WalrusDeclaration(w)) if w.ident.as_ref() == "self"),
+        !matches!(f.body.as_ref().unwrap().stmts.first(), Some(HirStmt::WalrusDeclaration(w)) if w.ident.as_ref() == "self"),
         "immutable `self` needs no shadow"
     );
 }
@@ -157,7 +157,7 @@ fn an_alias_lowers_one_for_one_with_an_unresolved_target() {
 fn a_projection_chain_flattens_in_source_order() {
     let module = lower("f(a: i32) => i32 { x.y[0].z; 0 }");
     let f = only_function(&module);
-    let HirStmt::Expression(node) = &f.body.stmts[0] else {
+    let HirStmt::Expression(node) = &f.body.as_ref().unwrap().stmts[0] else {
         panic!("expected an expression statement");
     };
     let HirExpr::Place(place) = &node.expr else {
@@ -182,7 +182,7 @@ fn a_projection_chain_flattens_in_source_order() {
 fn a_non_place_base_roots_at_an_expression() {
     let module = lower("f(a: i32) => i32 { g().field; 0 }");
     let f = only_function(&module);
-    let HirStmt::Expression(node) = &f.body.stmts[0] else {
+    let HirStmt::Expression(node) = &f.body.as_ref().unwrap().stmts[0] else {
         panic!("expected an expression statement");
     };
     let HirExpr::Place(place) = &node.expr else {
@@ -201,7 +201,7 @@ fn every_range_spelling_survives_lowering_distinctly() {
     ] {
         let module = lower(source);
         let f = only_function(&module);
-        let HirStmt::ForIn(for_in) = &f.body.stmts[0] else {
+        let HirStmt::ForIn(for_in) = &f.body.as_ref().unwrap().stmts[0] else {
             panic!("expected a for-in statement for `{source}`");
         };
         let HirExpr::Range(range) = &for_in.iterator.expr else {
@@ -309,7 +309,13 @@ fn a_try_operator_stays_a_try_node() {
     let source = "f() => i32 { call()? }";
     let module = lower(source);
     let f = only_function(&module);
-    let tail = f.body.tail.as_ref().expect("expected a tail expression");
+    let tail = f
+        .body
+        .as_ref()
+        .unwrap()
+        .tail
+        .as_ref()
+        .expect("expected a tail expression");
     let HirExpr::Try(r#try) = &tail.expr else {
         panic!(
             "`?` must survive lowering as HirExpr::Try, found {:?}",
@@ -336,7 +342,13 @@ fn a_try_operator_stays_a_try_node() {
 fn a_chained_try_lowers_to_nested_try_nodes() {
     let module = lower("f() => i32 { nested?? }");
     let f = only_function(&module);
-    let tail = f.body.tail.as_ref().expect("expected a tail expression");
+    let tail = f
+        .body
+        .as_ref()
+        .unwrap()
+        .tail
+        .as_ref()
+        .expect("expected a tail expression");
     let HirExpr::Try(outer) = &tail.expr else {
         panic!("expected the outer try");
     };
@@ -390,6 +402,8 @@ fn member_name_provenance_survives_lowering() {
         .expect("expected the expanded main function");
     let HirExpr::Place(place) = &f
         .body
+        .as_ref()
+        .unwrap()
         .tail
         .as_ref()
         .expect("main ends in an expression")
@@ -489,9 +503,13 @@ fn an_item_producing_macro_lowers_its_global_with_annotations() {
 fn a_whole_hole_annotation_lowers_to_a_walrus() {
     let module = lower("f() => void { mut x : _ = 1; y : _ = 2; }");
     let f = only_function(&module);
-    let [HirStmt::WalrusDeclaration(x), HirStmt::WalrusDeclaration(y)] = f.body.stmts.as_slice()
+    let [HirStmt::WalrusDeclaration(x), HirStmt::WalrusDeclaration(y)] =
+        f.body.as_ref().unwrap().stmts.as_slice()
     else {
-        panic!("expected two walrus declarations, got {:?}", f.body.stmts);
+        panic!(
+            "expected two walrus declarations, got {:?}",
+            f.body.as_ref().unwrap().stmts
+        );
     };
     assert_eq!(x.ident.as_ref(), "x");
     assert!(x.mutable && !x.comp);
@@ -520,7 +538,7 @@ fn a_nested_hole_annotation_stays_a_typed_declaration() {
     let module = lower("f() => void { p : *_ = &x; }");
     let f = only_function(&module);
     assert!(matches!(
-        f.body.stmts.as_slice(),
+        f.body.as_ref().unwrap().stmts.as_slice(),
         [HirStmt::DeclarationWithInit(..)]
     ));
 }
@@ -529,8 +547,11 @@ fn a_nested_hole_annotation_stays_a_typed_declaration() {
 fn a_whole_hole_for_in_binding_type_is_no_annotation() {
     let module = lower("f() => void { for x : _ in 0..<3 {} }");
     let f = only_function(&module);
-    let [HirStmt::ForIn(for_in)] = f.body.stmts.as_slice() else {
-        panic!("expected a for-in, got {:?}", f.body.stmts);
+    let [HirStmt::ForIn(for_in)] = f.body.as_ref().unwrap().stmts.as_slice() else {
+        panic!(
+            "expected a for-in, got {:?}",
+            f.body.as_ref().unwrap().stmts
+        );
     };
     assert!(for_in.binding_type.is_none());
 }

@@ -270,7 +270,7 @@ fn a_literal_array_length_still_parses_as_a_literal() {
 #[test]
 fn a_value_generic_argument_commits_in_expression_position() {
     let function = function("f() => void { g<10, i32>(1); }");
-    assert_eq!(function.codeblock.statements.len(), 1);
+    assert_eq!(function.codeblock.as_ref().unwrap().statements.len(), 1);
 }
 
 #[test]
@@ -278,13 +278,13 @@ fn a_comparison_chain_still_rolls_back_past_a_value_argument() {
     // `a < 10, i32 > b` is not a generic application: what follows `>` starts
     // a fresh operand, so the speculative parse must roll back.
     let function = function("f() => void { x := a < 10; y := 3 > b; }");
-    assert_eq!(function.codeblock.statements.len(), 2);
+    assert_eq!(function.codeblock.as_ref().unwrap().statements.len(), 2);
 }
 
 /// The single statement of `f`'s body, as the expression it evaluates.
 fn body_expression(source: &str) -> omega_parser::prelude::Expression {
     let function = function(source);
-    let [statement] = function.codeblock.statements.as_slice() else {
+    let [statement] = function.codeblock.as_ref().unwrap().statements.as_slice() else {
         panic!("expected exactly one statement");
     };
     let omega_parser::prelude::Statement::Expression(expression) = &statement.statement else {
@@ -312,7 +312,7 @@ fn a_member_without_a_call_keeps_its_comparisons() {
     // Only a call can apply generic arguments to a member, so `<...>` not
     // followed by `(` rolls back and the comparisons stand.
     let function = function("f() => void { x := a.b < c; y := d > e; }");
-    assert_eq!(function.codeblock.statements.len(), 2);
+    assert_eq!(function.codeblock.as_ref().unwrap().statements.len(), 2);
 }
 
 #[test]
@@ -374,4 +374,16 @@ fn a_declaration_bound_list_is_unaffected_by_selector_syntax() {
     let function = function("f<T: A + B, U>(x: T, y: U) => void {}");
     assert_eq!(function.generics[0].bounds().len(), 2);
     assert!(function.generics[1].bounds().is_empty());
+}
+
+#[test]
+fn item_level_function_may_omit_its_body() {
+    let function = function("exposed read_volatile<T>(location: *T) => T;");
+    assert!(function.codeblock.is_none());
+}
+
+#[test]
+fn member_and_glue_functions_still_require_a_body() {
+    assert!(SourceModule::parse("struct S { exposed get(*self) => i32; }").is_err());
+    assert!(SourceModule::parse("glue g::G { f() => void; }").is_err());
 }

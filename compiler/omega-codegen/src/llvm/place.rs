@@ -403,6 +403,16 @@ impl<'ctx> Codegen<'ctx> {
         r#type: &ResolvedType,
         align: u32,
     ) -> Vec<BasicValueEnum<'ctx>> {
+        self.load_scalars_with(storage, r#type, align, false)
+    }
+
+    pub(super) fn load_scalars_with(
+        &mut self,
+        storage: &PlaceStorage<'ctx>,
+        r#type: &ResolvedType,
+        align: u32,
+        volatile: bool,
+    ) -> Vec<BasicValueEnum<'ctx>> {
         if let PlaceStorage::Values(values) = storage {
             return values.clone();
         }
@@ -414,11 +424,11 @@ impl<'ctx> Codegen<'ctx> {
             let value = match storage {
                 PlaceStorage::Slot { slot, offset } => {
                     let at = *offset + rel_offset;
-                    self.aligned_load(llvm_ty, *slot, at, Self::offset_align(align, at))
+                    self.aligned_load(llvm_ty, *slot, at, Self::offset_align(align, at), volatile)
                 }
                 PlaceStorage::Address { base, offset } => {
                     let at = *offset + rel_offset;
-                    self.aligned_load(llvm_ty, *base, at, Self::offset_align(align, at))
+                    self.aligned_load(llvm_ty, *base, at, Self::offset_align(align, at), volatile)
                 }
                 PlaceStorage::Values(_) => unreachable!("handled above"),
             };
@@ -434,6 +444,7 @@ impl<'ctx> Codegen<'ctx> {
         base: PointerValue<'ctx>,
         offset: u32,
         align: u32,
+        volatile: bool,
     ) -> BasicValueEnum<'ctx> {
         let ptr = self.byte_gep(base, offset);
         let value = self
@@ -442,6 +453,9 @@ impl<'ctx> Codegen<'ctx> {
             .expect("load always succeeds");
         if let Some(inst) = value.as_instruction_value() {
             let _ = inst.set_alignment(align);
+            if volatile {
+                inst.set_volatile(true).expect("a load can be volatile");
+            }
         }
         value
     }
@@ -453,6 +467,17 @@ impl<'ctx> Codegen<'ctx> {
         values: &[BasicValueEnum<'ctx>],
         align: u32,
     ) {
+        self.store_scalars_with(base, base_offset, values, align, false);
+    }
+
+    pub(super) fn store_scalars_with(
+        &mut self,
+        base: &PointerValue<'ctx>,
+        base_offset: u32,
+        values: &[BasicValueEnum<'ctx>],
+        align: u32,
+        volatile: bool,
+    ) {
         let mut rel_offset = 0u32;
         for value in values {
             let leaf_bytes = leaf::value_byte_width(value.get_type(), self.pointer_bytes());
@@ -463,6 +488,9 @@ impl<'ctx> Codegen<'ctx> {
                 .build_store(ptr, *value)
                 .expect("store always succeeds");
             let _ = store.set_alignment(Self::offset_align(align, at));
+            if volatile {
+                store.set_volatile(true).expect("a store can be volatile");
+            }
             rel_offset += leaf_bytes;
         }
     }

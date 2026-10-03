@@ -1,0 +1,10 @@
+u8: 200
+u32: 3000000000
+u64: 12345678901234
+f64: 2.500000
+bool: true
+pointer: 7
+struct: 1 2 3
+explicit: 42
+value: 41
+zero-sized: done

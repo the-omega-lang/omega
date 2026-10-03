@@ -108,14 +108,14 @@ pub(crate) fn collect_expr(expr: &CheckedExprNode, usage: &mut FieldUsage) {
         | CheckedExpr::Const(_)
         | CheckedExpr::Sizeof(_)
         | CheckedExpr::Alignof(_) => {}
-        CheckedExpr::Place(p) => collect_place(p, usage),
+        CheckedExpr::Place(p) | CheckedExpr::VolatileRead(p) => collect_place(p, usage),
         CheckedExpr::FunctionCall(call) => {
             collect_expr(&call.callee, usage);
             for arg in &call.args {
                 collect_expr(arg, usage);
             }
         }
-        CheckedExpr::Assignment(a) => {
+        CheckedExpr::Assignment(a) | CheckedExpr::VolatileWrite(a) => {
             collect_place(&a.target, usage);
             collect_expr(&a.value, usage);
         }

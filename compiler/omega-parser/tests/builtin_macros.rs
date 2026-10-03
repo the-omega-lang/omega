@@ -51,6 +51,8 @@ fn probe(module: &SourceModule, index: usize) -> &Expression {
     };
     &function
         .codeblock
+        .as_ref()
+        .unwrap()
         .tail
         .as_ref()
         .expect("probe function has a tail expression")

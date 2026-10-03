@@ -372,6 +372,10 @@ pub enum CheckedExpr {
     AnonymousEnumWiden(CheckedAnonymousEnumWiden),
     DynamicCall(CheckedDynamicCall),
     Try(CheckedTry),
+    /// The single access a compiler-implemented `core::volatile` body
+    /// performs; see `docs/language/volatile.md`.
+    VolatileRead(CheckedPlace),
+    VolatileWrite(CheckedAssignment),
 }
 
 /// A source-level `expression?`. Analysis resolves every fact the operator

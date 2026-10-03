@@ -1,0 +1,4 @@
+# Compiler-implemented volatile accesses; see docs/language/volatile.md.
+
+exposed read_volatile<T>(location: *T) => T;
+exposed write_volatile<T>(location: *mut T, value: T) => void;

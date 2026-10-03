@@ -7,7 +7,7 @@ fn bound_expression(body: &str) -> Expression {
     let Item::FunctionDefinition(f) = &module.nodes[0].item else {
         panic!("expected a function");
     };
-    let Statement::Walrus(w) = &f.codeblock.statements[0].statement else {
+    let Statement::Walrus(w) = &f.codeblock.as_ref().unwrap().statements[0].statement else {
         panic!("expected a walrus binding");
     };
     w.value.expression.clone()

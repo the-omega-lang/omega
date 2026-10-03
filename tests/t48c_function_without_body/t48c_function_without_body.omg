@@ -1,0 +1,8 @@
+# Only the compiler-implemented `core::volatile` declarations may omit a body;
+# a user declaration is rejected even when it is generic and never called.
+unfinished<T>(value: T) => T;
+
+stub() => void;
+
+main() => void {
+}

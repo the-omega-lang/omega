@@ -357,7 +357,10 @@ impl<'a, E> Expander<'a, E> {
         f: FunctionDefinitionStmt,
     ) -> Result<FunctionDefinitionStmt, MacroError> {
         Ok(FunctionDefinitionStmt {
-            codeblock: self.expand_codeblock(f.codeblock)?,
+            codeblock: f
+                .codeblock
+                .map(|cb| self.expand_codeblock(cb))
+                .transpose()?,
             ..f
         })
     }

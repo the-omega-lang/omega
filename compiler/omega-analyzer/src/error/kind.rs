@@ -656,6 +656,14 @@ pub enum AnalysisErrorKind {
     RuntimeCheckSupportUnavailable {
         detail: String,
     },
+    FunctionWithoutBody {
+        name: Ident,
+    },
+    /// A declaration at a compiler-implemented path whose shape differs from
+    /// the one the compiler supplies a body for.
+    MalformedCompilerFunction {
+        name: Ident,
+    },
 }
 
 impl fmt::Display for AnalysisErrorKind {
@@ -1582,6 +1590,15 @@ impl fmt::Display for AnalysisErrorKind {
             Self::RuntimeCheckSupportUnavailable { detail } => {
                 write!(f, "cannot emit this function's runtime checks: {detail}")
             }
+            Self::FunctionWithoutBody { name } => {
+                write!(f, "function '{}' has no body", name.as_ref())
+            }
+            Self::MalformedCompilerFunction { name } => write!(
+                f,
+                "'core::volatile::{}' is compiler-implemented and must be declared exactly as \
+                 specified, with no body",
+                name.as_ref()
+            ),
         }
     }
 }

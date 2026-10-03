@@ -80,6 +80,7 @@ The following operations are not currently evaluable by `comp`:
 - dynamic dispatch through `*spec S` / `*mut spec S`;
 - indirect calls through a function-typed variable or field;
 - reading a non-`comp` global from within compile-time evaluation.
+- a `core::volatile` access (see [`volatile.md`](volatile.md)).
 
 Encountering one of these causes the `comp` evaluation to fail; it does not silently defer that portion to runtime.
 

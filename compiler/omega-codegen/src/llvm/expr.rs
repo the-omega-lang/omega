@@ -261,6 +261,23 @@ impl<'ctx> Codegen<'ctx> {
                 values
             }
 
+            MirExpr::VolatileRead(place) => {
+                let (storage, r#type, _align) = self.resolve_place_storage(place);
+                let align = layout::volatile_alignment(&r#type, self.pointer_bytes());
+                self.load_scalars_with(&storage, &r#type, align, true)
+            }
+
+            MirExpr::VolatileWrite(MirAssignment { target, value }) => {
+                let values = self.process_expr(value);
+                let (storage, r#type, _align) = self.resolve_place_storage(target);
+                let align = layout::volatile_alignment(&r#type, self.pointer_bytes());
+                let PlaceStorage::Address { base, offset } = storage else {
+                    unreachable!("a volatile access is always through a dereferenced pointer")
+                };
+                self.store_scalars_with(&base, offset, &values, align, true);
+                vec![]
+            }
+
             MirExpr::AddressOf(MirAddressOf { place }) => {
                 let (storage, r#type, _align) = self.resolve_place_storage(place);
                 vec![self.place_storage_address(&storage, &r#type).into()]

@@ -83,6 +83,20 @@ pub(super) fn lower_expr(lowerer: &mut FunctionLowerer, node: CheckedExprNode) -
                 MirExpr::Assignment(MirAssignment { target, value }),
             )
         }
+        CheckedExpr::VolatileRead(place) => {
+            let place = lowerer.lower_place(place);
+            mir_node(id, span, r#type, MirExpr::VolatileRead(place))
+        }
+        CheckedExpr::VolatileWrite(assignment) => {
+            let target = lowerer.lower_place_evaluated_once(assignment.target);
+            let value = Box::new(lowerer.lower_expr(*assignment.value));
+            mir_node(
+                id,
+                span,
+                r#type,
+                MirExpr::VolatileWrite(MirAssignment { target, value }),
+            )
+        }
         CheckedExpr::CompoundAssign(compound) => {
             lower_compound_assign(lowerer, id, span, r#type, compound)
         }

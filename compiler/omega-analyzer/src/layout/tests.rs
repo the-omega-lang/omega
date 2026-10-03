@@ -522,3 +522,20 @@ fn effective_alignment_is_independent_of_pointer_width() {
         assert_eq!(total_bytes(&outer, pointer_bytes), 16);
     }
 }
+
+#[test]
+fn volatile_alignment_is_natural_for_scalars_and_declared_otherwise() {
+    assert_eq!(volatile_alignment(&ResolvedType::U32, POINTER_BYTES), 4);
+    assert_eq!(volatile_alignment(&ResolvedType::USize, 8), 8);
+    assert_eq!(volatile_alignment(&ResolvedType::USize, 2), 2);
+    let pointer = ResolvedType::Pointer {
+        pointee: Box::new(ResolvedType::U8),
+        mutable: false,
+    };
+    assert_eq!(volatile_alignment(&pointer, 2), 2);
+
+    let packed = structure(vec![field("v", ResolvedType::U32)], Layout::default());
+    assert_eq!(volatile_alignment(&packed, POINTER_BYTES), 1);
+    let aligned_struct = structure(vec![field("v", ResolvedType::U32)], aligned(8));
+    assert_eq!(volatile_alignment(&aligned_struct, POINTER_BYTES), 8);
+}

@@ -46,6 +46,7 @@ The word `spec` in Omega source means the interface-like language construct. “
 20. [`annotations-and-sizeof.md`](annotations-and-sizeof.md) — annotations, `sizeof<Type>`, and `alignof<Type>`.
 21. [`macros.md`](macros.md) — declarative token macros, parameters, repetition, hygiene and visibility.
 22. [`atomics.md`](atomics.md) — atomic locations, modification order, ordering categories, and the platform obligation behind them.
+23. [`volatile.md`](volatile.md) — compiler-implemented `core::volatile` accesses: access count, alignment, and what they do not synchronize.
 
 ## Completeness rule
 

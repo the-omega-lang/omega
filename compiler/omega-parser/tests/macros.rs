@@ -49,13 +49,13 @@ fn imported_macro_expansions_are_attributed_to_the_call_site() {
     let Item::FunctionDefinition(function) = &parsed.nodes[0].item else {
         panic!("expected main function");
     };
-    let call_span = function.codeblock.statements[0].span;
+    let call_span = function.codeblock.as_ref().unwrap().statements[0].span;
 
     let expanded = macros::expand(parsed, &definitions).unwrap();
     let Item::FunctionDefinition(function) = &expanded.nodes[0].item else {
         panic!("expected expanded main function");
     };
-    let statement = &function.codeblock.statements[0];
+    let statement = &function.codeblock.as_ref().unwrap().statements[0];
     assert_eq!(statement.span, call_span);
     let Statement::Expression(expression) = &statement.statement else {
         panic!("expected foreign macro body to become an expression statement");
@@ -104,25 +104,25 @@ fn expands_in_all_three_positions() {
     let Item::FunctionDefinition(main) = &module.nodes[2].item else {
         panic!("expected main")
     };
-    assert_eq!(main.codeblock.statements.len(), 5);
+    assert_eq!(main.codeblock.as_ref().unwrap().statements.len(), 5);
     assert!(matches!(
-        main.codeblock.statements[0].statement,
+        main.codeblock.as_ref().unwrap().statements[0].statement,
         Statement::Walrus(_)
     ));
     assert!(matches!(
-        main.codeblock.statements[1].statement,
+        main.codeblock.as_ref().unwrap().statements[1].statement,
         Statement::Walrus(_)
     ));
     assert!(matches!(
-        main.codeblock.statements[2].statement,
+        main.codeblock.as_ref().unwrap().statements[2].statement,
         Statement::Walrus(_)
     ));
     assert!(matches!(
-        main.codeblock.statements[3].statement,
+        main.codeblock.as_ref().unwrap().statements[3].statement,
         Statement::Expression(_)
     ));
     assert!(matches!(
-        main.codeblock.statements[4].statement,
+        main.codeblock.as_ref().unwrap().statements[4].statement,
         Statement::Return(_)
     ));
 }
@@ -138,7 +138,7 @@ fn asm_reg_expr_macro_expands_but_body_stays_opaque() {
     let Item::FunctionDefinition(f) = &module.nodes[0].item else {
         panic!("expected expanded function");
     };
-    let Statement::InlineAsm(asm) = &f.codeblock.statements[0].statement else {
+    let Statement::InlineAsm(asm) = &f.codeblock.as_ref().unwrap().statements[0].statement else {
         panic!("expected an inline-asm statement");
     };
     let omega_parser::prelude::AsmDescriptorKind::Reg { expr, .. } = &asm.descriptors[0].kind
@@ -163,7 +163,7 @@ fn statement_invocation_inside_an_expression_is_not_spliced() {
     let Item::FunctionDefinition(main) = &module.nodes[0].item else {
         panic!("expected main")
     };
-    let Statement::Walrus(w) = &main.codeblock.statements[0].statement else {
+    let Statement::Walrus(w) = &main.codeblock.as_ref().unwrap().statements[0].statement else {
         panic!("expected walrus")
     };
     assert!(matches!(w.value.expression, Expression::BinaryOp(_)));
@@ -187,7 +187,7 @@ fn variadic_repetition_handles_empty_and_separators() {
     let Item::FunctionDefinition(main) = &module.nodes[2].item else {
         panic!("expected main")
     };
-    assert_eq!(main.codeblock.statements.len(), 3);
+    assert_eq!(main.codeblock.as_ref().unwrap().statements.len(), 3);
 }
 
 #[test]
@@ -382,8 +382,8 @@ fn path_fragment_supports_variadic_repetition() {
     let Item::FunctionDefinition(main) = &module.nodes[0].item else {
         panic!("expected main")
     };
-    assert_eq!(main.codeblock.statements.len(), 2);
-    for statement in &main.codeblock.statements {
+    assert_eq!(main.codeblock.as_ref().unwrap().statements.len(), 2);
+    for statement in &main.codeblock.as_ref().unwrap().statements {
         assert!(matches!(statement.statement, Statement::Expression(_)));
     }
 }
@@ -406,7 +406,7 @@ fn expanded_main_tail(module: &SourceModule) -> &omega_parser::prelude::Expressi
         .iter()
         .find_map(|node| match &node.item {
             Item::FunctionDefinition(f) if f.ident.as_ref() == "main" => {
-                f.codeblock.tail.as_deref()
+                f.codeblock.as_ref().unwrap().tail.as_deref()
             }
             _ => None,
         })

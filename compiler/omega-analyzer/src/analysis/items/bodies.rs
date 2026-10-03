@@ -1,4 +1,5 @@
 use super::*;
+use crate::compiler_functions::CompilerFunction;
 
 impl<'r> Analyzer<'r> {
     pub fn check_function_body(
@@ -9,8 +10,11 @@ impl<'r> Analyzer<'r> {
         annotations: &crate::annotations::ResolvedAnnotations,
     ) -> Option<CheckedFunctionDef> {
         let f = &self.normalized_function(f)?;
+        let Some(body) = &f.body else {
+            return self.check_compiler_function_body(f, fn_type, id, annotations);
+        };
         if annotations.naked {
-            return self.check_naked_function_body(f, fn_type, id, annotations);
+            return self.check_naked_function_body(f, body, fn_type, id, annotations);
         }
 
         let (params, body) = self.with_suppressed(&annotations.suppress, |this| {
@@ -29,8 +33,7 @@ impl<'r> Analyzer<'r> {
                     !this.in_defer_body,
                     "defer state must not leak between function bodies"
                 );
-                let body =
-                    this.analyze_block(&f.body, Expected::Exact(fn_type.return_type.as_ref()));
+                let body = this.analyze_block(body, Expected::Exact(fn_type.return_type.as_ref()));
                 (params, body)
             });
             this.warn_unused_bindings(scope, true);
@@ -71,6 +74,7 @@ impl<'r> Analyzer<'r> {
     fn check_naked_function_body(
         &mut self,
         f: &HirFunctionDef,
+        body: &HirBlock,
         fn_type: &ResolvedFunctionType,
         id: HirId,
         annotations: &crate::annotations::ResolvedAnnotations,
@@ -79,7 +83,7 @@ impl<'r> Analyzer<'r> {
             let ((params, asm), _scope) = this.with_scope(|this| {
                 let params = this.analyze_all(&f.params, Self::analyze_param);
                 this.current_return_type = (*fn_type.return_type).clone();
-                let asm = this.analyze_naked_body(f);
+                let asm = this.analyze_naked_body(f, body);
                 (params, asm)
             });
             (params, asm)
@@ -112,12 +116,16 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    fn analyze_naked_body(&mut self, f: &HirFunctionDef) -> Option<CheckedInlineAsm> {
-        let [HirStmt::InlineAsm(asm)] = f.body.stmts.as_slice() else {
+    fn analyze_naked_body(
+        &mut self,
+        f: &HirFunctionDef,
+        body: &HirBlock,
+    ) -> Option<CheckedInlineAsm> {
+        let [HirStmt::InlineAsm(asm)] = body.stmts.as_slice() else {
             self.error(f.id, f.span, AnalysisErrorKind::InvalidNakedBody);
             return None;
         };
-        if f.body.tail.is_some() {
+        if body.tail.is_some() {
             self.error(f.id, f.span, AnalysisErrorKind::InvalidNakedBody);
             return None;
         }
@@ -130,6 +138,94 @@ impl<'r> Analyzer<'r> {
             Some(CheckedStmt::InlineAsm(checked)) => Some(checked),
             _ => unreachable!("analyze_inline_asm always yields exactly one InlineAsm statement"),
         }
+    }
+
+    /// A bodyless declaration reaching here was already classified by the
+    /// driver's signature sweep; the body is one volatile access through the
+    /// `location` parameter, built over the concrete instance's types.
+    fn check_compiler_function_body(
+        &mut self,
+        f: &HirFunctionDef,
+        fn_type: &ResolvedFunctionType,
+        id: HirId,
+        annotations: &crate::annotations::ResolvedAnnotations,
+    ) -> Option<CheckedFunctionDef> {
+        let function = match crate::compiler_functions::compiler_function(&self.module_path, f) {
+            Ok(Some(function)) => function,
+            Ok(None) => unreachable!("a bodyless function always classifies or errors"),
+            Err(kind) => {
+                self.error(f.id, f.span, kind);
+                return None;
+            }
+        };
+        let (params, _scope) =
+            self.with_scope(|this| this.analyze_all(&f.params, Self::analyze_param));
+        let params = params?;
+
+        let parameter = |param: &CheckedParam| CheckedPlace {
+            root: CheckedPlaceRoot::Variable {
+                decl_id: param.id,
+                storage: Storage::Parameter,
+                r#type: param.r#type.clone(),
+            },
+            projections: Vec::new(),
+            r#type: param.r#type.clone(),
+        };
+        let location = &params[0];
+        let ResolvedType::Pointer { pointee, .. } = &location.r#type else {
+            unreachable!("the classifier only accepts a pointer 'location' parameter");
+        };
+        let target = CheckedPlace {
+            projections: vec![CheckedProjection::Deref {
+                r#type: (**pointee).clone(),
+            }],
+            r#type: (**pointee).clone(),
+            ..parameter(location)
+        };
+        let kind = match function {
+            CompilerFunction::ReadVolatile => CheckedExpr::VolatileRead(target),
+            CompilerFunction::WriteVolatile => {
+                let value = &params[1];
+                CheckedExpr::VolatileWrite(CheckedAssignment {
+                    target,
+                    value: Box::new(CheckedExprNode {
+                        id: value.id,
+                        span: value.span,
+                        r#type: value.r#type.clone(),
+                        kind: CheckedExpr::Place(parameter(value)),
+                    }),
+                })
+            }
+        };
+        let tail = CheckedExprNode {
+            id: f.id,
+            span: f.span,
+            r#type: (*fn_type.return_type).clone(),
+            kind,
+        };
+
+        Some(CheckedFunctionDef {
+            id,
+            span: f.span,
+            name: f.name.clone(),
+            generic_args: vec![],
+            self_mode: f.self_mode,
+            is_variadic: fn_type.is_variadic,
+            params,
+            return_type: (*fn_type.return_type).clone(),
+            body: CheckedBlock {
+                stmts: Vec::new(),
+                tail: Some(Box::new(tail)),
+            },
+            inline: annotations.inline,
+            symbol: annotations.symbol.clone(),
+            conformance_owner: None,
+            primitive_target: None,
+            method_owner: None,
+            template: None,
+            naked: false,
+            runtime_checks: None,
+        })
     }
 
     pub fn check_pending_spec_method(
@@ -155,7 +251,7 @@ impl<'r> Analyzer<'r> {
             self_mode: pending.raw.self_mode,
             params: pending.raw.params.clone(),
             return_type: pending.raw.return_type.clone(),
-            body,
+            body: Some(body),
         };
         self.check_function_body(
             &synthetic,

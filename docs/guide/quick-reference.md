@@ -305,6 +305,18 @@ defer {
 
 `defer` is function-exit cleanup; exact behavior is specified in [`../language/functions.md`](../language/functions.md).
 
+## Volatile access
+
+```omega
+import core::volatile::read_volatile;
+import core::volatile::write_volatile;
+
+write_volatile(&mut uart.data, 0x41_u32);   # never removed, repeated, or merged
+status := read_volatile(&uart.status);
+```
+
+See [`../language/volatile.md`](../language/volatile.md).
+
 ## Inline assembly
 
 ```omega

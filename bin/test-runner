@@ -43,8 +43,10 @@ end
 
 # omgc
 OMGC = BIN_DIR.join("omgc-debug")
+# Relative to ROOT_DIR, where every command runs, so a diagnostic that points
+# into a runtime package prints the same path on every machine.
 OMGC_IMPORTS = RUNTIME_PACKAGES.map do |name, path|
-  "--import=#{name}=#{path}"
+  "--import=#{name}=#{path.relative_path_from(ROOT_DIR)}"
 end.freeze
 
 module Color

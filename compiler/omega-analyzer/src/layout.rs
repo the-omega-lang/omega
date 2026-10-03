@@ -157,6 +157,34 @@ pub fn type_alignment(ty: &ResolvedType) -> u32 {
     }
 }
 
+/// The alignment a volatile access to `ty` assumes. A primitive scalar or a
+/// thin pointer is accessed in one instruction, which needs natural alignment
+/// even though its declared alignment is 1; anything else keeps its declared
+/// alignment, so a single-field struct deliberately stays on `type_alignment`.
+pub fn volatile_alignment(ty: &ResolvedType, pointer_bytes: u32) -> u32 {
+    let declared = type_alignment(ty);
+    match ty {
+        ResolvedType::Bool
+        | ResolvedType::Char
+        | ResolvedType::I8
+        | ResolvedType::I16
+        | ResolvedType::I32
+        | ResolvedType::I64
+        | ResolvedType::ISize
+        | ResolvedType::U8
+        | ResolvedType::U16
+        | ResolvedType::U32
+        | ResolvedType::U64
+        | ResolvedType::USize
+        | ResolvedType::F32
+        | ResolvedType::F64
+        | ResolvedType::Pointer { .. }
+        | ResolvedType::Array(_, _)
+        | ResolvedType::Function(_) => declared.max(total_bytes(ty, pointer_bytes)),
+        _ => declared,
+    }
+}
+
 fn max_alignment<'a>(types: impl IntoIterator<Item = &'a ResolvedType>) -> u32 {
     types.into_iter().map(type_alignment).max().unwrap_or(1)
 }

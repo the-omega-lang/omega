@@ -1,0 +1,19 @@
+import core::volatile::read_volatile;
+import core::volatile::write_volatile;
+
+# A volatile access is a promise about real memory, which compile-time
+# evaluation does not have.
+peek() => u32 {
+	local := 5u32;
+	read_volatile(&local)
+}
+
+comp PEEKED := comp peek();
+
+# The location of a write must be a mutable pointer.
+poke(location: *u32) => void {
+	write_volatile(location, 1u32);
+}
+
+main() => void {
+}

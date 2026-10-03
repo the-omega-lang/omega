@@ -61,14 +61,14 @@ fn collect_expr(expr: &CheckedExprNode, out: &mut Vec<(HirId, Span)>) {
         | CheckedExpr::Const(_)
         | CheckedExpr::Sizeof(_)
         | CheckedExpr::Alignof(_) => {}
-        CheckedExpr::Place(place) => collect_place(place, out),
+        CheckedExpr::Place(place) | CheckedExpr::VolatileRead(place) => collect_place(place, out),
         CheckedExpr::FunctionCall(call) => {
             collect_expr(&call.callee, out);
             for arg in &call.args {
                 collect_expr(arg, out);
             }
         }
-        CheckedExpr::Assignment(assignment) => {
+        CheckedExpr::Assignment(assignment) | CheckedExpr::VolatileWrite(assignment) => {
             collect_place(&assignment.target, out);
             collect_expr(&assignment.value, out);
         }

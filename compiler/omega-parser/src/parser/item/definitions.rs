@@ -1,5 +1,5 @@
 use super::annotations::parse_annotations;
-use super::functions::{parse_function_definition, parse_optional_generics};
+use super::functions::{BodyPolicy, parse_function_definition, parse_optional_generics};
 use super::{ParsedVisibility, parse_optional_visibility};
 use crate::ast::annotation::AnnotationNode;
 use crate::ast::item::{
@@ -129,7 +129,13 @@ fn parse_member_functions(
                 (Visibility::Hidden, None)
             }
         };
-        match parse_function_definition(p, annotations, visibility, explicit_hidden_span) {
+        match parse_function_definition(
+            p,
+            annotations,
+            visibility,
+            explicit_hidden_span,
+            BodyPolicy::Required,
+        ) {
             Some(f) => functions.push(f),
             None => recovery::synchronize_to_statement_boundary(p),
         }
@@ -371,8 +377,13 @@ pub(super) fn parse_glue_def(p: &mut Parser) -> Option<GlueStmt> {
     let mut functions = Vec::new();
     while matches!(p.peek(), TokenKind::Ident(_)) {
         // Per-member recovery, same rule as `parse_gap_def` above.
-        let Some(function) = parse_function_definition(p, Vec::new(), Visibility::Hidden, None)
-        else {
+        let Some(function) = parse_function_definition(
+            p,
+            Vec::new(),
+            Visibility::Hidden,
+            None,
+            BodyPolicy::Required,
+        ) else {
             recovery::synchronize_to_statement_boundary(p);
             continue;
         };

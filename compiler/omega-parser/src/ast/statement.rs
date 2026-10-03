@@ -132,7 +132,8 @@ pub struct FunctionDefinitionStmt {
     pub self_mode: Option<SelfMode>,
     pub params: Vec<Param>,
     pub return_type: Type,
-    pub codeblock: CodeblockExpr,
+    /// `None` for a `;`-terminated declaration (item-level free functions only).
+    pub codeblock: Option<CodeblockExpr>,
 }
 
 impl FunctionDefinitionStmt {

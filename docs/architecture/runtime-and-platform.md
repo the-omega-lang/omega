@@ -26,6 +26,7 @@ Each package compiles to a directory of per-source objects rather than a single 
 - allocation-free core data/protocols such as `Option`, comparison, iterators, ranges;
 - platform capability **gaps** (allocator/console/panic/atomic contracts), not implementations;
 - the compiler-implemented source-location macros in `core::builtins`.
+- the compiler-implemented volatile access declarations in `core::volatile`.
 
 It is designed to remain useful in freestanding/embedded contexts.
 
@@ -33,6 +34,7 @@ Compiler privilege is narrow and explicit:
 
 - exposed core items/macros can participate in ambient fallback lookup;
 - primitive declarations/inherent primitive methods belong to core.
+- the two bodyless `core::volatile` declarations get compiler-supplied bodies (see [`volatile.md`](../language/volatile.md)); no other function may omit its body.
 
 `core` is still compiled to an ordinary separate object and linked when its definitions are used.
 

@@ -6,10 +6,11 @@ fn expression_statement(source: &str) -> Expression {
     let Item::FunctionDefinition(function) = module.nodes.into_iter().next().unwrap().item else {
         panic!("expected function definition");
     };
-    if let Some(tail) = function.codeblock.tail {
+    let codeblock = function.codeblock.unwrap();
+    if let Some(tail) = codeblock.tail {
         return tail.expression;
     }
-    let StatementNode { statement, .. } = function.codeblock.statements.into_iter().last().unwrap();
+    let StatementNode { statement, .. } = codeblock.statements.into_iter().last().unwrap();
     let Statement::Expression(expression) = statement else {
         panic!("expected an expression statement");
     };

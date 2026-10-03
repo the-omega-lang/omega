@@ -19,6 +19,7 @@ runtime/core/
   primitives/    # the built-in type declarations (see below)
   range.omg      # Range<T>, RangeIterator<T>, Successor, Bounded
   result.omg     # Result<T, E>
+  volatile.omg   # read_volatile, write_volatile -- compiler-implemented
 ```
 
 `core` has no root source file: its package root is a namespace for these
@@ -44,6 +45,8 @@ when their definitions are used.
   and `ToIterator<T>`, the protocols behind `for`.
 - **`core::atomic`** owns the three ordering types and the per-width atomic
   capability gaps. See "Atomic operations" below.
+- **`core::volatile`** owns the compiler-implemented `read_volatile` and
+  `write_volatile`. See "Volatile access" below.
 - **`core::panic`** owns `PanicInfo`, the `PanicHandler` gap, and the `panic$`
   macro; **`core::builtins`** owns the compiler-implemented `file$`, `line$`,
   and `column$` source-location macros. See "Panicking" below.
@@ -151,6 +154,34 @@ including what concurrent access is excluded, is in
 
 Nothing here promises lock-freedom. A platform may implement a width with a
 lock or an OS primitive, so an atomic call may block.
+
+## Volatile access
+
+`core::volatile` provides accesses the compiler never removes, repeats, or
+merges, for device registers and memory shared with an interrupt handler:
+
+```omega
+import core::volatile::read_volatile;
+import core::volatile::write_volatile;
+
+@layout(align = 4)
+struct Uart {
+    exposed data: u32;
+    exposed status: u32;
+}
+
+transmit(uart: *mut Uart, byte: u8) => void {
+    while (read_volatile(&uart.status) & 0x1_u32) == 0u32 { }
+    write_volatile(&mut uart.data, <u32>byte);
+}
+```
+
+Both are ordinary generic functions whose bodies the compiler supplies, so
+`T` is inferred from the pointer and `read_volatile<u32>` is a usable
+function value. A scalar location must be naturally aligned. Primitives are
+packed by default, so put `@layout(align = n)` on the register block, as above.
+A volatile access is not atomic and does not order ordinary memory. The full
+contract is in [the language specification](../language/volatile.md).
 
 ## Panicking
 

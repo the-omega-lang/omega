@@ -41,8 +41,10 @@ fn scan_terminator(terminator: &MirTerminator, arg_count: usize, homes: &mut [Pa
 
 fn scan_expr(expr: &MirExprNode, arg_count: usize, homes: &mut [ParameterHome]) {
     match &expr.kind {
-        MirExpr::Place(place) => scan_place_exprs(place, arg_count, homes),
-        MirExpr::Assignment(assignment) => {
+        MirExpr::Place(place) | MirExpr::VolatileRead(place) => {
+            scan_place_exprs(place, arg_count, homes)
+        }
+        MirExpr::Assignment(assignment) | MirExpr::VolatileWrite(assignment) => {
             mark_parameter_storage(&assignment.target, arg_count, homes);
             scan_place_exprs(&assignment.target, arg_count, homes);
             scan_expr(&assignment.value, arg_count, homes);

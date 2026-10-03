@@ -17,9 +17,15 @@ pub(super) fn parse_declaration_or_function_definition(
     explicit_hidden_span: Option<Span>,
 ) -> Option<Item> {
     match p.peek_at(1) {
-        TokenKind::Lt | TokenKind::LParen => Some(Item::FunctionDefinition(
-            parse_function_definition(p, annotations, visibility, explicit_hidden_span)?,
-        )),
+        TokenKind::Lt | TokenKind::LParen => {
+            Some(Item::FunctionDefinition(parse_function_definition(
+                p,
+                annotations,
+                visibility,
+                explicit_hidden_span,
+                BodyPolicy::MayOmit,
+            )?))
+        }
         _ => {
             let mut decl = parse_declaration(p)?;
             decl.visibility = visibility;
@@ -103,11 +109,20 @@ pub(super) fn parse_item_walrus(
     })
 }
 
+/// Whether a `;` may stand in for the body. Only item-level free functions
+/// accept it; members of definitions, conformances, and glue always need one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BodyPolicy {
+    Required,
+    MayOmit,
+}
+
 pub fn parse_function_definition(
     p: &mut Parser,
     annotations: Vec<AnnotationNode>,
     visibility: Visibility,
     explicit_hidden_span: Option<Span>,
+    body_policy: BodyPolicy,
 ) -> Option<FunctionDefinitionStmt> {
     let ident = p.expect_ident()?;
     let name_span = p.last_span();
@@ -122,7 +137,11 @@ pub fn parse_function_definition(
     let return_type = crate::parser::r#type::parse_type(p)?;
     let return_type_span = return_type_start.to(p.last_span());
     let signature_span = name_span.to(return_type_span);
-    let codeblock = parse_codeblock(p)?;
+    let codeblock = if body_policy == BodyPolicy::MayOmit && p.eat(&TokenKind::Semi) {
+        None
+    } else {
+        Some(parse_codeblock(p)?)
+    };
     Some(FunctionDefinitionStmt {
         annotations,
         visibility,

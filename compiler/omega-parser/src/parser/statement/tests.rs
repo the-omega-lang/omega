@@ -10,6 +10,8 @@ fn body_statements(source: &str) -> Vec<Statement> {
         panic!("first item must be a function");
     };
     f.codeblock
+        .as_ref()
+        .unwrap()
         .statements
         .iter()
         .map(|s| s.statement.clone())
@@ -120,7 +122,7 @@ fn asm_without_fat_arrow_body_is_an_ordinary_call() {
         panic!("second item must be a function");
     };
     assert!(matches!(
-        f.codeblock.statements[0].statement,
+        f.codeblock.as_ref().unwrap().statements[0].statement,
         Statement::Expression(_)
     ));
 }

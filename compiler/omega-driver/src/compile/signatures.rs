@@ -274,6 +274,10 @@ impl Driver {
                 })
                 .collect();
             for f in &functions {
+                if let Err(kind) = omega_analyzer::compiler_functions::compiler_function(path, f) {
+                    self.diagnostics
+                        .error(path, AnalysisError::new(f.id, f.span, kind));
+                }
                 match self.normalized_function(path, f) {
                     Ok(normalized) => self.mark_bound_type_imports(path, &normalized.generics),
                     Err(error) => self.record_item_failure(path, error),

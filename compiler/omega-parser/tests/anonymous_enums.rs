@@ -36,6 +36,8 @@ fn match_arms(source: &str) -> Vec<MatchArm> {
     };
     let tail = f
         .codeblock
+        .as_ref()
+        .unwrap()
         .tail
         .as_ref()
         .expect("the match is the block's tail expression");

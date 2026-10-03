@@ -10,6 +10,8 @@ fn body_statements(source: &str) -> Vec<Statement> {
         panic!("first item must be a function");
     };
     f.codeblock
+        .as_ref()
+        .unwrap()
         .statements
         .iter()
         .map(|s| s.statement.clone())

@@ -166,6 +166,8 @@ fn anchored_expression_path_parses() {
     };
     let Some(omega_parser::prelude::Statement::Return(ret)) = func
         .codeblock
+        .as_ref()
+        .unwrap()
         .statements
         .last()
         .map(|s| s.statement.clone())

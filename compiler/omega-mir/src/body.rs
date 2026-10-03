@@ -69,6 +69,11 @@ pub enum MirExpr {
     SpecCoerce(MirSpecCoerce),
     DynamicCall(MirDynamicCall),
     InlineAsm(MirInlineAsm),
+    /// Volatile accesses keep `place.align` as the ordinary place alignment;
+    /// the backend applies the volatile alignment rule, which needs the
+    /// target's pointer width.
+    VolatileRead(MirPlace),
+    VolatileWrite(MirAssignment),
 }
 
 #[derive(Debug, Clone)]

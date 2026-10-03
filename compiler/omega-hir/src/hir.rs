@@ -220,7 +220,9 @@ pub struct HirFunctionDef {
     pub self_mode: Option<SelfMode>,
     pub params: Vec<HirParam>,
     pub return_type: Type,
-    pub body: HirBlock,
+    /// `None` only for a compiler-implemented declaration; see
+    /// `docs/language/volatile.md`.
+    pub body: Option<HirBlock>,
 }
 
 impl HirFunctionDef {

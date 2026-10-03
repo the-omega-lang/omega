@@ -1,0 +1,59 @@
+# `core::volatile` accesses are ordinary generic calls whose bodies the
+# compiler supplies (docs/language/volatile.md). Every location here is
+# naturally aligned: a scalar's volatile access assumes its natural alignment,
+# which `alignof` does not provide for packed-by-default storage.
+import std::io::println;
+import core::volatile::read_volatile;
+import core::volatile::write_volatile;
+
+@layout(align = 8)
+struct Cell<T> {
+	exposed value: T;
+}
+
+@layout(align = 8)
+struct Register {
+	exposed control: u32;
+	exposed status: u16;
+	exposed flags: u8;
+}
+
+marker Token { }
+
+round_trip<T>(cell: *mut Cell<T>, value: T) => T {
+	write_volatile(&mut cell.value, value);
+	read_volatile(&cell.value)
+}
+
+main() => void {
+	mut byte := Cell<u8> { value = 0u8; };
+	mut word := Cell<u32> { value = 0u32; };
+	mut wide := Cell<u64> { value = 0u64; };
+	mut real := Cell<f64> { value = 0.0f64; };
+	mut flag := Cell<bool> { value = false; };
+	target := 7u32;
+	mut pointer := Cell<*u32> { value = &word.value; };
+
+	println$("u8: ", round_trip(&mut byte, 200u8));
+	println$("u32: ", round_trip(&mut word, 3000000000u32));
+	println$("u64: ", round_trip(&mut wide, 12345678901234u64));
+	println$("f64: ", round_trip(&mut real, 2.5f64));
+	println$("bool: ", round_trip(&mut flag, true));
+	println$("pointer: ", *round_trip(&mut pointer, &target));
+
+	mut register := Register { control = 0u32; status = 0u16; flags = 0u8; };
+	write_volatile(&mut register, Register { control = 1u32; status = 2u16; flags = 3u8; });
+	snapshot := read_volatile(&register);
+	println$("struct: ", snapshot.control, " ", snapshot.status, " ", snapshot.flags);
+
+	write_volatile<u32>(&mut word.value, 41u32);
+	println$("explicit: ", read_volatile<u32>(&word.value) + 1u32);
+
+	read: (*u32) => u32 = read_volatile<u32>;
+	println$("value: ", read(&word.value));
+
+	mut token := Token { };
+	write_volatile(&mut token, Token { });
+	<void>read_volatile(&token);
+	println$("zero-sized: done");
+}

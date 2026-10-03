@@ -11,6 +11,8 @@ fn tail_expression(expr_source: &str) -> ExpressionNode {
         panic!("expected a function definition");
     };
     *f.codeblock
+        .as_ref()
+        .unwrap()
         .tail
         .clone()
         .expect("expected a tail expression")
@@ -37,7 +39,13 @@ fn the_operator_span_covers_only_the_question_mark() {
     let Item::FunctionDefinition(f) = &module.nodes.last().expect("one item").item else {
         panic!("expected a function definition");
     };
-    let expr = f.codeblock.tail.clone().expect("a tail expression");
+    let expr = f
+        .codeblock
+        .as_ref()
+        .unwrap()
+        .tail
+        .clone()
+        .expect("a tail expression");
     let r#try = expect_try(&expr);
     assert_eq!(
         &source[r#try.operator_span.start..r#try.operator_span.end],
@@ -113,7 +121,7 @@ fn a_try_operand_survives_macro_expansion() {
     let Item::FunctionDefinition(f) = &expanded.nodes.last().expect("one item").item else {
         panic!("expected a function definition");
     };
-    let Statement::Walrus(walrus) = &f.codeblock.statements[0].statement else {
+    let Statement::Walrus(walrus) = &f.codeblock.as_ref().unwrap().statements[0].statement else {
         panic!("expected the walrus declaration");
     };
     let r#try = expect_try(&walrus.value);

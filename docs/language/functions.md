@@ -24,6 +24,8 @@ function = identifier, [ generic-parameters ],
            "=>", return-type, block ;
 ```
 
+A function always has a body, except the compiler-implemented `core::volatile` declarations, whose bodies the compiler supplies; see [`volatile.md`](volatile.md).
+
 Parameters are immutable bindings. Methods use the same syntax inside a nominal type, with one of the receiver forms defined in [`bindings-and-mutability.md`](bindings-and-mutability.md).
 
 A function declared inside a struct, union, enum, marker, primitive block, or conformance block with no receiver is a static function. A declaration with `self`, `mut self`, `*self`, or `*mut self` is an instance method.

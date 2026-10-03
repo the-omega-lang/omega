@@ -178,7 +178,7 @@ fn walk_expr(expr: &CheckedExprNode, sites: &mut CandidateSites) {
         | CheckedExpr::Const(_)
         | CheckedExpr::Sizeof(_)
         | CheckedExpr::Alignof(_) => {}
-        CheckedExpr::Place(place) => walk_place(place, sites),
+        CheckedExpr::Place(place) | CheckedExpr::VolatileRead(place) => walk_place(place, sites),
         CheckedExpr::FunctionCall(call) => {
             walk_expr(&call.callee, sites);
             for arg in &call.args {
@@ -197,7 +197,7 @@ fn walk_expr(expr: &CheckedExprNode, sites: &mut CandidateSites) {
                 sites.never_calls += 1;
             }
         }
-        CheckedExpr::Assignment(a) => {
+        CheckedExpr::Assignment(a) | CheckedExpr::VolatileWrite(a) => {
             walk_place(&a.target, sites);
             walk_expr(&a.value, sites);
         }
