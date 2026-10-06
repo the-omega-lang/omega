@@ -4,7 +4,8 @@
 //! bodies reach a checked operation, resolves `core::panic` for them, and
 //! hands each one the support its generated panics call. Doing it here rather
 //! than inside four separate lowering sites is what keeps MIR free of name
-//! resolution and keeps one compilation to one resolution.
+//! resolution. `comp` evaluation consults the same cached resolution to
+//! recognise the handler, so one compilation still resolves it at most once.
 
 use super::*;
 use omega_analyzer::checked::{CheckedBlock, CheckedFunctionDef};
@@ -25,15 +26,14 @@ const INFO: &str = "PanicInfo";
 impl Driver {
     /// Attaches panic support to every emitted body that reaches a checked
     /// operation. A body that reaches none keeps `None`, so nothing about it
-    /// -- including its object's reference to the panic gap -- changes, and a
-    /// compilation whose bodies reach none never resolves `core::panic` at
-    /// all.
+    /// -- including its object's reference to the panic gap -- changes. This
+    /// pass skips resolving `core::panic` when no body reaches a check.
     pub(super) fn bind_runtime_checks(&mut self, modules: &mut CheckedModules) {
         let Some((module, decl_id, span)) = first_checked_body(modules) else {
             return;
         };
-        let support = match self.resolve_panic_support() {
-            Ok(support) => Rc::new(support),
+        let support = match self.panic_support() {
+            Ok(support) => support,
             Err(detail) => {
                 // One finding for the compilation: every further body would
                 // report the same missing contract at a different line.
@@ -69,7 +69,18 @@ impl Driver {
         self.modules.sources().shared(id)
     }
 
-    /// Resolves and validates `core`'s panic contract exactly once. The gap
+    /// `core`'s panic contract, resolved at most once successfully. A failure
+    /// is not cached, so a later caller retries it.
+    pub(crate) fn panic_support(&mut self) -> Result<Rc<PanicSupport>, String> {
+        if let Some(support) = &self.panic_support {
+            return Ok(support.clone());
+        }
+        let support = Rc::new(self.resolve_panic_support()?);
+        self.panic_support = Some(support.clone());
+        Ok(support)
+    }
+
+    /// Resolves and validates `core`'s panic contract. The gap
     /// member is `shared`, so the compiler's own reference to it bypasses
     /// visibility; nothing about what source may name changes.
     fn resolve_panic_support(&mut self) -> Result<PanicSupport, String> {

@@ -1,0 +1,34 @@
+error: cannot evaluate this expression at compile time: it panicked: "bad config"
+ --> tests/t50_comp_panic/t50_comp_panic.omg:6:21
+  |
+6 |   comp DIRECT := comp {
+  |  _____________________^
+7 | |     bad := true;
+8 | |     if bad { panic$("bad config") } else { "OK" }
+9 | | };
+  | |_^ cannot be evaluated at compile time
+8 |       if bad { panic$("bad config") } else { "OK" }
+  |                -------------------- evaluation stops here
+
+error: cannot evaluate this expression at compile time: it panicked: "negative input"
+  --> tests/t50_comp_panic/t50_comp_panic.omg:11:21
+   |
+ 2 |     if x < 0 { panic$("negative input") }
+   |                ------------------------ evaluation stops here
+...
+11 | comp NESTED := comp parse(-1);
+   |                     ^^^^^^^^^ cannot be evaluated at compile time
+   |                     --------- required by this compile-time call
+
+error: cannot evaluate this expression at compile time: it panicked
+  --> tests/t50_comp_panic/t50_comp_panic.omg:13:21
+   |
+13 |   comp SILENT := comp {
+   |  _____________________^
+14 | |     panic$()
+15 | | };
+   | |_^ cannot be evaluated at compile time
+14 |       panic$()
+   |       -------- evaluation stops here
+
+error: could not compile the program due to 3 previous errors

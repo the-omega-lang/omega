@@ -188,7 +188,7 @@ A successful `comp` expression can collapse into `CheckedExpr::Const(value)`. Ru
 `comp_eval.rs` evaluates an already semantically understood checked expression environment. It is not a second parser/type checker.
 The stateful interpreter remains cohesive in `comp_eval.rs`; its focused unit tests live in `comp_eval/tests.rs` so production control flow is not buried under test fixtures.
 
-When compile-time execution calls an Omega function, the evaluator obtains the checked function body through a resolver callback (`CompFunctionResolver`/driver implementation) rather than reaching into driver caches/filesystem directly.
+When compile-time execution calls an Omega function, the evaluator obtains the checked function body through a resolver callback (`CompFunctionResolver`/driver implementation) rather than reaching into driver caches/filesystem directly. The resolver also answers whether a bodiless callee is `core`'s trusted panic handler (by declaration identity, from the same cached resolution runtime checks use); evaluation then reports a panic instead of an extern call.
 
 Likewise, references to other compile-time declarations use already resolved `ConstValue`s when available.
 

@@ -1,0 +1,17 @@
+parse(x: i32) => i32 {
+	if x < 0 { panic$("negative input") }
+	x * 2
+}
+
+comp DIRECT := comp {
+	bad := true;
+	if bad { panic$("bad config") } else { "OK" }
+};
+
+comp NESTED := comp parse(-1);
+
+comp SILENT := comp {
+	panic$()
+};
+
+main() => void {}

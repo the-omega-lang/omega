@@ -52,6 +52,10 @@ pub struct Driver {
     /// is read with. It is fixed at construction: a cache populated under one
     /// configuration would be wrong under any other.
     definitions: CompilerDefinitions,
+    /// `core`'s panic contract once it has resolved. Only success is kept: a
+    /// lookup made mid-analysis can fail transiently (an in-progress cycle),
+    /// and caching that would misreport a sound `core` later.
+    panic_support: Option<Rc<omega_analyzer::runtime_checks::PanicSupport>>,
 }
 
 impl Driver {
@@ -84,6 +88,7 @@ impl Driver {
             prelude_macros: None,
             analysis_stack: Vec::new(),
             definitions,
+            panic_support: None,
         })
     }
 

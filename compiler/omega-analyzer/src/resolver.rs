@@ -430,6 +430,12 @@ pub trait ModuleResolver {
         None
     }
 
+    /// The index of `PanicInfo::message` when `decl_id` is `core`'s trusted
+    /// panic handler. Compile-time evaluation reports reaching it as a panic.
+    fn trusted_panic_message_field(&mut self, _decl_id: HirId) -> Option<usize> {
+        None
+    }
+
     /// Resolves a `Path`'s explicit anchor (`root::`/`self::`/`super::`)
     /// relative to `origin_module`. Returns `None` when the path carries no
     /// explicit anchor, so the caller falls back to its own unanchored

@@ -86,6 +86,22 @@ Encountering one of these causes the `comp` evaluation to fail; it does not sile
 
 Compile-time execution is also bounded to prevent non-terminating loops/recursion from hanging compilation. The current implementation limit is an implementation constraint rather than a language guarantee and is documented under [`../issues/compiler-limitations.md`](../issues/compiler-limitations.md).
 
+## Panics during evaluation
+
+A `comp` evaluation that reaches `core::panic::PanicHandler::panic`, as `panic$` does, fails. The resulting compile error reports the panic's message, located at the panic site. The handler is not called, so evaluating a panic needs no `PanicHandler` glue. `defer`s registered by the evaluated functions do not run, just as at runtime, where the handler never returns.
+
+A function that panics therefore serves both contexts: at runtime it panics, and under `comp` it fails compilation.
+
+```omega
+parse(x: i32) => i32 {
+	if x < 0 { panic$("negative input") }
+	x * 2
+}
+
+comp OK := comp parse(21);   # 42
+comp BAD := comp parse(-1);  # error: it panicked: "negative input"
+```
+
 ## Addresses of `comp` values
 
 A `comp` binding has no ordinary runtime storage. When immutable addressable storage is required—for example by `&VALUE`, a pointer-receiver method call, or slicing—the value may be materialized as immutable static data and the operation uses an address into that materialization.

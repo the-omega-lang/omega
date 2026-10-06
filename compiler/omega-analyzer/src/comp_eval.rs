@@ -25,6 +25,12 @@ pub trait CompFunctionResolver {
     fn function_source(&self, _decl_id: HirId) -> Option<SourceId> {
         None
     }
+
+    /// The index of `PanicInfo::message` when `decl_id` is `core`'s trusted
+    /// panic handler, recognised by declaration identity.
+    fn trusted_panic_message_field(&mut self, _decl_id: HirId) -> Option<usize> {
+        None
+    }
 }
 
 impl CompFunctionResolver for dyn crate::resolver::ModuleResolver + '_ {
@@ -38,11 +44,16 @@ impl CompFunctionResolver for dyn crate::resolver::ModuleResolver + '_ {
     fn function_source(&self, decl_id: HirId) -> Option<SourceId> {
         crate::resolver::ModuleResolver::function_source(self, decl_id)
     }
+
+    fn trusted_panic_message_field(&mut self, decl_id: HirId) -> Option<usize> {
+        crate::resolver::ModuleResolver::trusted_panic_message_field(self, decl_id)
+    }
 }
 
 #[derive(Debug, Clone)]
 pub enum CompErrorKind {
     ExternCall,
+    Panicked { message: String },
     DynamicDispatch,
     UnresolvableMemory,
     NonCompGlobalRead,
@@ -57,6 +68,8 @@ impl std::fmt::Display for CompErrorKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::ExternCall => write!(f, "it calls an 'extern' function"),
+            Self::Panicked { message } if message.is_empty() => write!(f, "it panicked"),
+            Self::Panicked { message } => write!(f, "it panicked: \"{message}\""),
             Self::DynamicDispatch => write!(f, "it uses dynamic dispatch through a 'spec' object"),
             Self::UnresolvableMemory => write!(
                 f,
@@ -885,7 +898,7 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
 
         let body = match self.resolver.resolve_function_body(*decl_id) {
             Ok(Some(body)) => body,
-            Ok(None) => return Err(self.err(span, CompErrorKind::ExternCall)),
+            Ok(None) => return Err(self.bodiless_call_error(*decl_id, &args, span)),
             Err(error) => return Err(self.err(span, CompErrorKind::ResolutionFailed(error))),
         };
 
@@ -906,6 +919,31 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
             }
             other => other,
         })
+    }
+
+    /// `core`'s panic handler is a gap with no body here, but reaching it is
+    /// the program panicking, not a call evaluation cannot follow.
+    fn bodiless_call_error(&mut self, decl_id: HirId, args: &[ConstValue], span: Span) -> Outcome {
+        let Some(message_index) = self.resolver.trusted_panic_message_field(decl_id) else {
+            return self.err(span, CompErrorKind::ExternCall);
+        };
+        let message = match args {
+            [ConstValue::Ref(info)] => match info.as_ref() {
+                ConstValue::Struct(fields) => match fields.get(message_index) {
+                    Some(ConstValue::Str(message)) => Some(message.clone()),
+                    _ => None,
+                },
+                _ => None,
+            },
+            _ => None,
+        };
+        match message {
+            Some(message) => self.err(span, CompErrorKind::Panicked { message }),
+            None => self.err(
+                span,
+                CompErrorKind::Unsupported("a panic handler argument of this shape"),
+            ),
+        }
     }
 
     fn call_function(

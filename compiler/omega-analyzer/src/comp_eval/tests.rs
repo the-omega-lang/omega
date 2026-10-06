@@ -742,3 +742,166 @@ fn a_try_that_escapes_the_outermost_evaluation_is_a_diagnostic() {
     let err = eval(&mut NoFunctions, &expr, Target::DEFAULT, None).unwrap_err();
     assert!(matches!(err.kind, CompErrorKind::EscapingControlFlow));
 }
+
+const PANIC_HANDLER: u32 = 77;
+
+/// Treats one bodiless declaration as `core`'s handler, with `PanicInfo`'s
+/// message at index 1, and hands out any other function it was given.
+struct PanicResolver {
+    trusted: bool,
+    functions: Vec<CheckedFunctionDef>,
+}
+
+impl CompFunctionResolver for PanicResolver {
+    fn resolve_function_body(
+        &mut self,
+        decl_id: HirId,
+    ) -> Result<Option<CheckedFunctionDef>, ResolveError> {
+        Ok(self.functions.iter().find(|f| f.id == decl_id).cloned())
+    }
+
+    fn trusted_panic_message_field(&mut self, decl_id: HirId) -> Option<usize> {
+        (self.trusted && decl_id == id(PANIC_HANDLER)).then_some(1)
+    }
+}
+
+fn void_fn_type() -> crate::resolved_type::ResolvedFunctionType {
+    crate::resolved_type::ResolvedFunctionType {
+        params: vec![],
+        return_type: Box::new(ResolvedType::Void),
+        is_variadic: false,
+        self_mode: None,
+        calling_convention: crate::resolved_type::CallingConvention::Omega,
+    }
+}
+
+fn call_of(decl: u32, args: Vec<CheckedExprNode>) -> CheckedExprNode {
+    let fn_type = void_fn_type();
+    let callee = node(
+        CheckedExpr::Place(CheckedPlace {
+            root: CheckedPlaceRoot::Variable {
+                decl_id: id(decl),
+                storage: Storage::Function,
+                r#type: ResolvedType::Function(fn_type.clone()),
+            },
+            projections: vec![],
+            r#type: ResolvedType::Function(fn_type.clone()),
+        }),
+        ResolvedType::Function(fn_type.clone()),
+    );
+    node(
+        CheckedExpr::FunctionCall(CheckedFunctionCall {
+            callee: Box::new(callee),
+            fn_type,
+            args,
+        }),
+        ResolvedType::Void,
+    )
+}
+
+fn panic_call(message: &str) -> CheckedExprNode {
+    let string = |s: &str| {
+        node(
+            CheckedExpr::String(s.into()),
+            ResolvedType::Str { mutable: false },
+        )
+    };
+    let info = node(
+        CheckedExpr::StructLiteral(CheckedStructLiteral {
+            fields: vec![
+                CheckedStructLiteralField {
+                    field_index: 0,
+                    value: string("main.omg"),
+                },
+                CheckedStructLiteralField {
+                    field_index: 1,
+                    value: string(message),
+                },
+            ],
+        }),
+        ResolvedType::Bool,
+    );
+    let info_ref = node(
+        CheckedExpr::AddressOf(crate::checked::CheckedAddressOf {
+            place: CheckedPlace {
+                root: CheckedPlaceRoot::Expr(Box::new(info)),
+                projections: vec![],
+                r#type: ResolvedType::Bool,
+            },
+        }),
+        ResolvedType::Bool,
+    );
+    call_of(PANIC_HANDLER, vec![info_ref])
+}
+
+#[test]
+fn reaching_the_trusted_panic_handler_reports_its_message() {
+    let mut resolver = PanicResolver {
+        trusted: true,
+        functions: vec![],
+    };
+    let err = eval(&mut resolver, &panic_call("boom"), Target::DEFAULT, None).unwrap_err();
+    assert!(matches!(&err.kind, CompErrorKind::Panicked { message } if message == "boom"));
+    assert_eq!(err.kind.to_string(), "it panicked: \"boom\"");
+}
+
+#[test]
+fn a_panic_without_a_message_says_only_that_it_panicked() {
+    let mut resolver = PanicResolver {
+        trusted: true,
+        functions: vec![],
+    };
+    let err = eval(&mut resolver, &panic_call(""), Target::DEFAULT, None).unwrap_err();
+    assert_eq!(err.kind.to_string(), "it panicked");
+}
+
+#[test]
+fn an_untrusted_bodiless_function_is_still_an_extern_call() {
+    let mut resolver = PanicResolver {
+        trusted: false,
+        functions: vec![],
+    };
+    let err = eval(&mut resolver, &panic_call("boom"), Target::DEFAULT, None).unwrap_err();
+    assert!(matches!(err.kind, CompErrorKind::ExternCall));
+}
+
+#[test]
+fn a_panic_in_a_called_function_keeps_the_call_trace() {
+    let helper = CheckedFunctionDef {
+        id: id(200),
+        span: sp(),
+        name: omega_parser::prelude::Ident("helper".into()),
+        generic_args: vec![],
+        self_mode: None,
+        is_variadic: false,
+        params: vec![],
+        return_type: ResolvedType::Void,
+        body: CheckedBlock {
+            stmts: vec![],
+            tail: Some(Box::new(panic_call("deep"))),
+        },
+        inline: None,
+        symbol: crate::annotations::SymbolPolicy::ordinary(),
+        conformance_owner: None,
+        primitive_target: None,
+        method_owner: None,
+        template: None,
+        naked: false,
+        runtime_checks: None,
+    };
+    let mut resolver = PanicResolver {
+        trusted: true,
+        functions: vec![helper],
+    };
+    let source = omega_diagnostics::SourceRegistry::default()
+        .add(omega_diagnostics::SourceFile::new("main.omg", ""));
+    let err = eval(
+        &mut resolver,
+        &call_of(200, vec![]),
+        Target::DEFAULT,
+        Some(source),
+    )
+    .unwrap_err();
+    assert!(matches!(&err.kind, CompErrorKind::Panicked { message } if message == "deep"));
+    assert_eq!(err.trace.len(), 1);
+}

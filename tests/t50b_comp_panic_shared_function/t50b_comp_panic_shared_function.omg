@@ -1,0 +1,15 @@
+import std::io::println;
+
+# One function serves both contexts: its untaken `panic$` neither fails the
+# compile-time call nor stops the runtime one.
+parse(x: i32) => i32 {
+	if x < 0 { panic$("negative input") }
+	x * 2
+}
+
+comp DOUBLED := comp parse(21);
+
+main() => void {
+	println$("comp: ", DOUBLED);
+	println$("runtime: ", parse(5));
+}

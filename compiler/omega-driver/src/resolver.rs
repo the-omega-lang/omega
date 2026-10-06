@@ -1273,6 +1273,11 @@ impl ModuleResolver for Driver {
         self.modules.source_id(key.module())
     }
 
+    fn trusted_panic_message_field(&mut self, decl_id: HirId) -> Option<usize> {
+        let support = self.panic_support().ok()?;
+        (support.handler_decl_id == decl_id).then_some(support.message.index)
+    }
+
     fn resolve_function_body(
         &mut self,
         decl_id: HirId,

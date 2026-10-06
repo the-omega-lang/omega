@@ -8,7 +8,8 @@
 # like `panic$`'s and resolve this declaration by identity, so the shapes below
 # are a compiler-facing contract as well as a source-facing one: renaming a
 # field, changing one's type, or changing the handler's signature is a breaking
-# change on both sides.
+# change on both sides. Compile-time evaluation reads `message` from the
+# `PanicInfo` passed to the handler, so its name and type bind `comp` too.
 #
 # As with every gap, a program that emits no reference to the handler needs no
 # glue for it -- but a function that dispatches on an enum tag, uses `?`, widens
