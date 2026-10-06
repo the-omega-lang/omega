@@ -1,0 +1,9 @@
+import std::io::println;
+
+# A supplied definition and its fallback must be the same kind of value.
+@cond(equals(default(def::n, "x"), "x"))
+selected() => *str { return "selected"; }
+
+main() => void {
+	println$("unreachable: ", selected());
+}

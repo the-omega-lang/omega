@@ -161,81 +161,18 @@ impl<'r> Analyzer<'r> {
             return mismatch(self, "a negative number literal".into());
         }
 
-        let literal_text = || {
-            let digits = match &n.fractional_part {
-                Some(frac) => format!("{}.{}", n.integer_part, frac),
-                None => n.integer_part.clone(),
-            };
-            if negated {
-                format!("-{digits}")
-            } else {
-                digits
-            }
-        };
-        let out_of_range = |this: &mut Self| {
-            this.error(
-                node_id,
-                span,
-                AnalysisErrorKind::NumberLiteralOutOfRange {
-                    literal: literal_text(),
-                    r#type: expected.clone(),
-                },
-            );
-            None
-        };
-
-        match kind {
-            NumericKind::Float(width) => {
-                let text = format!(
-                    "{}.{}",
-                    n.integer_part,
-                    n.fractional_part.as_deref().unwrap_or("0")
+        match parse_number_literal(n, kind, negated) {
+            Ok(value) => Some(value),
+            Err(()) => {
+                self.error(
+                    node_id,
+                    span,
+                    AnalysisErrorKind::NumberLiteralOutOfRange {
+                        literal: number_literal_text(n, negated),
+                        r#type: expected.clone(),
+                    },
                 );
-                let Ok(parsed) = text.parse::<f64>() else {
-                    return out_of_range(self);
-                };
-                if width == 32 && parsed.is_finite() && (parsed as f32).is_infinite() {
-                    return out_of_range(self);
-                }
-                Some(NumberValue::Float(if negated { -parsed } else { parsed }))
-            }
-            NumericKind::Signed(width) => {
-                let Ok(parsed) = u64::from_str_radix(&n.integer_part, n.base.radix()) else {
-                    return out_of_range(self);
-                };
-                let positive_max = if width == 64 {
-                    i64::MAX as u64
-                } else {
-                    (1u64 << (width - 1)) - 1
-                };
-                let max = if negated {
-                    positive_max + 1
-                } else {
-                    positive_max
-                };
-                if parsed > max {
-                    return out_of_range(self);
-                }
-                let value = if negated {
-                    (-(parsed as i128)) as i64
-                } else {
-                    parsed as i64
-                };
-                Some(NumberValue::Signed(value))
-            }
-            NumericKind::Unsigned(width) => {
-                let Ok(parsed) = u64::from_str_radix(&n.integer_part, n.base.radix()) else {
-                    return out_of_range(self);
-                };
-                let max = if width == 64 {
-                    u64::MAX
-                } else {
-                    (1u64 << width) - 1
-                };
-                if parsed > max {
-                    return out_of_range(self);
-                }
-                Some(NumberValue::Unsigned(parsed))
+                None
             }
         }
     }

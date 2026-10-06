@@ -8,6 +8,9 @@ impl<'r> Analyzer<'r> {
         base: &HirExprNode,
         expected: Option<&ResolvedType>,
     ) -> Option<CheckedExprNode> {
+        if let HirExpr::Number(n) = &base.expr {
+            return self.analyze_negated_number(node_id, span, n, expected);
+        }
         let checked_base = self.analyze_expr(base, expected.into())?;
         if checked_base.r#type == ResolvedType::Never {
             return Some(CheckedExprNode {
@@ -51,6 +54,27 @@ impl<'r> Analyzer<'r> {
             r#type,
             kind: CheckedExpr::Negate(Box::new(checked_base)),
         })
+    }
+
+    fn analyze_negated_number(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        n: &NumberExpr,
+        expected: Option<&ResolvedType>,
+    ) -> Option<CheckedExprNode> {
+        let literal = self.analyze_number(node_id, span, n, expected, true)?;
+        if let CheckedExpr::Number(NumberValue::Unsigned(_)) = literal.kind {
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::InvalidNegateOperand {
+                    r#type: literal.r#type,
+                },
+            );
+            return None;
+        }
+        Some(literal)
     }
 
     pub(super) fn analyze_not(

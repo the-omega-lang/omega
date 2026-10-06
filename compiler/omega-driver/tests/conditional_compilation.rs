@@ -1,9 +1,9 @@
 use omega_analyzer::Target;
 use omega_analyzer::annotation_eval::ConditionErrorKind;
 use omega_analyzer::checked::CheckedItem;
-use omega_analyzer::compiler_definitions::{CompilerDefinitions, DefinitionValue, decode_literal};
+use omega_analyzer::compiler_definitions::{CompilerDefinitions, validate_literal};
 use omega_driver::{CompileError, CompiledProgram, Driver, ExternRoot};
-use omega_parser::prelude::{Ident, parse_literal};
+use omega_parser::prelude::{AnnotationLiteral, Ident, parse_literal};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -19,11 +19,11 @@ fn definitions(options: &[&str]) -> CompilerDefinitions {
         let (name, value) = match option.split_once('=') {
             Some((name, text)) => {
                 let literal = parse_literal(text).expect("the test literal parses");
-                let value = decode_literal(&literal, target.pointer_bits())
-                    .expect("the test literal decodes");
-                (name, value)
+                validate_literal(&literal, target.pointer_bits())
+                    .expect("the test literal is a valid definition");
+                (name, literal)
             }
-            None => (*option, DefinitionValue::Bool(true)),
+            None => (*option, AnnotationLiteral::Bool(true)),
         };
         assert!(definitions.define(Ident(name.into()), value));
     }

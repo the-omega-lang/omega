@@ -272,6 +272,13 @@ pub enum MacroErrorKind {
     BuiltinWithoutSourceContext {
         builtin: MacroBuiltin,
     },
+    BuiltinWithoutConfiguration {
+        builtin: MacroBuiltin,
+    },
+    ConfigNotACondition {
+        errors: String,
+    },
+    ConfigInvokesMacro,
     SourceLocationOutOfRange {
         builtin: MacroBuiltin,
         value: usize,
@@ -393,14 +400,31 @@ impl fmt::Display for MacroErrorKind {
             Self::MalformedBuiltinDeclaration { builtin } => write!(
                 f,
                 "'{}::{}' is compiler-implemented and must be declared as an exposed macro with \
-                 no parameters and an empty body",
+                 {} and an empty body",
                 MacroBuiltin::MODULE.join("::"),
-                builtin.name()
+                builtin.name(),
+                match builtin {
+                    MacroBuiltin::Config => "exactly one 'expr' parameter",
+                    _ => "no parameters",
+                }
             ),
             Self::BuiltinWithoutSourceContext { builtin } => write!(
                 f,
                 "'{}' needs the invoking module's source, which this expansion has no access to",
                 builtin.name()
+            ),
+            Self::BuiltinWithoutConfiguration { builtin } => write!(
+                f,
+                "'{}' needs the compiler configuration, which this expansion has no access to",
+                builtin.name()
+            ),
+            Self::ConfigNotACondition { errors } => write!(
+                f,
+                "'config$' takes a '@cond' condition, not an Omega expression: {errors}"
+            ),
+            Self::ConfigInvokesMacro => f.write_str(
+                "a condition cannot invoke a macro, so a macro invocation cannot appear inside \
+                 'config$'",
             ),
             Self::SourceLocationOutOfRange { builtin, value } => write!(
                 f,
@@ -411,13 +435,13 @@ impl fmt::Display for MacroErrorKind {
     }
 }
 
-/// Why an expansion stopped: the macro system itself, or the caller's item
-/// filter. Expansion owns traversal, not what a filter means, so a filter's
-/// error type stays the caller's.
+/// Why an expansion stopped: the macro system itself, or the caller's
+/// configuration. Expansion owns traversal, not what a configuration means, so
+/// a configuration's error type stays the caller's.
 #[derive(Debug)]
 pub enum ExpansionFailure<E> {
     Macro(MacroError),
-    Filter(E),
+    Configuration(E),
 }
 
 impl<E> From<MacroError> for ExpansionFailure<E> {
@@ -426,36 +450,53 @@ impl<E> From<MacroError> for ExpansionFailure<E> {
     }
 }
 
-/// Decides whether an item survives, and may consume what it evaluated.
-/// Expansion applies it to source items before macro definitions are
-/// collected and to generated items before their bodies are expanded, so a
-/// removed item never binds a macro, nor has its contents looked at.
-pub type ItemFilter<'a, E> = &'a mut dyn FnMut(&mut ItemNode) -> Result<bool, E>;
+/// The compiler configuration an expansion is performed under.
+pub trait ExpansionConfiguration {
+    type Error;
 
-fn keep_every_item(_: &mut ItemNode) -> Result<bool, std::convert::Infallible> {
-    Ok(true)
+    /// Decides whether an item survives, and may consume what it evaluated.
+    /// Expansion applies it to source items before macro definitions are
+    /// collected and to generated items before their bodies are expanded, so
+    /// a removed item never binds a macro, nor has its contents looked at.
+    fn keep_item(&mut self, node: &mut ItemNode) -> Result<bool, Self::Error>;
+
+    /// The literal `config$(condition)` expands to.
+    fn value(&mut self, condition: &AnnotationExpr) -> Result<AnnotationLiteral, Self::Error>;
 }
 
-/// Template-only expansion with no module identity or source text. A
-/// compiler-backed builtin invoked through this path fails rather than
-/// inventing a source location.
+/// Keeps every item and has no configuration values to give.
+struct Unconfigured;
+
+impl ExpansionConfiguration for Unconfigured {
+    type Error = MacroError;
+
+    fn keep_item(&mut self, _: &mut ItemNode) -> Result<bool, MacroError> {
+        Ok(true)
+    }
+
+    fn value(&mut self, condition: &AnnotationExpr) -> Result<AnnotationLiteral, MacroError> {
+        Err(
+            MacroError::new(MacroErrorKind::BuiltinWithoutConfiguration {
+                builtin: MacroBuiltin::Config,
+            })
+            .at_invocation(condition.span),
+        )
+    }
+}
+
+/// Template-only expansion with no module identity, source text, or
+/// configuration. A compiler-backed builtin invoked through this path fails
+/// rather than inventing a source location or a configuration value.
 pub fn expand(
     module: SourceModule,
     imported: &HashMap<Ident, MacroDefinitionStmt>,
 ) -> Result<SourceModule, MacroError> {
     let mut state = ExpansionState::default();
-    expand_with_origins(
-        module,
-        imported,
-        &[],
-        None,
-        &mut state,
-        &mut keep_every_item,
+    expand_with_origins(module, imported, &[], None, &mut state, &mut Unconfigured).map_err(
+        |failure| match failure {
+            ExpansionFailure::Macro(error) | ExpansionFailure::Configuration(error) => error,
+        },
     )
-    .map_err(|failure| match failure {
-        ExpansionFailure::Macro(error) => error,
-        ExpansionFailure::Filter(never) => match never {},
-    })
 }
 
 /// `source` is the file being expanded, not the file a macro was defined in:
@@ -467,11 +508,14 @@ pub fn expand_with_origins<E>(
     module_path: &[Ident],
     source: Option<&SourceFile>,
     state: &mut ExpansionState,
-    filter: ItemFilter<'_, E>,
+    configuration: &mut dyn ExpansionConfiguration<Error = E>,
 ) -> Result<SourceModule, ExpansionFailure<E>> {
     let mut nodes = Vec::with_capacity(module.nodes.len());
     for mut node in module.nodes {
-        if filter(&mut node).map_err(ExpansionFailure::Filter)? {
+        if configuration
+            .keep_item(&mut node)
+            .map_err(ExpansionFailure::Configuration)?
+        {
             nodes.push(node);
         }
     }
@@ -482,7 +526,7 @@ pub fn expand_with_origins<E>(
     for def in defs.values() {
         validate_definition(def)?;
     }
-    let nodes = expander::Expander::new(&defs, module_path, source, state, filter)
+    let nodes = expander::Expander::new(&defs, module_path, source, state, configuration)
         .expand_item_list(items)?;
     Ok(SourceModule {
         annotations: module.annotations,
@@ -506,8 +550,20 @@ pub fn bind_definition(
     let Some(builtin) = def.builtin else {
         return Ok(());
     };
+    let parameters_match = match builtin {
+        MacroBuiltin::File | MacroBuiltin::Line | MacroBuiltin::Column => {
+            def.signature.fixed.is_empty()
+        }
+        MacroBuiltin::Config => matches!(
+            def.signature.fixed.as_slice(),
+            [MacroParam {
+                kind: FragmentKind::Expr,
+                ..
+            }]
+        ),
+    };
     let well_formed = def.visibility == Visibility::Exposed
-        && def.signature.fixed.is_empty()
+        && parameters_match
         && def.signature.variadic.is_none()
         && def.body.is_empty();
     if !well_formed {

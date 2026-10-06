@@ -1,0 +1,12 @@
+import std::io::println;
+
+# One past the signed minimum does not fit, and the reported literal is the
+# negative value that was written.
+too_low() => i8 { -129i8 }
+
+# An unsigned literal still has no negation.
+unsigned() => u8 { -1u8 }
+
+main() => void {
+	println$("unreachable: ", too_low(), " ", unsigned());
+}

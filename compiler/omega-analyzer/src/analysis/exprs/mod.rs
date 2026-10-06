@@ -25,7 +25,9 @@ impl<'r> Analyzer<'r> {
             HirExpr::Place(place) => self.analyze_place_read(id, span, place, expected.exact()),
             HirExpr::Reveal(reveal) => self.analyze_reveal(id, span, reveal, expected),
             HirExpr::Comp(inner) => self.analyze_comp(id, span, inner, expected),
-            HirExpr::Number(number) => self.analyze_number(id, span, number, expected.exact()),
+            HirExpr::Number(number) => {
+                self.analyze_number(id, span, number, expected.exact(), false)
+            }
             HirExpr::Bool(b) => literal(ResolvedType::Bool, CheckedExpr::Bool(*b)),
             HirExpr::Char(c) => literal(ResolvedType::Char, CheckedExpr::Char(*c)),
 

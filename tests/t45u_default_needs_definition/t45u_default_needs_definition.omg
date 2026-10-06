@@ -1,0 +1,9 @@
+import std::io::println;
+
+# The first operand of `default` must name a supplied-or-absent definition.
+@cond(equals(default(target_os, "x"), "x"))
+selected() => *str { return "selected"; }
+
+main() => void {
+	println$("unreachable: ", selected());
+}

@@ -23,7 +23,7 @@ use crate::generics::pattern::{ArgumentPattern, TypePattern};
 use calls::{CalleeResolution, FunctionValue, Intercepted, Interceptor, ResolvedCallee};
 use expected::Expected;
 use items::{HoledAnnotation, read_back_holes};
-use literals::parse_number_literal;
+use literals::{number_literal_text, parse_number_literal};
 
 use crate::target::Target;
 use crate::{

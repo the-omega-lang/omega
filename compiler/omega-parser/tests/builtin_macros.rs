@@ -3,8 +3,11 @@
 //! they describe.
 
 use omega_diagnostics::SourceFile;
-use omega_parser::macros::{self, MacroError, MacroErrorKind};
-use omega_parser::prelude::{Expression, Ident, Item, MacroDefinitionStmt, SourceModule};
+use omega_parser::macros::{self, ExpansionConfiguration, MacroError, MacroErrorKind};
+use omega_parser::prelude::{
+    AnnotationExpr, AnnotationExprKind, AnnotationLiteral, BoolExpr, Expression, Ident, Item,
+    ItemNode, MacroDefinitionStmt, SourceModule, parse_literal,
+};
 use std::collections::HashMap;
 
 const BUILTINS: &str = "core::builtins";
@@ -12,6 +15,37 @@ const BUILTINS: &str = "core::builtins";
 const DECLARATIONS: &str = "exposed macro file() => { }\n\
                             exposed macro line() => { }\n\
                             exposed macro column() => { }\n";
+
+const CONFIG_DECLARATION: &str = "exposed macro config($condition: expr) => { }\n";
+
+/// Answers `config$` from a fixed table keyed by the condition's shape, so
+/// these tests see exactly what the expander handed over and substituted.
+struct Probe;
+
+impl ExpansionConfiguration for Probe {
+    type Error = String;
+
+    fn keep_item(&mut self, _: &mut ItemNode) -> Result<bool, String> {
+        Ok(true)
+    }
+
+    fn value(&mut self, condition: &AnnotationExpr) -> Result<AnnotationLiteral, String> {
+        let written = match &condition.kind {
+            AnnotationExprKind::Qualified { namespace, name } => format!("{namespace}::{name}"),
+            AnnotationExprKind::Call { name, args } => format!("{name}/{}", args.len()),
+            AnnotationExprKind::Name(name) => name.to_string(),
+            other => return Err(format!("unexpected condition {other:?}")),
+        };
+        let literal = match written.as_str() {
+            "def::size" => "4096",
+            "def::low" => "-128i8",
+            "def::label" => "\"text\"",
+            "equals/2" => "true",
+            other => return Err(format!("no value for {other}")),
+        };
+        Ok(parse_literal(literal).expect("probe literal parses"))
+    }
+}
 
 fn module_path(path: &str) -> Vec<Ident> {
     path.split("::").map(|s| Ident(s.to_string())).collect()
@@ -29,11 +63,11 @@ fn expand_at(
         &module_path(path),
         file,
         &mut macros::ExpansionState::default(),
-        &mut |_: &mut omega_parser::prelude::ItemNode| Ok::<bool, std::convert::Infallible>(true),
+        &mut Probe,
     )
     .map_err(|failure| match failure {
         macros::ExpansionFailure::Macro(error) => error,
-        macros::ExpansionFailure::Filter(never) => match never {},
+        macros::ExpansionFailure::Configuration(error) => panic!("configuration failed: {error}"),
     })
 }
 
@@ -124,6 +158,11 @@ fn a_canonical_declaration_must_match_the_compiler_contract() {
         "exposed macro column($at: expr) => { }",
         "exposed macro file($rest: expr...) => { }",
         "exposed macro line() => { 1 }",
+        "exposed macro config() => { }",
+        "exposed macro config($condition: type) => { }",
+        "exposed macro config($a: expr, $b: expr) => { }",
+        "exposed macro config($condition: expr...) => { }",
+        "exposed macro config($condition: expr) => { 1 }",
     ] {
         let file = SourceFile::new("probe.omg", source);
         let error = expand_at(BUILTINS, source, Some(&file), &HashMap::new())
@@ -230,4 +269,103 @@ fn an_alias_of_a_builtin_keeps_builtin_behavior_at_the_alias_call_site() {
         expand_at("app::helper", source, Some(&file), &imported).expect("expansion succeeds");
 
     assert_eq!(number(probe(&module, 0)), ("1", Some("u32")));
+}
+
+fn config_probe(body: &str) -> Result<SourceModule, MacroError> {
+    let source = format!("{CONFIG_DECLARATION}probe() => void {{ {body} }}\n");
+    let file = SourceFile::new("probe.omg", source.as_str());
+    expand_at(BUILTINS, &source, Some(&file), &HashMap::new())
+}
+
+fn config_error(body: &str) -> MacroError {
+    config_probe(body)
+        .err()
+        .unwrap_or_else(|| panic!("expected `{body}` to be rejected"))
+}
+
+#[test]
+fn config_expands_its_condition_to_the_configured_literal() {
+    let module = config_probe("config$(def::size)").expect("expansion succeeds");
+    assert_eq!(number(probe(&module, 0)), ("4096", None));
+
+    let module = config_probe("config$(def::label)").expect("expansion succeeds");
+    assert_eq!(text(probe(&module, 0)), "text");
+
+    let module = config_probe("config$(equals(target_os, \"linux\"))").expect("expansion succeeds");
+    assert!(matches!(
+        probe(&module, 0),
+        Expression::Bool(BoolExpr(true))
+    ));
+}
+
+#[test]
+fn a_negative_config_value_is_parenthesized_so_postfix_use_applies_to_it() {
+    let module = config_probe("config$(def::low).abs()").expect("expansion succeeds");
+    let Expression::FunctionCall(call) = probe(&module, 0) else {
+        panic!("expected a method call, found {:?}", probe(&module, 0));
+    };
+    let Expression::FieldAccess(method) = &call.callee.expression else {
+        panic!("expected a method callee, found {:?}", call.callee);
+    };
+    let Expression::Negate(negated) = &method.base.expression else {
+        panic!(
+            "the receiver is the whole negated value, found {:?}",
+            method.base
+        );
+    };
+    assert_eq!(number(&negated.base.expression), ("128", Some("i8")));
+}
+
+#[test]
+fn config_takes_a_condition_not_an_omega_expression() {
+    for body in ["config$(1 + 2)", "config$(LOCAL.field)", "config$(a::b::c)"] {
+        let error = config_error(body);
+        assert!(
+            matches!(error.kind, MacroErrorKind::ConfigNotACondition { .. }),
+            "{body}: {error}"
+        );
+    }
+}
+
+#[test]
+fn a_config_condition_cannot_invoke_a_macro() {
+    let error = config_error("config$(equals(line$(), 1))");
+    assert!(
+        matches!(error.kind, MacroErrorKind::ConfigInvokesMacro),
+        "{error}"
+    );
+    assert!(error.to_string().contains("cannot invoke a macro"));
+}
+
+#[test]
+fn config_inside_a_wrapper_macro_receives_the_substituted_condition() {
+    let source = format!(
+        "{CONFIG_DECLARATION}exposed macro sized($name: path) => {{ config$($name) }}\n\
+         probe() => void {{ sized$(def::size) }}\n"
+    );
+    let (_, module) = expand_builtins(&source);
+    assert_eq!(number(probe(&module, 0)), ("4096", None));
+}
+
+#[test]
+fn template_only_expansion_has_no_configuration_to_read() {
+    let module = SourceModule::parse(CONFIG_DECLARATION).expect("source parses");
+    let Item::MacroDefinition(mut config) = module.nodes[0].item.clone() else {
+        panic!("expected the config declaration");
+    };
+    macros::bind_definition(&mut config, &module_path(BUILTINS)).expect("canonical declaration");
+    let mut imported = HashMap::new();
+    imported.insert(config.name.clone(), config);
+    let probe_only =
+        SourceModule::parse("probe() => void { config$(def::size) }\n").expect("source parses");
+    let error = macros::expand(probe_only, &imported)
+        .err()
+        .expect("template-only expansion cannot read a configuration");
+    assert!(
+        matches!(
+            error.kind,
+            MacroErrorKind::BuiltinWithoutConfiguration { .. }
+        ),
+        "{error}"
+    );
 }

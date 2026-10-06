@@ -558,6 +558,21 @@ exposed reset_handler() => never { ... }
 
 Definitions come from `omgc -Dname[=literal]` (see [`compiler-cli.md`](compiler-cli.md#compiler-definitions)). A definition that was never supplied reads as `false` where a boolean is expected, and is an error where a value is compared. `@cond` goes on a whole top-level declaration -- never on a member, field, variant, or statement.
 
+`config$` reads the same configuration as a literal inside an expression, and `default` supplies a fallback for an absent definition:
+
+```omega
+import core::builtins::config;
+
+exposed buffer_bytes : usize = config$(default(def::buffer_bytes, 4096));
+
+main() => void {
+    println$("os: ", config$(target_os));
+    if config$(equals(def::profile, "debug")) { println$("debug build"); }
+}
+```
+
+See [`config$`](../language/annotations-and-sizeof.md#reading-configuration-as-a-value-config).
+
 Use brackets for a whole-file prologue, before imports or other declarations:
 
 ```omega

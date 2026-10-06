@@ -1,17 +1,16 @@
-//! Evaluation of `@cond(...)` conditions against compiler definitions.
+//! Evaluation of `@cond(...)` conditions and `config$` values against compiler definitions.
 //!
-//! This runs before macro binding and before any semantic registration, so it
-//! is a pure function of the syntax it is given and the configuration it is
+//! Evaluation is a pure function of the syntax it is given and the configuration it is
 //! handed: it never resolves a name, reads a type, or queries an item.
 
 use crate::compiler_definitions::{
     CompilerDefinitions, DefinitionValue, LiteralValueError, declared_numeric_kind, decode_literal,
-    decode_number, default_numeric_kind,
+    decode_number, default_numeric_kind, validate_literal,
 };
 use crate::resolved_type::NumericKind;
 use omega_parser::prelude::{
     AnnotationArg, AnnotationExpr, AnnotationExprKind, AnnotationLiteral, AnnotationNode, Ident,
-    ItemNode, Origin, Span,
+    ItemNode, NumberBase, NumberExpr, Origin, Span,
 };
 use std::fmt;
 
@@ -19,6 +18,8 @@ use std::fmt;
 /// definitions the command line supplied, and nothing else: it is not a
 /// module, and it never takes part in ordinary name resolution.
 pub const DEFINITION_NAMESPACE: &str = "def";
+
+const DEFAULT_OPERATOR: &str = "default";
 
 #[derive(Debug, Clone)]
 pub struct ConditionError {
@@ -61,6 +62,16 @@ pub enum ConditionErrorKind {
         found: String,
     },
     InvalidLiteral(LiteralValueError),
+    DefaultNeedsDefinition {
+        found: String,
+    },
+    DefaultNeedsLiteral {
+        found: String,
+    },
+    DefaultKindMismatch {
+        definition: &'static str,
+        fallback: &'static str,
+    },
 }
 
 impl fmt::Display for ConditionError {
@@ -111,6 +122,23 @@ impl fmt::Display for ConditionError {
                 write!(f, "{found} has no ordering -- only numbers can be ordered")
             }
             ConditionErrorKind::InvalidLiteral(error) => write!(f, "{error}"),
+            ConditionErrorKind::DefaultNeedsDefinition { found } => write!(
+                f,
+                "'default' takes '{DEFINITION_NAMESPACE}::<name>' as its first operand, found \
+                 {found}"
+            ),
+            ConditionErrorKind::DefaultNeedsLiteral { found } => write!(
+                f,
+                "'default' takes a literal as its fallback, found {found}"
+            ),
+            ConditionErrorKind::DefaultKindMismatch {
+                definition,
+                fallback,
+            } => write!(
+                f,
+                "the definition is {definition} but its fallback is {fallback} -- both must be \
+                 the same kind of value"
+            ),
         }
     }
 }
@@ -172,6 +200,124 @@ pub fn evaluate(
     Evaluator { definitions }.boolean(condition)
 }
 
+/// Evaluates one condition expression in value position and returns the
+/// literal it stands for. A definition, a `default`, or a written literal is
+/// returned as written, so an unsuffixed number stays adaptable to its use; a
+/// builtin becomes a literal of its declared type; an operator call becomes a
+/// boolean. Unlike a boolean position, an absent bare definition is an error.
+pub fn evaluate_value(
+    definitions: &CompilerDefinitions,
+    expr: &AnnotationExpr,
+) -> Result<AnnotationLiteral, ConditionError> {
+    let evaluator = Evaluator { definitions };
+    let pointer_bits = definitions.target().pointer_bits();
+    let checked = |expr: &AnnotationExpr, literal: &AnnotationLiteral| {
+        validate_literal(literal, pointer_bits)
+            .map(|()| literal.clone())
+            .map_err(|error| ConditionError::new(expr, ConditionErrorKind::InvalidLiteral(error)))
+    };
+    match &expr.kind {
+        AnnotationExprKind::Literal(literal) => checked(expr, literal),
+        AnnotationExprKind::Name(name) => Ok(value_literal(&evaluator.builtin(expr, name)?)),
+        AnnotationExprKind::Qualified { namespace, name } => {
+            evaluator.check_namespace(expr, namespace)?;
+            checked(expr, evaluator.supplied(expr, name)?)
+        }
+        AnnotationExprKind::Call { name, args } if name.as_ref() == DEFAULT_OPERATOR => {
+            let operands = evaluator.default_operands(expr, name, args)?;
+            let definition = operands
+                .definition
+                .map(|literal| checked(operands.definition_expr, literal))
+                .transpose()?;
+            let fallback = checked(operands.fallback_expr, operands.fallback)?;
+            Ok(definition.unwrap_or(fallback))
+        }
+        AnnotationExprKind::Call { name, args } => evaluator
+            .call(expr, name, args)
+            .map(AnnotationLiteral::Bool),
+        _ => Err(ConditionError::new(
+            expr,
+            ConditionErrorKind::ExpectedValue {
+                found: expr.describe().to_string(),
+            },
+        )),
+    }
+}
+
+/// A decoded value written back as a literal of its own type.
+fn value_literal(value: &DefinitionValue) -> AnnotationLiteral {
+    let number = |negative: bool, integer_part: String, fractional_part, suffix: String| {
+        AnnotationLiteral::Number {
+            negative,
+            value: NumberExpr {
+                base: NumberBase::Decimal,
+                integer_part,
+                fractional_part,
+                explicit_type: Some(Ident(suffix)),
+            },
+        }
+    };
+    match value {
+        DefinitionValue::Bool(value) => AnnotationLiteral::Bool(*value),
+        DefinitionValue::Char(value) => AnnotationLiteral::Char(*value),
+        DefinitionValue::Str(value) => AnnotationLiteral::Str(value.clone()),
+        DefinitionValue::ByteStr(value) => AnnotationLiteral::ByteStr(value.clone()),
+        DefinitionValue::Int { value, r#type } => number(
+            *value < 0,
+            value.unsigned_abs().to_string(),
+            None,
+            format!("{}{}", if r#type.signed { "i" } else { "u" }, r#type.width),
+        ),
+        DefinitionValue::Float { value, width } => {
+            let text = value.abs().to_string();
+            let (integer, fraction) = text.split_once('.').unwrap_or((&text, "0"));
+            number(
+                value.is_sign_negative(),
+                integer.to_string(),
+                Some(fraction.to_string()),
+                format!("f{width}"),
+            )
+        }
+    }
+}
+
+/// The kind of value a literal is written as, before any numeric context
+/// decides its width.
+fn literal_kind(literal: &AnnotationLiteral) -> &'static str {
+    match literal {
+        AnnotationLiteral::Number { value, .. }
+            if value.fractional_part.is_some()
+                || value
+                    .explicit_type
+                    .as_ref()
+                    .is_some_and(|suffix| matches!(suffix.as_ref(), "f32" | "f64")) =>
+        {
+            "a float"
+        }
+        AnnotationLiteral::Number { .. } => "an integer",
+        AnnotationLiteral::Bool(_) => "a boolean",
+        AnnotationLiteral::Char(_) => "a character",
+        AnnotationLiteral::Str(_) => "a string",
+        AnnotationLiteral::ByteStr(_) => "a byte string",
+    }
+}
+
+fn declared_kind(literal: &AnnotationLiteral, pointer_bits: u32) -> Option<NumericKind> {
+    match literal {
+        AnnotationLiteral::Number { value, .. } => {
+            declared_numeric_kind(value, pointer_bits).ok().flatten()
+        }
+        _ => None,
+    }
+}
+
+struct DefaultOperands<'e> {
+    definition_expr: &'e AnnotationExpr,
+    definition: Option<&'e AnnotationLiteral>,
+    fallback_expr: &'e AnnotationExpr,
+    fallback: &'e AnnotationLiteral,
+}
+
 struct Evaluator<'a> {
     definitions: &'a CompilerDefinitions,
 }
@@ -191,8 +337,15 @@ impl Evaluator<'_> {
                 self.check_namespace(expr, namespace)?;
                 match self.definitions.user(name) {
                     None => Ok(false),
-                    Some(value) => self.expect_bool(expr, value),
+                    Some(literal) => {
+                        let value = self.literal(expr, literal, None)?;
+                        self.expect_bool(expr, &value)
+                    }
                 }
+            }
+            AnnotationExprKind::Call { name, args } if name.as_ref() == DEFAULT_OPERATOR => {
+                let value = self.default(expr, name, args, None)?;
+                self.expect_bool(expr, &value)
             }
             AnnotationExprKind::Call { name, args } => self.call(expr, name, args),
             _ => Err(ConditionError::new(
@@ -231,9 +384,11 @@ impl Evaluator<'_> {
             AnnotationExprKind::Name(name) => self.builtin(expr, name),
             AnnotationExprKind::Qualified { namespace, name } => {
                 self.check_namespace(expr, namespace)?;
-                self.definitions.user(name).cloned().ok_or_else(|| {
-                    ConditionError::new(expr, ConditionErrorKind::MissingDefinition(name.clone()))
-                })
+                let literal = self.supplied(expr, name)?;
+                self.literal(expr, literal, context)
+            }
+            AnnotationExprKind::Call { name, args } if name.as_ref() == DEFAULT_OPERATOR => {
+                self.default(expr, name, args, context)
             }
             AnnotationExprKind::Call { name, args } => {
                 self.call(expr, name, args).map(DefinitionValue::Bool)
@@ -287,10 +442,108 @@ impl Evaluator<'_> {
             {
                 self.definitions
                     .user(name)
-                    .and_then(DefinitionValue::numeric_kind)
+                    .and_then(|literal| declared_kind(literal, pointer_bits))
+            }
+            AnnotationExprKind::Call { name, args }
+                if name.as_ref() == DEFAULT_OPERATOR && args.len() == 2 =>
+            {
+                self.established_kind(&args[0])
+                    .or_else(|| self.established_kind(&args[1]))
             }
             _ => None,
         }
+    }
+
+    fn supplied(
+        &self,
+        expr: &AnnotationExpr,
+        name: &Ident,
+    ) -> Result<&AnnotationLiteral, ConditionError> {
+        self.definitions.user(name).ok_or_else(|| {
+            ConditionError::new(expr, ConditionErrorKind::MissingDefinition(name.clone()))
+        })
+    }
+
+    /// `default(def::name, literal)`, decoded in `context`. Each operand is
+    /// also decoded in the other's declared kind, so a suffix on either side
+    /// types both.
+    fn default(
+        &self,
+        expr: &AnnotationExpr,
+        name: &Ident,
+        args: &[AnnotationExpr],
+        context: Option<NumericKind>,
+    ) -> Result<DefinitionValue, ConditionError> {
+        let operands = self.default_operands(expr, name, args)?;
+        let definition = operands
+            .definition
+            .map(|literal| {
+                self.literal(
+                    operands.definition_expr,
+                    literal,
+                    self.established_kind(operands.fallback_expr).or(context),
+                )
+            })
+            .transpose()?;
+        let fallback = self.literal(
+            operands.fallback_expr,
+            operands.fallback,
+            self.established_kind(operands.definition_expr).or(context),
+        )?;
+        Ok(definition.unwrap_or(fallback))
+    }
+
+    /// The shape and kind checks `default` makes whatever position it is in.
+    /// The kinds are compared as written, so the check never depends on which
+    /// operand is chosen.
+    fn default_operands<'e>(
+        &'e self,
+        expr: &AnnotationExpr,
+        name: &Ident,
+        args: &'e [AnnotationExpr],
+    ) -> Result<DefaultOperands<'e>, ConditionError> {
+        let [definition_expr, fallback_expr] =
+            self.exact(expr, name, args, "a definition and a literal")?;
+        let AnnotationExprKind::Qualified {
+            namespace,
+            name: definition_name,
+        } = &definition_expr.kind
+        else {
+            return Err(ConditionError::new(
+                definition_expr,
+                ConditionErrorKind::DefaultNeedsDefinition {
+                    found: definition_expr.describe().to_string(),
+                },
+            ));
+        };
+        self.check_namespace(definition_expr, namespace)?;
+        let AnnotationExprKind::Literal(fallback) = &fallback_expr.kind else {
+            return Err(ConditionError::new(
+                fallback_expr,
+                ConditionErrorKind::DefaultNeedsLiteral {
+                    found: fallback_expr.describe().to_string(),
+                },
+            ));
+        };
+        let definition = self.definitions.user(definition_name);
+        if let Some(literal) = definition {
+            let (definition_kind, fallback_kind) = (literal_kind(literal), literal_kind(fallback));
+            if definition_kind != fallback_kind {
+                return Err(ConditionError::new(
+                    expr,
+                    ConditionErrorKind::DefaultKindMismatch {
+                        definition: definition_kind,
+                        fallback: fallback_kind,
+                    },
+                ));
+            }
+        }
+        Ok(DefaultOperands {
+            definition_expr,
+            definition,
+            fallback_expr,
+            fallback,
+        })
     }
 
     fn builtin(

@@ -3,14 +3,15 @@ use crate::{Driver, ModulePath};
 use indexmap::IndexMap;
 use indexmap::map::Entry;
 use omega_analyzer::analysis::{AnalysisSite, item_id_span, item_name};
-use omega_analyzer::annotation_eval::{ConditionError, item_is_enabled};
+use omega_analyzer::annotation_eval::{ConditionError, evaluate_value, item_is_enabled};
 use omega_analyzer::annotations::{self, ItemKind};
+use omega_analyzer::compiler_definitions::CompilerDefinitions;
 use omega_analyzer::error::{AnalysisError, AnalysisErrorKind};
 use omega_analyzer::generics::GenericSubstitution;
 use omega_analyzer::resolver::ResolveError;
 use omega_diagnostics::{SourceFile, SourceId, SourceRegistry, Span};
 use omega_hir::{HirGenericParam, HirId, HirItem, HirModule, ModuleId};
-use omega_parser::macros::{ExpansionFailure, MacroError};
+use omega_parser::macros::{ExpansionConfiguration, ExpansionFailure, MacroError};
 use omega_parser::prelude::{
     AliasItem, AliasTarget, Ident, ImportLeaf, Item, ParseError, Path, PathAnchor, SourceModule,
 };
@@ -669,24 +670,22 @@ impl Driver {
                     }
                 })?;
                 let source = self.modules.source_text(path);
-                let definitions = &self.definitions;
                 // Generated items are filtered as they appear, so a false one
                 // never has its body expanded, its macros looked up, or its
                 // name claimed.
-                let mut filter =
-                    |node: &mut omega_parser::prelude::ItemNode| item_is_enabled(definitions, node);
+                let mut configuration = Configuration(&self.definitions);
                 let ast = omega_parser::macros::expand_with_origins(
                     (*ast).clone(),
                     &macros,
                     path,
                     source.as_deref(),
                     &mut self.modules.macro_expansions,
-                    &mut filter,
+                    &mut configuration,
                 )
                 .map_err(|e| {
                     let failure = match e {
                         ExpansionFailure::Macro(error) => LoadFailure::MacroExpansion(error),
-                        ExpansionFailure::Filter(error) => LoadFailure::Condition(error),
+                        ExpansionFailure::Configuration(error) => LoadFailure::Condition(error),
                     };
                     self.modules.failures.insert(path.to_vec(), failure);
                     ResolveError::LoadFailed {
@@ -1135,5 +1134,25 @@ impl Driver {
                 }
             }
         })
+    }
+}
+
+struct Configuration<'a>(&'a CompilerDefinitions);
+
+impl ExpansionConfiguration for Configuration<'_> {
+    type Error = ConditionError;
+
+    fn keep_item(
+        &mut self,
+        node: &mut omega_parser::prelude::ItemNode,
+    ) -> Result<bool, ConditionError> {
+        item_is_enabled(self.0, node)
+    }
+
+    fn value(
+        &mut self,
+        condition: &omega_parser::prelude::AnnotationExpr,
+    ) -> Result<omega_parser::prelude::AnnotationLiteral, ConditionError> {
+        evaluate_value(self.0, condition)
     }
 }

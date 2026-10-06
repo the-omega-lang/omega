@@ -13,7 +13,15 @@ enum LiteralTarget {
     Union(ResolvedType),
 }
 
-pub(super) fn parse_number_literal(n: &NumberExpr, kind: NumericKind) -> Result<NumberValue, ()> {
+/// Decodes `n`, negated when `negated`, as one value of `kind`, so a signed
+/// minimum such as `-128i8` is in range. Negation never applies to an unsigned
+/// kind: callers reject `-` on an unsigned operand themselves, so only the
+/// magnitude is range-checked here.
+pub(super) fn parse_number_literal(
+    n: &NumberExpr,
+    kind: NumericKind,
+    negated: bool,
+) -> Result<NumberValue, ()> {
     match kind {
         NumericKind::Float(width) => {
             let text = format!(
@@ -25,19 +33,24 @@ pub(super) fn parse_number_literal(n: &NumberExpr, kind: NumericKind) -> Result<
             if width == 32 && parsed.is_finite() && (parsed as f32).is_infinite() {
                 return Err(());
             }
-            Ok(NumberValue::Float(parsed))
+            Ok(NumberValue::Float(if negated { -parsed } else { parsed }))
         }
         NumericKind::Signed(width) => {
             let parsed = u64::from_str_radix(&n.integer_part, n.base.radix()).map_err(|_| ())?;
-            let max = if width == 64 {
+            let positive_max = if width == 64 {
                 i64::MAX as u64
             } else {
                 (1u64 << (width - 1)) - 1
             };
+            let max = positive_max + u64::from(negated);
             if parsed > max {
                 return Err(());
             }
-            Ok(NumberValue::Signed(parsed as i64))
+            Ok(NumberValue::Signed(if negated {
+                (-(parsed as i128)) as i64
+            } else {
+                parsed as i64
+            }))
         }
         NumericKind::Unsigned(width) => {
             let parsed = u64::from_str_radix(&n.integer_part, n.base.radix()).map_err(|_| ())?;
@@ -51,6 +64,14 @@ pub(super) fn parse_number_literal(n: &NumberExpr, kind: NumericKind) -> Result<
             }
             Ok(NumberValue::Unsigned(parsed))
         }
+    }
+}
+
+pub(super) fn number_literal_text(n: &NumberExpr, negated: bool) -> String {
+    let sign = if negated { "-" } else { "" };
+    match &n.fractional_part {
+        Some(frac) => format!("{sign}{}.{frac}", n.integer_part),
+        None => format!("{sign}{}", n.integer_part),
     }
 }
 
@@ -933,6 +954,7 @@ impl<'r> Analyzer<'r> {
         span: Span,
         n: &NumberExpr,
         expected: Option<&ResolvedType>,
+        negated: bool,
     ) -> Option<CheckedExprNode> {
         let invalid_suffix = |this: &mut Self, ident: &Ident| {
             this.error(
@@ -981,16 +1003,12 @@ impl<'r> Analyzer<'r> {
             return None;
         }
 
-        let Ok(value) = parse_number_literal(n, kind) else {
-            let literal_text = match &n.fractional_part {
-                Some(frac) => format!("{}.{}", n.integer_part, frac),
-                None => n.integer_part.clone(),
-            };
+        let Ok(value) = parse_number_literal(n, kind, negated) else {
             self.error(
                 node_id,
                 span,
                 AnalysisErrorKind::NumberLiteralOutOfRange {
-                    literal: literal_text,
+                    literal: number_literal_text(n, negated),
                     r#type: resolved_type,
                 },
             );

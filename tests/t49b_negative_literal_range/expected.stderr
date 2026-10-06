@@ -1,0 +1,17 @@
+error: number '-129' does not fit in 'i8'
+ --> tests/t49b_negative_literal_range/t49b_negative_literal_range.omg:5:19
+  |
+5 | too_low() => i8 { -129i8 }
+  |                   ^^^^^^ does not fit in `i8`
+  |
+  = note: `i8` can hold values from -128 to 127
+
+error: cannot negate a value of type 'u8'
+ --> tests/t49b_negative_literal_range/t49b_negative_literal_range.omg:8:20
+  |
+8 | unsigned() => u8 { -1u8 }
+  |                    ^^^^ this has type `u8`
+  |
+  = note: unary `-` requires a signed integer or a float
+
+error: could not compile the program due to 2 previous errors

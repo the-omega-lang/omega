@@ -177,12 +177,12 @@ fn a_malformed_or_non_literal_value_is_rejected() {
 fn a_name_can_only_be_defined_once() {
     let mut definitions = CompilerDefinitions::new(Target::DEFAULT);
     let name = Ident("flag".into());
-    assert!(definitions.define(name.clone(), DefinitionValue::Bool(true)));
-    assert!(!definitions.define(name.clone(), DefinitionValue::Bool(false)));
-    assert!(!definitions.define(name.clone(), int(1, true, 32)));
+    assert!(definitions.define(name.clone(), AnnotationLiteral::Bool(true)));
+    assert!(!definitions.define(name.clone(), AnnotationLiteral::Bool(false)));
+    assert!(!definitions.define(name.clone(), parse_literal("1").unwrap()));
     assert_eq!(
         definitions.user(&name),
-        Some(&DefinitionValue::Bool(true)),
+        Some(&AnnotationLiteral::Bool(true)),
         "a refused definition must not overwrite the one already there"
     );
 }
@@ -201,7 +201,7 @@ fn builtins_describe_the_selected_target_and_are_not_user_definitions() {
     });
     assert!(definitions.define(
         Ident("target_os".into()),
-        DefinitionValue::Str("custom".into())
+        AnnotationLiteral::Str("custom".into())
     ));
 
     assert_eq!(
@@ -222,7 +222,7 @@ fn builtins_describe_the_selected_target_and_are_not_user_definitions() {
     );
     assert_eq!(
         definitions.user(&Ident("target_os".into())),
-        Some(&DefinitionValue::Str("custom".into())),
+        Some(&AnnotationLiteral::Str("custom".into())),
         "the user definition keeps its own namespace"
     );
     assert_eq!(definitions.builtin(&Ident("target_env".into())), None);
@@ -254,4 +254,16 @@ fn every_builtin_name_resolves_on_every_target() {
             );
         }
     }
+}
+
+#[test]
+fn an_unsuffixed_definition_is_only_checked_against_its_widest_type() {
+    let valid = |text: &str| validate_literal(&parse_literal(text).unwrap(), 64);
+    assert!(valid("4294967295").is_ok());
+    assert!(valid("18446744073709551615").is_ok());
+    assert!(valid("-9223372036854775808").is_ok());
+    assert!(valid("0.1").is_ok());
+    assert!(valid("18446744073709551616").is_err());
+    assert!(valid("-9223372036854775809").is_err());
+    assert!(valid("256u8").is_err());
 }

@@ -1,0 +1,7 @@
+error: 'config$' takes a '@cond' condition, not an Omega expression: expected the end of the condition, found '+'
+ --> tests/t45r_config_not_a_condition/t45r_config_not_a_condition.omg:6:14
+  |
+6 |     value := config$(1 + 2);
+  |              ^^^^^^^^^^^^^^ in this macro expansion
+
+error: could not compile the program due to 1 previous error

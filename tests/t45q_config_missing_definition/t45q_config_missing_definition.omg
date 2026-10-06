@@ -1,0 +1,8 @@
+import std::io::println;
+import core::builtins::config;
+
+main() => void {
+	# A value position has no answer for a definition that was never supplied.
+	value := config$(def::missing);
+	println$("unreachable: ", value);
+}

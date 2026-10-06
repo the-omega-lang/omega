@@ -1,0 +1,7 @@
+error: a condition cannot invoke a macro, so a macro invocation cannot appear inside 'config$'
+ --> tests/t45t_config_invokes_macro/t45t_config_invokes_macro.omg:8:14
+  |
+8 |     value := config$(other$());
+  |              ^^^^^^^^^^^^^^^^^ in this macro expansion
+
+error: could not compile the program due to 1 previous error

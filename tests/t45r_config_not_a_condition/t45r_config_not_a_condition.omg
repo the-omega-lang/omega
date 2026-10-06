@@ -1,0 +1,8 @@
+import std::io::println;
+import core::builtins::config;
+
+main() => void {
+	# The argument is a condition, not an Omega expression to evaluate.
+	value := config$(1 + 2);
+	println$("unreachable: ", value);
+}

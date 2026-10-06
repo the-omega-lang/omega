@@ -1,9 +1,9 @@
 use omega_analyzer::Target;
-use omega_analyzer::compiler_definitions::{CompilerDefinitions, DefinitionValue, decode_literal};
+use omega_analyzer::compiler_definitions::{CompilerDefinitions, validate_literal};
 use omega_codegen::{EmitKind, OptLevel};
 use omega_diagnostics::{BOLD, CYAN, Diagnostic, paint};
 use omega_driver::{ExternRoot, basename};
-use omega_parser::prelude::Ident;
+use omega_parser::prelude::{AnnotationLiteral, Ident};
 use std::path::PathBuf;
 
 const USAGE: &str = "omgc [<name>=]<entry-dir> -o <output-dir> [OPTIONS]";
@@ -185,13 +185,15 @@ pub(crate) fn resolve_definitions(
             continue;
         }
         let value = match option.value.as_deref() {
-            None => Ok(DefinitionValue::Bool(true)),
+            None => Ok(AnnotationLiteral::Bool(true)),
             Some("") => Err(invalid("a definition needs a value after '='")
                 .with_help("write '-Dname' for a boolean truth")),
             Some(text) => omega_parser::prelude::parse_literal(text)
                 .map_err(|error| error.to_string())
                 .and_then(|literal| {
-                    decode_literal(&literal, target.pointer_bits()).map_err(|e| e.to_string())
+                    validate_literal(&literal, target.pointer_bits())
+                        .map(|()| literal)
+                        .map_err(|e| e.to_string())
                 })
                 .map_err(|reason| invalid(&reason)),
         };
@@ -666,11 +668,11 @@ mod tests {
             .expect("valid options");
         assert_eq!(
             definitions.user(&Ident("flag".into())),
-            Some(&DefinitionValue::Bool(true))
+            Some(&AnnotationLiteral::Bool(true))
         );
         assert_eq!(
             definitions.user(&Ident("label".into())),
-            Some(&DefinitionValue::Str("x".into()))
+            Some(&AnnotationLiteral::Str("x".into()))
         );
         assert!(definitions.user(&Ident("count".into())).is_some());
         assert_eq!(definitions.user(&Ident("never_supplied".into())), None);

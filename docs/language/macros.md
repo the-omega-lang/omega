@@ -106,12 +106,13 @@ An `import` inside a macro body is invalid. Definition-origin paths already reso
 
 ## Compiler-implemented core macros
 
-`core::builtins` declares three macros whose expansion the compiler supplies:
+`core::builtins` declares four macros whose expansion the compiler supplies:
 
 ```omega
 exposed macro file() => { }
 exposed macro line() => { }
 exposed macro column() => { }
+exposed macro config($condition: expr) => { }
 ```
 
 `file$()` expands to a `*str` literal holding the compiler's source name for
@@ -121,9 +122,12 @@ tab-width and Unicode column rules a rendered diagnostic caret uses. Because
 they become ordinary literals during expansion, nothing after macro expansion
 treats them specially.
 
+`config$(condition)` expands to a literal computed from the compiler
+configuration; see [`config$`](annotations-and-sizeof.md#reading-configuration-as-a-value-config).
+
 Only these exact declarations are compiler-implemented, and they must be
-written as `exposed`, zero-parameter macros with empty bodies; any other shape
-is rejected. A same-named macro declared in another module is an ordinary
+written as `exposed` macros with empty bodies -- `config` with exactly one
+`expr` parameter and the others with none; any other shape is rejected. A same-named macro declared in another module is an ordinary
 template, and a local or imported macro of the same name shadows the ambient
 core declaration under the usual lookup order. An `alias` of one of them keeps
 the compiler-implemented behavior and reports the alias's own invocation site.

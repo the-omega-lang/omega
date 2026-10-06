@@ -1,0 +1,12 @@
+adaptable: 200 200 200
+suffixed: 7
+minimums: -128 -128
+text: release
+os: linux
+arch: x86_64
+pointer-width: 64
+freestanding: false
+large buffer
+default: 4096 512 4096
+wrapped: release
+postfix: -1 true

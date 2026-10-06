@@ -1,0 +1,10 @@
+import std::io::println;
+import core::builtins::config;
+
+macro other() => { 1 }
+
+main() => void {
+	# A condition cannot contain a macro invocation, so none is expanded here.
+	value := config$(other$());
+	println$("unreachable: ", value);
+}

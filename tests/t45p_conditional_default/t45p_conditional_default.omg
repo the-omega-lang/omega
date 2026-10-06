@@ -1,0 +1,27 @@
+import std::io::println;
+
+# `default` reads a definition when it was supplied and its fallback when not.
+@cond(greater(default(def::BUF, 0), 1024))
+buffer_label() => *str { return "large buffer"; }
+
+@cond(not(greater(default(def::BUF, 0), 1024)))
+buffer_label() => *str { return "small buffer"; }
+
+@cond(equals(default(def::never_supplied, 16), 16))
+fallback_label() => *str { return "fallback"; }
+
+# In a boolean position a `default` that yields a boolean is the condition.
+@cond(default(def::never_supplied, true))
+boolean_label() => *str { return "boolean default"; }
+
+# An unsuffixed float definition takes the type of what it is compared with,
+# so it equals the `f64` literal it was written as.
+@cond(equals(def::ratio, 0.1f64))
+float_label() => *str { return "adaptable float"; }
+
+main() => void {
+	println$(buffer_label());
+	println$(fallback_label());
+	println$(boolean_label());
+	println$(float_label());
+}

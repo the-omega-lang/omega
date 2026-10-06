@@ -1,5 +1,5 @@
 use super::*;
-use crate::compiler_definitions::decode_literal;
+use crate::compiler_definitions::validate_literal;
 use crate::target::{Arch, Os, Target};
 use omega_parser::SourceModule;
 use omega_parser::prelude::parse_literal;
@@ -14,11 +14,11 @@ fn definitions_for(target: Target, options: &[&str]) -> CompilerDefinitions {
         let (name, value) = match option.split_once('=') {
             Some((name, text)) => {
                 let literal = parse_literal(text).expect("the test literal parses");
-                let value = decode_literal(&literal, target.pointer_bits())
-                    .expect("the test literal decodes");
-                (name, value)
+                validate_literal(&literal, target.pointer_bits())
+                    .expect("the test literal is a valid definition");
+                (name, literal)
             }
-            None => (*option, DefinitionValue::Bool(true)),
+            None => (*option, AnnotationLiteral::Bool(true)),
         };
         assert!(
             definitions.define(Ident(name.into()), value),
@@ -100,7 +100,7 @@ fn every_operand_is_checked_even_when_the_answer_is_already_decided() {
 fn integers_compare_mathematically_across_widths_and_signedness() {
     assert!(eval_defined(&["n=255u8"], "equals(def::n, 255)"));
     assert!(eval_defined(&["n=255u8"], "equals(255i64, def::n)"));
-    assert!(eval_defined(&["n=-1"], "less(def::n, 0u64)"));
+    assert!(eval_defined(&["n=-1i32"], "less(def::n, 0u64)"));
     assert!(eval_defined(
         &["n=18446744073709551615u64"],
         "greater(def::n, 0)"
@@ -272,4 +272,129 @@ fn a_value_position_rejects_syntax_that_is_not_a_value() {
     assert!(error(&[], "equals(&[1], &[1])").contains("expected a value"));
     assert!(error(&[], "&[true]").contains("expected a boolean"));
     assert!(error(&[], "sizeof<u32>").contains("expected a boolean"));
+}
+
+fn value_with(definitions: &CompilerDefinitions, expr: &str) -> Result<String, ConditionError> {
+    let node = item(expr);
+    let [AnnotationArg::Positional(expr)] = node.conditions[0].args.as_slice() else {
+        panic!("one positional argument");
+    };
+    evaluate_value(definitions, expr).map(|literal| format!("{literal:?}"))
+}
+
+fn value(options: &[&str], expr: &str) -> String {
+    value_with(&definitions(options), expr)
+        .unwrap_or_else(|error| panic!("`{expr}` must evaluate: {error}"))
+}
+
+fn value_error(options: &[&str], expr: &str) -> String {
+    value_with(&definitions(options), expr)
+        .map(|value| panic!("`{expr}` must fail, evaluated to {value}"))
+        .unwrap_err()
+        .to_string()
+}
+
+fn literal(text: &str) -> String {
+    format!(
+        "{:?}",
+        parse_literal(text).expect("the expected literal parses")
+    )
+}
+
+#[test]
+fn an_unsuffixed_definition_adapts_to_its_counterpart() {
+    assert!(eval_defined(&["n=0.1"], "equals(def::n, 0.1f64)"));
+    assert!(eval_defined(&["n=0.1"], "equals(0.1f64, def::n)"));
+    assert!(eval_defined(
+        &["n=4294967295"],
+        "equals(def::n, 4294967295u32)"
+    ));
+    assert!(eval_defined(&["n=-128"], "equals(def::n, -128i8)"));
+    assert!(
+        error(&["n=300"], "equals(def::n, 1u8)").contains("does not fit"),
+        "an unsuffixed definition is range-checked where it is used"
+    );
+    assert!(
+        error(&["n=4294967295"], "equals(def::n, 1)").contains("does not fit"),
+        "with no context an unsuffixed definition takes the ordinary default"
+    );
+}
+
+#[test]
+fn default_yields_the_definition_or_its_fallback() {
+    assert!(eval_defined(
+        &["buf=4096"],
+        "greater(default(def::buf, 0), 1024)"
+    ));
+    assert!(!eval("greater(default(def::buf, 0), 1024)"));
+    assert!(eval("equals(default(def::buf, 4294967295u32), 4294967295)"));
+    assert!(
+        eval_defined(
+            &["buf=4294967295"],
+            "equals(default(def::buf, 0u32), 4294967295)"
+        ),
+        "a suffixed fallback types an unsuffixed definition"
+    );
+    assert!(eval_defined(&["flag"], "default(def::flag, false)"));
+    assert!(eval("default(def::flag, true)"));
+    assert!(!eval("not(default(def::flag, true))"));
+}
+
+#[test]
+fn default_checks_its_operands_whichever_is_chosen() {
+    assert!(error(&[], "equals(default(target_os, \"x\"), \"x\")").contains("first operand"));
+    assert!(error(&[], "equals(default(core::x, 1), 1)").contains("not a condition namespace"));
+    assert!(error(&[], "equals(default(def::x, def::y), 1)").contains("fallback"));
+    assert!(error(&["n=5"], "equals(default(def::n, \"x\"), \"x\")").contains("same kind"));
+    assert!(error(&["n=5"], "equals(default(def::n, 1.0), 1.0)").contains("same kind"));
+    assert!(error(&["n=5"], "equals(default(def::n, 300u8), 5)").contains("does not fit"));
+    assert!(error(&[], "default(def::n)").contains("a definition and a literal"));
+    assert!(error(&[], "default(def::n, 1)").contains("expected a boolean"));
+}
+
+#[test]
+fn default_checks_the_definition_before_the_fallback() {
+    assert!(
+        error(&["n=300"], "equals(default(def::n, 256u8), 0)").contains("'300' does not fit"),
+        "both operands fail in the fallback's u8 context, but the definition is first"
+    );
+}
+
+#[test]
+fn a_value_is_returned_as_written() {
+    assert_eq!(value(&["n=4096"], "def::n"), literal("4096"));
+    assert_eq!(value(&["n=-128"], "def::n"), literal("-128"));
+    assert_eq!(value(&["n=1.5f64"], "def::n"), literal("1.5f64"));
+    assert_eq!(value(&["s=\"x\""], "def::s"), literal("\"x\""));
+    assert_eq!(value(&["flag"], "def::flag"), literal("true"));
+    assert_eq!(value(&[], "default(def::n, 7)"), literal("7"));
+    assert_eq!(value(&["n=9"], "default(def::n, 7)"), literal("9"));
+    assert_eq!(value(&[], "300"), literal("300"));
+}
+
+#[test]
+fn a_builtin_value_keeps_its_declared_type() {
+    assert_eq!(value(&[], "target_pointer_width"), literal("64u32"));
+    assert_eq!(value(&[], "target_os"), literal("\"linux\""));
+    assert_eq!(value(&[], "target_freestanding"), literal("false"));
+}
+
+#[test]
+fn an_operator_call_is_a_boolean_value() {
+    assert_eq!(value(&[], "equals(target_os, \"linux\")"), literal("true"));
+    assert_eq!(value(&[], "not(def::flag)"), literal("true"));
+    assert_eq!(value(&["n=5"], "greater(def::n, 9)"), literal("false"));
+}
+
+#[test]
+fn a_value_position_needs_a_supplied_definition() {
+    assert!(value_error(&[], "def::missing").contains("not defined"));
+    assert!(value_error(&[], "equals(def::missing, 1)").contains("not defined"));
+    assert!(value_error(&[], "&[1]").contains("expected a value"));
+    assert!(value_error(&[], "core::x").contains("not a condition namespace"));
+    assert!(value_error(&[], "default(def::n, 300u8)").contains("does not fit"));
+    assert!(
+        value_error(&["n=5"], "default(def::n, 300u8)").contains("does not fit"),
+        "the fallback is checked even when the definition is chosen"
+    );
 }

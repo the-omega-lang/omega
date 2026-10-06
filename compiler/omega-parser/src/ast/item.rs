@@ -404,6 +404,7 @@ pub enum MacroBuiltin {
     File,
     Line,
     Column,
+    Config,
 }
 
 impl MacroBuiltin {
@@ -424,6 +425,7 @@ impl MacroBuiltin {
             "file" => Some(Self::File),
             "line" => Some(Self::Line),
             "column" => Some(Self::Column),
+            "config" => Some(Self::Config),
             _ => None,
         }
     }
@@ -433,6 +435,7 @@ impl MacroBuiltin {
             Self::File => "file",
             Self::Line => "line",
             Self::Column => "column",
+            Self::Config => "config",
         }
     }
 }

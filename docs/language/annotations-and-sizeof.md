@@ -148,7 +148,7 @@ A condition reads two namespaces of values, and no others:
 
 Builtins describe the **selected target**, never the host. They are their own namespace: a definition of the same spelling defines `def::target_os` and never replaces `target_os`. An unknown bare name is an error -- a misspelled builtin is not silently false.
 
-Neither namespace takes part in ordinary name resolution: a definition is not a binding, not a `comp` value, not importable, not aliasable, not shadowable, and not visible to any expression. `def::` is the only qualification a condition accepts; any other path is an error.
+Neither namespace takes part in ordinary name resolution: a definition is not a binding, not a `comp` value, not importable, not aliasable, not shadowable, and never resolved as a name by an expression. [`config$`](#reading-configuration-as-a-value-config) is the only way an expression reads one. `def::` is the only qualification a condition accepts; any other path is an error.
 
 One configuration applies to every source one invocation reads, including external packages. Separate invocations that share declarations or an ABI must be given compatible definitions; nothing in the emitted artifact records which configuration produced it.
 
@@ -163,14 +163,15 @@ One configuration applies to every source one invocation reads, including extern
 | `equals(value, value)` | exactly two comparable values; inequality is `not(equals(...))` |
 | `less`, `less_equal`, `greater`, `greater_equal` | exactly two numbers of the same family |
 | `in(value, &[value, ...])` | a value and a literal list; an empty list is false |
+| `default(def::name, literal)` | the definition's value if it was supplied, otherwise the literal |
 
-Every operator yields a boolean, so a call is also usable as a comparison or membership operand. `&[...]` is a membership-list spelling with no allocation, address, or slice meaning; there is no other list spelling, no indexing, no nested list, and no list-valued definition. Unknown operator names are errors.
+Every operator except `default` yields a boolean, so a call is also usable as a comparison or membership operand. `default` yields whichever of its operands it selects, so it is usable wherever a value is, and as a condition when that value is a boolean. Its first operand must be `def::name` and its second a literal, and the two must be the same kind of value; that kind check is made whether or not the definition was supplied. `&[...]` is a membership-list spelling with no allocation, address, or slice meaning; there is no other list spelling, no indexing, no nested list, and no list-valued definition. Unknown operator names are errors.
 
 ### Absence, and where it means false
 
 A **boolean-expected position** is the argument of `@cond`, `not`, `all`, or `any`. Only there does a definition that was never supplied read as `false`. A definition that *was* supplied with a value of another kind is an error there: nothing converts a value to a truth.
 
-Every other operand is a **value position**, and a definition named there must exist -- including in `equals(def::flag, false)`. Using a definition as a boolean somewhere does not establish a type for it anywhere else; there is no cross-declaration inference and no presence operator.
+Every other operand is a **value position**, and a definition named there must exist -- including in `equals(def::flag, false)`. The definition named by `default` is the exception in both positions: when it is absent, `default` yields its fallback rather than `false` or an error. Using a definition as a boolean somewhere does not establish a type for it anywhere else; there is no cross-declaration inference and no presence operator.
 
 ### Evaluation
 
@@ -183,7 +184,34 @@ Comparison is by kind:
 - Floats compare values rounded to their declared width, with an `f32` promoted exactly to `f64`; `0.0` and `-0.0` are equal.
 - An integer never compares to a float, and no other mixed-kind comparison is allowed.
 
-An unsuffixed number takes its counterpart's established numeric type when the two are compatible, in either operand order, and otherwise Omega's ordinary literal defaults (`i32`, `f32`). In a membership test the checked value supplies that context to the list; the list never supplies it to the value. A supplied definition keeps the type it was defined with. These rules govern condition evaluation only -- they are not Omega's expression coercions.
+An unsuffixed number takes its counterpart's established numeric type when the two are compatible, in either operand order, and otherwise Omega's ordinary literal defaults (`i32`, `f32`). In a membership test the checked value supplies that context to the list; the list never supplies it to the value. A supplied definition is decoded at each use exactly as the same literal written there would be: a suffixed one has its suffix's type, and an unsuffixed one adapts like any other unsuffixed number, with its range checked against the type it takes at that use. In `default`, each operand also takes the other's suffix as its context. These rules govern condition evaluation only -- they are not Omega's expression coercions.
+
+### Reading configuration as a value: `config$`
+
+`core::builtins::config$(condition)` is a compiler-implemented macro that expands to a single literal computed from the configuration:
+
+```omega
+import core::builtins::config;
+
+exposed buffer_bytes : usize = config$(default(def::buffer_bytes, 4096));
+
+main() => void {
+    println$("built for ", config$(target_os));
+    if config$(equals(def::profile, "debug")) { ... }
+}
+```
+
+Its one argument is a condition written in exactly the syntax and with exactly the rules of a `@cond` condition. It is never resolved, type-checked, or `comp`-evaluated as Omega, so an Omega expression (`1 + 2`), a local, or a `comp` binding is an error, as is a macro invocation inside the argument. A user macro may pass its own argument through (`config$($name)`), because that substitution happens before `config$` reads the condition.
+
+The top level of the argument is a **value position**: a bare `def::name` that was not supplied is an error there, not `false`. The expansion is:
+
+- for `def::name`, `default(...)`, or a literal: the literal as written, so an unsuffixed number stays unsuffixed and takes the type its use expects, with the ordinary range check at that use (`-Dsmall=300` used as a `u8` is out of range there);
+- for a builtin: a literal of the builtin's declared type -- `target_pointer_width` is a `u32`-suffixed number, the others a string or a boolean;
+- for an operator call: `true` or `false`.
+
+A negative number expands to `(`, `-`, the magnitude, `)`, so a postfix use such as `config$(def::offset).abs()` applies to the whole value and a signed minimum stays in range (see [numeric literal inference](types-and-primitives.md#numeric-literal-inference)).
+
+`config$` reads only the configuration. Nothing it produces is visible to `@cond`, so filtering never depends on an expansion.
 
 ### Ordering
 

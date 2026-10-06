@@ -83,9 +83,9 @@ Selecting a target never introduces a libc, CRT, sysroot, linker or runtime obje
 
 ## Compiler definitions
 
-`-D` supplies the values `@cond(...)` conditions select declarations with (the
-language rule is in
-[`../language/annotations-and-sizeof.md`](../language/annotations-and-sizeof.md#condcondition)).
+`-D` supplies the values `@cond(...)` conditions select declarations with, and
+that `config$(...)` reads as values inside expressions (the language rules are
+in [`../language/annotations-and-sizeof.md`](../language/annotations-and-sizeof.md#condcondition)).
 A definition is read in source as `def::<name>`:
 
 ```sh
@@ -105,8 +105,8 @@ type suffixes, and escapes the language has:
 |---|---|
 | `-Dflag` | boolean `true` |
 | `-Dflag=false` | boolean `false` |
-| `-Dcount=123`, `-Dmask=0xff_u8`, `-Dsmall=-128i8` | integers, `i32` by default |
-| `-Dratio=1.5`, `-Dratio=1.5f64` | floats, `f32` by default |
+| `-Dcount=123`, `-Dmask=0xff_u8`, `-Dsmall=-128i8` | integers |
+| `-Dratio=1.5`, `-Dratio=1.5f64` | floats |
 | `"-Dletter='x'"` | a character |
 | `'-Dlabel="release build"'` | a string |
 | `'-Draw=b"bytes"'` | a byte string |
@@ -115,6 +115,12 @@ type suffixes, and escapes the language has:
 stopped from eating them -- `'-Dlabel="release build"'` defines a string, while
 `-Dlabel=release` is an error rather than an implicit string. A character and a
 byte string keep their own kinds and never compare equal to a string.
+
+A suffixed number keeps its suffix's type. An unsuffixed one is kept as written
+and adapts to each use like an unsuffixed literal written there, so
+`-Dbuffer=4096` can be compared with a `u32` in one condition and expand to a
+`usize` through `config$` in another; its range is checked at each use, and on
+the command line only against the widest type of its family.
 
 Every definition is decoded against the **final** target, whatever order the
 options appear in, and an unused definition is validated exactly like a used

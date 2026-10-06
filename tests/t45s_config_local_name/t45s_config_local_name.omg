@@ -1,0 +1,9 @@
+import std::io::println;
+import core::builtins::config;
+
+main() => void {
+	LOCAL := 1;
+	# A condition never resolves Omega names, so a local is not visible.
+	value := config$(LOCAL);
+	println$("unreachable: ", value);
+}

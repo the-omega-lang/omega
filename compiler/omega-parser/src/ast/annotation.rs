@@ -67,7 +67,7 @@ pub enum AnnotationExprKind {
     Sizeof(Type),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum AnnotationLiteral {
     Bool(bool),
     /// `negative` records a written leading `-`; the magnitude stays in

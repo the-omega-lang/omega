@@ -1,0 +1,10 @@
+import std::io::println;
+import core::builtins::config;
+
+# An unsuffixed definition is range-checked where it is used, like any
+# unsuffixed literal written there.
+small() => u8 { config$(def::small) }
+
+main() => void {
+	println$("unreachable: ", small());
+}

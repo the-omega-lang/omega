@@ -53,6 +53,16 @@ y := 1.0f64;
 
 The integer suffixes are `i8`, `i16`, `i32`, `i64`, `isize`, `u8`, `u16`, `u32`, `u64`, and `usize`. Floating suffixes are `f32` and `f64`.
 
+Unary `-` applied directly to a numeric literal, including through parentheses, is range-checked as one negative value of the literal's type rather than as the negation of a separately checked magnitude. A signed minimum is therefore an ordinary literal:
+
+```omega
+a := -128i8;
+b: i32 = -2147483648;
+c: i8 = (-128);
+```
+
+Unary `-` on an unsigned literal remains an error.
+
 For C variadic calls, arguments in the variadic tail undergo the C default argument promotions (including `f32` to `f64` and narrow integers to the C-compatible promoted integer width). Current implementation limitations are listed under [`../issues/`](../issues/).
 
 ## `never`

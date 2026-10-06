@@ -2,7 +2,7 @@ use crate::ast::annotation::{
     AnnotationArg, AnnotationExpr, AnnotationExprKind, AnnotationLiteral, AnnotationNode,
 };
 use crate::diagnostics::{ParseError, ParseErrorKind, Span};
-use crate::lexer::{TokenKind, tokenize};
+use crate::lexer::{Token, TokenKind, tokenize};
 use crate::parser::{Parser, contextual, recovery};
 
 /// The annotation that decides whether a top-level item exists at all. It is
@@ -220,6 +220,24 @@ fn parse_literal_token(p: &mut Parser) -> Option<AnnotationLiteral> {
 pub(super) fn reject_annotations(p: &mut Parser, annotations: &[AnnotationNode]) {
     if let Some(first) = annotations.first() {
         p.error_at(first.span, ParseErrorKind::AnnotationNotAllowedHere);
+    }
+}
+
+/// Parses one complete condition expression, such as a `config$` argument.
+/// `tokens` must end with `Eof`, and every token before it must belong to the
+/// condition.
+pub(crate) fn parse_condition(tokens: &[Token]) -> Result<AnnotationExpr, Vec<ParseError>> {
+    let mut p = Parser::new(tokens);
+    let parsed = parse_annotation_expr(&mut p);
+    if parsed.is_some() && !p.is_eof() {
+        p.error(ParseErrorKind::Expected {
+            expected: "the end of the condition",
+            found: p.peek().describe(),
+        });
+    }
+    match (parsed, p.into_errors()) {
+        (Some(condition), errors) if errors.is_empty() => Ok(condition),
+        (_, errors) => Err(errors),
     }
 }
 

@@ -86,7 +86,7 @@ impl fmt::Display for DefinitionValue {
 #[derive(Debug, Clone)]
 pub struct CompilerDefinitions {
     target: Target,
-    user: HashMap<Ident, DefinitionValue>,
+    user: HashMap<Ident, AnnotationLiteral>,
 }
 
 /// The builtin definitions, which describe the selected target rather than
@@ -112,7 +112,7 @@ impl CompilerDefinitions {
     /// supplied each one, and how to say so, belongs to whoever collected
     /// them.
     #[must_use = "a refused definition is a configuration conflict the caller must report"]
-    pub fn define(&mut self, name: Ident, value: DefinitionValue) -> bool {
+    pub fn define(&mut self, name: Ident, value: AnnotationLiteral) -> bool {
         match self.user.entry(name) {
             std::collections::hash_map::Entry::Occupied(_) => false,
             std::collections::hash_map::Entry::Vacant(slot) => {
@@ -126,9 +126,11 @@ impl CompilerDefinitions {
         self.target
     }
 
-    /// A user definition, or `None` when none was supplied. Absence is not
-    /// falsehood: only a boolean-expected position turns it into `false`.
-    pub fn user(&self, name: &Ident) -> Option<&DefinitionValue> {
+    /// A user definition as written, or `None` when none was supplied. It is
+    /// decoded at each use exactly like a literal written there, so an
+    /// unsuffixed number adapts to its use. Absence is not falsehood: only a
+    /// boolean-expected position turns it into `false`.
+    pub fn user(&self, name: &Ident) -> Option<&AnnotationLiteral> {
         self.user.get(name)
     }
 
@@ -168,6 +170,26 @@ pub fn decode_literal(
             decode_number(value, *negative, kind)
         }
     }
+}
+
+/// Checks a literal whose use is not known yet, such as a supplied definition.
+/// A suffixed number must fit its suffix; an unsuffixed one only has to fit
+/// the widest type of its family, since its range is checked again at each
+/// use.
+pub fn validate_literal(
+    literal: &AnnotationLiteral,
+    pointer_bits: u32,
+) -> Result<(), LiteralValueError> {
+    let AnnotationLiteral::Number { negative, value } = literal else {
+        return decode_literal(literal, pointer_bits).map(drop);
+    };
+    let kind = match declared_numeric_kind(value, pointer_bits)? {
+        Some(declared) => declared,
+        None if value.fractional_part.is_some() => NumericKind::Float(64),
+        None if *negative => NumericKind::Signed(64),
+        None => NumericKind::Unsigned(64),
+    };
+    decode_number(value, *negative, kind).map(drop)
 }
 
 /// The numeric kind an unsuffixed literal takes when nothing else establishes

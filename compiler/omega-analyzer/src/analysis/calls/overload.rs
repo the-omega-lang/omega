@@ -810,19 +810,22 @@ impl<'r> Analyzer<'r> {
         target: &ResolvedType,
         pointer_bits: u32,
     ) -> Option<bool> {
-        let n = match &arg.expr {
-            HirExpr::Number(n) => n,
+        let (n, negated) = match &arg.expr {
+            HirExpr::Number(n) => (n, false),
             HirExpr::Negate(inner) => match &inner.expr {
-                HirExpr::Number(n) => n,
+                HirExpr::Number(n) => (n, true),
                 _ => return None,
             },
             _ => return None,
         };
         let target_kind = target.numeric_kind(pointer_bits)?;
+        if negated && matches!(target_kind, NumericKind::Unsigned(_)) {
+            return None;
+        }
         if matches!(target_kind, NumericKind::Float(_)) != n.fractional_part.is_some() {
             return None;
         }
-        parse_number_literal(n, target_kind).ok()?;
+        parse_number_literal(n, target_kind, negated).ok()?;
         let default = if n.fractional_part.is_some() {
             ResolvedType::F32
         } else {

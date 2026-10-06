@@ -179,6 +179,7 @@ fn a_malformed_definition_is_rejected_before_anything_is_compiled() {
         (vec!["-D0abc=1"], "definition name"),
         (vec!["-Dif"], "definition name"),
         (vec!["-Dcount=300u8"], "does not fit"),
+        (vec!["-Dcount=18446744073709551616"], "does not fit"),
     ] {
         let message = workspace.failure(&options);
         assert!(
@@ -186,6 +187,33 @@ fn a_malformed_definition_is_rejected_before_anything_is_compiled() {
             "{options:?} should mention {expected:?}, got: {message}"
         );
     }
+}
+
+/// An unsuffixed definition takes its type from each use, so its range is
+/// checked there rather than when it is supplied.
+#[test]
+fn an_unsuffixed_definition_adapts_to_each_use() {
+    let workspace = Workspace::new(
+        r#"
+@cond(equals(def::ratio, 0.1f64))
+exposed from_wide_float : i32 = 1;
+
+@cond(equals(def::big, 4294967295u32))
+exposed from_wide_int : i32 = 2;
+"#,
+    );
+    let ir = workspace.ir(&["-Dratio=0.1", "-Dbig=4294967295"]);
+    assert!(defines(&ir, "from_wide_float"));
+    assert!(defines(&ir, "from_wide_int"));
+
+    let narrow = Workspace::new(
+        r#"
+@cond(equals(def::big, 1u8))
+exposed never : i32 = 1;
+"#,
+    );
+    let message = narrow.failure(&["-Dbig=300"]);
+    assert!(message.contains("does not fit"), "{message}");
 }
 
 /// An unused definition is part of the configuration, so it is validated

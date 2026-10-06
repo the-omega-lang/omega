@@ -1,0 +1,47 @@
+import std::io::println;
+import core::builtins::config;
+
+takes_u64(value: u64) => u64 { value }
+
+exposed buffer_bytes : usize = config$(default(def::buffer, 512));
+
+# A user macro can hand its argument to `config$`: the argument is
+# substituted before the builtin reads it as a condition.
+macro setting($name: path) => { config$($name) }
+
+main() => void {
+	# An unsuffixed definition is an unsuffixed literal, so it takes the type
+	# each use expects.
+	as_usize: usize = config$(def::small);
+	as_u8: u8 = config$(def::small);
+	as_i64: i64 = config$(def::small);
+	println$("adaptable: ", as_usize, " ", as_u8, " ", as_i64);
+
+	# A suffixed definition keeps its suffix.
+	println$("suffixed: ", takes_u64(config$(def::wide)));
+
+	low: i8 = config$(def::low);
+	minimum: i8 = config$(def::minimum);
+	println$("minimums: ", low, " ", minimum);
+
+	println$("text: ", config$(def::label));
+
+	println$("os: ", config$(target_os));
+	println$("arch: ", config$(target_arch));
+	println$("pointer-width: ", config$(target_pointer_width));
+	println$("freestanding: ", config$(target_freestanding));
+
+	if config$(greater(def::buffer, 1024)) {
+		println$("large buffer");
+	} else {
+		println$("small buffer");
+	}
+
+	supplied: usize = config$(default(def::buffer, 512));
+	absent: usize = config$(default(def::never_supplied, 512));
+	println$("default: ", supplied, " ", absent, " ", buffer_bytes);
+
+	println$("wrapped: ", setting$(def::label));
+
+	println$("postfix: ", config$(def::low).signum(), " ", config$(def::small).is_even());
+}

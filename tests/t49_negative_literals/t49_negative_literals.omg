@@ -1,0 +1,24 @@
+import std::io::println;
+
+narrow(value: i8) => i8 { value }
+
+pick(value: i8) => i8 { value }
+pick(value: u8) => u8 { value }
+
+main() => void {
+	# A minus written directly on a literal is checked as one negative value,
+	# so each signed minimum is an ordinary literal.
+	a := -128i8;
+	b: i32 = -2147483648;
+	c := (-128i8);
+	d := -9223372036854775808i64;
+	println$("minimums: ", a, " ", b, " ", c, " ", d);
+
+	# An unsuffixed negative literal adapts to the expected type.
+	e: i8 = -128;
+	println$("adapted: ", e, " ", narrow(-128));
+
+	println$("overloads: ", pick(-128), " ", pick(-1), " ", pick(128));
+
+	println$("postfix: ", (-5).is_negative(), " ", (-128i8).signum());
+}

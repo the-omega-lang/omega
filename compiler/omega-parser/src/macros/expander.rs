@@ -6,7 +6,7 @@ pub(super) struct Expander<'a, E> {
     source: Option<&'a SourceFile>,
     budget: u32,
     state: &'a mut ExpansionState,
-    filter: ItemFilter<'a, E>,
+    configuration: &'a mut dyn ExpansionConfiguration<Error = E>,
 }
 
 impl<'a, E> Expander<'a, E> {
@@ -15,7 +15,7 @@ impl<'a, E> Expander<'a, E> {
         module: &'a [Ident],
         source: Option<&'a SourceFile>,
         state: &'a mut ExpansionState,
-        filter: ItemFilter<'a, E>,
+        configuration: &'a mut dyn ExpansionConfiguration<Error = E>,
     ) -> Self {
         Self {
             defs,
@@ -23,7 +23,7 @@ impl<'a, E> Expander<'a, E> {
             source,
             budget: MAX_EXPANSIONS,
             state,
-            filter,
+            configuration,
         }
     }
 
@@ -50,7 +50,11 @@ impl<'a, E> Expander<'a, E> {
     ) -> Result<Vec<ItemNode>, ExpansionFailure<E>> {
         let mut result = Vec::with_capacity(nodes.len());
         for mut node in nodes {
-            if !(self.filter)(&mut node).map_err(ExpansionFailure::Filter)? {
+            if !self
+                .configuration
+                .keep_item(&mut node)
+                .map_err(ExpansionFailure::Configuration)?
+            {
                 continue;
             }
             let ItemNode {
@@ -173,7 +177,7 @@ impl<'a, E> Expander<'a, E> {
         &mut self,
         inv: &MacroInvocationExpr,
         call_span: Span,
-    ) -> Result<ExpressionNode, MacroError> {
+    ) -> Result<ExpressionNode, ExpansionFailure<E>> {
         let def = self.macro_definition(inv, call_span)?;
         let tokens = self.substitute_invocation(&def, inv, call_span)?;
         let padded = with_eof(&tokens);
@@ -195,7 +199,8 @@ impl<'a, E> Expander<'a, E> {
                     errors: message,
                 })
                 .at_invocation(call_span)
-                .at_definition(&def.defining_module, def.span));
+                .at_definition(&def.defining_module, def.span)
+                .into());
             }
         };
         self.expand_expr(node)
@@ -205,7 +210,7 @@ impl<'a, E> Expander<'a, E> {
         &mut self,
         inv: &MacroInvocationExpr,
         call_span: Span,
-    ) -> Result<Vec<StatementNode>, MacroError> {
+    ) -> Result<Vec<StatementNode>, ExpansionFailure<E>> {
         let def = self.macro_definition(inv, call_span)?;
         let tokens = self.substitute_invocation(&def, inv, call_span)?;
         let padded = with_eof(&tokens);
@@ -227,7 +232,8 @@ impl<'a, E> Expander<'a, E> {
                     errors: message,
                 })
                 .at_invocation(call_span)
-                .at_definition(&def.defining_module, def.span));
+                .at_definition(&def.defining_module, def.span)
+                .into());
             }
         };
         if let Some(tail) = cb.tail.take() {
@@ -244,7 +250,7 @@ impl<'a, E> Expander<'a, E> {
         def: &MacroDefinitionStmt,
         inv: &MacroInvocationExpr,
         call_span: Span,
-    ) -> Result<Vec<Token>, MacroError> {
+    ) -> Result<Vec<Token>, ExpansionFailure<E>> {
         let args = &inv.args;
         let fixed_len = def.signature.fixed.len();
         let expected = if def.signature.variadic.is_some() {
@@ -261,14 +267,16 @@ impl<'a, E> Expander<'a, E> {
                 found: args.len(),
             })
             .at_invocation(call_span)
-            .at_definition(&def.defining_module, def.span));
+            .at_definition(&def.defining_module, def.span)
+            .into());
         }
         if self.budget == 0 {
             return Err(MacroError::new(MacroErrorKind::ExpansionLimitExceeded {
                 macro_name: def.name.clone(),
             })
             .at_invocation(call_span)
-            .at_definition(&def.defining_module, def.span));
+            .at_definition(&def.defining_module, def.span)
+            .into());
         }
         self.budget -= 1;
 
@@ -290,6 +298,9 @@ impl<'a, E> Expander<'a, E> {
             .state
             .fresh_origin(def, self.module, call_span, inv.origin);
         match def.builtin {
+            Some(MacroBuiltin::Config) => {
+                self.config_tokens(&args[0], call_span, origin, &mut out)?
+            }
             Some(builtin) => out.push(self.builtin_token(builtin, call_span, origin)?),
             None => render(
                 &def.body,
@@ -310,6 +321,65 @@ impl<'a, E> Expander<'a, E> {
             .collect())
     }
 
+    /// `config$`'s argument is a condition, so it is reparsed as one rather
+    /// than as the expression it was validated as. A negative number is
+    /// parenthesized so a postfix use applies to the whole value.
+    fn config_tokens(
+        &mut self,
+        argument: &[Token],
+        call_span: Span,
+        origin: Origin,
+        out: &mut Vec<Token>,
+    ) -> Result<(), ExpansionFailure<E>> {
+        let invokes_macro = argument.windows(2).any(|pair| {
+            matches!(pair[0].kind, TokenKind::Ident(_)) && pair[1].kind == TokenKind::Dollar
+        });
+        if invokes_macro {
+            return Err(MacroError::new(MacroErrorKind::ConfigInvokesMacro)
+                .at_invocation(call_span)
+                .into());
+        }
+        let condition = crate::parser::item::annotations::parse_condition(&with_eof(argument))
+            .map_err(|errors| {
+                MacroError::new(MacroErrorKind::ConfigNotACondition {
+                    errors: join_errors(&errors),
+                })
+                .at_invocation(call_span)
+            })?;
+        let literal = self
+            .configuration
+            .value(&condition)
+            .map_err(ExpansionFailure::Configuration)?;
+        let mut push = |kind| {
+            out.push(Token {
+                kind,
+                span: call_span,
+                origin,
+            })
+        };
+        match literal {
+            AnnotationLiteral::Bool(true) => push(TokenKind::True),
+            AnnotationLiteral::Bool(false) => push(TokenKind::False),
+            AnnotationLiteral::Char(value) => push(TokenKind::Char(value)),
+            AnnotationLiteral::Str(value) => push(TokenKind::Str(value)),
+            AnnotationLiteral::ByteStr(value) => push(TokenKind::ByteStr(value)),
+            AnnotationLiteral::Number {
+                negative: false,
+                value,
+            } => push(TokenKind::Number(value)),
+            AnnotationLiteral::Number {
+                negative: true,
+                value,
+            } => {
+                push(TokenKind::LParen);
+                push(TokenKind::Minus);
+                push(TokenKind::Number(value));
+                push(TokenKind::RParen);
+            }
+        }
+        Ok(())
+    }
+
     /// The single literal a compiler-backed macro expands to. The location
     /// comes from `call_span`, which macro-generated tokens already carry
     /// from their outermost invocation, so a builtin written inside another
@@ -319,13 +389,14 @@ impl<'a, E> Expander<'a, E> {
         builtin: MacroBuiltin,
         call_span: Span,
         origin: Origin,
-    ) -> Result<Token, MacroError> {
+    ) -> Result<Token, ExpansionFailure<E>> {
         let source = self.source.ok_or_else(|| {
             MacroError::new(MacroErrorKind::BuiltinWithoutSourceContext { builtin })
                 .at_invocation(call_span)
         })?;
         let kind = match builtin {
             MacroBuiltin::File => TokenKind::Str(source.name().to_string()),
+            MacroBuiltin::Config => unreachable!("'config$' expands through `config_tokens`"),
             MacroBuiltin::Line | MacroBuiltin::Column => {
                 let (line, column) = source.line_col(call_span.start);
                 let value = if builtin == MacroBuiltin::Line {
@@ -355,7 +426,7 @@ impl<'a, E> Expander<'a, E> {
     fn expand_function_def(
         &mut self,
         f: FunctionDefinitionStmt,
-    ) -> Result<FunctionDefinitionStmt, MacroError> {
+    ) -> Result<FunctionDefinitionStmt, ExpansionFailure<E>> {
         Ok(FunctionDefinitionStmt {
             codeblock: f
                 .codeblock
@@ -368,7 +439,7 @@ impl<'a, E> Expander<'a, E> {
     fn expand_foreign_function(
         &mut self,
         f: crate::ast::item::ForeignFunctionItem,
-    ) -> Result<crate::ast::item::ForeignFunctionItem, MacroError> {
+    ) -> Result<crate::ast::item::ForeignFunctionItem, ExpansionFailure<E>> {
         let body = f.body.map(|b| self.expand_codeblock(b)).transpose()?;
         Ok(crate::ast::item::ForeignFunctionItem { body, ..f })
     }
@@ -376,7 +447,7 @@ impl<'a, E> Expander<'a, E> {
     fn expand_foreign_block_entry(
         &mut self,
         entry: crate::ast::item::ForeignBlockEntry,
-    ) -> Result<crate::ast::item::ForeignBlockEntry, MacroError> {
+    ) -> Result<crate::ast::item::ForeignBlockEntry, ExpansionFailure<E>> {
         use crate::ast::item::ForeignBlockEntry;
         Ok(match entry {
             ForeignBlockEntry::Binding(b) => ForeignBlockEntry::Binding(b),
@@ -389,24 +460,24 @@ impl<'a, E> Expander<'a, E> {
     fn expand_member_functions(
         &mut self,
         functions: Vec<FunctionDefinitionStmt>,
-    ) -> Result<Vec<FunctionDefinitionStmt>, MacroError> {
+    ) -> Result<Vec<FunctionDefinitionStmt>, ExpansionFailure<E>> {
         functions
             .into_iter()
             .map(|f| self.expand_function_def(f))
             .collect()
     }
 
-    fn expand_struct_def(&mut self, s: StructStmt) -> Result<StructStmt, MacroError> {
+    fn expand_struct_def(&mut self, s: StructStmt) -> Result<StructStmt, ExpansionFailure<E>> {
         let functions = self.expand_member_functions(s.functions)?;
         Ok(StructStmt { functions, ..s })
     }
 
-    fn expand_union_def(&mut self, u: UnionStmt) -> Result<UnionStmt, MacroError> {
+    fn expand_union_def(&mut self, u: UnionStmt) -> Result<UnionStmt, ExpansionFailure<E>> {
         let functions = self.expand_member_functions(u.functions)?;
         Ok(UnionStmt { functions, ..u })
     }
 
-    fn expand_enum_def(&mut self, e: EnumStmt) -> Result<EnumStmt, MacroError> {
+    fn expand_enum_def(&mut self, e: EnumStmt) -> Result<EnumStmt, ExpansionFailure<E>> {
         let variants = e
             .variants
             .into_iter()
@@ -418,7 +489,7 @@ impl<'a, E> Expander<'a, E> {
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(EnumVariantStmt { args, ..v })
             })
-            .collect::<Result<Vec<_>, MacroError>>()?;
+            .collect::<Result<Vec<_>, ExpansionFailure<E>>>()?;
         let functions = self.expand_member_functions(e.functions)?;
         Ok(EnumStmt {
             variants,
@@ -427,7 +498,7 @@ impl<'a, E> Expander<'a, E> {
         })
     }
 
-    fn expand_spec_def(&mut self, sp: SpecStmt) -> Result<SpecStmt, MacroError> {
+    fn expand_spec_def(&mut self, sp: SpecStmt) -> Result<SpecStmt, ExpansionFailure<E>> {
         let functions = sp
             .functions
             .into_iter()
@@ -435,11 +506,14 @@ impl<'a, E> Expander<'a, E> {
                 let body = f.body.map(|b| self.expand_codeblock(b)).transpose()?;
                 Ok(SpecFunctionStmt { body, ..f })
             })
-            .collect::<Result<Vec<_>, MacroError>>()?;
+            .collect::<Result<Vec<_>, ExpansionFailure<E>>>()?;
         Ok(SpecStmt { functions, ..sp })
     }
 
-    fn expand_codeblock(&mut self, cb: CodeblockExpr) -> Result<CodeblockExpr, MacroError> {
+    fn expand_codeblock(
+        &mut self,
+        cb: CodeblockExpr,
+    ) -> Result<CodeblockExpr, ExpansionFailure<E>> {
         let statements = self.expand_statement_list(cb.statements)?;
         let tail = cb
             .tail
@@ -455,7 +529,7 @@ impl<'a, E> Expander<'a, E> {
     fn expand_statement_list(
         &mut self,
         statements: Vec<StatementNode>,
-    ) -> Result<Vec<StatementNode>, MacroError> {
+    ) -> Result<Vec<StatementNode>, ExpansionFailure<E>> {
         let mut result = Vec::with_capacity(statements.len());
         for node in statements {
             match node.statement {
@@ -471,12 +545,12 @@ impl<'a, E> Expander<'a, E> {
         Ok(result)
     }
 
-    fn expand_if(&mut self, if_expr: IfExpr) -> Result<IfExpr, MacroError> {
+    fn expand_if(&mut self, if_expr: IfExpr) -> Result<IfExpr, ExpansionFailure<E>> {
         let branches = if_expr
             .branches
             .into_iter()
             .map(|(cond, block)| Ok((self.expand_expr(cond)?, self.expand_codeblock(block)?)))
-            .collect::<Result<Vec<_>, MacroError>>()?;
+            .collect::<Result<Vec<_>, ExpansionFailure<E>>>()?;
         let else_branch = if_expr
             .else_branch
             .map(|b| self.expand_codeblock(b))
@@ -487,13 +561,16 @@ impl<'a, E> Expander<'a, E> {
         })
     }
 
-    fn expand_stmt_node(&mut self, node: StatementNode) -> Result<StatementNode, MacroError> {
+    fn expand_stmt_node(
+        &mut self,
+        node: StatementNode,
+    ) -> Result<StatementNode, ExpansionFailure<E>> {
         let span = node.span;
         let statement = self.expand_statement(node.statement)?;
         Ok(StatementNode { statement, span })
     }
 
-    fn expand_statement(&mut self, statement: Statement) -> Result<Statement, MacroError> {
+    fn expand_statement(&mut self, statement: Statement) -> Result<Statement, ExpansionFailure<E>> {
         Ok(match statement {
             Statement::MacroInvocation(_) => {
                 unreachable!("statement invocations are spliced by expand_statement_list")
@@ -559,7 +636,7 @@ impl<'a, E> Expander<'a, E> {
     fn expand_asm_descriptor(
         &mut self,
         descriptor: AsmDescriptorNode,
-    ) -> Result<AsmDescriptorNode, MacroError> {
+    ) -> Result<AsmDescriptorNode, ExpansionFailure<E>> {
         let span = descriptor.span;
         let kind = match descriptor.kind {
             AsmDescriptorKind::Reg { expr, physical } => AsmDescriptorKind::Reg {
@@ -571,7 +648,7 @@ impl<'a, E> Expander<'a, E> {
         Ok(AsmDescriptorNode { kind, span })
     }
 
-    fn expand_expr(&mut self, node: ExpressionNode) -> Result<ExpressionNode, MacroError> {
+    fn expand_expr(&mut self, node: ExpressionNode) -> Result<ExpressionNode, ExpansionFailure<E>> {
         let span = node.span;
         let origin = node.origin;
         if let Expression::MacroInvocation(inv) = node.expression {
@@ -688,7 +765,7 @@ impl<'a, E> Expander<'a, E> {
                             value: self.expand_expr(f.value)?,
                         })
                     })
-                    .collect::<Result<Vec<_>, MacroError>>()?,
+                    .collect::<Result<Vec<_>, ExpansionFailure<E>>>()?,
             }),
             Expression::Slice(s) => Expression::Slice(Box::new(SliceExpr {
                 base: self.expand_expr(s.base)?,
@@ -708,7 +785,7 @@ impl<'a, E> Expander<'a, E> {
         })
     }
 
-    fn expand_range(&mut self, range: RangeExpr) -> Result<RangeExpr, MacroError> {
+    fn expand_range(&mut self, range: RangeExpr) -> Result<RangeExpr, ExpansionFailure<E>> {
         let end = match range.end {
             RangeEnd::Inclusive(e) => RangeEnd::Inclusive(self.expand_expr(e)?),
             RangeEnd::Exclusive(e) => RangeEnd::Exclusive(self.expand_expr(e)?),
@@ -721,7 +798,7 @@ impl<'a, E> Expander<'a, E> {
         })
     }
 
-    fn expand_match(&mut self, match_expr: MatchExpr) -> Result<MatchExpr, MacroError> {
+    fn expand_match(&mut self, match_expr: MatchExpr) -> Result<MatchExpr, ExpansionFailure<E>> {
         let scrutinee = self.expand_expr(match_expr.scrutinee)?;
         let arms = match_expr
             .arms
@@ -745,7 +822,7 @@ impl<'a, E> Expander<'a, E> {
                     span: arm.span,
                 })
             })
-            .collect::<Result<Vec<_>, MacroError>>()?;
+            .collect::<Result<Vec<_>, ExpansionFailure<E>>>()?;
         let else_branch = match_expr
             .else_branch
             .map(|b| self.expand_codeblock(b))

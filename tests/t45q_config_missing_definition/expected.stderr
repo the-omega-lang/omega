@@ -1,0 +1,7 @@
+error: compiler definition 'missing' is not defined, so it has no value to compare
+ --> tests/t45q_config_missing_definition/t45q_config_missing_definition.omg:6:22
+  |
+6 |     value := config$(def::missing);
+  |                      ^^^^^^^^^^^^ in this condition
+
+error: could not compile the program due to 1 previous error
