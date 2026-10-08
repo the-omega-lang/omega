@@ -479,7 +479,7 @@ primitive char {
 
 primitive<T> []T {
     exposed is_empty(*self) => bool {
-        self.size == 0
+        self.length == 0
     }
 }
 ```
