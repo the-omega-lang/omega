@@ -272,7 +272,7 @@ function-parameters = [ receiver, [ "," ] ], parameter, { ",", parameter }
 
 There is deliberately no `fn` keyword and the return arrow is `=>`.
 
-The `;` form is accepted only for an item-level function; a function declared inside a struct, union, marker, enum, or primitive block always has a `code-block`. A function without a body is valid only as one of the compiler-implemented declarations specified in [`volatile.md`](volatile.md); every other bodyless function is rejected, whether or not it is generic or ever called.
+The `;` form is accepted only for an item-level function; a function declared inside a struct, union, marker, enum, or primitive block always has a `code-block`. A function without a body is valid only as one of the compiler-implemented declarations specified in [`volatile.md`](volatile.md) and [`reflection.md`](reflection.md); every other bodyless function is rejected, whether or not it is generic or ever called.
 
 ## Structs, unions, and markers
 

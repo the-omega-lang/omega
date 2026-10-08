@@ -653,6 +653,25 @@ pub enum ConstValue {
         value: Box<ConstValue>,
     },
     Ref(Box<ConstValue>),
+    /// The address of immutable data the compiler synthesizes on demand. It
+    /// is symbolic rather than an owned tree like `Ref`, because a type's
+    /// description may refer back to the type itself.
+    Reflected(Reflected),
+}
+
+/// Compiler-synthesized static data addressed by `ConstValue::Reflected`.
+/// Equality is identity of the described data, which is what makes `comp`
+/// pointer `==` on two `typeinfo` results mean "the same type".
+#[derive(Debug, Clone, PartialEq)]
+pub enum Reflected {
+    /// The `core::reflection::TypeInfo` table describing a type.
+    TypeInfo(ResolvedType),
+    /// The byte image of an enum value holding one variant: its tag and
+    /// header values written in, every other byte zero.
+    VariantPrototype {
+        r#type: ResolvedType,
+        variant: usize,
+    },
 }
 
 impl ConstValue {

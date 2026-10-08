@@ -5,7 +5,7 @@ use inkwell::types::BasicTypeEnum;
 use inkwell::values::{BasicValueEnum, GlobalValue};
 use omega_analyzer::checked::NumberValue;
 use omega_analyzer::layout;
-use omega_analyzer::resolved_type::{ConstValue, ResolvedType};
+use omega_analyzer::resolved_type::{ConstValue, Reflected, ResolvedType};
 
 fn ref_pointee_type(inner: &ConstValue, leaf_type: &ResolvedType) -> ResolvedType {
     match inner {
@@ -20,6 +20,32 @@ pub(super) struct ConstBlob<'ctx> {
     bytes: Vec<u8>,
     relocs: Vec<(u32, GlobalValue<'ctx>)>,
     pointer_bytes: u32,
+}
+
+impl ConstBlob<'_> {
+    pub(super) fn zeroed(total: u32, pointer_bytes: u32) -> Self {
+        Self {
+            bytes: vec![0u8; total as usize],
+            relocs: Vec::new(),
+            pointer_bytes,
+        }
+    }
+}
+
+fn reflected_pointee<'a>(r#type: &'a ResolvedType) -> &'a ResolvedType {
+    match r#type {
+        ResolvedType::Pointer { pointee, .. } => pointee,
+        _ => unreachable!("a Reflected constant's own type is always ResolvedType::Pointer"),
+    }
+}
+
+fn reflected_key(reflected: &Reflected) -> String {
+    omega_mir::mangle::encode(&match reflected {
+        Reflected::TypeInfo(described) => omega_mir::mangle::typeinfo_symbol(described),
+        Reflected::VariantPrototype { r#type, variant } => {
+            omega_mir::mangle::variant_prototype_symbol(r#type, *variant)
+        }
+    })
 }
 
 impl<'ctx> Codegen<'ctx> {
@@ -373,10 +399,14 @@ impl<'ctx> Codegen<'ctx> {
                 let data = self.build_const_data(inner, &inner_type);
                 vec![data.as_pointer_value().into()]
             }
+            ConstValue::Reflected(reflected) => {
+                let data = self.reflected_global(reflected, reflected_pointee(r#type));
+                vec![data.as_pointer_value().into()]
+            }
         }
     }
 
-    fn write_const_element(
+    pub(super) fn write_const_element(
         &mut self,
         blob: &mut ConstBlob<'ctx>,
         offset: u32,
@@ -527,6 +557,10 @@ impl<'ctx> Codegen<'ctx> {
                 let inner_id = self.build_const_data(inner, &inner_type);
                 blob.relocs.push((offset, inner_id));
             }
+            ConstValue::Reflected(reflected) => {
+                let data = self.reflected_global(reflected, reflected_pointee(r#type));
+                blob.relocs.push((offset, data));
+            }
         }
     }
 
@@ -629,6 +663,12 @@ impl<'ctx> Codegen<'ctx> {
                     _ => unreachable!("a Ref constant's own type is always ResolvedType::Pointer"),
                 };
                 self.hash_const_element(out, inner, &ref_pointee_type(inner, pointee));
+            }
+            // Reflected data can be cyclic, so it is identified by its
+            // symbol, never by its contents.
+            ConstValue::Reflected(reflected) => {
+                out.extend_from_slice(reflected_key(reflected).as_bytes());
+                out.push(0);
             }
         }
     }

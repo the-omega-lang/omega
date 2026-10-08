@@ -1104,7 +1104,8 @@ impl<'r> Analyzer<'r> {
             | ConstValue::Struct(_)
             | ConstValue::Enum { .. }
             | ConstValue::Union { .. }
-            | ConstValue::Ref(_) => {
+            | ConstValue::Ref(_)
+            | ConstValue::Reflected(_) => {
                 unreachable!(
                     "analyze_value_match only ever runs for an integer/bool/char scrutinee type"
                 )
@@ -1130,7 +1131,8 @@ impl<'r> Analyzer<'r> {
             | ConstValue::Struct(_)
             | ConstValue::Enum { .. }
             | ConstValue::Union { .. }
-            | ConstValue::Ref(_) => {
+            | ConstValue::Ref(_)
+            | ConstValue::Reflected(_) => {
                 unreachable!(
                     "analyze_value_match only ever runs for an integer/bool/char scrutinee type"
                 )

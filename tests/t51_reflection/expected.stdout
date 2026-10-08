@@ -1,0 +1,26 @@
+Header size=8 align=4
+  kind @0 u8 exposed
+  secret @1 u16 hidden
+  count @3 u32 shared
+comp: size=8 count@3
+comp: Pair<i32> == Pair<u8>: false, Pair<i32> == Pair<i32>: true
+comp: Buffer<3, i32> N bits: 3
+comp: Signed<-1> N bits: 255
+next: *Node -> Node
+next points to Node: true
+Eq through the field: true
+other object, same address: true
+other object, Eq: true
+Pair<i32> == Pair<u8>: false
+Pair<u8> == Pair<u8>: true
+Buffer<3, i32> == Buffer<4, i32>: false
+*[]u8 == *[]u8: true
+*[]u8 == *mut []u8: false
+tag: u8 @0
+header: label @1
+shared: id @13
+value is Circle (tag 3)
+rebuilt rect id=42 w=5 h=6
+enum *str | u16 size=16 tag u32 @0
+  *str tag=0 value @4
+  u16 tag=1 value @4

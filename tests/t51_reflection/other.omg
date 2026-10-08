@@ -1,0 +1,9 @@
+# Emits its own copy of `Node`'s table in this source's object, which the
+# linker merges with the one `main` emits.
+import core::reflection::typeinfo;
+import core::reflection::TypeInfo;
+import super::Node;
+
+exposed node_info() => *TypeInfo {
+	typeinfo<Node>()
+}

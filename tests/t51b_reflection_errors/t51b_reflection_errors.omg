@@ -1,0 +1,24 @@
+# A variant prototype is a byte image, and `comp` evaluation has no
+# byte-level reinterpretation to read one with (docs/language/reflection.md).
+import core::reflection::typeinfo;
+
+enum Light {
+	Off,
+	On;
+}
+
+first_prototype_byte() => u8 {
+	info := typeinfo<Light>();
+	kind := info.kind;
+	match kind {
+		TypeKind::Enum => { *kind.variants[1].prototype },
+	} else {
+		0u8
+	}
+}
+
+comp ON_BYTE := first_prototype_byte();
+
+main() => void {
+	<void>ON_BYTE;
+}

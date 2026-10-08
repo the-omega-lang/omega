@@ -183,6 +183,8 @@ See [`abi-and-representation.md`](abi-and-representation.md).
 
 A successful `comp` expression can collapse into `CheckedExpr::Const(value)`. Runtime codegen then emits/materializes the known value rather than re-executing the original source subtree.
 
+`ConstValue::Ref` owns the tree it points to, so it cannot express a cycle. `ConstValue::Reflected` is the one symbolic address: it names compiler-synthesized immutable data — a `core::reflection` type table or an enum variant prototype — without containing it, which is what lets a table for `struct Node { next: *Node; }` point back at itself. It appears only where a pointer value is expected, and only the `typeinfo` body and the table builder produce it. `omega_analyzer::reflection` is the single builder: `type_info_value` expands one table into an ordinary `ConstValue::Struct` whose nested `*TypeInfo` fields and prototypes are again `Reflected` leaves, so expansion is one level deep and lazy. The `comp` evaluator expands a table when a `Deref` reaches it; codegen expands it when emitting the table's global. Field order and nested shapes are read by name from `core::reflection`'s resolved declarations rather than assumed. Equality of two `Reflected` values is equality of the described type, which is what `comp` pointer `==` reports.
+
 ## Compile-time evaluator boundary
 
 `comp_eval.rs` evaluates an already semantically understood checked expression environment. It is not a second parser/type checker.
@@ -212,7 +214,8 @@ Codegen owns conversion of `ConstValue` into native LLVM values/memory/data obje
 - aggregate constants follow the same shared field/leaf/byte layout as runtime-built values;
 - addressable byte blobs are emitted as anonymous data, at the alignment their type requires;
 - repeated content-addressed const blobs may be deduplicated within a compilation unit. Because these are weak definitions merged across separately compiled objects, the content hash also covers the materialization's type identity, size, alignment and element count, so two units that disagree about a constant's storage contract cannot collide on one symbol;
-- codegen does not re-run compile-time semantic evaluation.
+- codegen does not re-run compile-time semantic evaluation;
+- a `Reflected` address is hashed by its symbol, never its contents, because reflected data can be cyclic.
 
 ## Representation changes checklist
 

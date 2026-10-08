@@ -1,0 +1,165 @@
+# `core::reflection` -- compiler-generated, immutable descriptions of types;
+# see docs/language/reflection.md. Field names are part of the contract the
+# compiler fills these tables against.
+
+# Only the compiler constructs these values; programs only read them.
+@[suppress(unused_field, never_constructed_variant)]
+
+import root::cmp::Eq;
+
+exposed typeinfo<T>() => *TypeInfo;
+
+exposed struct TypeInfo {
+    exposed name: *str;
+    exposed path: *[]*str;
+    exposed generic_args: *[]GenericArg;
+    exposed size: usize;
+    exposed align: usize;
+    exposed kind: TypeKind;
+}
+
+exposed enum GenericArg {
+    Type { exposed type: *TypeInfo; },
+    Comp { exposed type: *TypeInfo; exposed bits: u64; };
+}
+
+exposed struct FieldInfo {
+    exposed name: *str;
+    exposed offset: usize;
+    exposed type: *TypeInfo;
+    exposed visibility: Visibility;
+}
+
+exposed enum Visibility {
+    Hidden,
+    Shared,
+    Exposed;
+}
+
+exposed enum Primitive {
+    Void, Never, Bool, Char,
+    I8, I16, I32, I64, ISize,
+    U8, U16, U32, U64, USize,
+    F32, F64;
+}
+
+exposed struct VariantInfo {
+    exposed name: *str;
+    exposed tag: u64;
+    exposed prototype: *u8;
+    exposed fields: *[]FieldInfo;
+}
+
+exposed enum TypeKind {
+    Primitive { exposed primitive: Primitive; },
+    Pointer { exposed pointee: *TypeInfo; exposed mutable: bool; },
+    UnknownSizeArray { exposed element: *TypeInfo; exposed mutable: bool; },
+    Array { exposed element: *TypeInfo; exposed length: usize; },
+    Slice { exposed element: *TypeInfo; exposed mutable: bool; },
+    Str { exposed mutable: bool; },
+    Struct { exposed fields: *[]FieldInfo; },
+    Union { exposed fields: *[]FieldInfo; },
+    Marker,
+    Enum {
+        exposed tag_field: FieldInfo;
+        exposed header: *[]FieldInfo;
+        exposed shared: *[]FieldInfo;
+        exposed variants: *[]VariantInfo;
+    },
+    AnonymousEnum { exposed tag_field: FieldInfo; exposed members: *[]VariantInfo; },
+    Function,
+    SpecObject;
+}
+
+# Identity is structural: a named type is its declaration path, name and
+# generic arguments; any other type is its components.
+meet Eq for TypeInfo {
+    equals(*self, other: Self) => bool {
+        a := self.kind;
+        b := other.kind;
+        if a.tag != b.tag { return false; }
+        match a {
+            TypeKind::Primitive => {
+                match b {
+                    TypeKind::Primitive => { a.primitive.tag == b.primitive.tag },
+                } else { false }
+            },
+            TypeKind::Pointer => {
+                match b {
+                    TypeKind::Pointer => { a.mutable == b.mutable && same_type(a.pointee, b.pointee) },
+                } else { false }
+            },
+            TypeKind::UnknownSizeArray => {
+                match b {
+                    TypeKind::UnknownSizeArray => { a.mutable == b.mutable && same_type(a.element, b.element) },
+                } else { false }
+            },
+            TypeKind::Array => {
+                match b {
+                    TypeKind::Array => { a.length == b.length && same_type(a.element, b.element) },
+                } else { false }
+            },
+            TypeKind::Slice => {
+                match b {
+                    TypeKind::Slice => { a.mutable == b.mutable && same_type(a.element, b.element) },
+                } else { false }
+            },
+            TypeKind::Str => {
+                match b {
+                    TypeKind::Str => { a.mutable == b.mutable },
+                } else { false }
+            },
+            TypeKind::AnonymousEnum => {
+                match b {
+                    TypeKind::AnonymousEnum => { same_members(a.members, b.members) },
+                } else { false }
+            },
+            TypeKind::Function => { same_name(self, &other) },
+            TypeKind::SpecObject => { same_name(self, &other) },
+        } else {
+            same_name(self, &other)
+        }
+    }
+}
+
+same_type(a: *TypeInfo, b: *TypeInfo) => bool {
+    if a == b { return true; }
+    Eq::equals(*a, *b)
+}
+
+# Named types, and the opaque kinds whose spelling is all v1 records.
+same_name(a: *TypeInfo, b: *TypeInfo) => bool {
+    if !Eq::equals(a.name, b.name) { return false; }
+    if a.path.length != b.path.length { return false; }
+    for mut i := 0; i < a.path.length; ++i {
+        if !Eq::equals(a.path[i], b.path[i]) { return false; }
+    }
+    if a.generic_args.length != b.generic_args.length { return false; }
+    for mut i := 0; i < a.generic_args.length; ++i {
+        if !same_generic_arg(&a.generic_args[i], &b.generic_args[i]) { return false; }
+    }
+    true
+}
+
+same_generic_arg(a: *GenericArg, b: *GenericArg) => bool {
+    match a {
+        GenericArg::Type => {
+            match b {
+                GenericArg::Type => { same_type(a.type, b.type) },
+            } else { false }
+        },
+        GenericArg::Comp => {
+            match b {
+                GenericArg::Comp => { a.bits == b.bits && same_type(a.type, b.type) },
+            } else { false }
+        },
+    }
+}
+
+same_members(a: *[]VariantInfo, b: *[]VariantInfo) => bool {
+    if a.length != b.length { return false; }
+    for mut i := 0; i < a.length; ++i {
+        if !same_type(a[i].fields[0].type, b[i].fields[0].type) { return false; }
+    }
+    true
+}

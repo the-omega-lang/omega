@@ -15,7 +15,7 @@ exposed read_volatile<T>(location: *T) => T;
 exposed write_volatile<T>(location: *mut T, value: T) => void;
 ```
 
-These are the only functions in Omega without a body (see [`grammar.md`](grammar.md#functions)). The compiler supplies each instance's body. Recognition is by declaration identity: the module `core::volatile` and the exact name. A declaration there with one of these names must have exactly the shape above: `exposed`, no annotations, one type parameter with no bound and no default, the parameter names and types shown, and no body. Any other shape is rejected. A bodyless function anywhere else is rejected, including a generic one that is never instantiated.
+These and `core::reflection::typeinfo` (see [`reflection.md`](reflection.md)) are the only functions in Omega without a body (see [`grammar.md`](grammar.md#functions)). The compiler supplies each instance's body. Recognition is by declaration identity: the module `core::volatile` and the exact name. A declaration there with one of these names must have exactly the shape above: `exposed`, no annotations, one type parameter with no bound and no default, the parameter names and types shown, and no body. Any other shape is rejected. A bodyless function anywhere else is rejected, including a generic one that is never instantiated.
 
 Apart from where their bodies come from, they are ordinary generic functions. Name resolution, imports, aliasing, visibility, overloading, generic-argument inference, explicit generic arguments, and taking an instance as a function value all follow [`functions.md`](functions.md) and [`generics.md`](generics.md):
 

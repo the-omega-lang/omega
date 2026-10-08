@@ -5,6 +5,7 @@ mod inline_asm;
 mod item;
 mod leaf;
 mod place;
+mod reflection;
 mod vtable;
 
 use crate::catalog::Catalog;
@@ -123,6 +124,7 @@ pub(crate) struct Codegen<'ctx> {
     bytes: HashMap<String, inkwell::values::GlobalValue<'ctx>>,
     const_blobs: HashMap<String, inkwell::values::GlobalValue<'ctx>>,
     vtables: HashMap<String, inkwell::values::GlobalValue<'ctx>>,
+    reflected: HashMap<String, inkwell::values::GlobalValue<'ctx>>,
     globals: HashMap<HirId, inkwell::values::GlobalValue<'ctx>>,
 
     local_args: Vec<Vec<inkwell::values::BasicValueEnum<'ctx>>>,
@@ -162,6 +164,7 @@ impl<'ctx> Codegen<'ctx> {
             bytes: HashMap::new(),
             const_blobs: HashMap::new(),
             vtables: HashMap::new(),
+            reflected: HashMap::new(),
             globals: HashMap::new(),
             local_args: Vec::new(),
             parameter_slots: Vec::new(),

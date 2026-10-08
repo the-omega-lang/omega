@@ -725,12 +725,30 @@ impl<'r> Analyzer<'r> {
                 ))
             }
             (ResolvedType::Pointer { pointee, .. }, false) => {
-                let ConstValue::Ref(inner) = value else {
-                    unreachable!(
-                        "a comp value's own type is only ever Pointer alongside a ConstValue::Ref -- see ConstValue::Ref's doc comment"
-                    );
+                let inner = match value {
+                    ConstValue::Ref(inner) => *inner,
+                    ConstValue::Reflected(reflected) => {
+                        match crate::reflection::deref(&reflected, pointee, self.pointer_bytes()) {
+                            Ok(inner) => inner,
+                            Err(reason) => {
+                                self.error(
+                                    id,
+                                    span,
+                                    AnalysisErrorKind::CompEvalFailed {
+                                        reason: reason.into(),
+                                        failure: None,
+                                        trace: vec![],
+                                    },
+                                );
+                                return None;
+                            }
+                        }
+                    }
+                    _ => unreachable!(
+                        "a comp value's own type is only ever Pointer alongside a ConstValue::Ref or ConstValue::Reflected"
+                    ),
                 };
-                Some(node(pointee.widened(), CheckedExpr::Const(*inner)))
+                Some(node(pointee.widened(), CheckedExpr::Const(inner)))
             }
             (_, false) => Some(node(r#type.widened(), CheckedExpr::Const(value))),
         }

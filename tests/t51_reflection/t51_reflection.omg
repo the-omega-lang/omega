@@ -1,0 +1,186 @@
+# `core::reflection::typeinfo` tables, read at run time and under `comp`
+# (docs/language/reflection.md).
+import std::io::println;
+import core::cmp::Eq;
+import core::reflection::{ typeinfo, TypeInfo, FieldInfo, Visibility };
+import self::other;
+
+exposed struct Node {
+	exposed value: i32;
+	exposed next: *Node;
+}
+
+@layout(align = 4)
+struct Header {
+	exposed kind: u8;
+	secret: u16;
+	shared count: u32;
+}
+
+struct Pair<T> {
+	exposed first: T;
+	exposed second: T;
+}
+
+struct Buffer<comp N: usize, T> {
+	exposed data: [N]T;
+}
+
+struct Signed<comp N: i8> {
+	exposed unit: u8;
+}
+
+alias Either = enum u16 | *str;
+
+enum Shape(tag: u8, exposed label: *str) {
+	exposed id: u16;
+
+	Circle(3, "circle") {
+		exposed radius: u32;
+	},
+	Rect(7, "rect") {
+		exposed w: u16;
+		exposed h: u16;
+	};
+}
+
+visibility_name(visibility: Visibility) => *str {
+	match visibility {
+		Visibility::Hidden => "hidden",
+		Visibility::Shared => "shared",
+		Visibility::Exposed => "exposed",
+	}
+}
+
+struct_fields(info: *TypeInfo) => *[]FieldInfo {
+	kind := info.kind;
+	match kind {
+		TypeKind::Struct => { kind.fields },
+	} else {
+		panic$("not a struct")
+	}
+}
+
+field_offset(info: *TypeInfo, index: i32) => usize {
+	struct_fields(info)[index].offset
+}
+
+print_struct(info: *TypeInfo) => void {
+	println$(info.name, " size=", info.size, " align=", info.align);
+	fields := struct_fields(info);
+	for mut i := 0; i < fields.length; ++i {
+		field := fields[i];
+		println$("  ", field.name, " @", field.offset, " ", field.type.name, " ", visibility_name(field.visibility));
+	}
+}
+
+walk_nodes() => void {
+	node := typeinfo<Node>();
+	next := struct_fields(node)[1].type;
+	kind := next.kind;
+	match kind {
+		TypeKind::Pointer => {
+			println$("next: ", next.name, " -> ", kind.pointee.name);
+			println$("next points to Node: ", kind.pointee == node);
+			println$("Eq through the field: ", Eq::equals(*kind.pointee, *node));
+		},
+	} else {
+		println$("next is not a pointer");
+	}
+}
+
+shape_info() => *TypeInfo { typeinfo<Shape>() }
+
+walk_enum(value: *Shape) => void {
+	info := shape_info();
+	kind := info.kind;
+	match kind {
+		TypeKind::Enum => {
+			tag_field := kind.tag_field;
+			println$("tag: ", tag_field.type.name, " @", tag_field.offset);
+			println$("header: ", kind.header[0].name, " @", kind.header[0].offset);
+			println$("shared: ", kind.shared[0].name, " @", kind.shared[0].offset);
+			raw := *<*u8>(<*u8>value + tag_field.offset);
+			for mut i := 0; i < kind.variants.length; ++i {
+				variant := kind.variants[i];
+				if variant.tag == <u64>raw {
+					println$("value is ", variant.name, " (tag ", variant.tag, ")");
+				}
+			}
+
+			rect := kind.variants[1];
+			mut storage: Shape = *value;
+			bytes := <*mut u8>&mut storage;
+			for mut i: usize = 0; i < info.size; ++i {
+				*<*mut u8>(bytes + i) = *<*u8>(rect.prototype + i);
+			}
+			*<*mut u16>(bytes + kind.shared[0].offset) = 42u16;
+			*<*mut u16>(bytes + rect.fields[0].offset) = 5u16;
+			*<*mut u16>(bytes + rect.fields[1].offset) = 6u16;
+			match storage {
+				Shape::Rect => {
+					println$("rebuilt ", storage.label, " id=", storage.id, " w=", storage.w, " h=", storage.h);
+				},
+			} else {
+				println$("rebuilt the wrong variant");
+			}
+		},
+	} else {
+		println$("Shape is not an enum");
+	}
+}
+
+walk_anonymous() => void {
+	info := typeinfo<Either>();
+	kind := info.kind;
+	match kind {
+		TypeKind::AnonymousEnum => {
+			println$(info.name, " size=", info.size, " tag ", kind.tag_field.type.name, " @", kind.tag_field.offset);
+			for mut i := 0; i < kind.members.length; ++i {
+				member := kind.members[i];
+				value := member.fields[0];
+				println$("  ", member.name, " tag=", member.tag, " ", value.name, " @", value.offset);
+			}
+		},
+	} else {
+		println$("Either is not an anonymous enum");
+	}
+}
+
+comp_bits(info: *TypeInfo, index: i32) => u64 {
+	arg := info.generic_args[index];
+	match arg {
+		GenericArg::Comp => { arg.bits },
+	} else {
+		0xFFFF_u64
+	}
+}
+
+comp HEADER_SIZE := typeinfo<Header>().size;
+comp COUNT_OFFSET := field_offset(typeinfo<Header>(), 2);
+comp PAIRS_EQUAL := typeinfo<Pair<i32>>() == typeinfo<Pair<u8>>();
+comp SAME_PAIR := typeinfo<Pair<i32>>() == typeinfo<Pair<i32>>();
+comp BUFFER_LENGTH := comp_bits(typeinfo<Buffer<3, i32>>(), 0);
+comp MINUS_ONE_BITS := comp_bits(typeinfo<Signed<-1>>(), 0);
+
+main() => void {
+	print_struct(typeinfo<Header>());
+	println$("comp: size=", HEADER_SIZE, " count@", COUNT_OFFSET);
+	println$("comp: Pair<i32> == Pair<u8>: ", PAIRS_EQUAL, ", Pair<i32> == Pair<i32>: ", SAME_PAIR);
+	println$("comp: Buffer<3, i32> N bits: ", BUFFER_LENGTH);
+	println$("comp: Signed<-1> N bits: ", MINUS_ONE_BITS);
+
+	walk_nodes();
+	println$("other object, same address: ", other::node_info() == typeinfo<Node>());
+	println$("other object, Eq: ", Eq::equals(*other::node_info(), *typeinfo<Node>()));
+
+	println$("Pair<i32> == Pair<u8>: ", Eq::equals(*typeinfo<Pair<i32>>(), *typeinfo<Pair<u8>>()));
+	println$("Pair<u8> == Pair<u8>: ", Eq::equals(*typeinfo<Pair<u8>>(), *typeinfo<Pair<u8>>()));
+	println$("Buffer<3, i32> == Buffer<4, i32>: ", Eq::equals(*typeinfo<Buffer<3, i32>>(), *typeinfo<Buffer<4, i32>>()));
+	println$("*[]u8 == *[]u8: ", Eq::equals(*typeinfo<*[]u8>(), *typeinfo<*[]u8>()));
+	println$("*[]u8 == *mut []u8: ", Eq::equals(*typeinfo<*[]u8>(), *typeinfo<*mut []u8>()));
+
+	circle := Shape::Circle { id = 1u16; radius = 9u32; };
+	walk_enum(&circle);
+	walk_anonymous();
+}

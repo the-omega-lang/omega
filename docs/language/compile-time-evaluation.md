@@ -65,6 +65,7 @@ Current compile-time evaluation supports the ordinary operations needed by Omega
 - indexing and supported slicing;
 - `sizeof<Type>` and `alignof<Type>`;
 - calls to ordinary named Omega functions, including generic/overloaded/cross-module calls after normal resolution;
+- calls to compiler-implemented declarations whose bodies `comp` can perform, such as `core::reflection::typeinfo` and reads of the tables it returns (see [`reflection.md`](reflection.md#compile-time-evaluation));
 - nested `comp` evaluation;
 - addresses/references to compile-time data where the resulting value can be represented as immutable static data.
 
@@ -80,7 +81,8 @@ The following operations are not currently evaluable by `comp`:
 - dynamic dispatch through `*spec S` / `*mut spec S`;
 - indirect calls through a function-typed variable or field;
 - reading a non-`comp` global from within compile-time evaluation.
-- a `core::volatile` access (see [`volatile.md`](volatile.md)).
+- a `core::volatile` access (see [`volatile.md`](volatile.md));
+- reading through a `core::reflection` variant prototype (see [`reflection.md`](reflection.md#compile-time-evaluation)).
 
 Encountering one of these causes the `comp` evaluation to fail; it does not silently defer that portion to runtime.
 

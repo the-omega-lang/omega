@@ -94,6 +94,51 @@ Concrete current compiler/library bugs and unsupported cases. Resolved issues ar
   including across its modules, works.
   [modules-and-imports.md](../language/modules-and-imports.md)
 
+## Reflection
+
+The contract is in [reflection.md](../language/reflection.md). The existing
+[conformance-method restriction under `comp`](compiler-limitations.md#compile-time-evaluation-cannot-call-a-conformance-method)
+and [emission of generic instances used only under `comp`](compiler-limitations.md#generic-instances-reached-only-by-comp-are-still-emitted)
+also affect reflection.
+
+- **[P1] Casting a compile-time reflection pointer can crash the compiler.**
+  With `core::reflection::typeinfo` imported,
+  `comp X := *<*u8>typeinfo<i32>();` panics with
+  `internal compiler error: 'core::reflection' does not declare 'u8' as a struct`
+  and exits with status 101. Even without dereferencing, `comp P :=
+  <*u8>typeinfo<i32>();` followed by `main() => void { p := P; }` crashes
+  during codegen. `Reflected::TypeInfo` stores the described type but not the
+  table's resolved storage type; both `reflection::deref` and
+  `llvm::reflection::reflected_global` use the pointer's current pointee as
+  that storage type. A cast invalidates this assumption. Follow-up must
+  preserve table metadata across casts and diagnose unsupported compile-time
+  reads rather than panic.
+
+- **[P1] Runtime `Eq for TypeInfo` conflates distinct function and spec-object
+  types.** Declare separate `exposed struct T` types in modules `a` and `b`:
+  `typeinfo<(a::T) => void>()` and `typeinfo<(b::T) => void>()` compare unequal
+  with `==` under `comp`, but `Eq::equals(*left, *right)` at runtime returns
+  `true`. Separate `exposed spec S` declarations likewise make
+  `typeinfo<*spec a::S>()` and `typeinfo<*spec b::S>()` unequal under `comp`
+  but equal through runtime `Eq`. Their table names are respectively
+  `(T) => void` and `*spec S`, with empty paths and generic-argument lists.
+  `runtime/core/reflection.omg::same_name` therefore loses module identity
+  for these opaque kinds. Follow-up needs an identity representation that
+  distinguishes them without using display spelling as a canonical key.
+
+- **[P2] Function parameter descriptors make reflected names differ between
+  `comp` and runtime.** A struct with fields `first: (x: i32) => void` and
+  `second: (y: i32) => void` has identical function types in both fields:
+  descriptors are presentation metadata, excluded from type identity.
+  Reading each field's `type.name` under `comp` produces `(x: i32) => void`
+  and `(y: i32) => void`; runtime produces `(x: i32) => void` for both when
+  the first field's table is emitted first. `reflection::naming` preserves
+  descriptors through `Display`, while table symbols exclude them, so the
+  runtime cache merges tables with different initializers. Across compilation
+  units those initializers can also disagree under the same WeakODR symbol.
+  Follow-up must define a canonical reflected spelling consistent with table
+  identity and verify it under `comp`, at runtime, and across source files.
+
 ## Types
 
 - **Ordinary indexing does not validate the index expression type during semantic

@@ -534,6 +534,15 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
             (ConstValue::Char(l), ConstValue::Char(r)) => {
                 self.eval_char_binary_op(bin.op, l, r, span)
             }
+            // Each piece of reflected data has exactly one address.
+            (ConstValue::Reflected(l), ConstValue::Reflected(r)) => match bin.op {
+                BinaryOp::Eq => Ok(ConstValue::Bool(l == r)),
+                BinaryOp::Ne => Ok(ConstValue::Bool(l != r)),
+                _ => Err(self.err(
+                    span,
+                    CompErrorKind::Unsupported("this operator on reflected addresses"),
+                )),
+            },
             _ => Err(self.err(
                 span,
                 CompErrorKind::Unsupported("binary operator on this comp value shape"),
@@ -1152,8 +1161,12 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
                     )),
                 }
             }
-            CheckedProjection::Deref { .. } => match value {
+            CheckedProjection::Deref { r#type } => match value {
                 ConstValue::Ref(inner) => Ok(*inner),
+                ConstValue::Reflected(reflected) => {
+                    crate::reflection::deref(&reflected, r#type, self.target.pointer_bytes())
+                        .map_err(|reason| self.err(span, CompErrorKind::Unsupported(reason)))
+                }
                 _ => Err(self.err(span, CompErrorKind::UnresolvableMemory)),
             },
             CheckedProjection::SliceLength => match value {

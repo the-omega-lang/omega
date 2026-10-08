@@ -18,6 +18,7 @@ runtime/core/
   platform.omg   # allocator and console capability gaps
   primitives/    # the built-in type declarations (see below)
   range.omg      # Range<T>, RangeIterator<T>, Successor, Bounded
+  reflection.omg # typeinfo<T>() -- compiler-implemented -- and TypeInfo
   result.omg     # Result<T, E>
   volatile.omg   # read_volatile, write_volatile -- compiler-implemented
 ```
@@ -47,6 +48,8 @@ when their definitions are used.
   capability gaps. See "Atomic operations" below.
 - **`core::volatile`** owns the compiler-implemented `read_volatile` and
   `write_volatile`. See "Volatile access" below.
+- **`core::reflection`** owns the compiler-implemented `typeinfo<T>()` and the
+  `TypeInfo` tables it returns. See "Reflection" below.
 - **`core::panic`** owns `PanicInfo`, the `PanicHandler` gap, and the `panic$`
   macro; **`core::builtins`** owns the compiler-implemented `file$`, `line$`,
   and `column$` source-location macros. See "Panicking" below.
@@ -182,6 +185,38 @@ function value. A scalar location must be naturally aligned. Primitives are
 packed by default, so put `@layout(align = n)` on the register block, as above.
 A volatile access is not atomic and does not order ordinary memory. The full
 contract is in [the language specification](../language/volatile.md).
+
+## Reflection
+
+`core::reflection::typeinfo<T>()` returns a pointer to an immutable table
+describing `T`: its name and declaring path, size and alignment, and its fields
+with their offsets, or an enum's tag, header, and variants:
+
+```omega
+import core::reflection::typeinfo;
+import core::reflection::TypeInfo;
+
+print_fields(info: *TypeInfo) => void {
+    kind := info.kind;
+    match kind {
+        TypeKind::Struct => {
+            for mut i := 0; i < kind.fields.length; ++i {
+                field := kind.fields[i];
+                println$(field.name, " @", field.offset, ": ", field.type.name);
+            }
+        },
+    } else { }
+}
+
+print_fields(typeinfo<Header>());
+comp HEADER_BYTES := typeinfo<Header>().size;   # tables are readable under comp
+```
+
+A table exists only if runtime code uses it. Compare two tables with
+`core::cmp::Eq`, not by address. Each enum variant has a `prototype`: the bytes
+of a value with that variant's tag and header written in, which code can copy
+before writing the fields at their offsets. The full contract is in
+[the language specification](../language/reflection.md).
 
 ## Panicking
 

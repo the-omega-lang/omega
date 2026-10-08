@@ -252,11 +252,19 @@ impl<'r> Analyzer<'r> {
                 }
                 _ => unsupported(self, "field access on a non-union comp value"),
             },
-            // No real memory for a `comp` value to dereference through.
-            CheckedProjection::Deref { .. } => unsupported(
-                self,
-                "dereferencing a pointer inside a 'comp' binding projection isn't supported yet",
-            ),
+            CheckedProjection::Deref { r#type } => match value {
+                ConstValue::Reflected(reflected) => {
+                    match crate::reflection::deref(&reflected, r#type, self.pointer_bytes()) {
+                        Ok(value) => Some(value),
+                        Err(reason) => unsupported(self, reason),
+                    }
+                }
+                // No real memory for a `comp` value to dereference through.
+                _ => unsupported(
+                    self,
+                    "dereferencing a pointer inside a 'comp' binding projection isn't supported yet",
+                ),
+            },
             CheckedProjection::SpecObjectPtr { .. } | CheckedProjection::SpecObjectVtable => {
                 unsupported(
                     self,

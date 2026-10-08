@@ -16,6 +16,7 @@ pub mod error;
 mod exhaustiveness;
 pub mod generics;
 pub mod layout;
+pub mod reflection;
 pub mod resolved_type;
 pub mod resolver;
 pub mod runtime_checks;

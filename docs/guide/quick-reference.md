@@ -317,6 +317,18 @@ status := read_volatile(&uart.status);
 
 See [`../language/volatile.md`](../language/volatile.md).
 
+## Reflection
+
+```omega
+import core::reflection::typeinfo;
+
+info := typeinfo<Header>();          # *TypeInfo: name, path, size, align, kind
+println$(info.name, " ", info.size);
+comp BYTES := typeinfo<Header>().size;
+```
+
+Read fields through `match` on `info.kind` (`TypeKind::Struct`, `TypeKind::Enum`, ...). Compare tables with `Eq::equals(*a, *b)`, not by address. See [`../language/reflection.md`](../language/reflection.md).
+
 ## Inline assembly
 
 ```omega

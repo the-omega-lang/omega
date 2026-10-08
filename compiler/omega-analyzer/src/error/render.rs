@@ -965,10 +965,13 @@ impl AnalysisErrorKind {
                 .with_help("register the 'core' package this compilation was built against -- an invalid tag or an unexpected return is reported through 'core::panic::PanicHandler'"),
             Self::FunctionWithoutBody { .. } => d
                 .with_label(span, "expected a '{ ... }' body instead of ';'")
-                .with_help("only the compiler-implemented 'core::volatile' declarations may omit a body"),
-            Self::MalformedCompilerFunction { .. } => d
+                .with_help("only the compiler-implemented 'core::volatile' and 'core::reflection' declarations may omit a body"),
+            Self::MalformedCompilerFunction { module, .. } => d
                 .with_label(span, "does not match the compiler-implemented declaration")
-                .with_help("see 'docs/language/volatile.md' for the exact declaration"),
+                .with_help(format!(
+                    "see 'docs/language/{}.md' for the exact declaration",
+                    module.rsplit("::").next().unwrap_or(module)
+                )),
         }
     }
 }

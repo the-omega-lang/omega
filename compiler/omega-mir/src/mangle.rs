@@ -164,6 +164,22 @@ pub fn vtable_symbol(
     data_item_symbol(value_path_name(path, "vtable"))
 }
 
+/// The `core::reflection::TypeInfo` table of `described`, which must not be
+/// a refined enum. The name depends only on the type, so every compilation
+/// unit that emits the table agrees on it and the copies merge.
+pub fn typeinfo_symbol(described: &ResolvedType) -> Symbol {
+    data_item_symbol(value_path_name(owner_path(described), "typeinfo"))
+}
+
+/// The value image of `enum_type` holding variant `variant`; the same
+/// naming rule as `typeinfo_symbol`.
+pub fn variant_prototype_symbol(enum_type: &ResolvedType, variant: usize) -> Symbol {
+    data_item_symbol(value_path_name(
+        value_path_name(owner_path(enum_type), "typeinfo"),
+        &format!("prototype{variant}"),
+    ))
+}
+
 pub fn data_symbol(bytes: &[u8]) -> String {
     format!("_omgdata_{:016x}", rapidhash::v3::rapidhash_v3(bytes))
 }

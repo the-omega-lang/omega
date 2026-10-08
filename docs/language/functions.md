@@ -24,7 +24,7 @@ function = identifier, [ generic-parameters ],
            "=>", return-type, block ;
 ```
 
-A function always has a body, except the compiler-implemented `core::volatile` declarations, whose bodies the compiler supplies; see [`volatile.md`](volatile.md).
+A function always has a body, except the compiler-implemented `core::volatile` and `core::reflection` declarations, whose bodies the compiler supplies; see [`volatile.md`](volatile.md) and [`reflection.md`](reflection.md).
 
 Parameters are immutable bindings. Methods use the same syntax inside a nominal type, with one of the receiver forms defined in [`bindings-and-mutability.md`](bindings-and-mutability.md).
 

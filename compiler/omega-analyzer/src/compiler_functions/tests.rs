@@ -90,3 +90,38 @@ fn recognized_name_with_the_wrong_shape_is_malformed() {
         );
     }
 }
+
+const REFLECTION: &[&str] = &["core", "reflection"];
+
+#[test]
+fn recognizes_typeinfo() {
+    assert!(matches!(
+        classify(REFLECTION, "exposed typeinfo<T>() => *TypeInfo;"),
+        Ok(Some(CompilerFunction::TypeInfo))
+    ));
+    assert!(matches!(
+        classify(VOLATILE, "exposed typeinfo<T>() => *TypeInfo;"),
+        Err(AnalysisErrorKind::FunctionWithoutBody { .. })
+    ));
+}
+
+#[test]
+fn malformed_typeinfo_names_its_module() {
+    for source in [
+        "exposed typeinfo<T>() => *TypeInfo { }",
+        "typeinfo<T>() => *TypeInfo;",
+        "exposed typeinfo<T: Copy>() => *TypeInfo;",
+        "exposed typeinfo<T, U>() => *TypeInfo;",
+        "exposed typeinfo() => *TypeInfo;",
+        "exposed typeinfo<T>(value: T) => *TypeInfo;",
+        "exposed typeinfo<T>() => *mut TypeInfo;",
+        "exposed typeinfo<T>() => TypeInfo;",
+    ] {
+        match classify(REFLECTION, source) {
+            Err(AnalysisErrorKind::MalformedCompilerFunction { module, .. }) => {
+                assert_eq!(module, "core::reflection", "{source}")
+            }
+            other => panic!("{source}: {other:?}"),
+        }
+    }
+}

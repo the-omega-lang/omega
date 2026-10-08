@@ -316,9 +316,17 @@ The completed LLVM module is always verified before output. A verifier failure i
 
 Register-class selection is centralized in `inline_asm.rs` as the one place with target-conditional (`Arch`) codegen logic; every `Arch` Omega currently supports (`X86_64`, `X86`, `Armv7`, `Thumbv7em`, `Aarch64`, `Riscv32`, `Riscv64`, `Avr`) maps each accepted scalar/pointer leaf to a generic LLVM constraint letter. X86/X86-64 asm is always parsed as LLVM's Intel dialect; other targets use their LLVM backend's one defined dialect. Object/assembly emission failure (an integrated-assembler rejection of user-authored instructions/registers) is a `Result` propagated out of `Codegen::finish`, not a panic -- unlike the rest of codegen, invalid inline-asm text is a legitimate user error, not a compiler-bug precondition violation.
 
-### Volatile access
+### Compiler-implemented functions
 
-A bodyless `core::volatile` declaration gets its body from the analyzer, not from source. `omega_analyzer::compiler_functions` is the single classifier: the driver's signature sweep rejects every other bodyless function, and `check_function_body` builds the instance body as one `CheckedExpr::VolatileRead`/`VolatileWrite` over `*location`. MIR keeps that body as `MirExpr::VolatileRead(MirPlace)`/`VolatileWrite(MirAssignment)`. Their `MirPlace.align` is the ordinary `type_alignment` claim. The backend replaces it with `layout::volatile_alignment`, because natural scalar alignment depends on the target pointer width that MIR does not know. LLVM emission reuses the per-leaf `load_scalars_with`/`store_scalars_with` loops with every instruction marked volatile, so a zero-sized `T` emits nothing. Instances are ordinary generic instances with weak linkage.
+A bodyless `core::volatile` or `core::reflection` declaration gets its body from the analyzer, not from source. `omega_analyzer::compiler_functions` is the single classifier, keyed by each function's own module and name: the driver's signature sweep rejects every other bodyless function, and `check_function_body` builds each instance's body over its concrete types. Instances are ordinary generic instances with weak linkage.
+
+#### Volatile access
+
+`check_function_body` builds a volatile instance's body as one `CheckedExpr::VolatileRead`/`VolatileWrite` over `*location`. MIR keeps that body as `MirExpr::VolatileRead(MirPlace)`/`VolatileWrite(MirAssignment)`. Their `MirPlace.align` is the ordinary `type_alignment` claim. The backend replaces it with `layout::volatile_alignment`, because natural scalar alignment depends on the target pointer width that MIR does not know. LLVM emission reuses the per-leaf `load_scalars_with`/`store_scalars_with` loops with every instruction marked volatile, so a zero-sized `T` emits nothing.
+
+#### Reflection tables
+
+A `typeinfo<T>` instance's body is the constant `ConstValue::Reflected(Reflected::TypeInfo(T))`, which MIR carries unchanged. `llvm/reflection.rs` turns a `Reflected` address into a global on first use, modeled on vtables: one WeakODR, hidden, `constant` global per described type (refined enums normalized to their parent), in its own `.rodata.<symbol>` section except on macOS, named by `omega_mir::mangle::typeinfo_symbol` / `variant_prototype_symbol` so every unit that emits a copy agrees on the name and the linker merges them. A table's initializer is `build_const_blob` over `omega_analyzer::reflection::type_info_value`, so codegen never builds tables itself. A table's LLVM type is only known once its initializer is built, but building it can reach the same table again through a cycle, so the cache first holds a placeholder global; references made meanwhile point at it, and it is replaced with `replace_all_uses_with` once the real global exists. A variant prototype is a zero-filled `sizeof<E>` blob with the tag and header values written at their layout offsets. Nothing is emitted unless an emitted constant reaches a `Reflected` address.
 
 ### Naked functions
 
@@ -332,7 +340,7 @@ LLVM emission uses a declare/define pattern so references do not depend on sourc
 2. configures the definitions this source does own -- owner linkage, section, `naked` attributes, and global storage/initializers;
 3. defines the owned function bodies.
 
-A declaration alone creates no native relocation or link requirement; only an emitted use does, so a unit may safely declare names it never touches. Only the canonical owning unit attaches a body or initializer. Compiler-generated weak-ODR data (string/const blobs, vtables) may still be materialized in more than one object when referenced from several units; linker coalescing remains their contract and they never become additional artifacts.
+A declaration alone creates no native relocation or link requirement; only an emitted use does, so a unit may safely declare names it never touches. Only the canonical owning unit attaches a body or initializer. Compiler-generated weak-ODR data (string/const blobs, vtables, reflection tables) may still be materialized in more than one object when referenced from several units; linker coalescing remains their contract and they never become additional artifacts.
 
 Splitting the package this way creates an ordinary cross-source optimization boundary. Recovering it is not a reason to repartition native objects: future work should import non-owning bodies, summaries, or use LTO/ThinLTO while preserving one source -> one object.
 
