@@ -173,6 +173,25 @@ print_callbacks() => void {
 	println$("same table: ", fields[0].type == fields[1].type);
 }
 
+anonymous_member_name(info: *TypeInfo) => *str {
+	kind := info.kind;
+	match kind {
+		TypeKind::AnonymousEnum => { kind.members[0].name },
+	} else { "not an anonymous enum" }
+}
+
+comp FIRST_MEMBER := anonymous_member_name(typeinfo<enum (x: i32) => void | u8>);
+comp SECOND_MEMBER := anonymous_member_name(typeinfo<enum (y: i32) => void | u8>);
+
+print_callback_enums() => void {
+	first := typeinfo<enum (x: i32) => void | u8>;
+	second := typeinfo<enum (y: i32) => void | u8>;
+	other_info := other::callback_enum_info();
+	println$("anonymous-comp: ", FIRST_MEMBER, " / ", SECOND_MEMBER);
+	println$("anonymous-runtime: ", anonymous_member_name(first), " / ", anonymous_member_name(second), " / ", anonymous_member_name(other_info));
+	println$("anonymous-same-table: ", first == second, " ", first == other_info);
+}
+
 print_function(info: *TypeInfo) => void {
 	kind := info.kind;
 	match kind {
@@ -239,6 +258,7 @@ main() => void {
 	print_function(typeinfo<foreign(c) (format: *u8, ...) => i32>);
 	print_spec_object(typeinfo<*mut spec b::S>);
 	print_callbacks();
+	print_callback_enums();
 	println$("cast table is i32's: ", CAST_TABLE == <*u8>typeinfo<i32>);
 
 	circle := Shape::Circle { id = 1u16; radius = 9u32; };

@@ -1,7 +1,7 @@
 use super::*;
 use crate::checked::{
-    CheckedAssignment, CheckedIf, CheckedParam, CheckedStructLiteral, CheckedStructLiteralField,
-    CheckedWhile,
+    CheckedAssignment, CheckedCast, CheckedIf, CheckedParam, CheckedStructLiteral,
+    CheckedStructLiteralField, CheckedWhile,
 };
 use omega_hir::ModuleId;
 
@@ -80,6 +80,78 @@ fn division_by_zero_is_rejected_not_a_panic() {
     );
     let err = eval(&mut NoFunctions, &expr, Target::DEFAULT, None).unwrap_err();
     assert!(matches!(err.kind, CompErrorKind::Unsupported(_)));
+}
+
+fn reinterpret(base: CheckedExprNode, target: ResolvedType) -> CheckedExprNode {
+    node(
+        CheckedExpr::Cast(CheckedCast {
+            kind: CastKind::Reinterpret,
+            target_type: target.clone(),
+            base: Box::new(base),
+        }),
+        target,
+    )
+}
+
+fn byte_slice(item: ResolvedType) -> ResolvedType {
+    ResolvedType::Slice {
+        item: Box::new(item),
+        mutable: false,
+    }
+}
+
+#[test]
+fn byte_casts_preserve_bits_and_destination_signedness() {
+    let string = node(
+        CheckedExpr::String("é\0".to_string()),
+        ResolvedType::Str { mutable: false },
+    );
+    let signed = reinterpret(string, byte_slice(ResolvedType::I8));
+    assert_eq!(
+        eval(&mut NoFunctions, &signed, Target::DEFAULT, None).unwrap(),
+        ConstValue::Slice(vec![
+            ConstValue::Number(NumberValue::Signed(-61)),
+            ConstValue::Number(NumberValue::Signed(-87)),
+            ConstValue::Number(NumberValue::Signed(0)),
+        ])
+    );
+    let unsigned = reinterpret(signed.clone(), byte_slice(ResolvedType::U8));
+    assert_eq!(
+        eval(&mut NoFunctions, &unsigned, Target::DEFAULT, None).unwrap(),
+        ConstValue::Slice(str_bytes("é\0"))
+    );
+    let string = reinterpret(signed, ResolvedType::Str { mutable: false });
+    assert_eq!(
+        eval(&mut NoFunctions, &string, Target::DEFAULT, None).unwrap(),
+        ConstValue::Str("é\0".to_string())
+    );
+}
+
+#[test]
+fn byte_casts_to_str_preserve_non_utf8_data() {
+    let bytes = node(
+        CheckedExpr::Const(ConstValue::Slice(vec![
+            ConstValue::Number(NumberValue::Signed(-1)),
+            ConstValue::Number(NumberValue::Signed(0)),
+        ])),
+        byte_slice(ResolvedType::I8),
+    );
+    let string = reinterpret(bytes, ResolvedType::Str { mutable: false });
+    assert_eq!(
+        eval(&mut NoFunctions, &string, Target::DEFAULT, None).unwrap(),
+        ConstValue::Slice(vec![
+            ConstValue::Number(NumberValue::Unsigned(255)),
+            ConstValue::Number(NumberValue::Unsigned(0)),
+        ])
+    );
+    let signed = reinterpret(string, byte_slice(ResolvedType::I8));
+    assert_eq!(
+        eval(&mut NoFunctions, &signed, Target::DEFAULT, None).unwrap(),
+        ConstValue::Slice(vec![
+            ConstValue::Number(NumberValue::Signed(-1)),
+            ConstValue::Number(NumberValue::Signed(0)),
+        ])
+    );
 }
 
 #[test]

@@ -730,8 +730,34 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
     ) -> CompResult<ConstValue> {
         match kind {
             CastKind::Reinterpret => match (base, target_type) {
-                (ConstValue::Str(s), ResolvedType::Slice { .. }) => {
-                    Ok(ConstValue::Slice(str_bytes(&s)))
+                (ConstValue::Str(s), ResolvedType::Slice { item, .. }) => {
+                    Ok(ConstValue::Slice(cast_bytes(str_bytes(&s), item)))
+                }
+                (ConstValue::Slice(elements), ResolvedType::Slice { item, .. })
+                    if matches!(**item, ResolvedType::U8 | ResolvedType::I8) =>
+                {
+                    Ok(ConstValue::Slice(cast_bytes(elements, item)))
+                }
+                (ConstValue::Slice(elements), ResolvedType::Str { .. }) => {
+                    let bytes = cast_bytes(elements, &ResolvedType::U8)
+                        .into_iter()
+                        .map(|value| match value {
+                            ConstValue::Number(NumberValue::Unsigned(byte)) => byte as u8,
+                            _ => unreachable!("cast_bytes produced unsigned bytes"),
+                        })
+                        .collect();
+                    Ok(match String::from_utf8(bytes) {
+                        Ok(text) => ConstValue::Str(text),
+                        Err(error) => ConstValue::Slice(
+                            error
+                                .into_bytes()
+                                .into_iter()
+                                .map(|byte| {
+                                    ConstValue::Number(NumberValue::Unsigned(u64::from(byte)))
+                                })
+                                .collect(),
+                        ),
+                    })
                 }
                 (base, _) => Ok(base),
             },
@@ -1363,6 +1389,22 @@ fn compare(op: BinaryOp, ord: std::cmp::Ordering) -> bool {
 fn str_bytes(s: &str) -> Vec<ConstValue> {
     s.bytes()
         .map(|b| ConstValue::Number(NumberValue::Unsigned(u64::from(b))))
+        .collect()
+}
+
+fn cast_bytes(elements: Vec<ConstValue>, item: &ResolvedType) -> Vec<ConstValue> {
+    use crate::resolved_type::NumericKind;
+    let target = match item {
+        ResolvedType::I8 => NumericKind::Signed(8),
+        ResolvedType::U8 => NumericKind::Unsigned(8),
+        _ => unreachable!("a byte-pointer cast targets u8 or i8 elements"),
+    };
+    elements
+        .into_iter()
+        .map(|value| match value {
+            ConstValue::Number(number) => ConstValue::Number(cast_number(number, target)),
+            _ => unreachable!("a byte slice contains numeric elements"),
+        })
         .collect()
 }
 

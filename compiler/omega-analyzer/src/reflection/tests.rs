@@ -722,6 +722,30 @@ fn parameter_descriptors_do_not_change_a_name() {
 }
 
 #[test]
+fn anonymous_enum_member_names_are_descriptor_free() {
+    let anonymous = |names| ResolvedType::AnonymousEnum {
+        shape: Rc::new(ResolvedAnonymousEnum::canonicalize(vec![
+            function(names),
+            ResolvedType::U8,
+        ])),
+        variant: None,
+    };
+    let left = describe(&anonymous([Some("x"), Some("y")]));
+    let right = describe(&anonymous([Some("a"), Some("b")]));
+    assert_eq!(left, right);
+    let member_type = slice_item(&variant_field_type(
+        &field_type(&info_type(), "kind"),
+        "AnonymousEnum",
+        "members",
+    ));
+    let member = &elements(kind_field(&left, "members"))[0];
+    assert_eq!(
+        text(get(member, &member_type, "name")),
+        "foreign(c) (i32, i32, ...) => bool"
+    );
+}
+
+#[test]
 fn a_spec_object_describes_each_spec_by_declaration() {
     let spec = |n: u32, module: &str| {
         Rc::new(RefCell::new(ResolvedSpecType {

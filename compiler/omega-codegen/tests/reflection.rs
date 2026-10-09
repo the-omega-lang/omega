@@ -43,7 +43,14 @@ fn core_root() -> PathBuf {
 }
 
 fn ir_for(source: &str, target: Target) -> String {
-    let package = TestPackage::new(source);
+    ir_for_sources(&[("main.omg", source)], target)
+}
+
+fn ir_for_sources(sources: &[(&str, &str)], target: Target) -> String {
+    let package = TestPackage::new(sources[0].1);
+    for (path, source) in &sources[1..] {
+        fs::write(package.0.join(path), source).expect("write source module");
+    }
     let program = match Driver::new(
         package.0.clone(),
         None,
@@ -196,6 +203,7 @@ struct Callbacks {
     exposed first: (x: i32) => void;
     exposed second: (y: i32) => void;
 }
+
 main() => void {
     callbacks := typeinfo<Callbacks>;
 }
@@ -206,5 +214,33 @@ main() => void {
     assert!(
         !ir.contains("(x: i32)") && !ir.contains("(y: i32)"),
         "a descriptor reached a table's initializer:\n{ir}"
+    );
+}
+
+#[test]
+fn anonymous_enum_member_names_agree_across_emission_units() {
+    let ir = ir_for_sources(
+        &[
+            (
+                "main.omg",
+                "import self::other;
+main() => void {
+    local := typeinfo<enum (x: i32) => void | u8>;
+    remote := other::info();
+}",
+            ),
+            (
+                "other.omg",
+                "exposed info() => *core::reflection::TypeInfo {
+    typeinfo<enum (y: i32) => void | u8>
+}",
+            ),
+        ],
+        HOST,
+    );
+    assert!(ir.contains("(i32) => void"), "{ir}");
+    assert!(
+        !ir.contains("(x: i32)") && !ir.contains("(y: i32)"),
+        "an anonymous-enum member descriptor reached a table's initializer:\n{ir}"
     );
 }

@@ -16,6 +16,14 @@ fn ref_pointee_type(inner: &ConstValue, leaf_type: &ResolvedType) -> ResolvedTyp
     }
 }
 
+fn const_slice_item(r#type: &ResolvedType) -> &ResolvedType {
+    match r#type {
+        ResolvedType::Slice { item, .. } => item,
+        ResolvedType::Str { .. } => &ResolvedType::U8,
+        _ => unreachable!("a Slice constant is a slice or a byte-backed str"),
+    }
+}
+
 pub(super) struct ConstBlob<'ctx> {
     bytes: Vec<u8>,
     relocs: Vec<(u32, GlobalValue<'ctx>)>,
@@ -239,10 +247,7 @@ impl<'ctx> Codegen<'ctx> {
             ConstValue::Char(c) => vec![self.context.i32_type().const_int(*c as u64, false).into()],
             ConstValue::Str(s) => self.emit_bytes(s.clone()),
             ConstValue::Slice(elements) => {
-                let item = match r#type {
-                    ResolvedType::Slice { item, .. } => item,
-                    _ => unreachable!("mir body guarantees a Slice constant's own type is Slice"),
-                };
+                let item = const_slice_item(r#type);
                 let len = self
                     .context
                     .i32_type()
@@ -438,12 +443,7 @@ impl<'ctx> Codegen<'ctx> {
                     .copy_from_slice(&(s.len() as i32).to_le_bytes());
             }
             ConstValue::Slice(nested) => {
-                let item = match r#type {
-                    ResolvedType::Slice { item, .. } => item,
-                    _ => unreachable!(
-                        "mir body guarantees a nested Slice constant's own type is Slice"
-                    ),
-                };
+                let item = const_slice_item(r#type);
                 let nested_id = self.build_const_slice_data(nested, item);
                 blob.relocs.push((offset, nested_id));
                 let len_start = (offset + pointer_bytes) as usize;
@@ -578,12 +578,7 @@ impl<'ctx> Codegen<'ctx> {
                 out.extend_from_slice(s.as_bytes());
             }
             ConstValue::Slice(nested) => {
-                let item = match r#type {
-                    ResolvedType::Slice { item, .. } => item,
-                    _ => unreachable!(
-                        "mir body guarantees a nested Slice constant's own type is Slice"
-                    ),
-                };
+                let item = const_slice_item(r#type);
                 out.extend_from_slice(&(nested.len() as u32).to_le_bytes());
                 for element in nested {
                     self.hash_const_element(out, element, item);

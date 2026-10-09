@@ -94,43 +94,6 @@ Concrete current compiler/library bugs and unsupported cases. Resolved issues ar
   including across its modules, works.
   [modules-and-imports.md](../language/modules-and-imports.md)
 
-## Compile-time evaluation
-
-- **[P1] A compile-time string/slice cast round trip crashes codegen.**
-  `comp TEXT := <*str><*[]u8>"hello";` followed by
-  `main() => void { text := TEXT; }` exits with status 101 at
-  `llvm/constant.rs`'s `mir body guarantees a Slice constant's own type is Slice`
-  assertion. `comp_eval::eval_cast` converts the string into
-  `ConstValue::Slice`, but the reverse cast keeps that representation while
-  changing the expression's type to `Str`. Follow-up must preserve the
-  constant representation/type contract in both cast directions, including
-  byte sequences a Rust `String` cannot represent.
-  [strings-casts-arrays-and-slices.md](../language/strings-casts-arrays-and-slices.md#fat-pointer-casts)
-
-- **[P2] Compile-time string-to-signed-byte-slice casts lose signedness.**
-  In `first() => i32 { bytes := <*[]i8>"é"; <i32>bytes[0] }`,
-  `comp FIRST := first();` produces `195`, while a runtime call produces
-  `-61`. `comp_eval::str_bytes` always constructs unsigned numbers, even
-  when the cast's element type is `i8`, so widening and arithmetic consume
-  the wrong value. Follow-up must interpret bytes using the destination
-  element type and test bytes above `127` under `comp` and at runtime.
-  [strings-casts-arrays-and-slices.md](../language/strings-casts-arrays-and-slices.md#explicit-casts)
-
-## Reflection
-
-- **[P2] Anonymous-enum member names still depend on function parameter descriptors.**
-  For `alias A = enum (x: i32) => void | u8;` and
-  `alias B = enum (y: i32) => void | u8;`, reading the function member's
-  `VariantInfo.name` under `comp` produces `(x: i32) => void` and
-  `(y: i32) => void`, respectively. Runtime reads of both tables produce
-  whichever spelling was emitted first, because `A` and `B` share a table
-  symbol. `reflection::naming` canonicalizes `TypeInfo.name`, but the
-  anonymous-enum builder still uses `member.to_string()` for member names.
-  Separate units can consequently emit different initializers under one
-  WeakODR symbol. Follow-up must define and apply a canonical spelling to
-  member names too, with compile-time, runtime, and cross-unit coverage.
-  [reflection.md](../language/reflection.md#names)
-
 ## Types
 
 - **Ordinary indexing does not validate the index expression type during semantic

@@ -6,3 +6,7 @@ import super::Node;
 exposed node_info() => *TypeInfo {
 	typeinfo<Node>
 }
+
+exposed callback_enum_info() => *TypeInfo {
+	typeinfo<enum (other: i32) => void | u8>
+}

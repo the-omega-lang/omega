@@ -213,7 +213,7 @@ impl Builder<'_> {
                         build_struct(
                             &member_type,
                             vec![
-                                ("name", ConstValue::Str(member.to_string())),
+                                ("name", ConstValue::Str(CanonicalType(member).to_string())),
                                 (
                                     "tag",
                                     ConstValue::Number(NumberValue::Unsigned(index as u64)),

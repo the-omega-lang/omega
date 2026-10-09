@@ -1,0 +1,5 @@
+roundtrip: hello é 0
+signed: -61 -61
+unsigned: 195 195
+raw: 3 255 0 128 -1
+aggregate: 3 255 128 0

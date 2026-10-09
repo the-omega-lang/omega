@@ -1,0 +1,36 @@
+# Fat-pointer casts preserve bytes and the destination element's signedness
+# under comp and at runtime (docs/language/strings-casts-arrays-and-slices.md).
+import std::io::println;
+
+first_signed() => i32 {
+	bytes := <*[]i8>"é";
+	<i32>bytes[0]
+}
+
+first_unsigned() => u32 {
+	bytes := <*[]u8><*[]i8>"é";
+	<u32>bytes[0]
+}
+
+struct Text {
+	exposed value: *str;
+}
+
+comp ROUNDTRIP := <*str><*[]u8>"hello";
+comp UNICODE := <*str><*[]i8>"é";
+comp EMPTY := <*str><*[]u8>"";
+comp RAW := <*str>&[255u8, 0u8, 128u8];
+comp RAW_TEXT := Text { value = RAW; };
+comp RAW_LIST := &[RAW, RAW];
+comp RAW_FIRST := (<*[]i8>RAW)[0];
+comp SIGNED := first_signed();
+comp UNSIGNED := first_unsigned();
+
+main() => void {
+	println$("roundtrip: ", ROUNDTRIP, " ", UNICODE, " ", EMPTY.size);
+	println$("signed: ", SIGNED, " ", first_signed());
+	println$("unsigned: ", UNSIGNED, " ", first_unsigned());
+	println$("raw: ", RAW.size, " ", RAW[0], " ", RAW[1], " ", RAW[2], " ", RAW_FIRST);
+	text := &RAW_TEXT;
+	println$("aggregate: ", text.value.size, " ", text.value[0], " ", RAW_LIST[0][2], " ", RAW_LIST[1][1]);
+}
