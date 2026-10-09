@@ -32,16 +32,9 @@ impl ConstBlob<'_> {
     }
 }
 
-fn reflected_pointee<'a>(r#type: &'a ResolvedType) -> &'a ResolvedType {
-    match r#type {
-        ResolvedType::Pointer { pointee, .. } => pointee,
-        _ => unreachable!("a Reflected constant's own type is always ResolvedType::Pointer"),
-    }
-}
-
 fn reflected_key(reflected: &Reflected) -> String {
     omega_mir::mangle::encode(&match reflected {
-        Reflected::TypeInfo(described) => omega_mir::mangle::typeinfo_symbol(described),
+        Reflected::TypeInfo { described, .. } => omega_mir::mangle::typeinfo_symbol(described),
         Reflected::VariantPrototype { r#type, variant } => {
             omega_mir::mangle::variant_prototype_symbol(r#type, *variant)
         }
@@ -400,7 +393,7 @@ impl<'ctx> Codegen<'ctx> {
                 vec![data.as_pointer_value().into()]
             }
             ConstValue::Reflected(reflected) => {
-                let data = self.reflected_global(reflected, reflected_pointee(r#type));
+                let data = self.reflected_global(reflected);
                 vec![data.as_pointer_value().into()]
             }
         }
@@ -558,7 +551,7 @@ impl<'ctx> Codegen<'ctx> {
                 blob.relocs.push((offset, inner_id));
             }
             ConstValue::Reflected(reflected) => {
-                let data = self.reflected_global(reflected, reflected_pointee(r#type));
+                let data = self.reflected_global(reflected);
                 blob.relocs.push((offset, data));
             }
         }

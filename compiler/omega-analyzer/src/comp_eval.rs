@@ -729,17 +729,18 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
         span: Span,
     ) -> CompResult<ConstValue> {
         match kind {
-            CastKind::Reinterpret => Ok(base),
+            CastKind::Reinterpret => match (base, target_type) {
+                (ConstValue::Str(s), ResolvedType::Slice { .. }) => {
+                    Ok(ConstValue::Slice(str_bytes(&s)))
+                }
+                (base, _) => Ok(base),
+            },
             // The operand was already evaluated for its effects; `void` has no
             // comp value, so this reuses the interpreter's no-value sentinel.
             CastKind::Discard => Ok(ConstValue::Bool(false)),
             CastKind::DropLength => match base {
                 ConstValue::Str(s) => {
-                    let bytes = s
-                        .bytes()
-                        .map(|b| ConstValue::Number(NumberValue::Unsigned(b as u64)))
-                        .collect();
-                    Ok(ConstValue::Ref(Box::new(ConstValue::Array(bytes))))
+                    Ok(ConstValue::Ref(Box::new(ConstValue::Array(str_bytes(&s)))))
                 }
                 ConstValue::Slice(elements) => {
                     Ok(ConstValue::Ref(Box::new(ConstValue::Array(elements))))
@@ -1171,9 +1172,9 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
             },
             CheckedProjection::SliceLength => match value {
                 ConstValue::Slice(v) | ConstValue::Array(v) => {
-                    Ok(ConstValue::Number(NumberValue::Unsigned(v.len() as u64)))
+                    Ok(ConstValue::Number(NumberValue::Signed(v.len() as i64)))
                 }
-                ConstValue::Str(s) => Ok(ConstValue::Number(NumberValue::Unsigned(s.len() as u64))),
+                ConstValue::Str(s) => Ok(ConstValue::Number(NumberValue::Signed(s.len() as i64))),
                 _ => Err(self.err(
                     span,
                     CompErrorKind::Unsupported("length of a non-slice/str comp value"),
@@ -1357,6 +1358,12 @@ fn compare(op: BinaryOp, ord: std::cmp::Ordering) -> bool {
         BinaryOp::Ge => ord != Less,
         _ => unreachable!("compare is only ever called for a comparison operator"),
     }
+}
+
+fn str_bytes(s: &str) -> Vec<ConstValue> {
+    s.bytes()
+        .map(|b| ConstValue::Number(NumberValue::Unsigned(u64::from(b))))
+        .collect()
 }
 
 fn cast_number(n: NumberValue, target: crate::resolved_type::NumericKind) -> NumberValue {

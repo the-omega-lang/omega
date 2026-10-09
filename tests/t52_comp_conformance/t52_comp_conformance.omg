@@ -1,0 +1,29 @@
+# `comp` evaluation calls conformance methods, both a `meet` block's own
+# methods and the spec defaults it inherits
+# (docs/language/compile-time-evaluation.md).
+import std::io::println;
+import core::cmp::Eq;
+
+struct Celsius {
+	exposed degrees: i32;
+}
+
+meet Eq for Celsius {
+	equals(*self, other: Self) => bool {
+		self.degrees == other.degrees
+	}
+}
+
+comp SAME_TEXT := Eq::equals("abc", "abc");
+comp OTHER_TEXT := Eq::equals("abc", "abd");
+comp TEXT_DIFFERS := Eq::not_equals("abc", "abd");
+comp SAME_TEMPERATURE := Eq::equals(Celsius { degrees = 21; }, Celsius { degrees = 21; });
+comp TEMPERATURE_DIFFERS := Eq::not_equals(Celsius { degrees = 21; }, Celsius { degrees = 22; });
+
+main() => void {
+	println$("\"abc\" == \"abc\": ", SAME_TEXT);
+	println$("\"abc\" == \"abd\": ", OTHER_TEXT);
+	println$("\"abc\" != \"abd\": ", TEXT_DIFFERS);
+	println$("21C == 21C: ", SAME_TEMPERATURE);
+	println$("21C != 22C: ", TEMPERATURE_DIFFERS);
+}

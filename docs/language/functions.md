@@ -24,7 +24,7 @@ function = identifier, [ generic-parameters ],
            "=>", return-type, block ;
 ```
 
-A function always has a body, except the compiler-implemented `core::volatile` and `core::reflection` declarations, whose bodies the compiler supplies; see [`volatile.md`](volatile.md) and [`reflection.md`](reflection.md).
+A function always has a body, except the compiler-implemented `core::volatile` declarations, whose bodies the compiler supplies; see [`volatile.md`](volatile.md).
 
 Parameters are immutable bindings. Methods use the same syntax inside a nominal type, with one of the receiver forms defined in [`bindings-and-mutability.md`](bindings-and-mutability.md).
 
@@ -63,7 +63,7 @@ Visibility is checked on the declaration the namespace selected, exactly as befo
 
 ## Unbound member function values
 
-`Type::self::name` yields an **unbound ordinary function value**: the receiver becomes an explicit first parameter, and the declaration-only receiver form is gone from the type.
+`Type::self::name` yields an **unbound ordinary function value**: the receiver becomes an explicit first parameter, and the declaration-only receiver form is gone from the type. A receiver form is never part of a function type, so a written function type such as `(*self) => i32` is rejected.
 
 ```omega
 member : (target: *Thing) => i32 = Thing::self::same;

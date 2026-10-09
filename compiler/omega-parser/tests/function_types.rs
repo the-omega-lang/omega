@@ -1,5 +1,5 @@
 use omega_parser::SourceModule;
-use omega_parser::prelude::{AliasTarget, FunctionType, Item, ParseErrorKind, SelfMode, Type};
+use omega_parser::prelude::{AliasTarget, FunctionType, Item, ParseErrorKind, Type};
 
 fn function_type(target: &str) -> FunctionType {
     let source = format!("alias F = {target};");
@@ -53,17 +53,31 @@ fn a_pointer_typed_first_parameter_is_not_a_receiver() {
 }
 
 #[test]
-fn receivers_still_parse_in_every_spelling() {
-    for (target, mode) in [
-        ("(self, i32) => void", SelfMode::Value),
-        ("(mut self, i32) => void", SelfMode::MutValue),
-        ("(*self, i32) => void", SelfMode::Pointer),
-        ("(*mut self, i32) => void", SelfMode::MutPointer),
+fn a_receiver_is_rejected_in_every_spelling() {
+    for (target, spelling) in [
+        ("(self, i32) => void", "self"),
+        ("(mut self, i32) => void", "mut self"),
+        ("(*self) => void", "*self"),
+        ("(*mut self, i32) => void", "*mut self"),
     ] {
-        let f = function_type(target);
-        assert_eq!(f.self_mode, Some(mode));
-        assert_eq!(descriptors(&f), [None]);
+        let errors = SourceModule::parse(&format!("alias F = {target};"))
+            .expect_err("a function type has no receiver");
+        let rejected: Vec<_> = errors
+            .iter()
+            .filter_map(|error| match &error.kind {
+                ParseErrorKind::ReceiverInFunctionType { spelling } => Some(spelling.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rejected, [spelling], "{target}: {errors:?}");
     }
+}
+
+#[test]
+fn a_method_declaration_keeps_its_receiver() {
+    let module = SourceModule::parse("struct Thing { get(*self) => i32 { 0 } }")
+        .expect("a receiver belongs to a method declaration");
+    assert!(format!("{:?}", module.nodes).contains("Some(Pointer)"));
 }
 
 #[test]

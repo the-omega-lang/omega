@@ -151,6 +151,9 @@ impl Lowerer {
             Expression::Alignof(alignof) => {
                 self.node(node.span, HirExpr::Alignof(alignof.r#type.clone()))
             }
+            Expression::Typeinfo(typeinfo) => {
+                self.node(node.span, HirExpr::Typeinfo(typeinfo.r#type.clone()))
+            }
             Expression::Sizeof(sizeof) => {
                 self.node(node.span, HirExpr::Sizeof(sizeof.r#type.clone()))
             }

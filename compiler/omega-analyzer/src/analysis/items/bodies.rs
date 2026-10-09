@@ -141,8 +141,8 @@ impl<'r> Analyzer<'r> {
     }
 
     /// A bodyless declaration reaching here was already classified by the
-    /// driver's signature sweep; its body is built over the concrete
-    /// instance's types.
+    /// driver's signature sweep; the body is one volatile access through the
+    /// `location` parameter, built over the concrete instance's types.
     fn check_compiler_function_body(
         &mut self,
         f: &HirFunctionDef,
@@ -162,14 +162,39 @@ impl<'r> Analyzer<'r> {
             self.with_scope(|this| this.analyze_all(&f.params, Self::analyze_param));
         let params = params?;
 
+        let parameter = |param: &CheckedParam| CheckedPlace {
+            root: CheckedPlaceRoot::Variable {
+                decl_id: param.id,
+                storage: Storage::Parameter,
+                r#type: param.r#type.clone(),
+            },
+            projections: Vec::new(),
+            r#type: param.r#type.clone(),
+        };
+        let location = &params[0];
+        let ResolvedType::Pointer { pointee, .. } = &location.r#type else {
+            unreachable!("the classifier only accepts a pointer 'location' parameter");
+        };
+        let target = CheckedPlace {
+            projections: vec![CheckedProjection::Deref {
+                r#type: (**pointee).clone(),
+            }],
+            r#type: (**pointee).clone(),
+            ..parameter(location)
+        };
         let kind = match function {
-            CompilerFunction::ReadVolatile | CompilerFunction::WriteVolatile => {
-                Self::volatile_access(function, &params)
-            }
-            CompilerFunction::TypeInfo => {
-                let described = Type::Named(Path::from(f.generics[0].ident.clone()));
-                let described = self.resolve_type_or_error(f.id, f.span, &described, false)?;
-                CheckedExpr::Const(crate::reflection::type_info_ref(&described))
+            CompilerFunction::ReadVolatile => CheckedExpr::VolatileRead(target),
+            CompilerFunction::WriteVolatile => {
+                let value = &params[1];
+                CheckedExpr::VolatileWrite(CheckedAssignment {
+                    target,
+                    value: Box::new(CheckedExprNode {
+                        id: value.id,
+                        span: value.span,
+                        r#type: value.r#type.clone(),
+                        kind: CheckedExpr::Place(parameter(value)),
+                    }),
+                })
             }
         };
         let tail = CheckedExprNode {
@@ -201,46 +226,6 @@ impl<'r> Analyzer<'r> {
             naked: false,
             runtime_checks: None,
         })
-    }
-
-    /// One volatile access through the `location` parameter.
-    fn volatile_access(function: CompilerFunction, params: &[CheckedParam]) -> CheckedExpr {
-        let parameter = |param: &CheckedParam| CheckedPlace {
-            root: CheckedPlaceRoot::Variable {
-                decl_id: param.id,
-                storage: Storage::Parameter,
-                r#type: param.r#type.clone(),
-            },
-            projections: Vec::new(),
-            r#type: param.r#type.clone(),
-        };
-        let location = &params[0];
-        let ResolvedType::Pointer { pointee, .. } = &location.r#type else {
-            unreachable!("the classifier only accepts a pointer 'location' parameter");
-        };
-        let target = CheckedPlace {
-            projections: vec![CheckedProjection::Deref {
-                r#type: (**pointee).clone(),
-            }],
-            r#type: (**pointee).clone(),
-            ..parameter(location)
-        };
-        match function {
-            CompilerFunction::ReadVolatile => CheckedExpr::VolatileRead(target),
-            CompilerFunction::WriteVolatile => {
-                let value = &params[1];
-                CheckedExpr::VolatileWrite(CheckedAssignment {
-                    target,
-                    value: Box::new(CheckedExprNode {
-                        id: value.id,
-                        span: value.span,
-                        r#type: value.r#type.clone(),
-                        kind: CheckedExpr::Place(parameter(value)),
-                    }),
-                })
-            }
-            CompilerFunction::TypeInfo => unreachable!("not a volatile access"),
-        }
     }
 
     pub fn check_pending_spec_method(

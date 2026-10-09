@@ -9,7 +9,7 @@ pub use crate::ast::expression::{
     FunctionCallExpr, IfExpr, IncrementExpr, IndexExpr, LogicalExpr, LogicalOp,
     MacroInvocationExpr, MatchArm, MatchExpr, NegateExpr, NotExpr, NumberBase, NumberExpr, Pattern,
     PatternValue, RevealExpr, SizeofExpr, SliceExpr, StringExpr, StructLiteralExpr,
-    StructLiteralField, TryExpr,
+    StructLiteralField, TryExpr, TypeinfoExpr,
 };
 pub use crate::ast::generics::{ExprGenericArg, GenericParam, GenericParamKind, Selector};
 pub use crate::ast::identifier::{

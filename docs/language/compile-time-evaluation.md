@@ -63,9 +63,9 @@ Current compile-time evaluation supports the ordinary operations needed by Omega
 - fixed arrays and compile-time slices;
 - struct, union, marker, and enum construction and field access;
 - indexing and supported slicing;
-- `sizeof<Type>` and `alignof<Type>`;
+- `sizeof<Type>`, `alignof<Type>`, and `typeinfo<Type>` with reads of the tables it addresses (see [`reflection.md`](reflection.md#compile-time-evaluation));
 - calls to ordinary named Omega functions, including generic/overloaded/cross-module calls after normal resolution;
-- calls to compiler-implemented declarations whose bodies `comp` can perform, such as `core::reflection::typeinfo` and reads of the tables it returns (see [`reflection.md`](reflection.md#compile-time-evaluation));
+- calls to conformance methods, both a `meet` block's own and the spec defaults it inherits, as in `comp SAME := Eq::equals("a", "a");`;
 - nested `comp` evaluation;
 - addresses/references to compile-time data where the resulting value can be represented as immutable static data.
 

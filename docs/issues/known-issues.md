@@ -94,50 +94,42 @@ Concrete current compiler/library bugs and unsupported cases. Resolved issues ar
   including across its modules, works.
   [modules-and-imports.md](../language/modules-and-imports.md)
 
+## Compile-time evaluation
+
+- **[P1] A compile-time string/slice cast round trip crashes codegen.**
+  `comp TEXT := <*str><*[]u8>"hello";` followed by
+  `main() => void { text := TEXT; }` exits with status 101 at
+  `llvm/constant.rs`'s `mir body guarantees a Slice constant's own type is Slice`
+  assertion. `comp_eval::eval_cast` converts the string into
+  `ConstValue::Slice`, but the reverse cast keeps that representation while
+  changing the expression's type to `Str`. Follow-up must preserve the
+  constant representation/type contract in both cast directions, including
+  byte sequences a Rust `String` cannot represent.
+  [strings-casts-arrays-and-slices.md](../language/strings-casts-arrays-and-slices.md#fat-pointer-casts)
+
+- **[P2] Compile-time string-to-signed-byte-slice casts lose signedness.**
+  In `first() => i32 { bytes := <*[]i8>"é"; <i32>bytes[0] }`,
+  `comp FIRST := first();` produces `195`, while a runtime call produces
+  `-61`. `comp_eval::str_bytes` always constructs unsigned numbers, even
+  when the cast's element type is `i8`, so widening and arithmetic consume
+  the wrong value. Follow-up must interpret bytes using the destination
+  element type and test bytes above `127` under `comp` and at runtime.
+  [strings-casts-arrays-and-slices.md](../language/strings-casts-arrays-and-slices.md#explicit-casts)
+
 ## Reflection
 
-The contract is in [reflection.md](../language/reflection.md). The existing
-[conformance-method restriction under `comp`](compiler-limitations.md#compile-time-evaluation-cannot-call-a-conformance-method)
-and [emission of generic instances used only under `comp`](compiler-limitations.md#generic-instances-reached-only-by-comp-are-still-emitted)
-also affect reflection.
-
-- **[P1] Casting a compile-time reflection pointer can crash the compiler.**
-  With `core::reflection::typeinfo` imported,
-  `comp X := *<*u8>typeinfo<i32>();` panics with
-  `internal compiler error: 'core::reflection' does not declare 'u8' as a struct`
-  and exits with status 101. Even without dereferencing, `comp P :=
-  <*u8>typeinfo<i32>();` followed by `main() => void { p := P; }` crashes
-  during codegen. `Reflected::TypeInfo` stores the described type but not the
-  table's resolved storage type; both `reflection::deref` and
-  `llvm::reflection::reflected_global` use the pointer's current pointee as
-  that storage type. A cast invalidates this assumption. Follow-up must
-  preserve table metadata across casts and diagnose unsupported compile-time
-  reads rather than panic.
-
-- **[P1] Runtime `Eq for TypeInfo` conflates distinct function and spec-object
-  types.** Declare separate `exposed struct T` types in modules `a` and `b`:
-  `typeinfo<(a::T) => void>()` and `typeinfo<(b::T) => void>()` compare unequal
-  with `==` under `comp`, but `Eq::equals(*left, *right)` at runtime returns
-  `true`. Separate `exposed spec S` declarations likewise make
-  `typeinfo<*spec a::S>()` and `typeinfo<*spec b::S>()` unequal under `comp`
-  but equal through runtime `Eq`. Their table names are respectively
-  `(T) => void` and `*spec S`, with empty paths and generic-argument lists.
-  `runtime/core/reflection.omg::same_name` therefore loses module identity
-  for these opaque kinds. Follow-up needs an identity representation that
-  distinguishes them without using display spelling as a canonical key.
-
-- **[P2] Function parameter descriptors make reflected names differ between
-  `comp` and runtime.** A struct with fields `first: (x: i32) => void` and
-  `second: (y: i32) => void` has identical function types in both fields:
-  descriptors are presentation metadata, excluded from type identity.
-  Reading each field's `type.name` under `comp` produces `(x: i32) => void`
-  and `(y: i32) => void`; runtime produces `(x: i32) => void` for both when
-  the first field's table is emitted first. `reflection::naming` preserves
-  descriptors through `Display`, while table symbols exclude them, so the
-  runtime cache merges tables with different initializers. Across compilation
-  units those initializers can also disagree under the same WeakODR symbol.
-  Follow-up must define a canonical reflected spelling consistent with table
-  identity and verify it under `comp`, at runtime, and across source files.
+- **[P2] Anonymous-enum member names still depend on function parameter descriptors.**
+  For `alias A = enum (x: i32) => void | u8;` and
+  `alias B = enum (y: i32) => void | u8;`, reading the function member's
+  `VariantInfo.name` under `comp` produces `(x: i32) => void` and
+  `(y: i32) => void`, respectively. Runtime reads of both tables produce
+  whichever spelling was emitted first, because `A` and `B` share a table
+  symbol. `reflection::naming` canonicalizes `TypeInfo.name`, but the
+  anonymous-enum builder still uses `member.to_string()` for member names.
+  Separate units can consequently emit different initializers under one
+  WeakODR symbol. Follow-up must define and apply a canonical spelling to
+  member names too, with compile-time, runtime, and cross-unit coverage.
+  [reflection.md](../language/reflection.md#names)
 
 ## Types
 

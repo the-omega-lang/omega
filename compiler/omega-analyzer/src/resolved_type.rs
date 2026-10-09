@@ -448,18 +448,18 @@ impl Hash for ResolvedSpecApplication {
 
 impl std::fmt::Display for ResolvedSpecApplication {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.spec.borrow().name.as_ref())?;
-        if !self.spec_args.is_empty() {
-            write!(f, "<")?;
-            for (i, arg) in self.spec_args.iter().enumerate() {
-                if i > 0 {
-                    write!(f, ", ")?;
-                }
-                write!(f, "{arg}")?;
-            }
-            write!(f, ">")?;
+        self.write(f, Spelling::default())
+    }
+}
+
+impl ResolvedSpecApplication {
+    fn write(&self, f: &mut std::fmt::Formatter<'_>, spelling: Spelling) -> std::fmt::Result {
+        let spec = self.spec.borrow();
+        if spelling.qualified {
+            write_module_path(f, &spec.module_path)?;
         }
-        Ok(())
+        write!(f, "{}", spec.name.as_ref())?;
+        ResolvedType::write_generic_args(f, &self.spec_args, spelling)
     }
 }
 
@@ -486,11 +486,17 @@ impl ResolvedSpecShape {
 
 impl std::fmt::Display for ResolvedSpecShape {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.write(f, Spelling::default())
+    }
+}
+
+impl ResolvedSpecShape {
+    fn write(&self, f: &mut std::fmt::Formatter<'_>, spelling: Spelling) -> std::fmt::Result {
         for (i, member) in self.members.iter().enumerate() {
             if i > 0 {
                 write!(f, " + ")?;
             }
-            write!(f, "{member}")?;
+            member.write(f, spelling)?;
         }
         Ok(())
     }
@@ -584,12 +590,18 @@ impl ResolvedAnonymousEnum {
 
 impl std::fmt::Display for ResolvedAnonymousEnum {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.write(f, Spelling::default())
+    }
+}
+
+impl ResolvedAnonymousEnum {
+    fn write(&self, f: &mut std::fmt::Formatter<'_>, spelling: Spelling) -> std::fmt::Result {
         write!(f, "enum ")?;
         for (i, member) in self.members.iter().enumerate() {
             if i > 0 {
                 write!(f, " | ")?;
             }
-            write!(f, "{member}")?;
+            member.write(f, spelling)?;
         }
         Ok(())
     }
@@ -660,12 +672,17 @@ pub enum ConstValue {
 }
 
 /// Compiler-synthesized static data addressed by `ConstValue::Reflected`.
-/// Equality is identity of the described data, which is what makes `comp`
-/// pointer `==` on two `typeinfo` results mean "the same type".
+/// Equality is equality of addresses: each piece of reflected data has
+/// exactly one address in a compilation.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Reflected {
-    /// The `core::reflection::TypeInfo` table describing a type.
-    TypeInfo(ResolvedType),
+    /// The table describing `described`. `table` is the resolved
+    /// `core::reflection::TypeInfo` the table is stored as, carried here
+    /// because a cast can change the pointee of the pointer holding it.
+    TypeInfo {
+        described: ResolvedType,
+        table: ResolvedType,
+    },
     /// The byte image of an enum value holding one variant: its tag and
     /// header values written in, every other byte zero.
     VariantPrototype {
@@ -891,10 +908,10 @@ impl ResolvedGenericArg {
         }
     }
 
-    fn nested(&self, qualified: bool) -> String {
+    fn write(&self, f: &mut std::fmt::Formatter<'_>, spelling: Spelling) -> std::fmt::Result {
         match self {
-            Self::Type(r#type) => r#type.nested(qualified),
-            Self::Comp(value) => value.to_string(),
+            Self::Type(r#type) => r#type.write(f, spelling),
+            Self::Comp(value) => write!(f, "{value}"),
         }
     }
 }
@@ -1045,9 +1062,15 @@ fn self_mode_spelling(self_mode: SelfMode) -> &'static str {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct Spelling {
+    qualified: bool,
+    without_descriptors: bool,
+}
+
 impl std::fmt::Display for ResolvedType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.write(f, false)
+        self.write(f, Spelling::default())
     }
 }
 
@@ -1058,7 +1081,30 @@ pub struct QualifiedType<'a>(pub &'a ResolvedType);
 
 impl std::fmt::Display for QualifiedType<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.write(f, true)
+        self.0.write(
+            f,
+            Spelling {
+                qualified: true,
+                ..Spelling::default()
+            },
+        )
+    }
+}
+
+/// A rendering without function parameter descriptors at any depth. The
+/// descriptors are not part of type identity, so equal types always render
+/// the same.
+pub struct CanonicalType<'a>(pub &'a ResolvedType);
+
+impl std::fmt::Display for CanonicalType<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.write(
+            f,
+            Spelling {
+                without_descriptors: true,
+                ..Spelling::default()
+            },
+        )
     }
 }
 
@@ -1070,27 +1116,26 @@ fn write_module_path(f: &mut std::fmt::Formatter<'_>, module_path: &[Ident]) -> 
 }
 
 impl ResolvedType {
-    fn nested(&self, qualified: bool) -> String {
-        if qualified {
-            QualifiedType(self).to_string()
-        } else {
-            self.to_string()
-        }
-    }
-
     fn write_generic_args(
         f: &mut std::fmt::Formatter<'_>,
         args: &[ResolvedGenericArg],
-        qualified: bool,
+        spelling: Spelling,
     ) -> std::fmt::Result {
         if args.is_empty() {
             return Ok(());
         }
-        let rendered: Vec<String> = args.iter().map(|arg| arg.nested(qualified)).collect();
-        write!(f, "<{}>", rendered.join(", "))
+        write!(f, "<")?;
+        for (i, arg) in args.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            arg.write(f, spelling)?;
+        }
+        write!(f, ">")
     }
 
-    fn write(&self, f: &mut std::fmt::Formatter<'_>, qualified: bool) -> std::fmt::Result {
+    fn write(&self, f: &mut std::fmt::Formatter<'_>, spelling: Spelling) -> std::fmt::Result {
+        let qualified = spelling.qualified;
         match self {
             Self::Void => write!(f, "void"),
             Self::Never => write!(f, "never"),
@@ -1111,11 +1156,17 @@ impl ResolvedType {
             Self::Pointer {
                 pointee,
                 mutable: false,
-            } => write!(f, "*{}", pointee.nested(qualified)),
+            } => {
+                write!(f, "*")?;
+                pointee.write(f, spelling)
+            }
             Self::Pointer {
                 pointee,
                 mutable: true,
-            } => write!(f, "*mut {}", pointee.nested(qualified)),
+            } => {
+                write!(f, "*mut ")?;
+                pointee.write(f, spelling)
+            }
             Self::Function(fn_type) => {
                 if fn_type.calling_convention != CallingConvention::Omega {
                     write!(f, "foreign({}) ", fn_type.calling_convention)?;
@@ -1130,10 +1181,14 @@ impl ResolvedType {
                     if wrote_param {
                         write!(f, ", ")?;
                     }
-                    match &param.name {
-                        Some(name) => write!(f, "{name}: {}", param.r#type.nested(qualified))?,
-                        None => write!(f, "{}", param.r#type.nested(qualified))?,
+                    if let Some(name) = param
+                        .name
+                        .as_ref()
+                        .filter(|_| !spelling.without_descriptors)
+                    {
+                        write!(f, "{name}: ")?;
                     }
+                    param.r#type.write(f, spelling)?;
                     wrote_param = true;
                 }
                 if fn_type.is_variadic {
@@ -1142,19 +1197,35 @@ impl ResolvedType {
                     }
                     write!(f, "...")?;
                 }
-                write!(f, ") => {}", fn_type.return_type.nested(qualified))
+                write!(f, ") => ")?;
+                fn_type.return_type.write(f, spelling)
             }
-            Self::Array(inner, false) => write!(f, "*[?]{}", inner.nested(qualified)),
-            Self::Array(inner, true) => write!(f, "*mut [?]{}", inner.nested(qualified)),
-            Self::SizedArray(inner, size) => write!(f, "[{size}]{}", inner.nested(qualified)),
+            Self::Array(inner, false) => {
+                write!(f, "*[?]")?;
+                inner.write(f, spelling)
+            }
+            Self::Array(inner, true) => {
+                write!(f, "*mut [?]")?;
+                inner.write(f, spelling)
+            }
+            Self::SizedArray(inner, size) => {
+                write!(f, "[{size}]")?;
+                inner.write(f, spelling)
+            }
             Self::Slice {
                 item,
                 mutable: false,
-            } => write!(f, "*[]{}", item.nested(qualified)),
+            } => {
+                write!(f, "*[]")?;
+                item.write(f, spelling)
+            }
             Self::Slice {
                 item,
                 mutable: true,
-            } => write!(f, "*mut []{}", item.nested(qualified)),
+            } => {
+                write!(f, "*mut []")?;
+                item.write(f, spelling)
+            }
             Self::Str { mutable: false } => write!(f, "*str"),
             Self::Str { mutable: true } => write!(f, "*mut str"),
             Self::Struct(cell) => {
@@ -1163,7 +1234,7 @@ impl ResolvedType {
                     write_module_path(f, &s.module_path)?;
                 }
                 write!(f, "{}", s.name.as_ref())?;
-                Self::write_generic_args(f, &s.generic_args, qualified)
+                Self::write_generic_args(f, &s.generic_args, spelling)
             }
             Self::Union(cell) => {
                 let u = cell.borrow();
@@ -1171,7 +1242,7 @@ impl ResolvedType {
                     write_module_path(f, &u.module_path)?;
                 }
                 write!(f, "{}", u.name.as_ref())?;
-                Self::write_generic_args(f, &u.generic_args, qualified)
+                Self::write_generic_args(f, &u.generic_args, spelling)
             }
             Self::Enum { cell, variant } => {
                 let e = cell.borrow();
@@ -1179,7 +1250,7 @@ impl ResolvedType {
                     write_module_path(f, &e.module_path)?;
                 }
                 write!(f, "{}", e.name.as_ref())?;
-                Self::write_generic_args(f, &e.generic_args, qualified)?;
+                Self::write_generic_args(f, &e.generic_args, spelling)?;
                 if let Some(index) = variant {
                     write!(f, "::{}", e.variants[*index].name.as_ref())?;
                 }
@@ -1191,14 +1262,20 @@ impl ResolvedType {
                     write_module_path(f, &sp.module_path)?;
                 }
                 write!(f, "{}", sp.name.as_ref())?;
-                Self::write_generic_args(f, &sp.generic_args, qualified)
+                Self::write_generic_args(f, &sp.generic_args, spelling)
             }
             Self::SpecObject { shape, mutable } => {
-                write!(f, "*{}spec {shape}", if *mutable { "mut " } else { "" })
+                write!(f, "*{}spec ", if *mutable { "mut " } else { "" })?;
+                shape.write(f, spelling)
             }
             Self::AnonymousEnum { shape, variant } => match variant {
-                Some(index) => write!(f, "{} ({})", shape.members()[*index], shape),
-                None => write!(f, "{shape}"),
+                Some(index) => {
+                    shape.members()[*index].write(f, spelling)?;
+                    write!(f, " (")?;
+                    shape.write(f, spelling)?;
+                    write!(f, ")")
+                }
+                None => shape.write(f, spelling),
             },
         }
     }

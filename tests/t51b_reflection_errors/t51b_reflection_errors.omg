@@ -1,6 +1,6 @@
-# A variant prototype is a byte image, and `comp` evaluation has no
-# byte-level reinterpretation to read one with (docs/language/reflection.md).
-import core::reflection::typeinfo;
+# Reflection data `comp` evaluation cannot read (docs/language/reflection.md).
+# A variant prototype is a byte image, and `comp` has no byte-level
+# reinterpretation to read one with.
 
 enum Light {
 	Off,
@@ -8,7 +8,7 @@ enum Light {
 }
 
 first_prototype_byte() => u8 {
-	info := typeinfo<Light>();
+	info := typeinfo<Light>;
 	kind := info.kind;
 	match kind {
 		TypeKind::Enum => { *kind.variants[1].prototype },
@@ -22,3 +22,8 @@ comp ON_BYTE := first_prototype_byte();
 main() => void {
 	<void>ON_BYTE;
 }
+
+# The table is only readable through a pointer to its own type.
+comp RETYPED := *<*u8>typeinfo<i32>;
+
+use_retyped() => u8 { RETYPED }

@@ -64,13 +64,9 @@ Implementation caveats migrated out of architecture chapters. These are non-norm
 
 A single `comp` evaluation currently has a shared fuel budget of **1,000,000** steps across loop progress and nested calls. Exhaustion is diagnosed as runaway compile-time evaluation. This is an implementation safety limit, not a normative promise that programs below or above a particular step count must be accepted by every Omega implementation.
 
-## Compile-time evaluation cannot call a conformance method
-
-A `comp` evaluation that reaches a `meet` conformance method fails with "cannot use '…::__conform_N' because of its own error", even for a body that runs fine at run time (`comp X := Eq::equals("a", "a");`). The evaluator fetches bodies through `ModuleResolver::resolve_function_body`, which the driver answers from item bodies; conformance bodies are checked through the separate conformance pipeline and are not reachable from that query. Inherent methods and free functions work. One consequence: `Eq for core::reflection::TypeInfo` is run-time only, so `comp` code compares two `typeinfo` results with pointer `==` (see [`reflection.md`](../language/reflection.md#compile-time-evaluation)).
-
 ## Generic instances reached only by `comp` are still emitted
 
-Every generic instance the analysis checks is lowered and emitted, including one that only a `comp` evaluation called. Such an instance is a weak definition in its own section, so a `--gc-sections` link drops it along with anything only it references, but the object file still contains it. For `core::reflection` this means a `comp`-only `typeinfo<T>()` leaves its instance and tables in the object, though not in the linked program. Fixing it means tracking whether an instance has a run-time use before emission.
+Every generic instance the analysis checks is lowered and emitted, including one that only a `comp` evaluation called. Such an instance is a weak definition in its own section, so a `--gc-sections` link drops it along with anything only it references, but the object file still contains it. Fixing it means tracking whether an instance has a run-time use before emission.
 
 ## AVR object emission needs an optimized build
 

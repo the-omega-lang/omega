@@ -7,8 +7,6 @@
 
 import root::cmp::Eq;
 
-exposed typeinfo<T>() => *TypeInfo;
-
 exposed struct TypeInfo {
     exposed name: *str;
     exposed path: *[]*str;
@@ -43,6 +41,18 @@ exposed enum Primitive {
     F32, F64;
 }
 
+exposed enum CallingConvention {
+    Omega,
+    C,
+    SysV64;
+}
+
+exposed struct SpecInfo {
+    exposed name: *str;
+    exposed path: *[]*str;
+    exposed generic_args: *[]GenericArg;
+}
+
 exposed struct VariantInfo {
     exposed name: *str;
     exposed tag: u64;
@@ -67,8 +77,13 @@ exposed enum TypeKind {
         exposed variants: *[]VariantInfo;
     },
     AnonymousEnum { exposed tag_field: FieldInfo; exposed members: *[]VariantInfo; },
-    Function,
-    SpecObject;
+    Function {
+        exposed params: *[]*TypeInfo;
+        exposed ret: *TypeInfo;
+        exposed variadic: bool;
+        exposed convention: CallingConvention;
+    },
+    SpecObject { exposed specs: *[]SpecInfo; exposed mutable: bool; };
 }
 
 # Identity is structural: a named type is its declaration path, name and
@@ -114,10 +129,25 @@ meet Eq for TypeInfo {
                     TypeKind::AnonymousEnum => { same_members(a.members, b.members) },
                 } else { false }
             },
-            TypeKind::Function => { same_name(self, &other) },
-            TypeKind::SpecObject => { same_name(self, &other) },
+            TypeKind::Function => {
+                match b {
+                    TypeKind::Function => {
+                        a.variadic == b.variadic
+                            && a.convention.tag == b.convention.tag
+                            && same_type(a.ret, b.ret)
+                            && same_types(a.params, b.params)
+                    },
+                } else { false }
+            },
+            TypeKind::SpecObject => {
+                match b {
+                    TypeKind::SpecObject => { a.mutable == b.mutable && same_specs(a.specs, b.specs) },
+                } else { false }
+            },
         } else {
-            same_name(self, &other)
+            Eq::equals(self.name, other.name)
+                && same_path(self.path, other.path)
+                && same_generic_args(self.generic_args, other.generic_args)
         }
     }
 }
@@ -127,16 +157,26 @@ same_type(a: *TypeInfo, b: *TypeInfo) => bool {
     Eq::equals(*a, *b)
 }
 
-# Named types, and the opaque kinds whose spelling is all v1 records.
-same_name(a: *TypeInfo, b: *TypeInfo) => bool {
-    if !Eq::equals(a.name, b.name) { return false; }
-    if a.path.length != b.path.length { return false; }
-    for mut i := 0; i < a.path.length; ++i {
-        if !Eq::equals(a.path[i], b.path[i]) { return false; }
+same_types(a: *[]*TypeInfo, b: *[]*TypeInfo) => bool {
+    if a.length != b.length { return false; }
+    for mut i := 0; i < a.length; ++i {
+        if !same_type(a[i], b[i]) { return false; }
     }
-    if a.generic_args.length != b.generic_args.length { return false; }
-    for mut i := 0; i < a.generic_args.length; ++i {
-        if !same_generic_arg(&a.generic_args[i], &b.generic_args[i]) { return false; }
+    true
+}
+
+same_path(a: *[]*str, b: *[]*str) => bool {
+    if a.length != b.length { return false; }
+    for mut i := 0; i < a.length; ++i {
+        if !Eq::equals(a[i], b[i]) { return false; }
+    }
+    true
+}
+
+same_generic_args(a: *[]GenericArg, b: *[]GenericArg) => bool {
+    if a.length != b.length { return false; }
+    for mut i := 0; i < a.length; ++i {
+        if !same_generic_arg(&a[i], &b[i]) { return false; }
     }
     true
 }
@@ -154,6 +194,18 @@ same_generic_arg(a: *GenericArg, b: *GenericArg) => bool {
             } else { false }
         },
     }
+}
+
+same_specs(a: *[]SpecInfo, b: *[]SpecInfo) => bool {
+    if a.length != b.length { return false; }
+    for mut i := 0; i < a.length; ++i {
+        if !Eq::equals(a[i].name, b[i].name)
+            || !same_path(a[i].path, b[i].path)
+            || !same_generic_args(a[i].generic_args, b[i].generic_args) {
+            return false;
+        }
+    }
+    true
 }
 
 same_members(a: *[]VariantInfo, b: *[]VariantInfo) => bool {

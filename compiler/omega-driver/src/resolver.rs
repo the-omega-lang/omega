@@ -1282,7 +1282,15 @@ impl ModuleResolver for Driver {
         &mut self,
         decl_id: HirId,
     ) -> Result<Option<CheckedFunctionDef>, ResolveError> {
-        let Some(key) = self.items.decl_id_owner.get(&decl_id).cloned() else {
+        // A conformance method is not an item: its owner key is never
+        // resolved, and a spec default's id has no owner at all.
+        let key = self.items.decl_id_owner.get(&decl_id).cloned();
+        if key.as_ref().is_none_or(|key| !self.items.is_resolved(key))
+            && let Some(body) = self.conformance_method_query(decl_id)
+        {
+            return body.map(Some);
+        }
+        let Some(key) = key else {
             return Ok(None);
         };
         let Some(body) = self.ensure_item_body(&key) else {

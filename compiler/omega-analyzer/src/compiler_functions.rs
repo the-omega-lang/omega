@@ -1,6 +1,5 @@
 //! Declarations whose bodies the compiler supplies. The rules live in
-//! `docs/language/volatile.md` and `docs/language/reflection.md`; this module
-//! is their single owner.
+//! `docs/language/volatile.md`; this module is their single owner.
 
 use crate::error::AnalysisErrorKind;
 use omega_hir::HirFunctionDef;
@@ -10,31 +9,20 @@ use omega_parser::prelude::{GenericParamKind, Ident, Path, Type, Visibility};
 pub enum CompilerFunction {
     ReadVolatile,
     WriteVolatile,
-    TypeInfo,
 }
 
 impl CompilerFunction {
-    const ALL: [Self; 3] = [Self::ReadVolatile, Self::WriteVolatile, Self::TypeInfo];
-
-    pub fn module(self) -> [&'static str; 2] {
-        match self {
-            Self::ReadVolatile | Self::WriteVolatile => ["core", "volatile"],
-            Self::TypeInfo => ["core", "reflection"],
-        }
-    }
-
-    fn name(self) -> &'static str {
-        match self {
-            Self::ReadVolatile => "read_volatile",
-            Self::WriteVolatile => "write_volatile",
-            Self::TypeInfo => "typeinfo",
-        }
-    }
+    const MODULE: [&'static str; 2] = ["core", "volatile"];
 
     fn from_path(module_path: &[Ident], name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|function| {
-            function.name() == name && module_path.iter().map(Ident::as_ref).eq(function.module())
-        })
+        if !module_path.iter().map(Ident::as_ref).eq(Self::MODULE) {
+            return None;
+        }
+        match name {
+            "read_volatile" => Some(Self::ReadVolatile),
+            "write_volatile" => Some(Self::WriteVolatile),
+            _ => None,
+        }
     }
 
     fn matches_declaration(self, f: &HirFunctionDef) -> bool {
@@ -64,10 +52,6 @@ impl CompilerFunction {
                 vec![("location", pointer(true)), ("value", t.clone())],
                 named("void"),
             ),
-            Self::TypeInfo => (
-                Vec::new(),
-                Type::Pointer(Box::new(named("TypeInfo")), false),
-            ),
         };
         f.return_type == expected_return
             && f.params.len() == expected_params.len()
@@ -87,8 +71,7 @@ pub fn compiler_function(
 ) -> Result<Option<CompilerFunction>, AnalysisErrorKind> {
     match CompilerFunction::from_path(module_path, f.name.as_ref()) {
         Some(function) if function.matches_declaration(f) => Ok(Some(function)),
-        Some(function) => Err(AnalysisErrorKind::MalformedCompilerFunction {
-            module: function.module().join("::"),
+        Some(_) => Err(AnalysisErrorKind::MalformedCompilerFunction {
             name: f.name.clone(),
         }),
         None if f.body.is_none() => Err(AnalysisErrorKind::FunctionWithoutBody {

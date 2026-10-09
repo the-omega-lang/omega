@@ -532,6 +532,7 @@ pub enum HirExpr {
     Cast(HirCast),
     Sizeof(Type),
     Alignof(Type),
+    Typeinfo(Type),
     Try(HirTry),
 }
 

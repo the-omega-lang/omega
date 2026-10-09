@@ -1,4 +1,3 @@
-use crate::ast::self_mode::SelfMode;
 use crate::ast::r#type::{
     ArrayLength, CompLiteral, FunctionType, FunctionTypeParam, GenericArg, RawConvention, Type,
 };
@@ -150,10 +149,9 @@ pub(crate) fn parse_generic_arg(p: &mut Parser) -> Option<GenericArg> {
 
 fn parse_function_type(p: &mut Parser) -> Option<Type> {
     p.advance(); // '('
-    let self_mode = parse_function_type_receiver(p);
+    let mut needs_separator = reject_function_type_receiver(p);
     let mut params = Vec::new();
     let mut is_variadic = false;
-    let mut needs_separator = self_mode.is_some();
     while !p.check(&TokenKind::RParen) {
         if needs_separator && !p.eat(&TokenKind::Comma) {
             break;
@@ -172,31 +170,38 @@ fn parse_function_type(p: &mut Parser) -> Option<Type> {
         params,
         return_type: Box::new(return_type),
         is_variadic,
-        self_mode,
+        self_mode: None,
         convention: None,
     }))
 }
 
-/// A receiver is recognized only in its exact spellings, so a leading `*`
-/// still begins an ordinary pointer-typed parameter such as `*Thing`.
-fn parse_function_type_receiver(p: &mut Parser) -> Option<SelfMode> {
+/// Reports and skips a receiver written where a function type's parameters
+/// begin, returning whether one was there. Only the exact receiver
+/// spellings match, so a leading `*` still begins an ordinary pointer-typed
+/// parameter such as `*Thing`.
+fn reject_function_type_receiver(p: &mut Parser) -> bool {
     use contextual::{MUT, SELF};
 
     let by_pointer = p.check(&TokenKind::Star);
     let head = usize::from(by_pointer);
     let mutable = p.at_contextual_at(head, MUT) && p.at_contextual_at(head + 1, SELF);
     if !mutable && !p.at_contextual_at(head, SELF) {
-        return None;
+        return false;
     }
+    let start = p.peek_span();
     for _ in 0..head + usize::from(mutable) + 1 {
         p.advance();
     }
-    Some(match (by_pointer, mutable) {
-        (false, false) => SelfMode::Value,
-        (false, true) => SelfMode::MutValue,
-        (true, false) => SelfMode::Pointer,
-        (true, true) => SelfMode::MutPointer,
-    })
+    let spelling = format!(
+        "{}{}self",
+        if by_pointer { "*" } else { "" },
+        if mutable { "mut " } else { "" }
+    );
+    p.error_at(
+        start.to(p.last_span()),
+        ParseErrorKind::ReceiverInFunctionType { spelling },
+    );
+    true
 }
 
 /// `name : type` is the described form; anything else is a bare type. The

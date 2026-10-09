@@ -9,25 +9,43 @@
 use crate::checked::NumberValue;
 use crate::layout::{self, EnumView};
 use crate::resolved_type::{
-    CompScalar, ConstValue, Reflected, ResolvedField, ResolvedGenericArg, ResolvedType,
+    CallingConvention, CanonicalType, CompScalar, ConstValue, Reflected, ResolvedField,
+    ResolvedGenericArg, ResolvedSpecApplication, ResolvedType,
 };
 use omega_parser::prelude::{Ident, Visibility};
 
-/// The address of `described`'s table. Refinement never changes storage, so
-/// a refined enum is described by its parent type.
-pub fn type_info_ref(described: &ResolvedType) -> ConstValue {
-    ConstValue::Reflected(Reflected::TypeInfo(described.widened()))
+/// The absolute path of the table type `typeinfo<T>` addresses.
+pub const TYPE_INFO_PATH: [&str; 3] = ["core", "reflection", "TypeInfo"];
+
+pub fn type_info_path() -> Vec<Ident> {
+    TYPE_INFO_PATH
+        .map(|segment| Ident(segment.to_string()))
+        .to_vec()
 }
 
-/// What a `comp` dereference of a `Reflected` address reads, given the
-/// pointer's declared pointee type.
+/// The address of `described`'s table, stored as `table`. Refinement never
+/// changes storage, so a refined enum is described by its parent type.
+pub fn type_info_ref(described: &ResolvedType, table: &ResolvedType) -> ConstValue {
+    ConstValue::Reflected(Reflected::TypeInfo {
+        described: described.widened(),
+        table: table.clone(),
+    })
+}
+
+/// What a `comp` dereference of a `Reflected` address reads through a
+/// pointer to `pointee`.
 pub fn deref(
     reflected: &Reflected,
     pointee: &ResolvedType,
     pointer_bytes: u32,
 ) -> Result<ConstValue, &'static str> {
     match reflected {
-        Reflected::TypeInfo(described) => Ok(type_info_value(described, pointee, pointer_bytes)),
+        Reflected::TypeInfo { described, table } if pointee.widened() == *table => {
+            Ok(type_info_value(described, table, pointer_bytes))
+        }
+        Reflected::TypeInfo { .. } => {
+            Err("reading reflection data through a pointer of another type")
+        }
         Reflected::VariantPrototype { .. } => Err("reading a variant prototype"),
     }
 }
@@ -59,6 +77,10 @@ struct Naming {
 }
 
 impl Builder<'_> {
+    fn type_ref(&self, described: &ResolvedType) -> ConstValue {
+        type_info_ref(described, self.info_type)
+    }
+
     fn type_info(&self, described: &ResolvedType) -> ConstValue {
         let naming = naming(described);
         let generic_arg_type = slice_item(&field_type(self.info_type, "generic_args"));
@@ -73,16 +95,7 @@ impl Builder<'_> {
             self.info_type,
             vec![
                 ("name", ConstValue::Str(naming.name)),
-                (
-                    "path",
-                    ConstValue::Slice(
-                        naming
-                            .path
-                            .iter()
-                            .map(|segment| ConstValue::Str(segment.as_ref().to_string()))
-                            .collect(),
-                    ),
-                ),
+                ("path", path_value(&naming.path)),
                 ("generic_args", ConstValue::Slice(generic_args)),
                 ("size", usize_value(u64::from(size))),
                 ("align", usize_value(u64::from(align))),
@@ -94,13 +107,13 @@ impl Builder<'_> {
     fn generic_arg(&self, arg_type: &ResolvedType, arg: &ResolvedGenericArg) -> ConstValue {
         match arg {
             ResolvedGenericArg::Type(r#type) => {
-                build_variant(arg_type, "Type", vec![("type", type_info_ref(r#type))])
+                build_variant(arg_type, "Type", vec![("type", self.type_ref(r#type))])
             }
             ResolvedGenericArg::Comp(value) => build_variant(
                 arg_type,
                 "Comp",
                 vec![
-                    ("type", type_info_ref(&value.resolved_type())),
+                    ("type", self.type_ref(&value.resolved_type())),
                     (
                         "bits",
                         ConstValue::Number(NumberValue::Unsigned(self.comp_bits(value))),
@@ -131,28 +144,28 @@ impl Builder<'_> {
             ResolvedType::Pointer { pointee, mutable } => variant(
                 "Pointer",
                 vec![
-                    ("pointee", type_info_ref(pointee)),
+                    ("pointee", self.type_ref(pointee)),
                     ("mutable", ConstValue::Bool(*mutable)),
                 ],
             ),
             ResolvedType::Array(element, mutable) => variant(
                 "UnknownSizeArray",
                 vec![
-                    ("element", type_info_ref(element)),
+                    ("element", self.type_ref(element)),
                     ("mutable", ConstValue::Bool(*mutable)),
                 ],
             ),
             ResolvedType::SizedArray(element, length) => variant(
                 "Array",
                 vec![
-                    ("element", type_info_ref(element)),
+                    ("element", self.type_ref(element)),
                     ("length", usize_value(u64::from(*length))),
                 ],
             ),
             ResolvedType::Slice { item, mutable } => variant(
                 "Slice",
                 vec![
-                    ("element", type_info_ref(item)),
+                    ("element", self.type_ref(item)),
                     ("mutable", ConstValue::Bool(*mutable)),
                 ],
             ),
@@ -170,7 +183,7 @@ impl Builder<'_> {
                     .fields
                     .iter()
                     .zip(offsets)
-                    .map(|(field, offset)| field_info_of(&info, field, offset))
+                    .map(|(field, offset)| self.field_info_of(&info, field, offset))
                     .collect();
                 variant("Struct", vec![("fields", ConstValue::Slice(fields))])
             }
@@ -180,7 +193,7 @@ impl Builder<'_> {
                     .borrow()
                     .fields
                     .iter()
-                    .map(|field| field_info_of(&info, field, 0))
+                    .map(|field| self.field_info_of(&info, field, 0))
                     .collect();
                 variant("Union", vec![("fields", ConstValue::Slice(fields))])
             }
@@ -208,7 +221,7 @@ impl Builder<'_> {
                                 ("prototype", prototype_ref(described, index)),
                                 (
                                     "fields",
-                                    ConstValue::Slice(vec![field_info(
+                                    ConstValue::Slice(vec![self.field_info(
                                         &body_info,
                                         "value",
                                         offset,
@@ -228,8 +241,49 @@ impl Builder<'_> {
                     ],
                 )
             }
-            ResolvedType::Function(_) => variant("Function", vec![]),
-            ResolvedType::SpecObject { .. } => variant("SpecObject", vec![]),
+            ResolvedType::Function(function) if function.self_mode.is_some() => {
+                unreachable!("a receiver belongs to a method declaration, never to a value type")
+            }
+            ResolvedType::Function(function) => {
+                let convention_type = variant_field_type(&kind_type, "Function", "convention");
+                let convention = match function.calling_convention {
+                    CallingConvention::Omega => "Omega",
+                    CallingConvention::C => "C",
+                    CallingConvention::SysV64 => "SysV64",
+                };
+                variant(
+                    "Function",
+                    vec![
+                        (
+                            "params",
+                            ConstValue::Slice(
+                                function.param_types().map(|t| self.type_ref(t)).collect(),
+                            ),
+                        ),
+                        ("ret", self.type_ref(&function.return_type)),
+                        ("variadic", ConstValue::Bool(function.is_variadic)),
+                        (
+                            "convention",
+                            build_variant(&convention_type, convention, vec![]),
+                        ),
+                    ],
+                )
+            }
+            ResolvedType::SpecObject { shape, mutable } => {
+                let spec_info = field_list("SpecObject", "specs");
+                let specs = shape
+                    .members
+                    .iter()
+                    .map(|member| self.spec_info(&spec_info, member))
+                    .collect();
+                variant(
+                    "SpecObject",
+                    vec![
+                        ("specs", ConstValue::Slice(specs)),
+                        ("mutable", ConstValue::Bool(*mutable)),
+                    ],
+                )
+            }
             ResolvedType::Spec(_) => unreachable!("a spec definition is never itself a value type"),
             primitive => {
                 let primitive_type = variant_field_type(&kind_type, "Primitive", "primitive");
@@ -260,7 +314,7 @@ impl Builder<'_> {
             .enumerate()
             .map(|(index, field)| {
                 let offset = layout::enum_header_offset(&view, index, self.pointer_bytes);
-                field_info_of(&info, field, offset)
+                self.field_info_of(&info, field, offset)
             })
             .collect();
         let shared = enum_type
@@ -269,7 +323,7 @@ impl Builder<'_> {
             .enumerate()
             .map(|(index, field)| {
                 let offset = layout::enum_dynamic_field_offset(&view, index, self.pointer_bytes);
-                field_info_of(&info, field, offset)
+                self.field_info_of(&info, field, offset)
             })
             .collect();
         let tag_bits = layout::total_bytes(&enum_type.tag_type, self.pointer_bytes) * 8;
@@ -289,7 +343,7 @@ impl Builder<'_> {
                             index,
                             self.pointer_bytes,
                         );
-                        field_info_of(&info, field, offset)
+                        self.field_info_of(&info, field, offset)
                     })
                     .collect();
                 build_struct(
@@ -321,9 +375,69 @@ impl Builder<'_> {
         )
     }
 
+    fn spec_info(&self, info: &ResolvedType, member: &ResolvedSpecApplication) -> ConstValue {
+        let spec = member.spec.borrow();
+        let generic_arg_type = slice_item(&field_type(info, "generic_args"));
+        build_struct(
+            info,
+            vec![
+                ("name", ConstValue::Str(spec.name.as_ref().to_string())),
+                ("path", path_value(&spec.module_path)),
+                (
+                    "generic_args",
+                    ConstValue::Slice(
+                        member
+                            .spec_args
+                            .iter()
+                            .map(|arg| self.generic_arg(&generic_arg_type, arg))
+                            .collect(),
+                    ),
+                ),
+            ],
+        )
+    }
+
+    fn field_info_of(&self, info: &ResolvedType, field: &ResolvedField, offset: u32) -> ConstValue {
+        self.field_info(
+            info,
+            field.name.as_ref(),
+            offset,
+            &field.r#type,
+            field.visibility,
+        )
+    }
+
+    fn field_info(
+        &self,
+        info: &ResolvedType,
+        name: &str,
+        offset: u32,
+        r#type: &ResolvedType,
+        visibility: Visibility,
+    ) -> ConstValue {
+        let visibility_type = field_type(info, "visibility");
+        let visibility = match visibility {
+            Visibility::Hidden => "Hidden",
+            Visibility::Shared => "Shared",
+            Visibility::Exposed => "Exposed",
+        };
+        build_struct(
+            info,
+            vec![
+                ("name", ConstValue::Str(name.to_string())),
+                ("offset", usize_value(u64::from(offset))),
+                ("type", self.type_ref(r#type)),
+                (
+                    "visibility",
+                    build_variant(&visibility_type, visibility, vec![]),
+                ),
+            ],
+        )
+    }
+
     fn tag_field(&self, info: &ResolvedType, view: &EnumView) -> ConstValue {
         let offset = layout::enum_prefix_layout(view, self.pointer_bytes).byte_offsets[0];
-        field_info(info, "tag", offset, &view.tag_type, Visibility::Exposed)
+        self.field_info(info, "tag", offset, &view.tag_type, Visibility::Exposed)
     }
 }
 
@@ -347,7 +461,7 @@ fn naming(described: &ResolvedType) -> Naming {
             named(&e.name, &e.module_path, &e.generic_args)
         }
         unnamed => Naming {
-            name: unnamed.to_string(),
+            name: CanonicalType(unnamed).to_string(),
             path: Vec::new(),
             generic_args: Vec::new(),
         },
@@ -383,40 +497,11 @@ fn prototype_ref(described: &ResolvedType, variant: usize) -> ConstValue {
     })
 }
 
-fn field_info_of(info: &ResolvedType, field: &ResolvedField, offset: u32) -> ConstValue {
-    field_info(
-        info,
-        field.name.as_ref(),
-        offset,
-        &field.r#type,
-        field.visibility,
-    )
-}
-
-fn field_info(
-    info: &ResolvedType,
-    name: &str,
-    offset: u32,
-    r#type: &ResolvedType,
-    visibility: Visibility,
-) -> ConstValue {
-    let visibility_type = field_type(info, "visibility");
-    let visibility = match visibility {
-        Visibility::Hidden => "Hidden",
-        Visibility::Shared => "Shared",
-        Visibility::Exposed => "Exposed",
-    };
-    build_struct(
-        info,
-        vec![
-            ("name", ConstValue::Str(name.to_string())),
-            ("offset", usize_value(u64::from(offset))),
-            ("type", type_info_ref(r#type)),
-            (
-                "visibility",
-                build_variant(&visibility_type, visibility, vec![]),
-            ),
-        ],
+fn path_value(path: &[Ident]) -> ConstValue {
+    ConstValue::Slice(
+        path.iter()
+            .map(|segment| ConstValue::Str(segment.as_ref().to_string()))
+            .collect(),
     )
 }
 

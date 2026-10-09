@@ -16,6 +16,20 @@ Pair<u8> == Pair<u8>: true
 Buffer<3, i32> == Buffer<4, i32>: false
 *[]u8 == *[]u8: true
 *[]u8 == *mut []u8: false
+comp Eq: Pair<i32> == Pair<i32>: true, Pair<i32> == Pair<u8>: false
+comp Eq: (a::T) => void == (value: a::T) => void: true, vs (b::T) => void: false
+comp Eq: *spec a::S == *spec a::S: true, vs *spec b::S: false
+Eq: (a::T) => void == (b::T) => void: false
+Eq: *spec a::S == *spec b::S: false
+Eq: *spec a::S == *mut spec a::S: false
+Eq: (i32) => void == foreign(c) (i32) => void: false
+(i32, *str) => bool: 2 param(s) i32, ret bool, variadic false, C false
+foreign(c) (*u8, ...) => i32: 1 param(s) *u8, ret i32, variadic true, C true
+*mut spec S: 1 spec(s) t51_reflection::b::S, mutable true
+comp: (i32) => void / (i32) => void
+runtime: (i32) => void / (i32) => void
+same table: true
+cast table is i32's: true
 tag: u8 @0
 header: label @1
 shared: id @13

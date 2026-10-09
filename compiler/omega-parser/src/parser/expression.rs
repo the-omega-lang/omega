@@ -4,7 +4,7 @@ use crate::ast::expression::{
     CompoundAssignExpr, DecrementExpr, DerefExpr, Expression, ExpressionNode, FieldAccessExpr,
     FunctionCallExpr, IfExpr, IncrementExpr, IndexExpr, LogicalExpr, LogicalOp, MatchArm,
     MatchExpr, NegateExpr, NotExpr, Pattern, PatternValue, RevealExpr, SizeofExpr, SliceExpr,
-    StringExpr, StructLiteralExpr, StructLiteralField, TryExpr,
+    StringExpr, StructLiteralExpr, StructLiteralField, TryExpr, TypeinfoExpr,
 };
 use crate::ast::generics::{ExprGenericArg, Selector};
 use crate::ast::identifier::Origin;
@@ -642,35 +642,31 @@ fn parse_primary(p: &mut Parser) -> Option<ExpressionNode> {
                 origin,
             })
         }
-        // Commit contextual `sizeof` only when `<Type>` follows.
+        // The type queries commit only when `<Type>` follows, so each name
+        // stays an ordinary identifier elsewhere.
         TokenKind::Ident(name)
-            if name == contextual::SIZEOF && matches!(p.peek_at(1), TokenKind::Lt) =>
+            if matches!(p.peek_at(1), TokenKind::Lt)
+                && [
+                    contextual::SIZEOF,
+                    contextual::ALIGNOF,
+                    contextual::TYPEINFO,
+                ]
+                .contains(&name.as_str()) =>
         {
-            p.advance(); // 'sizeof'
+            let query = name.clone();
+            p.advance(); // query name
             p.advance(); // '<'
             let r#type = crate::parser::r#type::parse_type(p)?;
             let close_span = p.peek_span();
             p.expect_close_angle("'>'");
-            let span = start.to(close_span);
+            let expression = match query.as_str() {
+                contextual::SIZEOF => Expression::Sizeof(Box::new(SizeofExpr { r#type })),
+                contextual::ALIGNOF => Expression::Alignof(Box::new(AlignofExpr { r#type })),
+                _ => Expression::Typeinfo(Box::new(TypeinfoExpr { r#type })),
+            };
             Some(ExpressionNode {
-                expression: Expression::Sizeof(Box::new(SizeofExpr { r#type })),
-                span,
-                origin,
-            })
-        }
-        // `alignof` commits on the same contextual rule as `sizeof`.
-        TokenKind::Ident(name)
-            if name == contextual::ALIGNOF && matches!(p.peek_at(1), TokenKind::Lt) =>
-        {
-            p.advance(); // 'alignof'
-            p.advance(); // '<'
-            let r#type = crate::parser::r#type::parse_type(p)?;
-            let close_span = p.peek_span();
-            p.expect_close_angle("'>'");
-            let span = start.to(close_span);
-            Some(ExpressionNode {
-                expression: Expression::Alignof(Box::new(AlignofExpr { r#type })),
-                span,
+                expression,
+                span: start.to(close_span),
                 origin,
             })
         }

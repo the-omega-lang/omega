@@ -1,0 +1,8 @@
+# Declares the same names as `b`, so only module identity tells them apart.
+exposed struct T {
+	exposed value: i32;
+}
+
+exposed spec S {
+	run(*self) => void;
+}

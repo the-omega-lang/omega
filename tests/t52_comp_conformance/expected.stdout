@@ -1,0 +1,5 @@
+"abc" == "abc": true
+"abc" == "abd": false
+"abc" != "abd": true
+21C == 21C: true
+21C != 22C: true

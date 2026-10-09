@@ -379,6 +379,14 @@ Concrete methods and free functions share `generic_instantiations` and
 body from its materialized identity. Their query states and emission cache keep
 insertion order.
 
+A conformance method is not an item: its `__conform_N` owner key never reaches
+the resolved state, and an inherited spec default's id has no owner at all. Its
+body is instead checked by `Driver::conformance_method_body`, memoized by method
+id with its own in-progress guard. Both the module body sweep
+(`check_conformance_bodies`) and compile-time evaluation go through it, so a
+body `comp` asked for first is checked once and the sweep emits that same body
+with its warnings.
+
 Each instantiation is emitted as a standalone checked function carrying its owner identity (`CheckedFunctionDef::method_owner`), into the owner module's `CheckedModule` -- the same declaring-module rule concrete item instantiations follow, and for the same symbol-identity reason. MIR builds its symbol from the owner path, the owner's generic arguments, and the declaration's own, and gives it weak linkage, so two packages that instantiate one declaration at the same arguments fold to one definition.
 
 Generic conformance methods share this cache/materialization path, retaining their `ConformanceOwner` so emission uses conformance linkage and identity rather than treating the implementation as an inherent method.

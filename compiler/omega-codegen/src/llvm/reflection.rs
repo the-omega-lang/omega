@@ -7,15 +7,9 @@ use omega_analyzer::layout::{self, EnumView};
 use omega_analyzer::resolved_type::{ConstValue, Reflected, ResolvedType};
 
 impl<'ctx> Codegen<'ctx> {
-    /// `pointee` is the declared pointee of the pointer holding the address;
-    /// for a table it is `core::reflection::TypeInfo` itself.
-    pub(super) fn reflected_global(
-        &mut self,
-        reflected: &Reflected,
-        pointee: &ResolvedType,
-    ) -> GlobalValue<'ctx> {
+    pub(super) fn reflected_global(&mut self, reflected: &Reflected) -> GlobalValue<'ctx> {
         match reflected {
-            Reflected::TypeInfo(described) => self.typeinfo_global(described, pointee),
+            Reflected::TypeInfo { described, table } => self.typeinfo_global(described, table),
             Reflected::VariantPrototype { r#type, variant } => {
                 self.variant_prototype_global(r#type, *variant)
             }

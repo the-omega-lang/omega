@@ -84,6 +84,9 @@ impl ParseError {
             ParseErrorKind::InferenceHoleNotAValue => Diagnostic::error("'_' is an inference hole, not a name or a value")
                 .with_label(self.span, "`_` cannot be used as an expression")
                 .with_note("`_` is a reserved token that stands for a type or value the compiler infers"),
+            ParseErrorKind::ReceiverInFunctionType { spelling } => Diagnostic::error("a function type has no receiver")
+                .with_label(self.span, format!("`{spelling}` is only valid in a method declaration"))
+                .with_help("write the receiver's type as an explicit first parameter, such as `(*Thing) => void`"),
             ParseErrorKind::NestingTooDeep { limit } => Diagnostic::error(format!("expression or type nests more than {limit} levels deep"))
                 .with_label(self.span, format!("nesting goes deeper than {limit} levels here"))
                 .with_note("the parser is recursive descent, so each level of nesting costs native stack -- this limit turns what would be a stack overflow into a diagnostic")
@@ -211,6 +214,9 @@ pub enum ParseErrorKind {
     RangeMissingEnd,
     OpenRangeHasEnd,
     InferenceHoleNotAValue,
+    ReceiverInFunctionType {
+        spelling: String,
+    },
     ChainedComparison,
     NestingTooDeep {
         limit: usize,

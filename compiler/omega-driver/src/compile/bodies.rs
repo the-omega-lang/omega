@@ -140,72 +140,18 @@ impl Driver {
                 entry.spec.borrow().id,
                 entry.spec_args.clone(),
             ));
-            let mut bounds = vec![ResolvedBound::new(
-                entry.target.clone(),
-                entry.spec.clone(),
-                entry.spec_args.clone(),
-            )];
-            let keys_run = self.with_analyzer(
-                &entry.module,
-                &entry.substitution,
-                AnalysisSite::new(entry.id, entry.span),
-                |a| a.expand_bound_set(entry.id, entry.span, &entry.declared_bounds),
-            );
+            let (bounds, bound_warnings) = self.conformance_bounds(&entry);
             self.diagnostics
-                .record_warnings(&entry.module, keys_run.warnings);
-            let keys = keys_run.result;
-            bounds.extend(self.bound_context_over(&entry.declared_bounds, &keys));
-            let owner = Self::conformance_owner(&entry);
-            for (function, method_id) in entry.functions.iter().zip(&entry.method_ids) {
-                let Some((_, method)) = entry
-                    .methods
-                    .iter()
-                    .find(|(_, method)| method.decl_id == *method_id)
-                else {
-                    continue;
-                };
-                let run = self.with_analyzer_in(
-                    path,
-                    &entry.substitution,
-                    &bounds,
-                    AnalysisSite::new(function.id, function.span),
-                    |analyzer| {
-                        analyzer.check_function_body(
-                            function,
-                            &method.fn_type,
-                            method.decl_id,
-                            &method.annotations,
-                        )
-                    },
-                );
-                if let Some(mut checked) = run.result {
-                    checked.conformance_owner = Some(owner.clone());
-                    items.push(CheckedItem::FunctionDefinition(checked));
+                .record_warnings(&entry.module, bound_warnings);
+            let method_ids = entry
+                .method_ids
+                .iter()
+                .chain(entry.pending.iter().map(|pending| &pending.id));
+            for method_id in method_ids {
+                if let Some(body) = self.conformance_method_body(&entry, &bounds, *method_id) {
+                    items.push(CheckedItem::FunctionDefinition(body.function));
+                    warnings.extend(body.warnings);
                 }
-                warnings.extend(
-                    run.warnings
-                        .into_iter()
-                        .map(|warning| (path.to_vec(), warning)),
-                );
-            }
-            let spec_module = entry.spec.borrow().module_path.clone();
-            for pending in &entry.pending {
-                let run = self.with_analyzer_in(
-                    &spec_module,
-                    &pending.substitution,
-                    &bounds,
-                    AnalysisSite::new(pending.id, pending.raw.span),
-                    |analyzer| analyzer.check_pending_spec_method(pending),
-                );
-                if let Some(mut checked) = run.result {
-                    checked.conformance_owner = Some(owner.clone());
-                    items.push(CheckedItem::FunctionDefinition(checked));
-                }
-                warnings.extend(
-                    run.warnings
-                        .into_iter()
-                        .map(|warning| (spec_module.clone(), warning)),
-                );
             }
         }
         items

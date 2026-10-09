@@ -1,9 +1,11 @@
-# `core::reflection::typeinfo` tables, read at run time and under `comp`
+# `typeinfo<T>` tables, read at run time and under `comp`
 # (docs/language/reflection.md).
 import std::io::println;
 import core::cmp::Eq;
-import core::reflection::{ typeinfo, TypeInfo, FieldInfo, Visibility };
+import core::reflection::{ TypeInfo, FieldInfo, Visibility };
 import self::other;
+import self::a;
+import self::b;
 
 exposed struct Node {
 	exposed value: i32;
@@ -75,7 +77,7 @@ print_struct(info: *TypeInfo) => void {
 }
 
 walk_nodes() => void {
-	node := typeinfo<Node>();
+	node := typeinfo<Node>;
 	next := struct_fields(node)[1].type;
 	kind := next.kind;
 	match kind {
@@ -89,7 +91,7 @@ walk_nodes() => void {
 	}
 }
 
-shape_info() => *TypeInfo { typeinfo<Shape>() }
+shape_info() => *TypeInfo { typeinfo<Shape> }
 
 walk_enum(value: *Shape) => void {
 	info := shape_info();
@@ -131,7 +133,7 @@ walk_enum(value: *Shape) => void {
 }
 
 walk_anonymous() => void {
-	info := typeinfo<Either>();
+	info := typeinfo<Either>;
 	kind := info.kind;
 	match kind {
 		TypeKind::AnonymousEnum => {
@@ -156,29 +158,88 @@ comp_bits(info: *TypeInfo, index: i32) => u64 {
 	}
 }
 
-comp HEADER_SIZE := typeinfo<Header>().size;
-comp COUNT_OFFSET := field_offset(typeinfo<Header>(), 2);
-comp PAIRS_EQUAL := typeinfo<Pair<i32>>() == typeinfo<Pair<u8>>();
-comp SAME_PAIR := typeinfo<Pair<i32>>() == typeinfo<Pair<i32>>();
-comp BUFFER_LENGTH := comp_bits(typeinfo<Buffer<3, i32>>(), 0);
-comp MINUS_ONE_BITS := comp_bits(typeinfo<Signed<-1>>(), 0);
+struct Callbacks {
+	exposed first: (x: i32) => void;
+	exposed second: (y: i32) => void;
+}
+
+comp FIRST_CALLBACK := struct_fields(typeinfo<Callbacks>)[0].type.name;
+comp SECOND_CALLBACK := struct_fields(typeinfo<Callbacks>)[1].type.name;
+
+print_callbacks() => void {
+	fields := struct_fields(typeinfo<Callbacks>);
+	println$("comp: ", FIRST_CALLBACK, " / ", SECOND_CALLBACK);
+	println$("runtime: ", fields[0].type.name, " / ", fields[1].type.name);
+	println$("same table: ", fields[0].type == fields[1].type);
+}
+
+print_function(info: *TypeInfo) => void {
+	kind := info.kind;
+	match kind {
+		TypeKind::Function => {
+			println$(info.name, ": ", kind.params.length, " param(s) ", kind.params[0].name, ", ret ", kind.ret.name, ", variadic ", kind.variadic, ", C ", kind.convention.tag == CallingConvention::C.tag);
+		},
+	} else {
+		println$("not a function");
+	}
+}
+
+print_spec_object(info: *TypeInfo) => void {
+	kind := info.kind;
+	match kind {
+		TypeKind::SpecObject => {
+			first := kind.specs[0];
+			println$(info.name, ": ", kind.specs.length, " spec(s) ", first.path[0], "::", first.path[1], "::", first.name, ", mutable ", kind.mutable);
+		},
+	} else {
+		println$("not a spec object");
+	}
+}
+
+comp FN_SAME := Eq::equals(*typeinfo<(a::T) => void>, *typeinfo<(value: a::T) => void>);
+comp FN_ACROSS := Eq::equals(*typeinfo<(a::T) => void>, *typeinfo<(b::T) => void>);
+comp SPEC_SAME := Eq::equals(*typeinfo<*spec a::S>, *typeinfo<*spec a::S>);
+comp SPEC_ACROSS := Eq::equals(*typeinfo<*spec a::S>, *typeinfo<*spec b::S>);
+comp PAIR_EQ := Eq::equals(*typeinfo<Pair<i32>>, *typeinfo<Pair<i32>>);
+comp PAIR_NE := Eq::equals(*typeinfo<Pair<i32>>, *typeinfo<Pair<u8>>);
+comp CAST_TABLE := <*u8>typeinfo<i32>;
+
+comp HEADER_SIZE := typeinfo<Header>.size;
+comp COUNT_OFFSET := field_offset(typeinfo<Header>, 2);
+comp PAIRS_EQUAL := typeinfo<Pair<i32>> == typeinfo<Pair<u8>>;
+comp SAME_PAIR := typeinfo<Pair<i32>> == typeinfo<Pair<i32>>;
+comp BUFFER_LENGTH := comp_bits(typeinfo<Buffer<3, i32>>, 0);
+comp MINUS_ONE_BITS := comp_bits(typeinfo<Signed<-1>>, 0);
 
 main() => void {
-	print_struct(typeinfo<Header>());
+	print_struct(typeinfo<Header>);
 	println$("comp: size=", HEADER_SIZE, " count@", COUNT_OFFSET);
 	println$("comp: Pair<i32> == Pair<u8>: ", PAIRS_EQUAL, ", Pair<i32> == Pair<i32>: ", SAME_PAIR);
 	println$("comp: Buffer<3, i32> N bits: ", BUFFER_LENGTH);
 	println$("comp: Signed<-1> N bits: ", MINUS_ONE_BITS);
 
 	walk_nodes();
-	println$("other object, same address: ", other::node_info() == typeinfo<Node>());
-	println$("other object, Eq: ", Eq::equals(*other::node_info(), *typeinfo<Node>()));
+	println$("other object, same address: ", other::node_info() == typeinfo<Node>);
+	println$("other object, Eq: ", Eq::equals(*other::node_info(), *typeinfo<Node>));
 
-	println$("Pair<i32> == Pair<u8>: ", Eq::equals(*typeinfo<Pair<i32>>(), *typeinfo<Pair<u8>>()));
-	println$("Pair<u8> == Pair<u8>: ", Eq::equals(*typeinfo<Pair<u8>>(), *typeinfo<Pair<u8>>()));
-	println$("Buffer<3, i32> == Buffer<4, i32>: ", Eq::equals(*typeinfo<Buffer<3, i32>>(), *typeinfo<Buffer<4, i32>>()));
-	println$("*[]u8 == *[]u8: ", Eq::equals(*typeinfo<*[]u8>(), *typeinfo<*[]u8>()));
-	println$("*[]u8 == *mut []u8: ", Eq::equals(*typeinfo<*[]u8>(), *typeinfo<*mut []u8>()));
+	println$("Pair<i32> == Pair<u8>: ", Eq::equals(*typeinfo<Pair<i32>>, *typeinfo<Pair<u8>>));
+	println$("Pair<u8> == Pair<u8>: ", Eq::equals(*typeinfo<Pair<u8>>, *typeinfo<Pair<u8>>));
+	println$("Buffer<3, i32> == Buffer<4, i32>: ", Eq::equals(*typeinfo<Buffer<3, i32>>, *typeinfo<Buffer<4, i32>>));
+	println$("*[]u8 == *[]u8: ", Eq::equals(*typeinfo<*[]u8>, *typeinfo<*[]u8>));
+	println$("*[]u8 == *mut []u8: ", Eq::equals(*typeinfo<*[]u8>, *typeinfo<*mut []u8>));
+
+	println$("comp Eq: Pair<i32> == Pair<i32>: ", PAIR_EQ, ", Pair<i32> == Pair<u8>: ", PAIR_NE);
+	println$("comp Eq: (a::T) => void == (value: a::T) => void: ", FN_SAME, ", vs (b::T) => void: ", FN_ACROSS);
+	println$("comp Eq: *spec a::S == *spec a::S: ", SPEC_SAME, ", vs *spec b::S: ", SPEC_ACROSS);
+	println$("Eq: (a::T) => void == (b::T) => void: ", Eq::equals(*typeinfo<(a::T) => void>, *typeinfo<(b::T) => void>));
+	println$("Eq: *spec a::S == *spec b::S: ", Eq::equals(*typeinfo<*spec a::S>, *typeinfo<*spec b::S>));
+	println$("Eq: *spec a::S == *mut spec a::S: ", Eq::equals(*typeinfo<*spec a::S>, *typeinfo<*mut spec a::S>));
+	println$("Eq: (i32) => void == foreign(c) (i32) => void: ", Eq::equals(*typeinfo<(i32) => void>, *typeinfo<foreign(c) (i32) => void>));
+	print_function(typeinfo<(x: i32, y: *str) => bool>);
+	print_function(typeinfo<foreign(c) (format: *u8, ...) => i32>);
+	print_spec_object(typeinfo<*mut spec b::S>);
+	print_callbacks();
+	println$("cast table is i32's: ", CAST_TABLE == <*u8>typeinfo<i32>);
 
 	circle := Shape::Circle { id = 1u16; radius = 9u32; };
 	walk_enum(&circle);

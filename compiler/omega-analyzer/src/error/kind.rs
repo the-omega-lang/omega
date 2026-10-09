@@ -662,9 +662,9 @@ pub enum AnalysisErrorKind {
     /// A declaration at a compiler-implemented path whose shape differs from
     /// the one the compiler supplies a body for.
     MalformedCompilerFunction {
-        module: String,
         name: Ident,
     },
+    TypeinfoUnavailable,
 }
 
 impl fmt::Display for AnalysisErrorKind {
@@ -1594,9 +1594,12 @@ impl fmt::Display for AnalysisErrorKind {
             Self::FunctionWithoutBody { name } => {
                 write!(f, "function '{}' has no body", name.as_ref())
             }
-            Self::MalformedCompilerFunction { module, name } => write!(
+            Self::TypeinfoUnavailable => {
+                write!(f, "'typeinfo' requires 'core::reflection::TypeInfo'")
+            }
+            Self::MalformedCompilerFunction { name } => write!(
                 f,
-                "'{module}::{}' is compiler-implemented and must be declared exactly as \
+                "'core::volatile::{}' is compiler-implemented and must be declared exactly as \
                  specified, with no body",
                 name.as_ref()
             ),

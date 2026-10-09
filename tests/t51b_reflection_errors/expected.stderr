@@ -8,6 +8,12 @@ error: cannot evaluate this expression at compile time: reading a variant protot
    |                 ^^^^^^^^^^^^^^^^^^^^^^ cannot be evaluated at compile time
    |                 ---------------------- required by this compile-time call
 
+error: cannot evaluate this expression at compile time: reading reflection data through a pointer of another type isn't supported in a compile-time evaluation yet
+  --> tests/t51b_reflection_errors/t51b_reflection_errors.omg:27:17
+   |
+27 | comp RETYPED := *<*u8>typeinfo<i32>;
+   |                 ^^^^^^^^^^^^^^^^^^^ cannot be evaluated at compile time
+
 error: cannot use 't51b_reflection_errors::ON_BYTE' because of its own error
   --> tests/t51b_reflection_errors/t51b_reflection_errors.omg:23:11
    |
@@ -16,4 +22,12 @@ error: cannot use 't51b_reflection_errors::ON_BYTE' because of its own error
    |
    = note: `ON_BYTE`'s own error is reported where it is defined
 
-error: could not compile the program due to 2 previous errors
+error: cannot use 't51b_reflection_errors::RETYPED' because of its own error
+  --> tests/t51b_reflection_errors/t51b_reflection_errors.omg:29:23
+   |
+29 | use_retyped() => u8 { RETYPED }
+   |                       ^^^^^^^ cannot be used because of its own error
+   |
+   = note: `RETYPED`'s own error is reported where it is defined
+
+error: could not compile the program due to 4 previous errors

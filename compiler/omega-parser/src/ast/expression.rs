@@ -21,6 +21,7 @@ pub enum Expression {
     Cast(Box<CastExpr>),
     Sizeof(Box<SizeofExpr>),
     Alignof(Box<AlignofExpr>),
+    Typeinfo(Box<TypeinfoExpr>),
     Increment(Box<IncrementExpr>),
     Decrement(Box<DecrementExpr>),
     BinaryOp(Box<BinaryOpExpr>),
@@ -140,6 +141,11 @@ pub struct SizeofExpr {
 
 #[derive(Debug, Clone)]
 pub struct AlignofExpr {
+    pub r#type: Type,
+}
+
+#[derive(Debug, Clone)]
+pub struct TypeinfoExpr {
     pub r#type: Type,
 }
 

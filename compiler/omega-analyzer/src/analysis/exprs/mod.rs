@@ -63,6 +63,26 @@ impl<'r> Analyzer<'r> {
                 literal(ResolvedType::USize, CheckedExpr::Alignof(target_type))
             }
 
+            HirExpr::Typeinfo(target) => {
+                let described = self.resolve_type_or_error(id, span, target, true)?;
+                let Ok(ResolvedItem::Type(table)) = self.resolver.resolve_item(
+                    &self.module_path,
+                    &crate::reflection::type_info_path(),
+                    &[],
+                    ResolveItemOptions::DIRECT,
+                ) else {
+                    self.error(id, span, AnalysisErrorKind::TypeinfoUnavailable);
+                    return None;
+                };
+                literal(
+                    ResolvedType::Pointer {
+                        pointee: Box::new(table.clone()),
+                        mutable: false,
+                    },
+                    CheckedExpr::Const(crate::reflection::type_info_ref(&described, &table)),
+                )
+            }
+
             HirExpr::If(HirIf {
                 branches,
                 else_branch,

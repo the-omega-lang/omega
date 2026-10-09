@@ -708,6 +708,7 @@ impl<'a, E> Expander<'a, E> {
             // Bare types cannot contain expression-position macro metavariables.
             Expression::Sizeof(sizeof) => Expression::Sizeof(sizeof),
             Expression::Alignof(alignof) => Expression::Alignof(alignof),
+            Expression::Typeinfo(typeinfo) => Expression::Typeinfo(typeinfo),
             Expression::Increment(incr) => Expression::Increment(Box::new(IncrementExpr {
                 base: self.expand_expr(incr.base)?,
             })),

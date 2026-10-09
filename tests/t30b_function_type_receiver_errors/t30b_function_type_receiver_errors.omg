@@ -1,0 +1,16 @@
+# A receiver belongs to a method declaration, never to a function type
+# (docs/language/functions.md).
+struct Thing {
+	exposed value: i32;
+
+	exposed get(*self) => i32 { self.value }
+}
+
+alias ByValue = (self) => i32;
+alias ByMutValue = (mut self, i32) => i32;
+alias ByPointer = (*self) => i32;
+alias ByMutPointer = (*mut self, i32) => i32;
+
+main() => void {
+	explicit: (*Thing) => i32 = Thing::self::get;
+}

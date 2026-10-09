@@ -1,6 +1,7 @@
 //! Black-box coverage of `core::reflection` emission: a program that never
-//! names `typeinfo` emits no tables, and the tables it does emit are weak,
-//! hidden constants named by the described type.
+//! names `typeinfo` emits no tables, `typeinfo` itself is never a function,
+//! and the tables it does emit are weak, hidden constants named by the
+//! described type.
 
 use omega_analyzer::{Arch, Os, Target};
 use omega_driver::{Driver, ExternRoot};
@@ -116,12 +117,11 @@ main() => void {
 fn runtime_use_emits_weak_hidden_constant_tables_through_cycles() {
     let ir = ir_for(
         "\
-import core::reflection::typeinfo;
 struct Node { exposed value: i32; exposed next: *Node; }
 enum Light { Off, On; }
 main() => void {
-    node := typeinfo<Node>();
-    light := typeinfo<Light>();
+    node := typeinfo<Node>;
+    light := typeinfo<Light>;
 }
 ",
         HOST,
@@ -160,4 +160,51 @@ main() => void {
         "one prototype per Light variant:\n{ir}"
     );
     assert!(!ir.contains(".placeholder"), "{ir}");
+    assert!(
+        !ir.lines()
+            .any(|line| line.starts_with("define") && line.contains("typeinfo")),
+        "typeinfo is an operator, not a function:\n{ir}"
+    );
+}
+
+#[test]
+fn a_table_held_through_a_byte_pointer_is_still_emitted() {
+    let ir = ir_for(
+        "\
+struct Node { exposed value: i32; }
+comp NODE := <*u8>typeinfo<Node>;
+main() => void {
+    node := NODE;
+}
+",
+        HOST,
+    );
+    let globals = reflection_globals(&ir);
+    assert!(
+        globals
+            .iter()
+            .any(|line| line.starts_with("@_omg_NvNtC4main4Node8typeinfo ")),
+        "{ir}"
+    );
+}
+
+#[test]
+fn function_types_differing_only_in_descriptors_share_one_table() {
+    let ir = ir_for(
+        "\
+struct Callbacks {
+    exposed first: (x: i32) => void;
+    exposed second: (y: i32) => void;
+}
+main() => void {
+    callbacks := typeinfo<Callbacks>;
+}
+",
+        HOST,
+    );
+    assert!(ir.contains("(i32) => void"), "{ir}");
+    assert!(
+        !ir.contains("(x: i32)") && !ir.contains("(y: i32)"),
+        "a descriptor reached a table's initializer:\n{ir}"
+    );
 }

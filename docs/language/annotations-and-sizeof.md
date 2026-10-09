@@ -298,6 +298,8 @@ It parses exactly like `sizeof<Type>`: both are contextual identifiers that comm
 
 `alignof` is not accepted inside `@layout` arguments; the annotation grammar takes a plain integer or `sizeof<Primitive>`.
 
+`typeinfo<Type>` is the third query of this family, parsed the same way; it yields the address of the type's reflection table (see [`reflection.md`](reflection.md)).
+
 ## `@inline`
 
 Accepted forms:

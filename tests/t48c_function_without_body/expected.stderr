@@ -4,7 +4,7 @@ error: function 'unfinished' has no body
 3 | unfinished<T>(value: T) => T;
   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected a '{ ... }' body instead of ';'
   |
-  = help: only the compiler-implemented 'core::volatile' and 'core::reflection' declarations may omit a body
+  = help: only the compiler-implemented 'core::volatile' declarations may omit a body
 
 error: function 'stub' has no body
  --> tests/t48c_function_without_body/t48c_function_without_body.omg:5:1
@@ -12,6 +12,6 @@ error: function 'stub' has no body
 5 | stub() => void;
   | ^^^^^^^^^^^^^^ expected a '{ ... }' body instead of ';'
   |
-  = help: only the compiler-implemented 'core::volatile' and 'core::reflection' declarations may omit a body
+  = help: only the compiler-implemented 'core::volatile' declarations may omit a body
 
 error: could not compile the program due to 2 previous errors

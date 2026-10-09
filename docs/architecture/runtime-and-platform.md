@@ -27,7 +27,7 @@ Each package compiles to a directory of per-source objects rather than a single 
 - platform capability **gaps** (allocator/console/panic/atomic contracts), not implementations;
 - the compiler-implemented source-location macros in `core::builtins`.
 - the compiler-implemented volatile access declarations in `core::volatile`;
-- the compiler-implemented `typeinfo` declaration and the table types it fills in `core::reflection`.
+- the table types the `typeinfo<T>` operator addresses, in `core::reflection`.
 
 It is designed to remain useful in freestanding/embedded contexts.
 
@@ -35,8 +35,8 @@ Compiler privilege is narrow and explicit:
 
 - exposed core items/macros can participate in ambient fallback lookup;
 - primitive declarations/inherent primitive methods belong to core.
-- the bodyless `core::volatile` and `core::reflection` declarations get compiler-supplied bodies (see [`volatile.md`](../language/volatile.md) and [`reflection.md`](../language/reflection.md)); no other function may omit its body;
-- the compiler fills `core::reflection` tables against those declarations' field names.
+- the two bodyless `core::volatile` declarations get compiler-supplied bodies (see [`volatile.md`](../language/volatile.md)); no other function may omit its body;
+- the compiler fills `core::reflection` tables against those declarations' field names (see [`reflection.md`](../language/reflection.md)).
 
 `core` is still compiled to an ordinary separate object and linked when its definitions are used.
 

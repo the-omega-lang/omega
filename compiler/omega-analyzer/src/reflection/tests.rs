@@ -1,7 +1,9 @@
 use super::*;
 use crate::annotations::Layout;
 use crate::resolved_type::{
-    CompIntType, ResolvedAnonymousEnum, ResolvedEnumType, ResolvedEnumVariant, ResolvedStructType,
+    CompIntType, ResolvedAnonymousEnum, ResolvedEnumType, ResolvedEnumVariant,
+    ResolvedFunctionParam, ResolvedFunctionType, ResolvedSpecShape, ResolvedSpecType,
+    ResolvedStructType,
 };
 use omega_hir::ids::{HirId, ModuleId};
 use std::cell::RefCell;
@@ -166,6 +168,17 @@ fn info_type() -> ResolvedType {
         vec![field("element", opaque.clone()), field(extra.0, extra.1)]
     };
     let mutable = || ("mutable", ResolvedType::Bool);
+    let convention = unit_enum(17, "CallingConvention", &["Omega", "C", "SysV64"]);
+    let spec_info = structure(
+        18,
+        "SpecInfo",
+        vec![
+            field("name", str.clone()),
+            field("path", slice(str.clone())),
+            field("generic_args", slice(generic_arg.clone())),
+        ],
+        Layout::default(),
+    );
     let kind = enumeration(
         15,
         "TypeKind",
@@ -207,8 +220,24 @@ fn info_type() -> ResolvedType {
                     field("members", slice(variant_info)),
                 ],
             ),
-            variant("Function", 11, vec![]),
-            variant("SpecObject", 12, vec![]),
+            variant(
+                "Function",
+                11,
+                vec![
+                    field("params", slice(opaque.clone())),
+                    field("ret", opaque.clone()),
+                    field("variadic", ResolvedType::Bool),
+                    field("convention", convention),
+                ],
+            ),
+            variant(
+                "SpecObject",
+                12,
+                vec![
+                    field("specs", slice(spec_info)),
+                    field("mutable", ResolvedType::Bool),
+                ],
+            ),
         ],
     );
     structure(
@@ -224,6 +253,10 @@ fn info_type() -> ResolvedType {
         ],
         Layout::default(),
     )
+}
+
+fn table_ref(described: ResolvedType) -> ConstValue {
+    type_info_ref(&described, &info_type())
 }
 
 fn describe(described: &ResolvedType) -> ConstValue {
@@ -408,7 +441,7 @@ fn hidden_fields_are_described_with_their_visibility() {
     assert_eq!(*variant_index, 0, "Hidden");
     assert_eq!(
         get(secret, &field_info, "type"),
-        &ConstValue::Reflected(Reflected::TypeInfo(ResolvedType::U8))
+        &table_ref(ResolvedType::U8)
     );
 }
 
@@ -456,10 +489,7 @@ fn an_enum_describes_its_tag_header_shared_fields_and_variants() {
     ));
     assert_eq!(text(get(tag, &field_info, "name")), "tag");
     assert_eq!(number(get(tag, &field_info, "offset")), 0);
-    assert_eq!(
-        get(tag, &field_info, "type"),
-        &ConstValue::Reflected(Reflected::TypeInfo(ResolvedType::U8))
-    );
+    assert_eq!(get(tag, &field_info, "type"), &table_ref(ResolvedType::U8));
 
     let variant_info = slice_item(&variant_field_type(
         &field_type(&info_type(), "kind"),
@@ -560,7 +590,10 @@ fn a_refined_enum_is_described_by_its_parent() {
         variant: Some(1),
     };
 
-    assert_eq!(type_info_ref(&refined), type_info_ref(&parent));
+    assert_eq!(
+        type_info_ref(&refined, &info_type()),
+        type_info_ref(&parent, &info_type())
+    );
     assert_eq!(describe(&refined), describe(&parent));
 }
 
@@ -580,10 +613,7 @@ fn a_comp_argument_is_truncated_to_its_parameter_width() {
     let arg = &elements(get(&info, &info_type, "generic_args"))[0];
 
     assert_eq!(number(get(arg, &arg_type, "bits")), 0xFF);
-    assert_eq!(
-        get(arg, &arg_type, "type"),
-        &ConstValue::Reflected(Reflected::TypeInfo(ResolvedType::I8))
-    );
+    assert_eq!(get(arg, &arg_type, "type"), &table_ref(ResolvedType::I8));
 }
 
 #[test]
@@ -591,7 +621,10 @@ fn only_a_type_table_can_be_read_under_comp() {
     let info_type = info_type();
     assert!(
         deref(
-            &Reflected::TypeInfo(ResolvedType::U8),
+            &Reflected::TypeInfo {
+                described: ResolvedType::U8,
+                table: info_type.clone(),
+            },
             &info_type,
             POINTER_BYTES
         )
@@ -607,5 +640,131 @@ fn only_a_type_table_can_be_read_under_comp() {
             POINTER_BYTES
         )
         .is_err()
+    );
+}
+
+#[test]
+fn a_table_is_unreadable_through_a_pointer_of_another_type() {
+    let ConstValue::Reflected(table) = table_ref(ResolvedType::I32) else {
+        unreachable!()
+    };
+    assert_eq!(
+        deref(&table, &ResolvedType::U8, POINTER_BYTES),
+        Err("reading reflection data through a pointer of another type")
+    );
+    assert!(deref(&table, &info_type(), POINTER_BYTES).is_ok());
+}
+
+fn function(names: [Option<&str>; 2]) -> ResolvedType {
+    ResolvedType::Function(ResolvedFunctionType {
+        params: names
+            .into_iter()
+            .map(|name| ResolvedFunctionParam {
+                name: name.map(ident),
+                r#type: ResolvedType::I32,
+            })
+            .collect(),
+        return_type: Box::new(ResolvedType::Bool),
+        is_variadic: true,
+        self_mode: None,
+        calling_convention: CallingConvention::C,
+    })
+}
+
+#[test]
+fn a_function_describes_its_parameters_return_and_convention() {
+    let info = describe(&function([Some("x"), None]));
+    let info_type = info_type();
+    let convention = variant_field_type(&field_type(&info_type, "kind"), "Function", "convention");
+
+    assert_eq!(kind_name(&info), "Function");
+    assert_eq!(
+        elements(kind_field(&info, "params")),
+        [table_ref(ResolvedType::I32), table_ref(ResolvedType::I32)]
+    );
+    assert_eq!(kind_field(&info, "ret"), &table_ref(ResolvedType::Bool));
+    assert_eq!(kind_field(&info, "variadic"), &ConstValue::Bool(true));
+    assert_eq!(
+        kind_field(&info, "convention"),
+        &build_variant(&convention, "C", vec![])
+    );
+}
+
+#[test]
+fn parameter_descriptors_do_not_change_a_name() {
+    let pointer = |pointee| ResolvedType::Pointer {
+        pointee: Box::new(pointee),
+        mutable: false,
+    };
+    let info_type = info_type();
+    let name =
+        |described: &ResolvedType| text(get(&describe(described), &info_type, "name")).to_string();
+
+    assert_eq!(
+        name(&function([Some("x"), Some("y")])),
+        "foreign(c) (i32, i32, ...) => bool"
+    );
+    assert_eq!(
+        name(&function([Some("x"), None])),
+        name(&function([Some("y"), Some("z")]))
+    );
+    assert_eq!(
+        name(&pointer(function([Some("x"), None]))),
+        name(&pointer(function([None, Some("y")])))
+    );
+    assert_eq!(
+        name(&ResolvedType::SizedArray(
+            Box::new(function([Some("x"), None])),
+            2
+        )),
+        "[2]foreign(c) (i32, i32, ...) => bool"
+    );
+}
+
+#[test]
+fn a_spec_object_describes_each_spec_by_declaration() {
+    let spec = |n: u32, module: &str| {
+        Rc::new(RefCell::new(ResolvedSpecType {
+            id: id(n),
+            name: ident("S"),
+            visibility: Visibility::Exposed,
+            generics: vec![],
+            module_path: vec![ident("app"), ident(module)],
+            generic_args: vec![],
+            is_object_safe: true,
+            functions: vec![],
+            suppress: vec![],
+        }))
+    };
+    let object = ResolvedType::SpecObject {
+        shape: ResolvedSpecShape::canonicalize(vec![ResolvedSpecApplication::new(
+            spec(1, "a"),
+            vec![ResolvedGenericArg::Type(ResolvedType::U8)],
+        )]),
+        mutable: true,
+    };
+    let info = describe(&object);
+    let info_type = info_type();
+    let spec_info = slice_item(&variant_field_type(
+        &field_type(&info_type, "kind"),
+        "SpecObject",
+        "specs",
+    ));
+    let arg_type = slice_item(&field_type(&spec_info, "generic_args"));
+    let specs = elements(kind_field(&info, "specs"));
+
+    assert_eq!(kind_name(&info), "SpecObject");
+    assert_eq!(kind_field(&info, "mutable"), &ConstValue::Bool(true));
+    assert_eq!(specs.len(), 1);
+    assert_eq!(text(get(&specs[0], &spec_info, "name")), "S");
+    let path: Vec<_> = elements(get(&specs[0], &spec_info, "path"))
+        .iter()
+        .map(text)
+        .collect();
+    assert_eq!(path, ["app", "a"]);
+    let args = elements(get(&specs[0], &spec_info, "generic_args"));
+    assert_eq!(
+        get(&args[0], &arg_type, "type"),
+        &table_ref(ResolvedType::U8)
     );
 }
