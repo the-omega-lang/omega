@@ -1,0 +1,14 @@
+generic-members: 32 8
+alias-member: 0 8
+inferred-header: 7
+aliases: 7
+generic-variants: 8 32 1 2
+known-owner: 1 7
+qualified-structs: 32 8
+qualified-enums: 32 8 1 2
+sibling-fresh: 110
+ordinary-shadow: 7
+pointer-fresh: 99
+revealed-header: 1 0
+revealed-member: 1 0
+macro-headers: 1 1 1

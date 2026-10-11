@@ -108,11 +108,6 @@ impl LexicalScope {
         self.visible.get(key).map(|&i| &self.declarations[i].1)
     }
 
-    fn get_mut(&mut self, key: &(Ident, Origin)) -> Option<&mut VarBinding> {
-        let index = *self.visible.get(key)?;
-        Some(&mut self.declarations[index].1)
-    }
-
     /// Every declaration in this scope, shadowed ones included, in source
     /// order.
     pub fn bindings(&self) -> impl Iterator<Item = (&(Ident, Origin), &VarBinding)> {
@@ -233,16 +228,11 @@ impl Context {
     }
 
     pub fn widen_variable(&mut self, ident: &Ident, origin: Origin) {
-        let key = (ident.clone(), origin);
-        if let Some(binding) = self.variable_mut(&key) {
-            binding.r#type = binding.r#type.widened();
-            return;
-        }
-        if ident.as_ref() == "self" && origin != Origin::default() {
-            let root_key = (ident.clone(), Origin::default());
-            if let Some(binding) = self.variable_mut(&root_key) {
-                binding.r#type = binding.r#type.widened();
-            }
+        if let Some(decl_id) = self
+            .find_variable(ident, origin)
+            .map(|binding| binding.decl_id)
+        {
+            self.drop_refinements(decl_id, &[]);
         }
     }
 
@@ -264,10 +254,24 @@ impl Context {
     /// Forgets every proof at or below `prefix`, as a mutable alias to that
     /// place could replace what was proved there.
     pub fn drop_refinements(&mut self, decl_id: HirId, prefix: &[Ident]) {
-        if let Some(binding) = self.binding_mut(decl_id) {
-            binding
-                .refinements
-                .retain(|refined| !refined.path.starts_with(prefix));
+        for scope in &mut self.scopes {
+            for (_, binding) in &mut scope.declarations {
+                if binding.decl_id != decl_id {
+                    continue;
+                }
+                binding
+                    .refinements
+                    .retain(|refined| !refined.path.starts_with(prefix));
+                if prefix.is_empty() {
+                    binding.r#type = match &binding.r#type {
+                        ResolvedType::Pointer { pointee, mutable } => ResolvedType::Pointer {
+                            pointee: Box::new(pointee.widened()),
+                            mutable: *mutable,
+                        },
+                        other => other.widened(),
+                    };
+                }
+            }
         }
     }
 
@@ -281,13 +285,6 @@ impl Context {
         if let Some(binding) = self.binding_mut(decl_id) {
             binding.written = true;
         }
-    }
-
-    fn variable_mut(&mut self, key: &(Ident, Origin)) -> Option<&mut VarBinding> {
-        self.scopes
-            .iter_mut()
-            .rev()
-            .find_map(|scope| scope.get_mut(key))
     }
 
     /// The innermost, latest binding carrying `decl_id`. A refinement scope

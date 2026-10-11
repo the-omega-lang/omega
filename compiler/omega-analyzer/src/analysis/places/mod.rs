@@ -202,8 +202,7 @@ impl<'r> Analyzer<'r> {
     pub(super) fn widen_place(&mut self, place: &HirPlace) {
         if let Some((ident, origin, ..)) = self.narrowable_place(place) {
             self.context.widen_variable(&ident, origin);
-        }
-        if let Some((decl_id, path)) = self.refinable_path(place) {
+        } else if let Some((decl_id, path)) = self.refinable_path(place) {
             self.context.drop_refinements(decl_id, &path);
         }
     }

@@ -1,0 +1,188 @@
+import std::io::println;
+import self::a;
+import self::b;
+import self::a::{ classify_box, classify_alias, classify_maybe, make_box };
+
+struct Box<T> { value: T; }
+struct MacroBox<T> { value: T; }
+struct Point { x: i32; }
+alias P = Point;
+enum Button { Left, Right; }
+alias B = Button;
+enum Maybe<T> { Nothing, Just { value: T; }; }
+alias IntMaybe = Maybe<i32>;
+alias ByteBox = Box<u8>;
+struct Holder { inner: enum Box<i32> | Box<u8>; }
+struct Wrapped { inner: enum Maybe<i32> | Maybe<u8> | Button; }
+struct Nest { point: Point; button: Button; }
+
+boxes(h: Holder) => i32 {
+	match h {
+		Holder { inner = Box<u8> { value = 7; }; } => 8,
+		Holder { inner = Box<i32> { value = 7; }; } => 32,
+		.. => 0,
+	}
+}
+
+box_alias(h: Holder) => i32 {
+	match h {
+		Holder { inner = ByteBox { value = 7; }; } => 8,
+		.. => 0,
+	}
+}
+
+inferred_header(b: Box<i32>) => i32 {
+	match b {
+		Box<_> { value = 7; } => 7,
+		.. => 0,
+	}
+}
+
+aliases(p: Point, n: Nest) => i32 {
+	a := match p {
+		P { x = 3; } => p.x,
+		.. => 0,
+	};
+	b := match n {
+		Nest { point = P { x = 4; }; button = B::Left; } => n.point.x,
+		.. => 0,
+	};
+	a + b
+}
+
+variants(w: Wrapped) => i32 {
+	match w {
+		Wrapped { inner = Maybe<u8>::Just { value = 7; }; } => 8,
+		Wrapped { inner = IntMaybe::Just; } => w.inner.value,
+		Wrapped { inner = B::Left; } => 1,
+		Wrapped { inner = Button; } => 2,
+		.. => 0,
+	}
+}
+
+known_owner(m: Maybe<i32>) => i32 {
+	match m {
+		Maybe::Just { value = 0; } => 1,
+		Maybe<i32>::Just => m.value,
+		IntMaybe::Nothing => 0,
+	}
+}
+
+struct Twins { inner: enum a::Twin | b::Twin; }
+struct Flags { inner: enum a::Flag | b::Flag; }
+
+twins(t: Twins) => i32 {
+	match t {
+		Twins { inner = b::Twin { value = 7; }; } => 8,
+		Twins { inner = a::Twin { value = 7; }; } => 32,
+		.. => 0,
+	}
+}
+
+flags(f: Flags) => i32 {
+	match f {
+		Flags { inner = b::Flag::On { value = 7; }; } => 8,
+		Flags { inner = a::Flag::On; } => 32,
+		Flags { inner = a::Flag; } => 1,
+		Flags { inner = b::Flag; } => 2,
+	}
+}
+
+enum Res {
+	Ok { value: i32; },
+	Err { code: i32; };
+	clear(*mut self) => void { *self = Res::Err { code = 99; }; }
+}
+struct Pair { left: Res; right: Res; }
+replace(r: *mut Res) => void { *r = Res::Err { code = 99; }; }
+
+sibling_and_fresh(p: Pair) => i32 {
+	mut local := p;
+	match local {
+		Pair { left = Res::Ok; right = Res::Ok; } => {
+			match local {
+				Pair { .. } => { local.left.clear(); },
+			}
+			kept := local.right.value;
+			fresh := match local {
+				Pair { left = Res::Err; .. } => local.left.code,
+				.. => 0,
+			};
+			kept + fresh
+		},
+		.. => 0,
+	}
+}
+
+ordinary_shadow(p: Pair) => i32 {
+	mut local := p;
+	match local {
+		Pair { left = Res::Ok; .. } => {
+			{
+				mut local: Res = Res::Ok { value = 1; };
+				replace(&mut local);
+			}
+			local.left.value
+		},
+		.. => 0,
+	}
+}
+
+pointer_fresh(local: *mut Res) => i32 {
+	match local {
+		Res::Ok => {
+			replace(&mut *local);
+			match local {
+				Res::Err => local.code,
+				.. => 0,
+			}
+		},
+		.. => 0,
+	}
+}
+
+revealed(b: a::PublicButton) => i32 {
+	match b {
+		reveal a::HiddenButton::Left => 1,
+		.. => 0,
+	}
+}
+
+struct RevealedHolder { inner: enum a::PublicButton | i32; }
+
+revealed_member(h: RevealedHolder) => i32 {
+	match h {
+		RevealedHolder { inner = reveal a::HiddenButton::Left; } => 1,
+		.. => 0,
+	}
+}
+
+macro_box(value: a::PublicBox) => i32 { classify_box$(value) }
+macro_alias(value: a::PublicBox) => i32 { classify_alias$(value) }
+macro_maybe(value: a::PublicMaybe) => i32 { classify_maybe$(value) }
+
+main() => void {
+	println$("generic-members: ", boxes(Holder { inner = Box<i32> { value = 7; }; }), " ", boxes(Holder { inner = Box<u8> { value = 7u8; }; }));
+	println$("alias-member: ", box_alias(Holder { inner = Box<i32> { value = 7; }; }), " ", box_alias(Holder { inner = ByteBox { value = 7u8; }; }));
+	println$("inferred-header: ", inferred_header(Box<i32> { value = 7; }));
+	println$("aliases: ", aliases(Point { x = 3; }, Nest { point = Point { x = 4; }; button = Button::Left; }));
+	println$("generic-variants: ",
+		variants(Wrapped { inner = Maybe<u8>::Just { value = 7u8; }; }), " ",
+		variants(Wrapped { inner = Maybe<i32>::Just { value = 32; }; }), " ",
+		variants(Wrapped { inner = Button::Left; }), " ",
+		variants(Wrapped { inner = Button::Right; }));
+	println$("known-owner: ", known_owner(Maybe<i32>::Just { value = 0; }), " ", known_owner(Maybe<i32>::Just { value = 7; }));
+	println$("qualified-structs: ", twins(Twins { inner = a::Twin { value = 7; }; }), " ", twins(Twins { inner = b::Twin { value = 7u8; }; }));
+	println$("qualified-enums: ",
+		flags(Flags { inner = a::Flag::On { value = 7; }; }), " ", flags(Flags { inner = b::Flag::On { value = 7; }; }), " ",
+		flags(Flags { inner = a::Flag::Off; }), " ", flags(Flags { inner = b::Flag::Off; }));
+	pair := Pair { left = Res::Ok { value = 7; }; right = Res::Ok { value = 11; }; };
+	println$("sibling-fresh: ", sibling_and_fresh(pair));
+	println$("ordinary-shadow: ", ordinary_shadow(pair));
+	mut result: Res = Res::Ok { value = 7; };
+	println$("pointer-fresh: ", pointer_fresh(&mut result));
+	println$("revealed-header: ", revealed(a::PublicButton::Left), " ", revealed(a::PublicButton::Right));
+	println$("revealed-member: ", revealed_member(RevealedHolder { inner = a::PublicButton::Left; }), " ", revealed_member(RevealedHolder { inner = a::PublicButton::Right; }));
+	box: a::PublicBox = make_box$();
+	println$("macro-headers: ", macro_box(box), " ", macro_alias(box), " ", macro_maybe(a::PublicMaybe::Just { value = 7; }));
+}

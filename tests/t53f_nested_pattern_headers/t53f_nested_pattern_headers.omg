@@ -1,0 +1,71 @@
+import self::other;
+struct Point { x: i32; }
+struct Box<T> { value: T; }
+enum Button { Left, Right; }
+enum Maybe<T> { Nothing, Just { value: T; }; }
+struct Holder { inner: enum Box<i32> | Box<u8>; }
+struct Wrapped { inner: enum Maybe<i32> | Maybe<u8>; }
+
+nonexistent_qualifier(p: Point) => i32 {
+	match p { nonexistent::Point { .. } => 1, .. => 0, }
+}
+
+ignored_generic(p: Point) => i32 {
+	match p { Point<u8> { .. } => 1, .. => 0, }
+}
+
+wrong_module(p: Point) => i32 {
+	match p { other::Point { .. } => 1, .. => 0, }
+}
+
+wrong_generic(p: Box<i32>) => i32 {
+	match p { Box<u8> { .. } => 1, .. => 0, }
+}
+
+invisible_struct(p: Point) => i32 {
+	match p { other::Private { .. } => 1, .. => 0, }
+}
+
+unknown_header(p: Point) => i32 {
+	match p { Unknown { .. } => 1, .. => 0, }
+}
+
+malformed_header(p: Point) => i32 {
+	match p { Point<u8>::Extra::Deep { .. } => 1, .. => 0, }
+}
+
+ambiguous_member(h: Holder) => i32 {
+	match h { Holder { inner = Box { value = 7; }; } => 1, .. => 0, }
+}
+
+nonexistent_variant_qualifier(b: Button) => i32 {
+	match b { nonexistent::Button::Left => 1, .. => 0, }
+}
+
+variant_generic_mismatch(m: Maybe<i32>) => i32 {
+	match m { Maybe<u8>::Just => 1, .. => 0, }
+}
+
+variant_module_mismatch(b: Button) => i32 {
+	match b { other::Button::Left => 1, .. => 0, }
+}
+
+invisible_variant(b: Button) => i32 {
+	match b { other::Secret<u8>::Left => 1, .. => 0, }
+}
+
+unknown_variant(b: Button) => i32 {
+	match b { Button::Missing => 1, .. => 0, }
+}
+
+ambiguous_variant(w: Wrapped) => i32 {
+	match w { Wrapped { inner = Maybe::Just; } => 1, .. => 0, }
+}
+
+anonymous_wrong_member(h: Holder) => i32 {
+	match h { Holder { inner = Box<u16> { .. }; } => 1, .. => 0, }
+}
+
+ignored_variant_generic(b: Button) => i32 {
+	match b { Button<u8>::Left => 1, .. => 0, }
+}

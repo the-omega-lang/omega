@@ -1,4 +1,5 @@
 use super::*;
+use crate::analysis::literals::AggregateTarget;
 use crate::exhaustiveness::{ComponentKey, Leaf, LeafKind, Pat, Product, Sum};
 use omega_hir::HirFieldsPattern;
 
@@ -306,56 +307,86 @@ impl<'r> Analyzer<'r> {
         parent: &ResolvedType,
         pattern: &HirPattern,
     ) -> Option<(usize, bool)> {
-        match &pattern.value {
-            Some(HirPatternValue::Fields(fields)) => {
-                match Self::anonymous_member_for_path(shape, &fields.path) {
-                    Some(index) => Some((index, true)),
-                    None => {
-                        self.error(
-                            node_id,
-                            fields.span,
-                            AnalysisErrorKind::PatternPathMismatch {
-                                expected: parent.clone(),
-                                found: Some(Self::path_text(&fields.path)),
-                            },
+        if let Some(HirPatternValue::Value(expr)) = &pattern.value {
+            return self.with_reveal_operand(expr, |this, _| {
+                this.resolve_anonymous_member_header(node_id, shape, parent, pattern)
+            });
+        }
+        self.resolve_anonymous_member_header(node_id, shape, parent, pattern)
+    }
+
+    fn resolve_anonymous_member_header(
+        &mut self,
+        node_id: HirId,
+        shape: &ResolvedAnonymousEnum,
+        parent: &ResolvedType,
+        pattern: &HirPattern,
+    ) -> Option<(usize, bool)> {
+        let (path, span) = match &pattern.value {
+            Some(HirPatternValue::Fields(fields)) => (&fields.path, fields.span),
+            Some(HirPatternValue::Value(expr)) => {
+                let Some(path) = Self::variant_shaped_path(expr) else {
+                    return self
+                        .resolve_anonymous_member_type(node_id, pattern, shape, parent)
+                        .map(|index| (index, false));
+                };
+                if let Some(raw_type) = &pattern.r#type {
+                    if let Some(member) = self.without_diagnostics(|analyzer| {
+                        analyzer.resolve_type_or_error(node_id, pattern.span(), raw_type, false)
+                    }) {
+                        let describes_member = matches!(
+                            member,
+                            ResolvedType::Enum {
+                                variant: Some(_),
+                                ..
+                            }
                         );
-                        None
+                        return self
+                            .pattern_member_index(
+                                node_id,
+                                pattern.span(),
+                                shape,
+                                parent,
+                                member.widened(),
+                            )
+                            .map(|index| (index, describes_member));
                     }
                 }
+                (path, expr.span)
             }
-            Some(HirPatternValue::Value(expr)) => match Self::enum_member_variant(shape, expr) {
-                Some(index) => Some((index, true)),
-                None => self
+            _ => {
+                return self
                     .resolve_anonymous_member_type(node_id, pattern, shape, parent)
-                    .map(|index| (index, false)),
-            },
-            _ => self
-                .resolve_anonymous_member_type(node_id, pattern, shape, parent)
-                .map(|index| (index, false)),
-        }
-    }
-
-    /// A variant path whose enum is one of the members selects that member.
-    fn enum_member_variant(shape: &ResolvedAnonymousEnum, expr: &HirExprNode) -> Option<usize> {
-        let index = Self::anonymous_member_for_path(shape, Self::variant_shaped_path(expr)?)?;
-        matches!(shape.members()[index], ResolvedType::Enum { .. }).then_some(index)
-    }
-
-    fn anonymous_member_for_path(shape: &ResolvedAnonymousEnum, path: &ExprPath) -> Option<usize> {
-        let tail = &path.path.tail;
-        let last = tail.last().unwrap_or(&path.path.head);
-        let enum_segment = match tail.len() {
-            0 => None,
-            1 => Some(&path.path.head),
-            n => Some(&tail[n - 2]),
-        };
-        shape.members().iter().position(|member| match member {
-            ResolvedType::Struct(cell) => cell.borrow().name == *last,
-            ResolvedType::Enum { cell, .. } => {
-                enum_segment.is_some_and(|segment| *segment == cell.borrow().name)
+                    .map(|index| (index, false));
             }
-            _ => false,
-        })
+        };
+        let target = self.resolve_aggregate_path(node_id, span, path, &[], Expected::None)?;
+        self.pattern_member_index(node_id, span, shape, parent, target.r#type().widened())
+            .map(|index| (index, true))
+    }
+
+    fn pattern_member_index(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        shape: &ResolvedAnonymousEnum,
+        parent: &ResolvedType,
+        member: ResolvedType,
+    ) -> Option<usize> {
+        match shape.index_of(&member) {
+            Some(index) => Some(index),
+            None => {
+                self.error(
+                    node_id,
+                    span,
+                    AnalysisErrorKind::NotAnAnonymousEnumMember {
+                        found: member,
+                        r#enum: parent.clone(),
+                    },
+                );
+                None
+            }
+        }
     }
 
     fn variant_shaped_path(expr: &HirExprNode) -> Option<&ExprPath> {
@@ -363,12 +394,7 @@ impl<'r> Analyzer<'r> {
             HirExpr::Place(HirPlace {
                 root: HirPlaceRoot::Path(path),
                 projections,
-            }) if projections.is_empty()
-                && path.generic_args.is_empty()
-                && !path.path.tail.is_empty() =>
-            {
-                Some(path)
-            }
+            }) if projections.is_empty() && !path.path.tail.is_empty() => Some(path),
             _ => None,
         }
     }
@@ -390,30 +416,8 @@ impl<'r> Analyzer<'r> {
         pattern: &HirPattern,
         proof: &mut Proof,
     ) -> Option<Pat> {
-        let name = cell.borrow().name.clone();
         let fields = match &pattern.value {
-            Some(HirPatternValue::Fields(fields))
-                if *fields
-                    .path
-                    .path
-                    .tail
-                    .last()
-                    .unwrap_or(&fields.path.path.head)
-                    == name =>
-            {
-                fields
-            }
-            Some(HirPatternValue::Fields(fields)) => {
-                self.error(
-                    node_id,
-                    fields.span,
-                    AnalysisErrorKind::PatternPathMismatch {
-                        expected: position.r#type.clone(),
-                        found: Some(Self::path_text(&fields.path)),
-                    },
-                );
-                return None;
-            }
+            Some(HirPatternValue::Fields(fields)) => fields,
             _ => {
                 self.error(
                     node_id,
@@ -426,6 +430,24 @@ impl<'r> Analyzer<'r> {
                 return None;
             }
         };
+        let target = self.resolve_aggregate_path(
+            node_id,
+            fields.span,
+            &fields.path,
+            &[],
+            Expected::Exact(&position.r#type),
+        )?;
+        if target.r#type() != position.r#type.widened() {
+            self.error(
+                node_id,
+                fields.span,
+                AnalysisErrorKind::PatternTypeMismatch {
+                    expected: position.r#type.clone(),
+                    found: target.r#type(),
+                },
+            );
+            return None;
+        }
         let (declared, module_path) = {
             let s = cell.borrow();
             (s.fields.clone(), s.module_path.clone())
@@ -441,7 +463,7 @@ impl<'r> Analyzer<'r> {
             proof,
         )?;
         Some(Pat::Struct {
-            name: Rc::from(name.as_ref()),
+            name: Rc::from(cell.borrow().name.as_ref()),
             fields,
         })
     }
@@ -600,20 +622,7 @@ impl<'r> Analyzer<'r> {
             return None;
         };
         let member = self.resolve_type_or_error(node_id, span, raw_type, false)?;
-        match shape.index_of(&member) {
-            Some(index) => Some(index),
-            None => {
-                self.error(
-                    node_id,
-                    span,
-                    AnalysisErrorKind::NotAnAnonymousEnumMember {
-                        found: member,
-                        r#enum: parent.clone(),
-                    },
-                );
-                None
-            }
-        }
+        self.pattern_member_index(node_id, span, shape, parent, member)
     }
 
     pub(super) fn member_tag_condition(
@@ -684,18 +693,19 @@ impl<'r> Analyzer<'r> {
         cell: &Rc<RefCell<ResolvedEnumType>>,
         expr: &HirExprNode,
     ) -> Option<usize> {
-        let expr = Self::strip_reveal(expr).1;
-        let Some(path) = Self::variant_shaped_path(expr) else {
-            self.error(
-                expr.id,
-                expr.span,
-                AnalysisErrorKind::PatternNotEnumVariant {
-                    r#enum: cell.borrow().name.clone(),
-                },
-            );
-            return None;
-        };
-        self.resolve_variant_path(expr.id, expr.span, cell, path)
+        self.with_reveal_operand(expr, |this, expr| {
+            let Some(path) = Self::variant_shaped_path(expr) else {
+                this.error(
+                    expr.id,
+                    expr.span,
+                    AnalysisErrorKind::PatternNotEnumVariant {
+                        r#enum: cell.borrow().name.clone(),
+                    },
+                );
+                return None;
+            };
+            this.resolve_variant_path(expr.id, expr.span, cell, path)
+        })
     }
 
     fn resolve_variant_path(
@@ -705,54 +715,41 @@ impl<'r> Analyzer<'r> {
         cell: &Rc<RefCell<ResolvedEnumType>>,
         expr_path: &ExprPath,
     ) -> Option<usize> {
-        if !expr_path.generic_args.is_empty() || expr_path.path.tail.is_empty() {
-            self.error(
-                node_id,
-                span,
-                AnalysisErrorKind::PatternNotEnumVariant {
-                    r#enum: cell.borrow().name.clone(),
-                },
-            );
-            return None;
-        }
-        let variant_name = expr_path
-            .path
-            .tail
-            .last()
-            .expect("just confirmed non-empty above");
-        let enum_name_segment = if expr_path.path.tail.len() == 1 {
-            &expr_path.path.head
-        } else {
-            &expr_path.path.tail[expr_path.path.tail.len() - 2]
+        let expected = ResolvedType::Enum {
+            cell: cell.clone(),
+            variant: None,
         };
-        if *enum_name_segment != cell.borrow().name {
-            self.error(
-                node_id,
-                span,
-                AnalysisErrorKind::PatternIsEnumVariant {
-                    r#enum: enum_name_segment.clone(),
-                    variant: variant_name.clone(),
-                    scrutinee: ResolvedType::Enum {
-                        cell: cell.clone(),
-                        variant: None,
-                    },
-                },
-            );
-            return None;
-        }
-        let found = cell.borrow().variant(variant_name).map(|(idx, _)| idx);
-        match found {
-            Some(idx) => Some(idx),
-            None => {
-                let similar =
-                    best_match(variant_name, cell.borrow().variants.iter().map(|v| &v.name));
+        let target =
+            self.resolve_aggregate_path(node_id, span, expr_path, &[], Expected::Exact(&expected))?;
+        match target {
+            AggregateTarget::EnumVariant(found, index)
+                if ResolvedType::Enum {
+                    cell: found.clone(),
+                    variant: None,
+                } == expected =>
+            {
+                Some(index)
+            }
+            AggregateTarget::EnumVariant(found, index) => {
                 self.error(
                     node_id,
                     span,
-                    AnalysisErrorKind::NoSuchVariantInPattern {
+                    AnalysisErrorKind::PatternTypeMismatch {
+                        expected,
+                        found: ResolvedType::Enum {
+                            cell: found,
+                            variant: Some(index),
+                        },
+                    },
+                );
+                None
+            }
+            _ => {
+                self.error(
+                    node_id,
+                    span,
+                    AnalysisErrorKind::PatternNotEnumVariant {
                         r#enum: cell.borrow().name.clone(),
-                        name: variant_name.clone(),
-                        similar,
                     },
                 );
                 None

@@ -1,0 +1,2 @@
+exposed struct Twin { exposed value: u8; }
+exposed enum Flag { Off, On { exposed value: i32; }; }

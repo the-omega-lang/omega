@@ -1,0 +1,64 @@
+error: cannot access variant field 'value' on a value whose 'Res' variant is unknown
+  --> tests/t53e_nested_pattern_invalidation/t53e_nested_pattern_invalidation.omg:19:13
+   |
+19 |             local.value.value
+   |             ^^^^^^^^^^^^^^^^^ this value's variant is not statically known here
+   |
+   = note: 'value' belongs to variant 'Ok', which this value may or may not be;
+           only `tag`, the shared header fields, and the shared dynamic fields are always present
+
+error: cannot access variant field 'value' on a value whose 'Res' variant is unknown
+  --> tests/t53e_nested_pattern_invalidation/t53e_nested_pattern_invalidation.omg:35:13
+   |
+35 |             local.value.value
+   |             ^^^^^^^^^^^^^^^^^ this value's variant is not statically known here
+   |
+   = note: 'value' belongs to variant 'Ok', which this value may or may not be;
+           only `tag`, the shared header fields, and the shared dynamic fields are always present
+
+error: cannot access variant field 'value' on a value whose 'Res' variant is unknown
+  --> tests/t53e_nested_pattern_invalidation/t53e_nested_pattern_invalidation.omg:49:13
+   |
+49 |             local.value.value
+   |             ^^^^^^^^^^^^^^^^^ this value's variant is not statically known here
+   |
+   = note: 'value' belongs to variant 'Ok', which this value may or may not be;
+           only `tag`, the shared header fields, and the shared dynamic fields are always present
+
+error: cannot access variant field 'value' on a value whose 'Res' variant is unknown
+  --> tests/t53e_nested_pattern_invalidation/t53e_nested_pattern_invalidation.omg:66:13
+   |
+66 |             local.holder.inner.value
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^ this value's variant is not statically known here
+   |
+   = note: 'value' belongs to variant 'Ok', which this value may or may not be;
+           only `tag`, the shared header fields, and the shared dynamic fields are always present
+
+error: cannot access variant field 'value' on a value whose 'Opt' variant is unknown
+  --> tests/t53e_nested_pattern_invalidation/t53e_nested_pattern_invalidation.omg:83:13
+   |
+83 |             local.value.value
+   |             ^^^^^^^^^^^^^^^^^ this value's variant is not statically known here
+   |
+   = note: 'value' belongs to variant 'Some', which this value may or may not be;
+           only `tag`, the shared header fields, and the shared dynamic fields are always present
+
+error: cannot access variant field 'value' on a value whose 'Res' variant is unknown
+  --> tests/t53e_nested_pattern_invalidation/t53e_nested_pattern_invalidation.omg:96:13
+   |
+96 |             local.value
+   |             ^^^^^^^^^^^ this value's variant is not statically known here
+   |
+   = note: 'value' belongs to variant 'Ok', which this value may or may not be;
+           only `tag`, the shared header fields, and the shared dynamic fields are always present
+
+error: cannot access variant field 'value' on a value whose 'Res' variant is unknown
+   --> tests/t53e_nested_pattern_invalidation/t53e_nested_pattern_invalidation.omg:109:13
+    |
+109 |             local.value
+    |             ^^^^^^^^^^^ this value's variant is not statically known here
+    |
+    = note: 'value' belongs to variant 'Ok', which this value may or may not be;
+            only `tag`, the shared header fields, and the shared dynamic fields are always present
+
+error: could not compile the program due to 7 previous errors

@@ -1,0 +1,33 @@
+exposed struct Twin { exposed value: i32; }
+exposed enum Flag { Off, On { exposed value: i32; }; }
+
+enum HiddenButton { Left, Right; }
+exposed alias PublicButton = HiddenButton;
+struct MacroBox<T> { value: T; }
+exposed alias PublicBox = MacroBox<i32>;
+alias LocalBox = MacroBox<i32>;
+enum Maybe<T> { Nothing, Just { exposed value: T; }; }
+exposed alias PublicMaybe = Maybe<i32>;
+
+exposed macro classify_box($value: expr) => {
+	match $value {
+		MacroBox { value = 7; } => 1,
+		.. => 0,
+	}
+}
+
+exposed macro classify_alias($value: expr) => {
+	match $value {
+		LocalBox { value = 7; } => 1,
+		.. => 0,
+	}
+}
+
+exposed macro classify_maybe($value: expr) => {
+	match $value {
+		Maybe::Just { value = 7; } => 1,
+		.. => 0,
+	}
+}
+
+exposed macro make_box() => { MacroBox { value = 7; } }

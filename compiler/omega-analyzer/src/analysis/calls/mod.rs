@@ -612,6 +612,9 @@ impl<'r> Analyzer<'r> {
                 true,
             ) => {
                 self.require_mutable_pointer(id, span, wants_mutable, *pointer_mutable)?;
+                if wants_mutable {
+                    self.widen_place(&place);
+                }
                 let pointer = ResolvedType::Pointer {
                     pointee: Box::new(pointee.widened()),
                     mutable: wants_mutable,

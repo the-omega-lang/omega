@@ -41,28 +41,6 @@ impl<'r> Analyzer<'r> {
             }
         }
     }
-    pub(super) fn resolve_alias(
-        &mut self,
-        alias: &Ident,
-    ) -> Result<Option<ImportTarget>, ResolveError> {
-        self.resolver.resolve_import_alias(&self.module_path, alias)
-    }
-
-    pub(super) fn resolve_alias_or_error(
-        &mut self,
-        node_id: HirId,
-        span: Span,
-        alias: &Ident,
-    ) -> Option<Option<ImportTarget>> {
-        match self.resolve_alias(alias) {
-            Ok(target) => Some(target),
-            Err(e) => {
-                self.error(node_id, span, AnalysisErrorKind::ModuleResolution(e));
-                None
-            }
-        }
-    }
-
     pub(super) fn resolve_path_alias_or_error(
         &mut self,
         node_id: HirId,

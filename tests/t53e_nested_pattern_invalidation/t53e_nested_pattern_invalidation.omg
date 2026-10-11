@@ -1,0 +1,113 @@
+enum Res {
+	Ok { value: i32; },
+	Err { code: i32; };
+	clear(*mut self) => void { *self = Res::Err { code = 99; }; }
+}
+enum Opt { None, Some { value: Res; }; }
+struct Holder { inner: Res; }
+enum Wrapped { Empty, Full { holder: Holder; }; }
+replace(v: *mut Res) => void { *v = Res::Err { code = 99; }; }
+
+nested_match(o: Opt) => i32 {
+	mut local := o;
+	match local {
+		Opt::Some { value = Res::Ok; } => {
+			match local {
+				Opt::Some => { replace(&mut local.value); },
+				.. => {},
+			}
+			local.value.value
+		},
+		.. => 0,
+	}
+}
+
+conditional_mutation(o: Opt, flag: bool) => i32 {
+	mut local := o;
+	match local {
+		Opt::Some { value = Res::Ok; } => {
+			if flag {
+				match local {
+					Opt::Some => { replace(&mut local.value); },
+					.. => {},
+				}
+			}
+			local.value.value
+		},
+		.. => 0,
+	}
+}
+
+mutable_receiver(o: Opt) => i32 {
+	mut local := o;
+	match local {
+		Opt::Some { value = Res::Ok; } => {
+			match local {
+				Opt::Some => { local.value.clear(); },
+				.. => {},
+			}
+			local.value.value
+		},
+		.. => 0,
+	}
+}
+
+prefix_alias(o: Wrapped) => i32 {
+	mut local := o;
+	match local {
+		Wrapped::Full { holder = Holder { inner = Res::Ok; }; } => {
+			match local {
+				Wrapped::Full => {
+					pointer := &mut local.holder;
+					pointer.inner = Res::Err { code = 99; };
+				},
+				.. => {},
+			}
+			local.holder.inner.value
+		},
+		.. => 0,
+	}
+}
+
+root_alias(o: Opt) => i32 {
+	mut local := o;
+	match local {
+		Opt::Some { value = Res::Ok; } => {
+			match local {
+				Opt::Some => {
+					pointer := &mut local;
+					*pointer = Opt::None;
+				},
+				.. => {},
+			}
+			local.value.value
+		},
+		.. => 0,
+	}
+}
+
+pointer_root(local: *mut Res) => i32 {
+	match local {
+		Res::Ok => {
+			match local {
+				Res::Ok => { replace(&mut *local); },
+				.. => {},
+			}
+			local.value
+		},
+		.. => 0,
+	}
+}
+
+pointer_receiver(local: *mut Res) => i32 {
+	match local {
+		Res::Ok => {
+			match local {
+				Res::Ok => { local.clear(); },
+				.. => {},
+			}
+			local.value
+		},
+		.. => 0,
+	}
+}

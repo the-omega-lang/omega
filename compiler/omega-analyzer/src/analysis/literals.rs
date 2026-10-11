@@ -7,10 +7,22 @@ struct LiteralTargetFields {
     declared: Vec<ResolvedField>,
 }
 
-enum LiteralTarget {
+pub(super) enum AggregateTarget {
     Struct(ResolvedType),
     EnumVariant(Rc<RefCell<ResolvedEnumType>>, usize),
     Union(ResolvedType),
+}
+
+impl AggregateTarget {
+    pub(super) fn r#type(&self) -> ResolvedType {
+        match self {
+            Self::Struct(r#type) | Self::Union(r#type) => r#type.clone(),
+            Self::EnumVariant(cell, _) => ResolvedType::Enum {
+                cell: cell.clone(),
+                variant: None,
+            },
+        }
+    }
 }
 
 /// Decodes `n`, negated when `negated`, as one value of `kind`, so a signed
@@ -83,10 +95,10 @@ impl<'r> Analyzer<'r> {
         lit: &HirStructLiteral,
         expected: Expected<'_>,
     ) -> Option<CheckedExprNode> {
-        match self.resolve_literal_target(node_id, span, lit, expected)? {
-            LiteralTarget::Struct(resolved) => {
+        match self.resolve_aggregate_path(node_id, span, &lit.path, &lit.fields, expected)? {
+            AggregateTarget::Struct(resolved) => {
                 let ResolvedType::Struct(cell) = &resolved else {
-                    unreachable!("LiteralTarget::Struct always wraps ResolvedType::Struct");
+                    unreachable!("AggregateTarget::Struct always wraps ResolvedType::Struct");
                 };
                 // Snapshot the declared fields so `cell` isn't borrowed
                 // across the value analysis below -- a nested literal of
@@ -115,7 +127,7 @@ impl<'r> Analyzer<'r> {
                     kind: CheckedExpr::StructLiteral(CheckedStructLiteral { fields }),
                 })
             }
-            LiteralTarget::EnumVariant(cell, variant_index) => {
+            AggregateTarget::EnumVariant(cell, variant_index) => {
                 let (enum_name, variant_name, declared, header_names, declaring_module) = {
                     let e = cell.borrow();
                     let v = &e.variants[variant_index];
@@ -191,9 +203,9 @@ impl<'r> Analyzer<'r> {
                     }),
                 })
             }
-            LiteralTarget::Union(resolved) => {
+            AggregateTarget::Union(resolved) => {
                 let ResolvedType::Union(cell) = &resolved else {
-                    unreachable!("LiteralTarget::Union always wraps ResolvedType::Union");
+                    unreachable!("AggregateTarget::Union always wraps ResolvedType::Union");
                 };
                 let declared = cell.borrow().fields.clone();
                 let union_name = cell.borrow().name.clone();
@@ -372,14 +384,14 @@ impl<'r> Analyzer<'r> {
         ok.then_some(checked_fields)
     }
 
-    fn resolve_literal_target(
+    pub(super) fn resolve_aggregate_path(
         &mut self,
         node_id: HirId,
         span: Span,
-        lit: &HirStructLiteral,
+        path: &ExprPath,
+        fields: &[HirStructLiteralField],
         expected: Expected<'_>,
-    ) -> Option<LiteralTarget> {
-        let path = &lit.path;
+    ) -> Option<AggregateTarget> {
         if path.plain().is_none() {
             let segments = path.path.segments();
             let rest = segments[path.args_at + 1..].to_vec();
@@ -424,7 +436,7 @@ impl<'r> Analyzer<'r> {
                     span,
                     &real_absolute,
                     &sig,
-                    &lit.fields,
+                    fields,
                     expected,
                     seed,
                 )?
@@ -462,14 +474,14 @@ impl<'r> Analyzer<'r> {
             if let Some(local) = self.context.find_defined_type(&plain.head).cloned() {
                 return self.literal_target_from_type(node_id, span, local, &[]);
             }
-            let alias = self.resolve_alias_or_error(node_id, span, &plain.head)?;
+            let alias = self.resolve_path_alias_or_error(node_id, span, plain)?;
             let access = match &alias {
                 Some(ImportTarget::Item(absolute, _)) | Some(ImportTarget::Module(absolute)) => {
                     ItemAccess::gated(absolute.clone())
                 }
                 Some(ImportTarget::ItemPath(access)) => access.clone(),
                 None => ItemAccess::gated(
-                    self.module_path
+                    self.path_module(plain)
                         .iter()
                         .cloned()
                         .chain(std::iter::once(plain.head.clone()))
@@ -491,7 +503,7 @@ impl<'r> Analyzer<'r> {
                         absolute: real_absolute.clone(),
                     },
                     &sig,
-                    &lit.fields,
+                    fields,
                     expected,
                     plain.origin,
                 )?;
@@ -536,15 +548,19 @@ impl<'r> Analyzer<'r> {
         };
         let module_qualified = match self.module_qualified_path(node_id, span, plain) {
             ModuleQualifiedPath::Item(access) => Some(access),
-            ModuleQualifiedPath::NotModule => anchored
-                .as_ref()
-                .map(|absolute| ItemAccess::gated(absolute.clone())),
+            ModuleQualifiedPath::NotModule => {
+                self.module_headed_path(node_id, span, plain)?.or_else(|| {
+                    anchored
+                        .as_ref()
+                        .map(|absolute| ItemAccess::gated(absolute.clone()))
+                })
+            }
             ModuleQualifiedPath::Failed => return None,
         };
         let alias = if anchored.is_some() || module_qualified.is_some() {
             None
         } else {
-            self.resolve_alias_or_error(node_id, span, &plain.head)?
+            self.resolve_path_alias_or_error(node_id, span, plain)?
         };
         if let Some(access) = module_qualified {
             let absolute = access.absolute.clone();
@@ -555,7 +571,7 @@ impl<'r> Analyzer<'r> {
                     &absolute,
                     &access,
                     &sig,
-                    &lit.fields,
+                    fields,
                     expected,
                     plain.origin,
                 )?,
@@ -596,7 +612,7 @@ impl<'r> Analyzer<'r> {
                         &prefix_access.absolute,
                         &prefix_access,
                         &sig,
-                        &lit.fields,
+                        fields,
                         expected,
                         plain.origin,
                     )?,
@@ -628,7 +644,7 @@ impl<'r> Analyzer<'r> {
         let access = match alias {
             Some(ImportTarget::ItemPath(access)) => access,
             _ => ItemAccess::gated(
-                self.module_path
+                self.path_module(plain)
                     .iter()
                     .cloned()
                     .chain(std::iter::once(plain.head.clone()))
@@ -651,7 +667,7 @@ impl<'r> Analyzer<'r> {
                     absolute: real_absolute,
                 },
                 &sig,
-                &lit.fields,
+                fields,
                 expected,
                 plain.origin,
             )?,
@@ -879,17 +895,17 @@ impl<'r> Analyzer<'r> {
         span: Span,
         r#type: ResolvedType,
         rest: &[Ident],
-    ) -> Option<LiteralTarget> {
+    ) -> Option<AggregateTarget> {
         let kind = match &r#type {
             ResolvedType::Struct(cell) => match rest.first() {
-                None => return Some(LiteralTarget::Struct(r#type.clone())),
+                None => return Some(AggregateTarget::Struct(r#type.clone())),
                 Some(name) => AnalysisErrorKind::StructLiteralPathTooDeep {
                     r#struct: cell.borrow().name.clone(),
                     name: name.clone(),
                 },
             },
             ResolvedType::Union(cell) => match rest.first() {
-                None => return Some(LiteralTarget::Union(r#type.clone())),
+                None => return Some(AggregateTarget::Union(r#type.clone())),
                 Some(name) => AnalysisErrorKind::StructLiteralPathTooDeep {
                     r#struct: cell.borrow().name.clone(),
                     name: name.clone(),
@@ -911,7 +927,7 @@ impl<'r> Analyzer<'r> {
                     let found = cell.borrow().variant(variant_name).map(|(index, _)| index);
                     match found {
                         Some(index) => {
-                            return Some(LiteralTarget::EnumVariant(cell.clone(), index));
+                            return Some(AggregateTarget::EnumVariant(cell.clone(), index));
                         }
                         None => {
                             let e = cell.borrow();

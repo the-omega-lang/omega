@@ -204,3 +204,120 @@ fn a_macro_origin_name_does_not_shadow_the_same_spelling_from_the_caller() {
         2
     );
 }
+
+fn refined_binding(local: u32, r#type: ResolvedType) -> VarBinding {
+    let mut binding = binding(local, r#type, true);
+    binding.narrowed = true;
+    binding.refinements = [vec!["left"], vec!["left", "value"], vec!["right"]]
+        .into_iter()
+        .map(|path| RefinedPath {
+            path: path.into_iter().map(|name| Ident(name.into())).collect(),
+            r#type: ResolvedType::Bool,
+            member: None,
+        })
+        .collect();
+    binding
+}
+
+fn declare_refined(ctx: &mut Context, local: u32, r#type: ResolvedType) -> HirId {
+    let binding = refined_binding(local, r#type);
+    let id = binding.decl_id;
+    ctx.declare(
+        Ident("x".into()),
+        Origin::default(),
+        binding,
+        DeclarationPolicy::Shadow,
+    )
+    .unwrap();
+    id
+}
+
+#[test]
+fn prefix_invalidation_survives_every_refinement_scope_and_keeps_siblings() {
+    let mut ctx = Context::new(Target::DEFAULT);
+    ctx.enter_scope();
+    let id = declare_refined(&mut ctx, 1, ResolvedType::I32);
+    ctx.enter_scope();
+    declare_refined(&mut ctx, 1, ResolvedType::I32);
+    ctx.enter_scope();
+    declare_refined(&mut ctx, 1, ResolvedType::I32);
+    ctx.drop_refinements(id, &[Ident("left".into())]);
+    for _ in 0..3 {
+        assert_eq!(ctx.refinements(id).len(), 1);
+        assert_eq!(ctx.refinements(id)[0].path, vec![Ident("right".into())]);
+        ctx.leave_scope();
+    }
+}
+
+#[test]
+fn mutation_of_a_same_named_local_keeps_the_outer_declarations_proofs() {
+    let mut ctx = Context::new(Target::DEFAULT);
+    ctx.enter_scope();
+    let outer = declare_refined(&mut ctx, 1, ResolvedType::I32);
+    ctx.enter_scope();
+    let inner = declare_refined(&mut ctx, 2, ResolvedType::I32);
+    ctx.widen_variable(&Ident("x".into()), Origin::default());
+    assert!(ctx.refinements(inner).is_empty());
+    ctx.leave_scope();
+    assert_eq!(ctx.refinements(outer).len(), 3);
+}
+
+#[test]
+fn root_invalidation_widens_proved_pointer_pointees_across_scopes() {
+    let mut ctx = Context::new(Target::DEFAULT);
+    let shape = std::rc::Rc::new(ResolvedAnonymousEnum::canonicalize(vec![
+        ResolvedType::I32,
+        ResolvedType::Bool,
+    ]));
+    let parent = ResolvedType::AnonymousEnum {
+        shape: shape.clone(),
+        variant: None,
+    };
+    let proved = ResolvedType::AnonymousEnum {
+        shape,
+        variant: Some(0),
+    };
+    for pointer in [false, true] {
+        let wrap = |pointee| {
+            if pointer {
+                ResolvedType::Pointer {
+                    pointee: Box::new(pointee),
+                    mutable: true,
+                }
+            } else {
+                pointee
+            }
+        };
+        ctx.enter_scope();
+        let id = declare_refined(&mut ctx, 1, wrap(proved.clone()));
+        ctx.enter_scope();
+        declare_refined(&mut ctx, 1, wrap(proved.clone()));
+        ctx.drop_refinements(id, &[]);
+        for _ in 0..2 {
+            assert!(ctx.refinements(id).is_empty());
+            assert_eq!(
+                ctx.find_variable(&Ident("x".into()), Origin::default())
+                    .unwrap()
+                    .r#type,
+                wrap(parent.clone())
+            );
+            ctx.leave_scope();
+        }
+    }
+    let nested_pointer = ResolvedType::Pointer {
+        pointee: Box::new(ResolvedType::Pointer {
+            pointee: Box::new(proved),
+            mutable: true,
+        }),
+        mutable: true,
+    };
+    ctx.enter_scope();
+    let id = declare_refined(&mut ctx, 1, nested_pointer.clone());
+    ctx.drop_refinements(id, &[]);
+    assert_eq!(
+        ctx.find_variable(&Ident("x".into()), Origin::default())
+            .unwrap()
+            .r#type,
+        nested_pointer
+    );
+}

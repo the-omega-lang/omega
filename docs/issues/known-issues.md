@@ -96,30 +96,6 @@ Concrete current compiler/library bugs and unsupported cases. Resolved issues ar
 
 ## Types
 
-- **A mutable alias inside a nested match can restore an invalidated field
-  refinement on scope exit.** An outer `Opt::Some { value = Res::Ok; }`
-  proof is copied into a nested match's shadow binding. Taking
-  `&mut local.value` there removes the proof only from the innermost binding;
-  leaving that match restores the outer proof. A callee can replace the
-  field with `Res::Err`, after which `local.value.value` still compiles and
-  reads the wrong variant's payload. Proof invalidation needs to survive
-  refinement-shadow scopes and conservatively account for branches, rather
-  than updating only the latest binding with the same declaration ID.
-  [bindings-and-mutability.md](../language/bindings-and-mutability.md)
-
-- **Field-pattern paths are compared by declaration name instead of resolved
-  type identity.** Struct patterns ignore qualifiers and generic arguments:
-  `nonexistent::Point { .. }` can match a `Point`, while a valid alias
-  `alias P = Point` is rejected as `P { .. }`. Anonymous-enum shape patterns
-  choose the first same-named member, so a `Box<u8> { value = 7; }` pattern
-  in `enum Box<i32> | Box<u8>` selects `Box<i32>` and uses its field types.
-  This can dispatch to the wrong arm and read the wrong representation.
-  Pattern headers must use ordinary type/name resolution, including aliases,
-  qualification, generic arguments and visibility, before comparing the
-  result with the matched position or canonical member list.
-  [enums-and-pattern-matching.md](../language/enums-and-pattern-matching.md),
-  [aliases.md](../language/aliases.md)
-
 - **Ordinary indexing does not validate the index expression type during semantic
   analysis.** `project_index` analyzes `container[index]` with no expected type
   and records the resulting expression directly in `CheckedProjection::Index`.

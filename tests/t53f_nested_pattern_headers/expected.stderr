@@ -1,0 +1,107 @@
+error: cannot find 'nonexistent' in this scope
+  --> tests/t53f_nested_pattern_headers/t53f_nested_pattern_headers.omg:10:15
+   |
+10 |     match p { nonexistent::Point { .. } => 1, .. => 0, }
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^ not a known module or struct
+   |
+   = note: if `nonexistent` is a module, it must be imported first: `import nonexistent;`
+
+error: 't53f_nested_pattern_headers::Point' expects 0 generic argument(s), found 1
+  --> tests/t53f_nested_pattern_headers/t53f_nested_pattern_headers.omg:14:15
+   |
+14 |     match p { Point<u8> { .. } => 1, .. => 0, }
+   |               ^^^^^^^^^^^^^^^^ expected 0 generic arguments
+
+error: mismatched types: expected 't53f_nested_pattern_headers::Point', found 't53f_nested_pattern_headers::other::Point'
+  --> tests/t53f_nested_pattern_headers/t53f_nested_pattern_headers.omg:18:15
+   |
+18 |     match p { other::Point { .. } => 1, .. => 0, }
+   |               ^^^^^^^^^^^^^^^^^^^ expected `Point`, found `Point`
+
+error: mismatched types: expected 'Box<i32>', found 'Box<u8>'
+  --> tests/t53f_nested_pattern_headers/t53f_nested_pattern_headers.omg:22:15
+   |
+22 |     match p { Box<u8> { .. } => 1, .. => 0, }
+   |               ^^^^^^^^^^^^^^ expected `Box<i32>`, found `Box<u8>`
+
+error: 't53f_nested_pattern_headers::other::Private' is not visible here
+  --> tests/t53f_nested_pattern_headers/t53f_nested_pattern_headers.omg:26:15
+   |
+26 |     match p { other::Private { .. } => 1, .. => 0, }
+   |               ^^^^^^^^^^^^^^^^^^^^^ not visible from this module
+
+error: cannot find type 'Unknown' in this scope
+  --> tests/t53f_nested_pattern_headers/t53f_nested_pattern_headers.omg:30:15
+   |
+30 |     match p { Unknown { .. } => 1, .. => 0, }
+   |               ^^^^^^^^^^^^^^ not found in this scope
+
+error: path continues too far past 'Point'
+  --> tests/t53f_nested_pattern_headers/t53f_nested_pattern_headers.omg:34:15
+   |
+34 |     match p { Point<u8>::Extra::Deep { .. } => 1, .. => 0, }
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ nothing nests deeper than `Point`'s own members
+
+error: cannot infer type argument(s) 'T' of 'Box' here
+  --> tests/t53f_nested_pattern_headers/t53f_nested_pattern_headers.omg:38:32
+   |
+38 |     match h { Holder { inner = Box { value = 7; }; } => 1, .. => 0, }
+   |                                ^^^^^^^^^^^^^^^^^^ cannot infer type argument(s) `T` of `Box` here
+   |
+   = help: write them explicitly, e.g. `Box<...>`
+
+error: cannot find 'nonexistent' in this scope
+  --> tests/t53f_nested_pattern_headers/t53f_nested_pattern_headers.omg:42:15
+   |
+42 |     match b { nonexistent::Button::Left => 1, .. => 0, }
+   |               ^^^^^^^^^^^^^^^^^^^^^^^^^ not a known module or struct
+   |
+   = note: if `nonexistent` is a module, it must be imported first: `import nonexistent;`
+
+error: mismatched types: expected 'Maybe<i32>', found 'Maybe<u8>::Just'
+  --> tests/t53f_nested_pattern_headers/t53f_nested_pattern_headers.omg:46:15
+   |
+46 |     match m { Maybe<u8>::Just => 1, .. => 0, }
+   |               ^^^^^^^^^^^^^^^ expected `Maybe<i32>`, found `Maybe<u8>::Just`
+
+error: mismatched types: expected 'Button', found 'Button::Left'
+  --> tests/t53f_nested_pattern_headers/t53f_nested_pattern_headers.omg:50:15
+   |
+50 |     match b { other::Button::Left => 1, .. => 0, }
+   |               ^^^^^^^^^^^^^^^^^^^ expected `Button`, found `Button::Left`
+
+error: 't53f_nested_pattern_headers::other::Secret' is not visible here
+  --> tests/t53f_nested_pattern_headers/t53f_nested_pattern_headers.omg:54:15
+   |
+54 |     match b { other::Secret<u8>::Left => 1, .. => 0, }
+   |               ^^^^^^^^^^^^^^^^^^^^^^^ not visible from this module
+
+error: no variant or function 'Missing' on enum 'Button'
+  --> tests/t53f_nested_pattern_headers/t53f_nested_pattern_headers.omg:58:15
+   |
+58 |     match b { Button::Missing => 1, .. => 0, }
+   |               ^^^^^^^^^^^^^^^ not found in `Button`
+
+error: cannot infer type argument(s) 'T' of 'Maybe' here
+  --> tests/t53f_nested_pattern_headers/t53f_nested_pattern_headers.omg:62:33
+   |
+62 |     match w { Wrapped { inner = Maybe::Just; } => 1, .. => 0, }
+   |                                 ^^^^^^^^^^^ cannot infer type argument(s) `T` of `Maybe` here
+   |
+   = help: write them explicitly, e.g. `Maybe<...>`
+
+error: 'Box<u16>' is not a member of 'enum Box<i32> | Box<u8>'
+  --> tests/t53f_nested_pattern_headers/t53f_nested_pattern_headers.omg:66:32
+   |
+66 |     match h { Holder { inner = Box<u16> { .. }; } => 1, .. => 0, }
+   |                                ^^^^^^^^^^^^^^^ not one of this type's members
+   |
+   = help: the members of `enum Box<i32> | Box<u8>` are the only arms it can match
+
+error: 't53f_nested_pattern_headers::Button' expects 0 generic argument(s), found 1
+  --> tests/t53f_nested_pattern_headers/t53f_nested_pattern_headers.omg:70:15
+   |
+70 |     match b { Button<u8>::Left => 1, .. => 0, }
+   |               ^^^^^^^^^^^^^^^^ expected 0 generic arguments
+
+error: could not compile the program due to 16 previous errors

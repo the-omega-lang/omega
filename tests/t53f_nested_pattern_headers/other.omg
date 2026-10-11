@@ -1,0 +1,4 @@
+exposed struct Point { exposed x: i32; }
+struct Private { x: i32; }
+exposed enum Button { Left, Right; }
+enum Secret<T> { Left, Right; }
