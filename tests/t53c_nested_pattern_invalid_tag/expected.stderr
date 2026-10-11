@@ -1,0 +1,1 @@
+panicked at tests/t53c_nested_pattern_invalid_tag/t53c_nested_pattern_invalid_tag.omg:19:5: invalid enum tag in match

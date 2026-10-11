@@ -1,0 +1,141 @@
+error: overlapping match arms
+  --> tests/t53b_nested_pattern_errors/t53b_nested_pattern_errors.omg:48:9
+   |
+47 |         Point { x = 0..<10; .. } => 1,
+   |         ------------------------ overlapping arm here
+48 |         Point { x = 5..<20; .. } => 2,
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^ this pattern partly overlaps an earlier arm at `x`
+   |
+   = note: neither pattern contains the other, so no arm is the more specific one;
+           make the two patterns nest or stop touching
+
+error: match arm is more specific than an earlier arm
+  --> tests/t53b_nested_pattern_errors/t53b_nested_pattern_errors.omg:58:9
+   |
+57 |         Opt::Some => 1,
+   |         --------- this more general arm comes first
+58 |         Opt::Some { value = Res::Ok; } => 2,
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ every value this arm matches is matched by an earlier arm
+   |
+   = help: move this arm above the arm it is more specific than
+
+error: duplicate match arm
+  --> tests/t53b_nested_pattern_errors/t53b_nested_pattern_errors.omg:67:9
+   |
+66 |         Point { x = 0; .. } => 1,
+   |         ------------------- same pattern here
+67 |         Point { x = 0; .. } => 2,
+   |         ^^^^^^^^^^^^^^^^^^^ this pattern is identical to an earlier arm
+   |
+   = help: remove one of the two arms
+
+error: unreachable match arm
+  --> tests/t53b_nested_pattern_errors/t53b_nested_pattern_errors.omg:77:9
+   |
+75 |         Pair { a = true; .. } => 1,
+   |         --------------------- covered in part here
+76 |         Pair { a = false; .. } => 2,
+   |         ---------------------- covered in part here
+77 |         Pair { .. } => 3,
+   |         ^^^^^^^^^^^ every value this arm matches is matched by earlier arms
+   |
+   = help: remove this arm
+
+error: unreachable match arm
+  --> tests/t53b_nested_pattern_errors/t53b_nested_pattern_errors.omg:85:9
+   |
+83 |         0..<100 => 1,
+   |         ------- covered in part here
+84 |         100..<200 => 2,
+   |         --------- covered in part here
+85 |         0..<200 => 3,
+   |         ^^^^^^^ every value this arm matches is matched by earlier arms
+   |
+   = help: remove this arm
+
+error: '..' must be the last arm
+  --> tests/t53b_nested_pattern_errors/t53b_nested_pattern_errors.omg:93:9
+   |
+92 |         .. => 0,
+   |         -- the `..` arm matches everything
+93 |         3 => 1,
+   |         ^ every value this arm matches is matched by an earlier arm
+   |
+   = help: move `..` to the end of the arm list
+
+error: match on 'Opt' does not cover every value
+   --> tests/t53b_nested_pattern_errors/t53b_nested_pattern_errors.omg:98:5
+    |
+ 98 |       match o {
+    |  _____^
+ 99 | |         Opt::None => 0,
+100 | |         Opt::Some { value = Res::Ok; } => 1,
+101 | |     }
+    | |_____^ not covered: Opt::Some { value = Res::Err; .. }
+    |
+    = help: cover the remaining patterns, or add an `else` block
+
+error: no field 'z' on 'Point'
+   --> tests/t53b_nested_pattern_errors/t53b_nested_pattern_errors.omg:106:17
+    |
+106 |         Point { z = 0; .. } => 1,
+    |                 ^ `Point` has no field by that name
+
+error: 'label' cannot be named in a pattern
+   --> tests/t53b_nested_pattern_errors/t53b_nested_pattern_errors.omg:113:22
+    |
+113 |         Level::Low { label = 0; .. } => 1,
+    |                      ^^^^^ `label` is fixed by the variant
+    |
+    = note: the tag and header fields are per-variant constants; the variant path already says what they are
+
+error: field 'bits' of type 'Bits' cannot be matched
+   --> tests/t53b_nested_pattern_errors/t53b_nested_pattern_errors.omg:120:18
+    |
+120 |         Packet { bits = 0; .. } => 1,
+    |                  ^^^^ `Bits` has no pattern form
+    |
+    = note: a field pattern can match enums, anonymous enums, structs, integers, `bool`, and `char`
+
+error: pattern does not name every field
+   --> tests/t53b_nested_pattern_errors/t53b_nested_pattern_errors.omg:127:9
+    |
+127 |         Point { x = 0; } => 1,
+    |         ^^^^^^^^^^^^^^^^ missing field 'y'
+    |
+    = help: name them, or end the pattern with `..` to leave the rest unconstrained
+
+error: cannot assign to 'local.value' while this arm relies on its proved variant
+   --> tests/t53b_nested_pattern_errors/t53b_nested_pattern_errors.omg:136:13
+    |
+136 |             local.value = Res::Err { code = 1; };
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this would replace the value the arm proved at `local.value`
+    |
+    = help: assign inside the refined field instead, or after the `match`
+
+error: cannot access variant field 'value' on a value whose 'Res' variant is unknown
+   --> tests/t53b_nested_pattern_errors/t53b_nested_pattern_errors.omg:147:13
+    |
+147 |             local.value.value
+    |             ^^^^^^^^^^^^^^^^^ this value's variant is not statically known here
+    |
+    = note: 'value' belongs to variant 'Ok', which this value may or may not be;
+            only `tag`, the shared header fields, and the shared dynamic fields are always present
+
+error: unreachable match arm
+   --> tests/t53b_nested_pattern_errors/t53b_nested_pattern_errors.omg:155:9
+    |
+155 |         5..<5 => 1,
+    |         ^^^^^ every value this arm matches is matched by earlier arms
+    |
+    = help: remove this arm
+
+error: unreachable match arm
+   --> tests/t53b_nested_pattern_errors/t53b_nested_pattern_errors.omg:162:9
+    |
+162 |         Point { x = 5..<5; .. } => 1,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^ every value this arm matches is matched by earlier arms
+    |
+    = help: remove this arm
+
+error: could not compile the program due to 15 previous errors

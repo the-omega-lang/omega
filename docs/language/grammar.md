@@ -581,9 +581,15 @@ match-expression = "match", expression-no-leading-struct-literal,
                    [ "else", code-block ] ;
 
 match-arm = pattern, "=>", expression ;
+
+pattern       = field-pattern | range | expression | type ;
+field-pattern = expr-path, "{", { field-subpattern }, [ ".." ], "}" ;
+field-subpattern = identifier, "=", pattern, ";" ;
 ```
 
-Patterns are value patterns or ranges; bare `..` is a catch-all. A `pattern` that parses completely as a `type` up to its `=>` may also be read as a type pattern, which is how an anonymous enum's members are matched; that reading is selected only when the scrutinee is an anonymous enum, so `Enum::Variant`, literal, range, and constant-value patterns keep their ordinary meaning everywhere else. Enum/refinement semantics are specified in [`enums-and-pattern-matching.md`](enums-and-pattern-matching.md).
+Patterns are value patterns, ranges, or field patterns; a bare `..` arm is the catch-all, and a bare `..` subpattern leaves its field unconstrained. A path directly followed by `{` in pattern position is always a field pattern, never a struct literal. Its fields are written exactly like struct-literal initializers, each terminated by `;`, and an optional trailing `..` (with no `;`) ends the list.
+
+A `pattern` that parses completely as a `type` up to its terminator -- `=>` for an arm, `;` for a field subpattern -- may also be read as a type pattern, which is how an anonymous enum's members are matched; that reading is selected only at an anonymous-enum position, so `Enum::Variant`, literal, range, and constant-value patterns keep their ordinary meaning everywhere else. Pattern and refinement semantics are specified in [`enums-and-pattern-matching.md`](enums-and-pattern-matching.md).
 
 ### Range syntax
 

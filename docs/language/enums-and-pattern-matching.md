@@ -319,13 +319,21 @@ Each arm's type is resolved in the enclosing module (aliases included) and must
 be exactly a member of the scrutinee's canonical member list. Naming a
 non-member, or naming the same member twice, is an error.
 
+An arm may also describe the member it selects instead of naming its type: a
+field pattern whose struct is a member (`Point { x = 0; .. }`), or a variant
+pattern whose enum is a member (`Status::Err`, `Status::Err { code = 7; }`),
+selects that member and constrains it further. The same three spellings are
+accepted wherever an anonymous enum appears at a nested position of a field
+pattern; see [Field patterns](#field-patterns).
+
 Because the canonical list holds leaves, arms name leaves. An alias that itself
 resolves to an anonymous enum is not a member and is therefore not an arm that
 groups several leaves at once; match those leaf types individually.
 
-Coverage follows the ordinary enum rules: the arms may cover every member, or
-coverage is completed by a single bare `..` arm or an `else` block. Matching
-compares the tag, so arms never overlap beyond the duplicate-member check.
+Coverage and arm order follow the ordinary rules in
+[Exhaustiveness and overlap](#exhaustiveness-and-overlap), with the members as
+the alternatives: the arms may cover every member, or coverage is completed by
+a final bare `..` arm or an `else` block.
 
 An anonymous enum's member types are only a pattern spelling here. Elsewhere a
 `match` arm keeps its ordinary meaning: enum-variant paths, literals, ranges,
@@ -336,7 +344,8 @@ and constant values are unaffected.
 Like a named enum match, an anonymous enum match refines a directly nameable
 scrutinee binding for the lexical scope of the arm — including through a
 pointer-to-anonymous-enum scrutinee. The proof narrows the binding to the
-matched member.
+matched member, and an arm that also proves the member's own variant or fields
+refines those as well.
 
 Within the arm, ordinary use of that binding reads the member value: field
 access, indexing, and method calls apply to the member's type, and the binding
@@ -387,6 +396,8 @@ pattern => { ... }
 
 Arms are comma-separated and may have a trailing comma. An optional `else { ... }` follows the arm list when needed.
 
+A scrutinee may be an enum, an anonymous enum, a struct, or a value of a finite ordered integral domain (an integer type, `bool`, or `char`). An enum, anonymous enum, or struct may also be matched through a single pointer to it.
+
 ### Enum patterns
 
 An enum pattern names a variant path:
@@ -412,23 +423,65 @@ match option {
 
 The analogous refinement applies through a pointer-to-enum scrutinee to the proven pointee variant. Refinement is lexical proof, not a permanent change to the runtime value. Taking mutable aliases can require widening as described in [`bindings-and-mutability.md`](bindings-and-mutability.md).
 
+### Field patterns
+
+A pattern may also describe the fields of the value it matches. A field pattern mirrors construction: a variant or struct path, then `name = subpattern;` for each field, with an optional trailing `..` that leaves every unnamed field unconstrained:
+
+```omega
+match event {
+    Event::Click { pos = Point { x = 0; .. }; button = Button::Left; } => { ... },
+    Event::Click { button = Button::Left; .. } => { ... },
+    Event::Key { ch = 'a'..='z'; shift = false; .. } => { ... },
+    .. => { ... },
+}
+```
+
+Field patterns nest to any depth. A subpattern is whatever pattern its field's type accepts:
+
+- an enum field takes a variant path or a variant field pattern;
+- an anonymous-enum field takes a member type, a struct field pattern whose struct is a member, or a variant pattern whose enum is a member;
+- a struct field takes a struct field pattern;
+- an integer, `bool`, or `char` field takes a literal or a range;
+- a bare `..` takes any value of the field.
+
+Only runtime fields can be named: for an enum variant, the enum's shared dynamic fields and the variant's own body fields; for a struct, its fields visible from the matching module. The tag and header fields are never named — the variant path already fixes them, exactly as construction never supplies them. A field of any other type (a union, pointer, array, slice, float, ...) has no pattern form and cannot be named. Naming a field twice is an error. Without a trailing `..`, every visible field that has a pattern form must be named. For a variant, `Path { .. }` means the same as the bare path `Path`; a struct is always matched with a field pattern.
+
+A field pattern proves facts; it never binds names, copies, or aliases anything. When the scrutinee is a directly nameable binding, an arm refines not only the binding but every field path its pattern proved to hold one variant or member, for the lexical scope of the arm:
+
+```omega
+match res {
+    Option::Some { value = Result::Ok; } => use(res.value.value),
+    .. => { ... },
+}
+```
+
+Here the arm proves both that `res` is `Some` and that `res.value` is `Ok`, so `res.value.value` is available. Field-path refinement follows the same rules as binding refinement, including through a pointer scrutinee; mutation and aliasing of a refined path are specified in [`bindings-and-mutability.md`](bindings-and-mutability.md).
+
 ### Exhaustiveness and overlap
 
-For enum matches, explicit variant arms may cover all variants. If they do not, coverage must be completed by either an `else` block or a single bare `..` catch-all arm. For an anonymous enum the same rule applies to its canonical members, with each arm naming a member type.
+Every value of the scrutinee is either matched by an arm, covered by `else`, or — for an enum — an invalid tag (see [Invalid tags](#invalid-tags)). The arms may cover the whole domain on their own, or coverage is completed by an `else` block or a final bare `..` arm. A match that leaves values uncovered without either is an error that lists the missing values as patterns.
 
-An enum `match`'s `else` covers the variants the arms left, exactly as a bare `..` does — it is not an unconditional fallthrough. If the arms already cover every declared variant (a `..` among them counts), the `else` can never run: it is reported as unreachable code. A dead `else` is still ordinary source and is checked for ordinary errors, but its result does not participate in the match's type and its body is not emitted. Giving it a different result type is therefore not a type error in the surrounding match.
+Arms may overlap, but only in ways where the order they are written in is the order of their specificity. Two arms are compared position by position, recursively through their field patterns. At a leaf — a literal or range, or the variant or member chosen at an enum position — two arms' subpatterns are disjoint, equal, or one lies inside the other:
 
-For value matches, Omega supports finite ordered integral domains: integer types, `bool`, and `char`. Literal and range patterns denote sets of values. Arms must partition the covered domain: two arms may not overlap. There is no first-match-wins rule for overlapping patterns.
+1. A leaf where two arms **partially overlap** — each matches values the other does not, and they share some (`x = 0..<10` against `x = 5..<20`) — is an error, unless the two arms are disjoint at some other position.
+2. If one arm lies inside another at every position and the two differ, it is **more specific**. The more specific arm must come first, and it is the one that runs on the overlap. A more specific arm written after the arm containing it is an error.
+3. Arms that lie inside each other in opposite directions at different positions (`Point { x = 0; .. }` and `Point { y = 0; .. }`) carry the **same weight**. They may overlap, and the earlier one runs on the overlap.
+4. An arm whose every value is already matched by the earlier arms together is **unreachable**, and an error.
+5. Two **identical** patterns are an error.
+
+Together these rules guarantee that the first arm, in reading order, whose pattern matches a value is the arm that runs for it, and that this is never a less specific arm hiding a more specific one.
 
 ```omega
 message := match n {
-    0..<100 => "less than a hundred",
-    100 => "a hundred",
-    .. => "more than a hundred",
+    5 => "five",
+    0..<10 => "a digit",
+    .. => "something else",
 };
 ```
 
-Floating-point values are not supported as `match` scrutinees.
+For value matches, the scrutinee's domain is the finite ordered integral domain of its type: integer types, `bool`, and `char`. Literal and range patterns denote sets of values, and a value match is the single-leaf case of the rules above. Floating-point values are not supported as `match` scrutinees or field patterns.
+
+An enum `match`'s `else` covers the variants whose values the arms left — exactly as a bare `..` does — and is not an unconditional fallthrough. If the arms already cover every declared variant (a `..` among them counts), the `else` can never run: it is reported as unreachable code. A dead `else` is still ordinary source and is checked for ordinary errors, but its result does not participate in the match's type and its body is not emitted. Giving it a different result type is therefore not a type error in the surrounding match.
 
 A `match` used as an expression must produce a value on every reachable arm. When static coverage proves a match exhaustive, the impossible runtime remainder is not a normal fallthrough path.
 
@@ -437,6 +490,8 @@ A `match` used as an expression must produce a value on every reachable arm. Whe
 Coverage is over the variants an enum *declares*, not over every bit pattern its tag field can hold. A `match` on an enum value whose tag is none of the declared ones has reached a state the declaration says cannot exist. That is not resolved by picking a variant, by taking the `else` block, or by continuing: it reports `invalid enum tag in match` through `core::panic::PanicHandler` at the `match`, and the program stops. No arm body, no `else` block, and no `defer` registered by the surrounding function runs.
 
 The same rule covers a `match` through a pointer to an enum, and a `match` on an anonymous enum whose tag is outside its canonical member list.
+
+A tag nested inside the scrutinee is tested only where a subpattern names a variant or member at its position, and an invalid nested tag fails every such test. An arm that leaves that position unconstrained does not test it and still runs. When no arm accepts the value, the `match` reports `invalid enum tag in match` exactly as for an invalid scrutinee tag. The scrutinee's own tag, when it is an enum, is always tested, including by a bare `..` and by `else`.
 
 This is a check on the operation that relies on the tag, not a promise that every enum value is validated. Reaching a `match` with an invalid tag requires having produced one — through a pointer reinterpretation, foreign code, or uninitialized storage — and nothing here makes such a value safe to hold, copy, or pass around. Values whose validity is not checked at all are listed in [`../issues/known-issues.md`](../issues/known-issues.md).
 
@@ -455,7 +510,7 @@ a..      # explicit start with open end
 
 `..<` and `..=` always require an explicit end expression. Bare `..<`, bare `..=`, `a..<`, and `a..=` are therefore invalid.
 
-`..` is the open-ended form. Its missing bound is interpreted by the context that consumes it: for slicing, the container supplies the end; in a `match`, a bare `..` can denote the uncovered remainder.
+`..` is the open-ended form. Its missing bound is interpreted by the context that consumes it: for slicing, the container supplies the end; in a `match`, a bare `..` arm matches every value.
 
 Ranges can use any type for which Omega defines the required finite ordered integral domain. This includes `char`:
 
@@ -473,20 +528,18 @@ Standalone ranges are ordinary `core::range::Range<T>` values. Whether a `Range<
 
 ### Bare `..` catch-all
 
-A bare `..` arm means the portion of the scrutinee domain not covered by the other arms.
-
-For enum matches, it denotes the non-empty set of unmatched variants; for an anonymous enum, the non-empty set of unmatched members. Like an `else`, it covers declared variants only — a tag outside the declared set reaches the panic described under [Invalid tags](#invalid-tags) instead.
-
-For numeric, `bool`, and `char` matches, the uncovered remainder must form one contiguous range. For example, removing only `0` from an integer domain leaves two disjoint ranges, so a bare `..` cannot infer a single range for that remainder:
+A bare `..` arm is the most general arm: it matches every declared value of the scrutinee. By the ordering rules in [Exhaustiveness and overlap](#exhaustiveness-and-overlap), every other arm is more specific than it, so `..` must be the last arm, and it runs for exactly the values the earlier arms left:
 
 ```omega
 match n {
     0 => { ... },
-    .. => { ... },  # invalid: the remaining domain is split around zero
+    .. => { ... },  # every value except 0
 }
 ```
 
-At most one bare `..` arm is permitted, and it is invalid when the other arms are already exhaustive.
+For an enum, that remainder is a set of declared variants (or of members, for an anonymous enum). Like an `else`, `..` covers declared variants only — a tag outside the declared set reaches the panic described under [Invalid tags](#invalid-tags) instead.
+
+At most one bare `..` arm is permitted, and it is invalid when the earlier arms already cover every value. Inside a field pattern, a bare `..` subpattern (`x = ..;`) only leaves that one field unconstrained.
 
 ## Variant-specific access and widening
 

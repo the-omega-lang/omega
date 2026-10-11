@@ -52,7 +52,7 @@ each arm condition, including the conditions for `..` and a reachable `else`.
 This does not repeat evaluation of the scrutinee expression, but dispatch can
 load its tag repeatedly. The conditions are built by `tag_variant_condition`
 and `member_tag_condition` in
-[`analysis/patterns.rs`](../../compiler/omega-analyzer/src/analysis/patterns.rs)
+[`analysis/patterns/resolve.rs`](../../compiler/omega-analyzer/src/analysis/patterns/resolve.rs)
 and lowered independently by
 [`lower_match_chain`](../../compiler/omega-mir/src/lower/function/control_flow.rs).
 
@@ -68,35 +68,28 @@ and anonymous enums (including pointer scrutinees and sparse explicit tags),
 and retain executable coverage of valid arms and invalid-tag panics at `-O0`
 and `-O3`.
 
-### Enum-variant matching and enum-tag matching are two unrelated exhaustiveness engines with very different practical requirements
+### Matching on an enum's `.tag` is checked against the tag type's whole domain
 
-The docs describe one unified exhaustiveness mechanism (`exhaustiveness.rs`)
-covering "enums, integers, `bool`, and `char`." In truth `analyze_enum_match`
-(matching the enum value itself, `analysis/patterns.rs`) never touches
-`exhaustiveness.rs` — it just tracks a `HashMap<usize, Span>` of covered variant
-indices and requires exactly one arm per variant, however many variants there
-are. `analyze_value_match` (matching an integer/bool/char scrutinee in the same
-module) is the one that actually runs the interval-sweep
-exhaustiveness checker over the scrutinee type's full domain. Since an enum's `
-.tag` field is an ordinary integer, matching *on the tag* goes through the
-second path, not the first:
+Every `match` is checked by one pattern-space engine (`exhaustiveness.rs`), but
+the domain it checks against comes from the scrutinee's type. Matching the enum
+value itself covers its declared variants; matching its `.tag` field is an
+ordinary integer match over the tag type's full range:
 
 ```
 enum E(tag: u32) { First(10), Second(20) }
 
 match e { E::First => .., E::Second => .. }             # exhaustive, no `else` needed
 
-match e.tag { 10 => .., 20 => .. }                        # `else` REQUIRED —
-                                                             # exhaustiveness checker
-                                                             # has no idea only 10/20
+match e.tag { 10 => .., 20 => .. }                        # `else` REQUIRED --
+                                                             # the u32 domain has
+                                                             # no idea only 10/20
                                                              # ever occur
 ```
-Both behaviors are individually correct for what each function actually knows,
-but a user has no way to predict which one they'll get just by looking at "am I
-matching an enum-shaped thing" — the moment you reach for `.tag` instead of the
-value itself (plausible whenever you want the numeric tag for
-logging/serialization/FFI alongside a match), exhaustiveness checking gets
-categorically weaker with no warning that anything changed.
+Both behaviors are individually correct for what each match knows, but the
+moment you reach for `.tag` instead of the value itself (plausible whenever you
+want the numeric tag for logging/serialization/FFI alongside a match),
+exhaustiveness checking gets categorically weaker with no warning that anything
+changed.
 
 ### Packed-by-default layout has no per-target safety argument
 

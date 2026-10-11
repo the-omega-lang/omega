@@ -650,9 +650,7 @@ impl<'r> Analyzer<'r> {
                 if wants_mutable {
                     self.require_mutable_place(id, span, &place.root, &checked, mutable)?;
                     // De-assumption, like an explicit `&mut`.
-                    if let Some((ident, origin, ..)) = self.narrowable_place(&place) {
-                        self.context.widen_variable(&ident, origin);
-                    }
+                    self.widen_place(&place);
                 }
                 let pointer = ResolvedType::Pointer {
                     pointee: Box::new(r#type.widened()),

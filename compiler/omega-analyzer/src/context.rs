@@ -33,6 +33,22 @@ pub struct VarBinding {
     pub mutable: bool,
     pub used: bool,
     pub written: bool,
+    /// Field paths below the binding that a `match` arm proved, only ever
+    /// non-empty on a narrowed binding.
+    pub refinements: Vec<RefinedPath>,
+}
+
+/// A field path a `match` arm proved to hold one enum variant or
+/// anonymous-enum member. Like a narrowed binding's type, it is lexical proof
+/// about the current value and never changes the field's storage.
+#[derive(Debug, Clone)]
+pub struct RefinedPath {
+    pub path: Vec<Ident>,
+    pub r#type: ResolvedType,
+    /// The proved variant of the member itself, when `r#type` is a refined
+    /// anonymous-enum member whose type is an enum: the one proof a
+    /// `ResolvedType` cannot carry at the same path.
+    pub member: Option<ResolvedType>,
 }
 
 /// Whether a declaration site allows an earlier binding of the same hygienic
@@ -227,6 +243,31 @@ impl Context {
             if let Some(binding) = self.variable_mut(&root_key) {
                 binding.r#type = binding.r#type.widened();
             }
+        }
+    }
+
+    pub fn refinements(&self, decl_id: HirId) -> &[RefinedPath] {
+        self.scopes
+            .iter()
+            .rev()
+            .find_map(|scope| {
+                scope
+                    .declarations
+                    .iter()
+                    .rev()
+                    .map(|(_, binding)| binding)
+                    .find(|binding| binding.decl_id == decl_id)
+            })
+            .map_or(&[], |binding| &binding.refinements)
+    }
+
+    /// Forgets every proof at or below `prefix`, as a mutable alias to that
+    /// place could replace what was proved there.
+    pub fn drop_refinements(&mut self, decl_id: HirId, prefix: &[Ident]) {
+        if let Some(binding) = self.binding_mut(decl_id) {
+            binding
+                .refinements
+                .retain(|refined| !refined.path.starts_with(prefix));
         }
     }
 
@@ -1168,6 +1209,7 @@ impl Context {
             mutable: false,
             used: true,
             written: false,
+            refinements: Vec::new(),
         };
         self.scopes
             .last_mut()

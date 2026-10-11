@@ -729,6 +729,7 @@ impl<'r> Analyzer<'r> {
                 refined,
                 Storage::Local,
                 false,
+                Vec::new(),
             );
             CheckedBlock {
                 stmts: vec![CheckedStmt::Break(CheckedBreak {
@@ -774,6 +775,7 @@ impl<'r> Analyzer<'r> {
                 refined.clone(),
                 Storage::Local,
                 false,
+                Vec::new(),
             );
 
             let mut value_projections = Vec::new();

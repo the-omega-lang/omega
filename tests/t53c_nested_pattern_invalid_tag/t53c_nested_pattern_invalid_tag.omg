@@ -1,0 +1,36 @@
+# A nested tag is tested only where a subpattern names a variant. An arm that
+# leaves the field unconstrained still runs for an invalid nested tag; when no
+# arm accepts the value, the match panics instead of picking an arm.
+import std::io::println;
+
+enum Kind(tag: u8) {
+	A(0),
+	B(1),
+}
+
+struct Holder {
+	kind: Kind;
+	n: i32;
+}
+
+foreign(c) set_kind_tag(slot: *mut Holder, tag: u8) => void;
+
+describe(h: Holder) => *str {
+	match h {
+		Holder { kind = Kind::A; n = 0; } => "a-zero",
+		Holder { n = 1; .. } => "any-kind-one",
+		Holder { kind = Kind::A; .. } => "a",
+		Holder { kind = Kind::B; .. } => "b",
+	}
+}
+
+main() => void {
+	mut holder := Holder { kind = Kind::A; n = 0; };
+	println$("valid: ", describe(holder));
+	set_kind_tag(&mut holder, 7u8);
+	holder.n = 1;
+	println$("unconstrained-field: ", describe(holder));
+	holder.n = 2;
+	println$("before-match");
+	println$("never: ", describe(holder));
+}

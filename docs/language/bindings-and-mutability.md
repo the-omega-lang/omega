@@ -101,6 +101,13 @@ When enum-variant refinement has narrowed a binding, taking `&mut` to that bindi
 
 An anonymous enum narrowed to one of its members behaves the same way. Reading the binding, accessing a field, indexing, or calling a method uses the member's type, while the binding's storage remains the whole anonymous enum, and taking `&mut` to it widens back to the anonymous enum. As with a named enum, a narrowed binding is not itself an assignment target while the proof holds; it is one again outside the arm. Refinement is proof about the current value, never a change of representation.
 
+A `match` arm with field patterns also refines **field paths** below the binding — `res.value` proved to be `Result::Ok`, for example. The same rules apply at every refined path:
+
+- Reading through it uses the refined type, so `res.value.value` is available inside the arm.
+- Taking `&mut` to a refined path, or to any prefix of it, or calling a method that needs a mutable receiver on one, gives up every refinement at and below that place for the rest of the arm. `&mut res` gives up all of them.
+- A refined path, and every prefix of it down to the binding itself, is not an assignment target while the proof holds: the write would replace the value the arm relies on. Assigning *inside* a refined field — `res.value.value = 3` — leaves the proof intact and is allowed.
+- `&` to a refined path produces a pointer to the field's declared type, since the pointer may outlive the arm that proved more.
+
 ## Compound assignment and increment/decrement
 
 The compound assignments are:

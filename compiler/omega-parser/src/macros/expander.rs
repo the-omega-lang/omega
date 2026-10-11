@@ -799,24 +799,43 @@ impl<'a, E> Expander<'a, E> {
         })
     }
 
+    fn expand_pattern(&mut self, pattern: Pattern) -> Result<Pattern, ExpansionFailure<E>> {
+        let value = match pattern.value {
+            Some(PatternValue::Value(v)) => Some(PatternValue::Value(self.expand_expr(v)?)),
+            Some(PatternValue::Range(r)) => Some(PatternValue::Range(self.expand_range(r)?)),
+            Some(PatternValue::Fields(fields)) => Some(PatternValue::Fields(FieldsPattern {
+                path: fields.path,
+                fields: fields
+                    .fields
+                    .into_iter()
+                    .map(|field| {
+                        Ok(FieldSubpattern {
+                            name: field.name,
+                            name_span: field.name_span,
+                            name_origin: field.name_origin,
+                            pattern: self.expand_pattern(field.pattern)?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, ExpansionFailure<E>>>()?,
+                rest: fields.rest,
+                span: fields.span,
+            })),
+            None => None,
+        };
+        Ok(Pattern {
+            value,
+            r#type: pattern.r#type,
+            span: pattern.span,
+        })
+    }
+
     fn expand_match(&mut self, match_expr: MatchExpr) -> Result<MatchExpr, ExpansionFailure<E>> {
         let scrutinee = self.expand_expr(match_expr.scrutinee)?;
         let arms = match_expr
             .arms
             .into_iter()
             .map(|arm| {
-                let value = match arm.pattern.value {
-                    Some(PatternValue::Value(v)) => Some(PatternValue::Value(self.expand_expr(v)?)),
-                    Some(PatternValue::Range(r)) => {
-                        Some(PatternValue::Range(self.expand_range(r)?))
-                    }
-                    None => None,
-                };
-                let pattern = Pattern {
-                    value,
-                    r#type: arm.pattern.r#type,
-                    span: arm.pattern.span,
-                };
+                let pattern = self.expand_pattern(arm.pattern)?;
                 Ok(MatchArm {
                     pattern,
                     body: self.expand_expr(arm.body)?,

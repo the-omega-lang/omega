@@ -471,11 +471,50 @@ impl AnalysisErrorKind {
             }
             Self::UnsupportedMatchScrutinee { r#type } => d
                 .with_label(span, format!("cannot match on `{type}`"))
-                .with_note("`match` supports enums, integers, and `bool`"),
-            Self::OverlappingMatchArm { previous } => d
-                .with_label(span, "this pattern covers values an earlier arm already covers")
-                .with_secondary_label(*previous, "first covered here")
-                .with_note("`match` has no first-match-wins rule -- every value must be covered by exactly one arm"),
+                .with_note("`match` supports enums, anonymous enums, structs, integers, `bool`, and `char`"),
+            Self::OverlappingMatchArm { previous, field } => d
+                .with_label(span, match field {
+                    Some(field) => format!("this pattern partly overlaps an earlier arm at `{field}`"),
+                    None => "this pattern partly overlaps an earlier arm".to_string(),
+                })
+                .with_secondary_label(*previous, "overlapping arm here")
+                .with_note("neither pattern contains the other, so no arm is the more specific one;\nmake the two patterns nest or stop touching"),
+            Self::MoreSpecificArmAfterGeneral { general, general_is_catch_all } => d
+                .with_label(span, "every value this arm matches is matched by an earlier arm")
+                .with_secondary_label(*general, if *general_is_catch_all { "the `..` arm matches everything" } else { "this more general arm comes first" })
+                .with_help(if *general_is_catch_all { "move `..` to the end of the arm list" } else { "move this arm above the arm it is more specific than" }),
+            Self::UnreachableMatchArm { covering } => covering.iter().fold(
+                d.with_label(span, "every value this arm matches is matched by earlier arms")
+                    .with_help("remove this arm"),
+                |d, arm| d.with_secondary_label(*arm, "covered in part here"),
+            ),
+            Self::DuplicateMatchArm { previous } => d
+                .with_label(span, "this pattern is identical to an earlier arm")
+                .with_secondary_label(*previous, "same pattern here")
+                .with_help("remove one of the two arms"),
+            Self::NonExhaustiveMatchPatterns { missing, .. } => d
+                .with_label(span, format!("not covered: {}", missing.join(", ")))
+                .with_help("cover the remaining patterns, or add an `else` block"),
+            Self::PatternDuplicateField { field, previous } => d
+                .with_label(span, format!("`{}` named again here", field.as_ref()))
+                .with_secondary_label(*previous, format!("`{}` first named here", field.as_ref())),
+            Self::PatternHeaderField { field } => d
+                .with_label(span, format!("`{}` is fixed by the variant", field.as_ref()))
+                .with_note("the tag and header fields are per-variant constants; the variant path already says what they are"),
+            Self::PatternFieldNotPatternable { r#type, .. } => d
+                .with_label(span, format!("`{type}` has no pattern form"))
+                .with_note("a field pattern can match enums, anonymous enums, structs, integers, `bool`, and `char`"),
+            Self::PatternMissingFields { missing } => d
+                .with_label(span, format!("missing {}", field_list(missing)))
+                .with_help("name them, or end the pattern with `..` to leave the rest unconstrained"),
+            Self::PatternPathMismatch { expected, found: Some(_) } => d
+                .with_label(span, format!("this pattern does not describe a `{expected}`")),
+            Self::PatternPathMismatch { expected, found: None } => d
+                .with_label(span, "not a field pattern")
+                .with_help(format!("write `{expected} {{ .. }}`, naming the fields to match")),
+            Self::RefinedPathAssignment { refined, .. } => d
+                .with_label(span, format!("this would replace the value the arm proved at `{refined}`"))
+                .with_help("assign inside the refined field instead, or after the `match`"),
             Self::NonExhaustiveMatchEnum { missing, .. } => d
                 .with_label(span, format!("missing {} {}", plural(missing.len(), "variant"), ident_list(missing)))
                 .with_help("cover the remaining variants, or add an `else` block"),
@@ -497,9 +536,6 @@ impl AnalysisErrorKind {
             Self::NonExhaustiveMatchValue { gaps, .. } => d
                 .with_label(span, format!("not covered: {}", gaps.join(", ")))
                 .with_help("cover the remaining values, or add an `else` block"),
-            Self::CatchAllRangeNotInferable { .. } => d
-                .with_label(span, "what's left uncovered isn't one contiguous range")
-                .with_note("`..` can only infer a single gap -- split this into explicit ranges, or add an `else` block instead"),
             Self::CatchAllPatternRedundant => d
                 .with_label(span, "every value is already covered by an earlier arm")
                 .with_help("remove this arm -- there's nothing left for it to match"),

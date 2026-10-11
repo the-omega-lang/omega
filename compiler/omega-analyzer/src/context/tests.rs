@@ -74,6 +74,7 @@ fn binding(local: u32, r#type: ResolvedType, mutable: bool) -> VarBinding {
         mutable,
         used: false,
         written: false,
+        refinements: Vec::new(),
     }
 }
 

@@ -1,9 +1,9 @@
 use super::Lowerer;
 use crate::hir::{
     HirAddressOf, HirAssignment, HirBinaryOp, HirCast, HirCompoundAssign, HirExpr, HirExprNode,
-    HirFunctionCall, HirIf, HirLogical, HirMatch, HirMatchArm, HirPattern, HirPatternValue,
-    HirPlace, HirPlaceRoot, HirProjection, HirRange, HirRangeEnd, HirReveal, HirSlice,
-    HirStructLiteral, HirStructLiteralField, HirTry,
+    HirFieldSubpattern, HirFieldsPattern, HirFunctionCall, HirIf, HirLogical, HirMatch,
+    HirMatchArm, HirPattern, HirPatternValue, HirPlace, HirPlaceRoot, HirProjection, HirRange,
+    HirRangeEnd, HirReveal, HirSlice, HirStructLiteral, HirStructLiteralField, HirTry,
 };
 use omega_parser::prelude::{
     Expression, ExpressionNode, Origin, Pattern, PatternValue, RangeEnd, RangeExpr, Span,
@@ -263,6 +263,21 @@ impl Lowerer {
             value: pattern.value.as_ref().map(|value| match value {
                 PatternValue::Value(v) => HirPatternValue::Value(self.lower_expr(v)),
                 PatternValue::Range(r) => HirPatternValue::Range(self.lower_range(r)),
+                PatternValue::Fields(fields) => HirPatternValue::Fields(HirFieldsPattern {
+                    path: fields.path.clone(),
+                    fields: fields
+                        .fields
+                        .iter()
+                        .map(|field| HirFieldSubpattern {
+                            name: field.name.clone(),
+                            name_span: field.name_span,
+                            name_origin: field.name_origin,
+                            pattern: self.lower_pattern(&field.pattern),
+                        })
+                        .collect(),
+                    rest: fields.rest,
+                    span: fields.span,
+                }),
             }),
             r#type: pattern.r#type.clone(),
             span: pattern.span,

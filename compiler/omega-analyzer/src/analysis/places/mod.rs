@@ -154,6 +154,114 @@ impl<'r> Analyzer<'r> {
             })
     }
 
+    /// A field projected from a refined anonymous member must see that
+    /// member's own proved variant, which only the refinement records.
+    fn open_refined_member(
+        refinements: &[RefinedPath],
+        path: &[Ident],
+        projections: &mut Vec<CheckedProjection>,
+        current_type: ResolvedType,
+        mutable: &mut bool,
+    ) -> ResolvedType {
+        let Some(member) = refinements
+            .iter()
+            .find(|r| r.path == path)
+            .and_then(|r| r.member.clone())
+        else {
+            return current_type;
+        };
+        match Self::open_refined_anonymous(projections, &current_type, mutable) {
+            Some(_) => member,
+            None => current_type,
+        }
+    }
+
+    /// The narrowable binding a place starts at and the field-name path it
+    /// reaches, which is how refinements are keyed. An index ends the path:
+    /// no element of an array is ever refined.
+    pub(super) fn refinable_path(&self, place: &HirPlace) -> Option<(HirId, Vec<Ident>)> {
+        let root = HirPlace {
+            root: place.root.clone(),
+            projections: Vec::new(),
+        };
+        let (_, _, decl_id, ..) = self.narrowable_place(&root)?;
+        let path = place
+            .projections
+            .iter()
+            .filter(|projection| !matches!(projection, HirProjection::Deref))
+            .map_while(|projection| match projection {
+                HirProjection::FieldAccess(field, ..) => Some(field.clone()),
+                _ => None,
+            })
+            .collect();
+        Some((decl_id, path))
+    }
+
+    /// `&mut place`, or anything else that hands out a mutable alias to it,
+    /// gives up every proof at and below the place.
+    pub(super) fn widen_place(&mut self, place: &HirPlace) {
+        if let Some((ident, origin, ..)) = self.narrowable_place(place) {
+            self.context.widen_variable(&ident, origin);
+        }
+        if let Some((decl_id, path)) = self.refinable_path(place) {
+            self.context.drop_refinements(decl_id, &path);
+        }
+    }
+
+    /// Whether `place` is a refined field path itself, so a pointer to it
+    /// must not carry the proof past the arm that made it.
+    pub(super) fn is_refined_path(&self, place: &HirPlace) -> bool {
+        self.refinable_path(place).is_some_and(|(decl_id, path)| {
+            !path.is_empty()
+                && self
+                    .context
+                    .refinements(decl_id)
+                    .iter()
+                    .any(|refined| refined.path == path)
+        })
+    }
+
+    /// A proved path, or any prefix of it, is not an assignment target while
+    /// the proof holds: the write would replace what the arm relies on.
+    /// Writing *inside* a refined field leaves the proof intact.
+    pub(super) fn require_unrefined_target(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        place: &HirPlace,
+    ) -> Option<()> {
+        let Some((decl_id, path)) = self.refinable_path(place) else {
+            return Some(());
+        };
+        let Some(refined) = self
+            .context
+            .refinements(decl_id)
+            .iter()
+            .find(|refined| refined.path.starts_with(&path))
+            .map(|refined| refined.path.clone())
+        else {
+            return Some(());
+        };
+        let HirPlaceRoot::Path(root) = &place.root else {
+            unreachable!("a refinable place is rooted at a binding")
+        };
+        let render = |path: &[Ident]| {
+            std::iter::once(root.path.head.as_ref())
+                .chain(path.iter().map(|field| field.as_ref()))
+                .collect::<Vec<_>>()
+                .join(".")
+        };
+        self.error(
+            node_id,
+            span,
+            AnalysisErrorKind::RefinedPathAssignment {
+                target: render(&path),
+                refined: render(&refined),
+            },
+        );
+        None
+    }
+
     pub(super) fn require_mutable_place(
         &mut self,
         node_id: HirId,
@@ -230,8 +338,25 @@ impl<'r> Analyzer<'r> {
             self.context.mark_used(decl_id);
         }
 
+        let refinements = match root {
+            CheckedPlaceRoot::Variable { decl_id, .. } => {
+                self.context.refinements(decl_id).to_vec()
+            }
+            _ => Vec::new(),
+        };
+        let mut refined_path = (!refinements.is_empty()).then(Vec::new);
+
         let mut projections = Vec::with_capacity(place.projections.len());
         for projection in &place.projections {
+            if let (Some(path), HirProjection::FieldAccess(..)) = (&refined_path, projection) {
+                current_type = Self::open_refined_member(
+                    &refinements,
+                    path,
+                    &mut projections,
+                    current_type,
+                    &mut mutable,
+                );
+            }
             current_type = match projection {
                 // Generic arguments are only ever written on a call's
                 // member segment, which `resolve_callee` consumes before a
@@ -275,6 +400,18 @@ impl<'r> Analyzer<'r> {
                     *pointee
                 }
             };
+            match projection {
+                HirProjection::FieldAccess(field, ..) => {
+                    if let Some(path) = &mut refined_path {
+                        path.push(field.clone());
+                        if let Some(refined) = refinements.iter().find(|r| r.path == *path) {
+                            current_type = refined.r#type.clone();
+                        }
+                    }
+                }
+                HirProjection::Index(_) => refined_path = None,
+                HirProjection::Deref => {}
+            }
         }
 
         Some((

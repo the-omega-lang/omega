@@ -85,16 +85,16 @@ error: 'Other' is not a member of 'enum Failure | *str'
    |
    = help: the members of `enum Failure | *str` are the only arms it can match
 
-error: overlapping match arms
+error: duplicate match arm
   --> tests/t27b_anonymous_enum_errors/t27b_anonymous_enum_errors.omg:80:9
    |
 78 |         Failure => 0,
-   |         ------- first covered here
+   |         ------- same pattern here
 79 |         *str => 1,
 80 |         Failure => 2,
-   |         ^^^^^^^ this pattern covers values an earlier arm already covers
+   |         ^^^^^^^ this pattern is identical to an earlier arm
    |
-   = note: `match` has no first-match-wins rule -- every value must be covered by exactly one arm
+   = help: remove one of the two arms
 
 error: match on 'enum Failure | *str' does not cover every member
   --> tests/t27b_anonymous_enum_errors/t27b_anonymous_enum_errors.omg:86:5

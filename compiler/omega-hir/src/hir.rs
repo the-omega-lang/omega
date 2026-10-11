@@ -648,6 +648,23 @@ pub struct HirPattern {
 pub enum HirPatternValue {
     Value(HirExprNode),
     Range(HirRange),
+    Fields(HirFieldsPattern),
+}
+
+#[derive(Debug, Clone)]
+pub struct HirFieldsPattern {
+    pub path: ExprPath,
+    pub fields: Vec<HirFieldSubpattern>,
+    pub rest: Option<Span>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct HirFieldSubpattern {
+    pub name: Ident,
+    pub name_span: Span,
+    pub name_origin: Origin,
+    pub pattern: HirPattern,
 }
 
 impl HirPattern {
@@ -655,6 +672,8 @@ impl HirPattern {
         self.span
     }
 
+    /// Only meaningful for an arm's top-level pattern, where a bare `..` is
+    /// the most general arm.
     pub fn catch_all_range(&self) -> Option<&HirRange> {
         match self.value.as_ref()? {
             HirPatternValue::Range(range) if range.is_catch_all() => Some(range),

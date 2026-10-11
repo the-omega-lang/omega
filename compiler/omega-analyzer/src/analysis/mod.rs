@@ -40,7 +40,7 @@ use crate::{
         CheckedStructDef, CheckedStructLiteral, CheckedStructLiteralField, CheckedUnionConstruct,
         CheckedUnionDef, CheckedWhile, NumberValue, Storage,
     },
-    context::{Context, DeclarationPolicy, LexicalScope, VarBinding},
+    context::{Context, DeclarationPolicy, LexicalScope, RefinedPath, VarBinding},
     error::{
         AnalysisError, AnalysisErrorKind, AnalysisWarning, AnalysisWarningKind, AuthoredSite,
         TypeResolutionError,
@@ -1096,6 +1096,7 @@ impl<'r> Analyzer<'r> {
                 mutable,
                 used: false,
                 written: false,
+                refinements: Vec::new(),
             },
             policy,
         )
@@ -1134,6 +1135,7 @@ impl<'r> Analyzer<'r> {
         r#type: ResolvedType,
         storage: Storage,
         mutable: bool,
+        refinements: Vec<RefinedPath>,
     ) -> Option<()> {
         self.declare_binding_impl(
             ident,
@@ -1147,6 +1149,7 @@ impl<'r> Analyzer<'r> {
                 mutable,
                 used: false,
                 written: false,
+                refinements,
             },
             // A refinement scope re-declares the same name under a proved
             // narrower type; it is a shadow of the binding it refines, not a

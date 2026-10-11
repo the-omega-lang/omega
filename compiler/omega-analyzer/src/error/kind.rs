@@ -339,6 +339,43 @@ pub enum AnalysisErrorKind {
     },
     OverlappingMatchArm {
         previous: Span,
+        field: Option<String>,
+    },
+    MoreSpecificArmAfterGeneral {
+        general: Span,
+        general_is_catch_all: bool,
+    },
+    UnreachableMatchArm {
+        covering: Vec<Span>,
+    },
+    DuplicateMatchArm {
+        previous: Span,
+    },
+    NonExhaustiveMatchPatterns {
+        r#type: ResolvedType,
+        missing: Vec<String>,
+    },
+    PatternDuplicateField {
+        field: Ident,
+        previous: Span,
+    },
+    PatternHeaderField {
+        field: Ident,
+    },
+    PatternFieldNotPatternable {
+        field: Ident,
+        r#type: ResolvedType,
+    },
+    PatternMissingFields {
+        missing: Vec<Ident>,
+    },
+    PatternPathMismatch {
+        expected: ResolvedType,
+        found: Option<String>,
+    },
+    RefinedPathAssignment {
+        target: String,
+        refined: String,
     },
     NonExhaustiveMatchEnum {
         r#enum: Ident,
@@ -364,9 +401,6 @@ pub enum AnalysisErrorKind {
     NonExhaustiveMatchValue {
         r#type: ResolvedType,
         gaps: Vec<String>,
-    },
-    CatchAllRangeNotInferable {
-        gaps: usize,
     },
     CatchAllPatternRedundant,
     MultipleCatchAllPatterns {
@@ -1179,6 +1213,62 @@ impl fmt::Display for AnalysisErrorKind {
                 write!(f, "cannot match on a value of type '{type}'")
             }
             Self::OverlappingMatchArm { .. } => write!(f, "overlapping match arms"),
+            Self::MoreSpecificArmAfterGeneral {
+                general_is_catch_all: true,
+                ..
+            } => write!(f, "'..' must be the last arm"),
+            Self::MoreSpecificArmAfterGeneral { .. } => {
+                write!(f, "match arm is more specific than an earlier arm")
+            }
+            Self::UnreachableMatchArm { .. } => write!(f, "unreachable match arm"),
+            Self::DuplicateMatchArm { .. } => write!(f, "duplicate match arm"),
+            Self::NonExhaustiveMatchPatterns { r#type, .. } => {
+                write!(f, "match on '{type}' does not cover every value")
+            }
+            Self::PatternDuplicateField { field, .. } => {
+                write!(f, "field '{}' is named more than once", field.as_ref())
+            }
+            Self::PatternHeaderField { field } => {
+                write!(f, "'{}' cannot be named in a pattern", field.as_ref())
+            }
+            Self::PatternFieldNotPatternable { field, r#type } => {
+                write!(
+                    f,
+                    "field '{}' of type '{type}' cannot be matched",
+                    field.as_ref()
+                )
+            }
+            Self::PatternMissingFields { .. } => write!(f, "pattern does not name every field"),
+            Self::PatternPathMismatch {
+                expected,
+                found: Some(found),
+            } => {
+                write!(
+                    f,
+                    "mismatched types: expected '{expected}', found pattern '{found}'"
+                )
+            }
+            Self::PatternPathMismatch {
+                expected,
+                found: None,
+            } => {
+                write!(
+                    f,
+                    "a value of type '{expected}' is matched with a field pattern"
+                )
+            }
+            Self::RefinedPathAssignment { target, refined } if target == refined => {
+                write!(
+                    f,
+                    "cannot assign to '{target}' while this arm relies on its proved variant"
+                )
+            }
+            Self::RefinedPathAssignment { target, refined } => {
+                write!(
+                    f,
+                    "cannot assign to '{target}' while this arm relies on '{refined}'"
+                )
+            }
             Self::NonExhaustiveMatchEnum { r#enum, .. } => {
                 write!(
                     f,
@@ -1206,12 +1296,6 @@ impl fmt::Display for AnalysisErrorKind {
             }
             Self::NonExhaustiveMatchValue { r#type, .. } => {
                 write!(f, "match on '{type}' does not cover every value")
-            }
-            Self::CatchAllRangeNotInferable { gaps } => {
-                write!(
-                    f,
-                    "'..' can't be inferred: {gaps} disjoint ranges are left uncovered, not one"
-                )
             }
             Self::CatchAllPatternRedundant => write!(f, "'..' has nothing left to cover"),
             Self::MultipleCatchAllPatterns { .. } => write!(f, "more than one '..' catch-all arm"),

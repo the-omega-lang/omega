@@ -1,0 +1,225 @@
+import std::io::println;
+
+enum Button {
+	Left,
+	Right,
+	Middle;
+}
+
+struct Point {
+	x: i32;
+	y: i32;
+}
+
+enum Event {
+	Click {
+		pos: Point;
+		button: Button;
+	},
+	Key {
+		ch: char;
+		shift: bool;
+		code: u8;
+	},
+	Quit;
+}
+
+enum Res {
+	Ok {
+		value: i32;
+	},
+	Err {
+		code: i32;
+	};
+}
+
+enum Opt {
+	None,
+	Some {
+		value: Res;
+	};
+}
+
+enum Maybe<T> {
+	Nothing,
+	Just {
+		value: T;
+	};
+}
+
+struct Holder {
+	value: enum Point | Button | *str;
+}
+
+struct Wrapped {
+	inner: enum Res | *str;
+}
+
+# Exhaustive without a catch-all: the nested arms cover `Some` between them.
+describe_opt(o: Opt) => i32 {
+	match o {
+		Opt::None => 0,
+		Opt::Some { value = Res::Ok; } => o.value.value,
+		Opt::Some { value = Res::Err; } => 0 - o.value.code,
+	}
+}
+
+key_label(e: Event) => *str {
+	match e {
+		Event::Key { ch = 'q'; shift = true; .. } => "shift-q",
+		Event::Key { ch = 'a'..='z'; .. } => "letter",
+		Event::Key { code = 0..<32; .. } => "control",
+		Event::Key => "other key",
+		.. => "not a key",
+	}
+}
+
+# The origin case: a more specific arm runs before the arms containing it.
+click_label(e: Event) => *str {
+	match e {
+		Event::Click { pos = Point { x = 0; .. }; button = Button::Left; } => "left click on the y-axis",
+		Event::Click { button = Button::Left; .. } => "left click",
+		Event::Click { .. } => "other click",
+		Event::Quit => "quit",
+		.. => "something else",
+	}
+}
+
+quadrant(p: Point) => *str {
+	match p {
+		Point { x = 0; y = 0; } => "origin",
+		Point { x = 0; .. } => "y-axis",
+		Point { y = 0; .. } => "x-axis",
+		Point { .. } => "plane",
+	}
+}
+
+# Same-weight arms may overlap; on the overlap the earlier arm runs.
+axis(p: Point) => *str {
+	match p {
+		Point { x = 0; .. } => "on the y-axis",
+		Point { y = 0; .. } => "on the x-axis",
+		.. => "off-axis",
+	}
+}
+
+zero_or_not(n: i32) => *str {
+	match n {
+		0 => "zero",
+		.. => "nonzero",
+	}
+}
+
+five(n: u8) => *str {
+	match n {
+		5 => "five",
+		0..<10 => "digit",
+		.. => "big",
+	}
+}
+
+through_pointer(e: *Event) => i32 {
+	match e {
+		Event::Click { pos = Point { x = 1..; .. }; .. } => e.pos.x,
+		.. => -1,
+	}
+}
+
+holder_label(h: Holder) => *str {
+	match h {
+		Holder { value = Point { x = 0; .. }; } => "point on the y-axis",
+		Holder { value = Point { .. }; } => "point",
+		Holder { value = Button::Left; } => "left button",
+		Holder { value = Button; } => "button",
+		Holder { value = *str; } => h.value,
+	}
+}
+
+holder_y(h: Holder) => i32 {
+	match h {
+		Holder { value = Point; } => h.value.y,
+		.. => -1,
+	}
+}
+
+wrapped_value(w: Wrapped) => i32 {
+	match w {
+		Wrapped { inner = Res::Ok; } => w.inner.value,
+		Wrapped { inner = Res::Err { code = 0; }; } => 0,
+		.. => -1,
+	}
+}
+
+maybe_label(m: Maybe<i32>) => *str {
+	match m {
+		Maybe::Just { value = 0; } => "just zero",
+		Maybe::Just => "just",
+		Maybe::Nothing => "nothing",
+	}
+}
+
+main() => void {
+	ok: Opt = Opt::Some { value = Res::Ok { value = 7; }; };
+	err: Opt = Opt::Some { value = Res::Err { code = 3; }; };
+	none: Opt = Opt::None;
+	println$("nested-enum: ", describe_opt(ok), " ", describe_opt(err));
+	println$("nested-enum-none: ", describe_opt(none));
+
+	println$("leaf-fields: ",
+		key_label(Event::Key { ch = 'q'; shift = true; code = 81u8; }), " ",
+		key_label(Event::Key { ch = 'q'; shift = false; code = 81u8; }), " ",
+		key_label(Event::Key { ch = '?'; shift = false; code = 8u8; }), " ",
+		key_label(Event::Key { ch = '?'; shift = false; code = 63u8; }), " ",
+		key_label(Event::Quit));
+
+	println$("specific-first: ",
+		click_label(Event::Click { pos = Point { x = 0; y = 5; }; button = Button::Left; }), " / ",
+		click_label(Event::Click { pos = Point { x = 2; y = 5; }; button = Button::Left; }), " / ",
+		click_label(Event::Click { pos = Point { x = 0; y = 5; }; button = Button::Right; }), " / ",
+		click_label(Event::Quit), " / ",
+		click_label(Event::Key { ch = 'a'; shift = false; code = 97u8; }));
+
+	println$("struct-scrutinee: ",
+		quadrant(Point { x = 0; y = 0; }), " ",
+		quadrant(Point { x = 0; y = 3; }), " ",
+		quadrant(Point { x = 3; y = 0; }), " ",
+		quadrant(Point { x = 3; y = 3; }));
+
+	println$("same-weight: ", axis(Point { x = 0; y = 0; }), " ", axis(Point { x = 4; y = 0; }), " ", axis(Point { x = 4; y = 4; }));
+
+	println$("catch-all-last: ", zero_or_not(0), " ", zero_or_not(-3), " ", five(5u8), " ", five(3u8), " ", five(30u8));
+
+	clicked := Event::Click { pos = Point { x = 9; y = 1; }; button = Button::Middle; };
+	at_origin := Event::Click { pos = Point { x = 0; y = 1; }; button = Button::Middle; };
+	println$("pointer-scrutinee: ", through_pointer(&clicked), " ", through_pointer(&at_origin));
+
+	println$("anonymous-member: ",
+		holder_label(Holder { value = Point { x = 0; y = 2; }; }), " / ",
+		holder_label(Holder { value = Point { x = 1; y = 2; }; }), " / ",
+		holder_label(Holder { value = Button::Left; }), " / ",
+		holder_label(Holder { value = Button::Right; }), " / ",
+		holder_label(Holder { value = "text"; }), " / ",
+		holder_y(Holder { value = Point { x = 1; y = 2; }; }));
+
+	println$("anonymous-variant: ",
+		wrapped_value(Wrapped { inner = Res::Ok { value = 11; }; }), " ",
+		wrapped_value(Wrapped { inner = Res::Err { code = 0; }; }), " ",
+		wrapped_value(Wrapped { inner = "text"; }));
+
+	println$("generic-enum: ",
+		maybe_label(Maybe<i32>::Just { value = 0; }), " ",
+		maybe_label(Maybe<i32>::Just { value = 4; }), " ",
+		maybe_label(Maybe<i32>::Nothing));
+
+	mut counter: Opt = Opt::Some { value = Res::Ok { value = 1; }; };
+	match counter {
+		Opt::Some { value = Res::Ok; } => {
+			counter.value.value = 41;
+			counter.value.value += 1;
+			println$("write-inside-refined: ", counter.value.value);
+		},
+		.. => {},
+	}
+	counter = Opt::None;
+	println$("reassigned-after-match: ", describe_opt(counter));
+}

@@ -610,6 +610,7 @@ impl<'r> Analyzer<'r> {
             span,
             AnalysisErrorKind::AssignmentTargetNotAPlace,
         )?;
+        self.require_unrefined_target(node_id, span, &place)?;
         self.require_mutable_place(node_id, span, &place.root, &checked_target, target_mutable)?;
 
         let checked_value = self.analyze_expr(&assignment.value, Expected::Exact(&target_type))?;
@@ -704,9 +705,7 @@ impl<'r> Analyzer<'r> {
         }
         let pointee_type = if mutable {
             self.require_mutable_place(node_id, span, &place.root, &checked_place, place_mutable)?;
-            if let Some((ident, origin, ..)) = self.narrowable_place(place) {
-                self.context.widen_variable(&ident, origin);
-            }
+            self.widen_place(place);
             place_type.widened()
         } else {
             let narrowed_shadow =
@@ -716,7 +715,7 @@ impl<'r> Analyzer<'r> {
                             .find_variable(&ident, origin)
                             .is_some_and(|binding| binding.narrowed)
                     });
-            if narrowed_shadow {
+            if narrowed_shadow || self.is_refined_path(place) {
                 place_type.widened()
             } else {
                 place_type

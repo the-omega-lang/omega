@@ -21,6 +21,7 @@ This is **not** the normative language definition. For exact rules, follow the l
 | fixed array type | `[64]u8` | `[u8; 64]` |
 | compile-time value generic | `struct B<comp N: usize, T>` | `struct B<const N: usize, T>` |
 | struct literal field | `x = 1;` | `x: 1,` |
+| nested match pattern | `Opt::Some { value = Res::Ok; }` (proves, never binds) | `Some(Ok(v))` |
 
 When editing `.omg`, do not infer missing syntax from Rust simply because the languages look similar.
 
@@ -248,6 +249,14 @@ match value {
     println$("unmatched");
 }
 
+match event {
+    Event::Click { pos = Point { x = 0; .. }; button = Button::Left; } => {
+        println$("left click on the y-axis");
+    },
+    Event::Click { .. } => { println$("other click at x = ", event.pos.x); },
+    .. => {},
+}
+
 while condition {
     work();
 }
@@ -264,6 +273,8 @@ for c in 'a'..='z' {
     work(c);
 }
 ```
+
+A field pattern proves the fields it names and refines the scrutinee binding for the arm; it never binds names. Arms run in order, a more specific arm must come before the arms containing it, and a bare `..` arm comes last. See [`../language/enums-and-pattern-matching.md`](../language/enums-and-pattern-matching.md).
 
 ## Ranges
 

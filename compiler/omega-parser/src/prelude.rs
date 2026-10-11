@@ -6,10 +6,10 @@ pub use crate::ast::expression::{
     AddressOfExpr, AlignofExpr, ArrayLiteralExpr, AssignmentExpr, BinaryOp, BinaryOpExpr,
     BitNotExpr, BoolExpr, ByteStringExpr, CastExpr, CharExpr, CodeblockExpr, CompExpr,
     CompoundAssignExpr, DecrementExpr, DerefExpr, Expression, ExpressionNode, FieldAccessExpr,
-    FunctionCallExpr, IfExpr, IncrementExpr, IndexExpr, LogicalExpr, LogicalOp,
-    MacroInvocationExpr, MatchArm, MatchExpr, NegateExpr, NotExpr, NumberBase, NumberExpr, Pattern,
-    PatternValue, RevealExpr, SizeofExpr, SliceExpr, StringExpr, StructLiteralExpr,
-    StructLiteralField, TryExpr, TypeinfoExpr,
+    FieldSubpattern, FieldsPattern, FunctionCallExpr, IfExpr, IncrementExpr, IndexExpr,
+    LogicalExpr, LogicalOp, MacroInvocationExpr, MatchArm, MatchExpr, NegateExpr, NotExpr,
+    NumberBase, NumberExpr, Pattern, PatternValue, RevealExpr, SizeofExpr, SliceExpr, StringExpr,
+    StructLiteralExpr, StructLiteralField, TryExpr, TypeinfoExpr,
 };
 pub use crate::ast::generics::{ExprGenericArg, GenericParam, GenericParamKind, Selector};
 pub use crate::ast::identifier::{

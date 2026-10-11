@@ -283,11 +283,12 @@ pub struct MatchArm {
     pub span: Span,
 }
 
-/// A match arm's pattern carries both readings the syntax allows, because
-/// which one is meant depends on the scrutinee's semantic type. `value` is
-/// the ordinary value/range reading and `r#type` a complete type parse that
-/// reached the arm's `=>`; the analyzer selects `r#type` only for an
-/// anonymous-enum scrutinee. At least one of the two is always present.
+/// A pattern carries both readings the syntax allows, because which one is
+/// meant depends on the matched position's semantic type. `value` is the
+/// ordinary value/range/field-pattern reading and `r#type` a complete type
+/// parse that reached the pattern's terminator (`=>` for an arm, `;` for a
+/// field subpattern); the analyzer selects `r#type` only at an anonymous-enum
+/// position. At least one of the two is always present.
 #[derive(Debug, Clone)]
 pub struct Pattern {
     pub value: Option<PatternValue>,
@@ -299,6 +300,25 @@ pub struct Pattern {
 pub enum PatternValue {
     Value(ExpressionNode),
     Range(RangeExpr),
+    Fields(FieldsPattern),
+}
+
+/// `Path { name = subpattern; ... }`, optionally ending in `..` (`rest`) to
+/// leave the unnamed fields unconstrained.
+#[derive(Debug, Clone)]
+pub struct FieldsPattern {
+    pub path: ExprPath,
+    pub fields: Vec<FieldSubpattern>,
+    pub rest: Option<Span>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct FieldSubpattern {
+    pub name: Ident,
+    pub name_span: Span,
+    pub name_origin: Origin,
+    pub pattern: Pattern,
 }
 
 #[derive(Debug, Clone)]

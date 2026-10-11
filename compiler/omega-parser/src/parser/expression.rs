@@ -2,9 +2,10 @@ use crate::ast::expression::{
     AddressOfExpr, AlignofExpr, ArrayLiteralExpr, AssignmentExpr, BinaryOp, BinaryOpExpr,
     BitNotExpr, BoolExpr, ByteStringExpr, CastExpr, CharExpr, CodeblockExpr, CompExpr,
     CompoundAssignExpr, DecrementExpr, DerefExpr, Expression, ExpressionNode, FieldAccessExpr,
-    FunctionCallExpr, IfExpr, IncrementExpr, IndexExpr, LogicalExpr, LogicalOp, MatchArm,
-    MatchExpr, NegateExpr, NotExpr, Pattern, PatternValue, RevealExpr, SizeofExpr, SliceExpr,
-    StringExpr, StructLiteralExpr, StructLiteralField, TryExpr, TypeinfoExpr,
+    FieldSubpattern, FieldsPattern, FunctionCallExpr, IfExpr, IncrementExpr, IndexExpr,
+    LogicalExpr, LogicalOp, MatchArm, MatchExpr, NegateExpr, NotExpr, Pattern, PatternValue,
+    RevealExpr, SizeofExpr, SliceExpr, StringExpr, StructLiteralExpr, StructLiteralField, TryExpr,
+    TypeinfoExpr,
 };
 use crate::ast::generics::{ExprGenericArg, Selector};
 use crate::ast::identifier::Origin;
@@ -986,7 +987,7 @@ fn parse_match_expr(p: &mut Parser) -> Option<MatchExpr> {
 
 fn parse_match_arm(p: &mut Parser) -> Option<MatchArm> {
     let start = p.peek_span();
-    let pattern = parse_pattern(p)?;
+    let pattern = parse_pattern(p, &TokenKind::FatArrow)?;
     p.expect(&TokenKind::FatArrow, "'=>'");
     let body = p.allow_struct_literals(parse_expression)?;
     let span = start.to(body.span);
@@ -997,10 +998,19 @@ fn parse_match_arm(p: &mut Parser) -> Option<MatchArm> {
     })
 }
 
-fn parse_pattern(p: &mut Parser) -> Option<Pattern> {
+/// `terminator` is the token that ends this pattern: `=>` for an arm, `;` for
+/// a field subpattern.
+fn parse_pattern(p: &mut Parser, terminator: &TokenKind) -> Option<Pattern> {
     let start = p.peek_span();
-    let candidate = probe_type_pattern(p);
-    let value = parse_pattern_value(p, candidate.is_some());
+    if let Some(fields) = parse_fields_pattern(p) {
+        return Some(Pattern {
+            value: Some(PatternValue::Fields(fields?)),
+            r#type: None,
+            span: start.to(p.last_span()),
+        });
+    }
+    let candidate = probe_type_pattern(p, terminator);
+    let value = parse_pattern_value(p, terminator, candidate.is_some());
     if let (None, Some(candidate)) = (&value, &candidate) {
         // Only a spelling with no value reading at all -- `[4]u8`,
         // `Wrapper<i32>` -- consumes the type reading's tokens instead.
@@ -1019,6 +1029,67 @@ fn parse_pattern(p: &mut Parser) -> Option<Pattern> {
     })
 }
 
+/// A path directly followed by `{` in pattern position is a field pattern,
+/// never a struct literal: patterns describe shapes, they don't build values.
+/// `None` means the tokens here are not a field pattern at all; `Some(None)`
+/// means one started but failed to parse.
+fn parse_fields_pattern(p: &mut Parser) -> Option<Option<FieldsPattern>> {
+    if !matches!(p.peek(), TokenKind::Ident(_)) {
+        return None;
+    }
+    let start = p.peek_span();
+    let mark = p.mark();
+    let path = p.allow_struct_literals(parse_expr_path);
+    let Some(path) = path.filter(|_| !p.errors_since(&mark) && p.check(&TokenKind::LBrace)) else {
+        p.reset(mark);
+        return None;
+    };
+    Some(p.allow_struct_literals(|p| parse_fields_pattern_body(p, path, start)))
+}
+
+fn parse_fields_pattern_body(
+    p: &mut Parser,
+    path: crate::ast::identifier::ExprPath,
+    start: Span,
+) -> Option<FieldsPattern> {
+    p.expect(&TokenKind::LBrace, "'{'");
+    let mut fields = Vec::new();
+    while matches!(p.peek(), TokenKind::Ident(_)) {
+        let name_span = p.peek_span();
+        let (name, name_origin) = p.expect_ident_with_origin()?;
+        p.expect(&TokenKind::Eq, "'='");
+        let pattern = parse_pattern(p, &TokenKind::Semi)?;
+        p.expect_terminator(&TokenKind::Semi, "';'");
+        fields.push(FieldSubpattern {
+            name,
+            name_span,
+            name_origin,
+            pattern,
+        });
+    }
+    let rest = if p.check(&TokenKind::DotDot) {
+        let span = p.peek_span();
+        p.advance();
+        Some(span)
+    } else {
+        None
+    };
+    if !p.check(&TokenKind::RBrace) {
+        p.error(ParseErrorKind::Expected {
+            expected: "a field subpattern (`name = pattern;`), `..`, or '}'",
+            found: p.peek().describe(),
+        });
+        return None;
+    }
+    p.advance(); // '}'
+    Some(FieldsPattern {
+        path,
+        fields,
+        rest,
+        span: start.to(p.last_span()),
+    })
+}
+
 struct TypePatternCandidate {
     r#type: Type,
     end: Mark,
@@ -1026,15 +1097,15 @@ struct TypePatternCandidate {
 
 /// A non-diagnostic probe for a pattern that could also be read as a type.
 /// The candidate is kept only when a complete type parse consumed everything
-/// up to the arm's `=>` and produced no diagnostics of its own, so an
-/// ambiguous path pattern such as `A` keeps both readings and the analyzer
-/// decides between them from the scrutinee's type.
-fn probe_type_pattern(p: &mut Parser) -> Option<TypePatternCandidate> {
+/// up to the pattern's terminator and produced no diagnostics of its own, so
+/// an ambiguous path pattern such as `A` keeps both readings and the analyzer
+/// decides between them from the matched position's type.
+fn probe_type_pattern(p: &mut Parser, terminator: &TokenKind) -> Option<TypePatternCandidate> {
     let start = p.mark();
     let parsed = crate::parser::r#type::parse_type(p);
     let end = p.mark();
     let candidate = match parsed {
-        Some(r#type) if p.check(&TokenKind::FatArrow) && !p.errors_since(&start) => {
+        Some(r#type) if p.check(terminator) && !p.errors_since(&start) => {
             Some(TypePatternCandidate { r#type, end })
         }
         _ => None,
@@ -1047,7 +1118,11 @@ fn probe_type_pattern(p: &mut Parser) -> Option<TypePatternCandidate> {
 /// abandoned. Without a type reading to fall back on there is nothing to
 /// abandon it *for*, so the parse and its diagnostics stay exactly what they
 /// were before type patterns existed.
-fn parse_pattern_value(p: &mut Parser, has_type_candidate: bool) -> Option<PatternValue> {
+fn parse_pattern_value(
+    p: &mut Parser,
+    terminator: &TokenKind,
+    has_type_candidate: bool,
+) -> Option<PatternValue> {
     if is_range_operator(p.peek()) {
         let op_span = p.peek_span();
         let range = p.allow_struct_literals(|p| parse_range_tail(p, None, op_span))?;
@@ -1067,10 +1142,10 @@ fn parse_pattern_value(p: &mut Parser, has_type_candidate: bool) -> Option<Patte
         let range = p.allow_struct_literals(|p| parse_range_tail(p, Some(value), op_span))?;
         return Some(PatternValue::Range(range));
     }
-    // A value reading that stalls before the arm's `=>` is not a pattern at
-    // all: `[4]u8` parses `[4]` and then stops. Handing the arm to the type
-    // reading avoids a spurious "expected '=>'".
-    if has_type_candidate && !p.check(&TokenKind::FatArrow) {
+    // A value reading that stalls before the terminator is not a pattern at
+    // all: `[4]u8` parses `[4]` and then stops. Handing the pattern to the
+    // type reading avoids a spurious "expected '=>'".
+    if has_type_candidate && !p.check(terminator) {
         p.reset(mark);
         return None;
     }

@@ -1,0 +1,13 @@
+nested-enum: 7 -3
+nested-enum-none: 0
+leaf-fields: shift-q letter control other key not a key
+specific-first: left click on the y-axis / left click / other click / quit / something else
+struct-scrutinee: origin y-axis x-axis plane
+same-weight: on the y-axis on the x-axis off-axis
+catch-all-last: zero nonzero five digit big
+pointer-scrutinee: 9 -1
+anonymous-member: point on the y-axis / point / left button / button / text / 2
+anonymous-variant: 11 0 -1
+generic-enum: just zero just nothing
+write-inside-refined: 42
+reassigned-after-match: 0
