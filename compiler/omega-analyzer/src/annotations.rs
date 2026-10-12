@@ -3,7 +3,7 @@ use crate::error::AnalysisErrorKind;
 use crate::error::AnalysisWarningKind;
 use omega_hir::{
     AnnotationExprKind, AnnotationLiteral, HirAnnotation, HirAnnotationArg, HirAnnotationValue,
-    HirId,
+    HirId, ModulePath,
 };
 use omega_parser::prelude::{Ident, NumberBase, Span};
 use std::fmt;
@@ -119,7 +119,7 @@ pub enum ManglingMode {
     Disabled,
     Forced(String),
     Glued {
-        spec_module_path: Vec<Ident>,
+        spec_module_path: ModulePath,
         spec_name: Ident,
         function_name: Ident,
     },

@@ -1,5 +1,5 @@
 use crate::mir::{MirItem, MirModule};
-use omega_parser::prelude::Ident;
+use omega_hir::ModulePath;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -10,7 +10,7 @@ use std::path::PathBuf;
 /// renames `module` never moves the artifact.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EmissionSource {
-    pub module: Vec<Ident>,
+    pub module: ModulePath,
     pub path: PathBuf,
 }
 
@@ -35,7 +35,7 @@ pub struct EmissionUnit {
 /// local home: the source-bearing package root when there is one, otherwise
 /// the first source in path order.
 pub fn plan_emission(
-    modules: Vec<(Vec<Ident>, MirModule)>,
+    modules: Vec<(ModulePath, MirModule)>,
     sources: &[EmissionSource],
 ) -> Vec<EmissionUnit> {
     let mut sources: Vec<&EmissionSource> = sources.iter().collect();
@@ -44,10 +44,10 @@ pub fn plan_emission(
     }
     sources.sort_by(|a, b| a.path.cmp(&b.path));
 
-    let owners: HashMap<&[Ident], usize> = sources
+    let owners: HashMap<&ModulePath, usize> = sources
         .iter()
         .enumerate()
-        .map(|(index, source)| (source.module.as_slice(), index))
+        .map(|(index, source)| (&source.module, index))
         .collect();
     let generated_home = sources
         .iter()
@@ -62,10 +62,7 @@ pub fn plan_emission(
         })
         .collect();
     for (path, module) in modules {
-        let unit = owners
-            .get(path.as_slice())
-            .copied()
-            .unwrap_or(generated_home);
+        let unit = owners.get(&path).copied().unwrap_or(generated_home);
         units[unit].items.extend(module.items);
     }
     units
@@ -75,6 +72,7 @@ pub fn plan_emission(
 mod tests {
     use super::*;
     use omega_hir::ModuleId;
+    use omega_parser::prelude::Ident;
 
     fn ident(name: &str) -> Ident {
         Ident(name.to_string())
@@ -116,7 +114,7 @@ mod tests {
             source(&["pkg"], "pkg.omg"),
             source(&["pkg", "child"], "child.omg"),
         ];
-        let units = plan_emission(vec![(vec![ident("pkg")], module(1))], &sources);
+        let units = plan_emission(vec![(ModulePath::new([ident("pkg")]), module(1))], &sources);
 
         assert_eq!(
             units.iter().map(|unit| &unit.source).collect::<Vec<_>>(),
@@ -135,8 +133,8 @@ mod tests {
         let sources = [source(&["pkg"], "pkg.omg"), source(&["pkg", "a"], "a.omg")];
         let units = plan_emission(
             vec![
-                (vec![ident("core"), ident("mem")], module(2)),
-                (vec![ident("pkg")], module(1)),
+                (ModulePath::new([ident("core"), ident("mem")]), module(2)),
+                (ModulePath::new([ident("pkg")]), module(1)),
             ],
             &sources,
         );
@@ -154,7 +152,10 @@ mod tests {
             source(&["pkg", "b"], "b.omg"),
             source(&["pkg", "a"], "a.omg"),
         ];
-        let units = plan_emission(vec![(vec![ident("core")], module(2))], &sources);
+        let units = plan_emission(
+            vec![(ModulePath::new([ident("core")]), module(2))],
+            &sources,
+        );
 
         assert_eq!(units.len(), 2);
         assert_eq!(units[0].source, PathBuf::from("a.omg"));

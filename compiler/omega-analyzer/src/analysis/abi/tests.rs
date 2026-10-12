@@ -19,7 +19,7 @@ fn dummy_union_type() -> ResolvedType {
     ResolvedType::Union(Rc::new(RefCell::new(ResolvedUnionType {
         id: id(1),
         name: Ident("U".into()),
-        module_path: vec![],
+        module_path: omega_hir::ModulePath::default(),
         generic_args: vec![],
         fields: vec![],
         functions: vec![],
@@ -32,7 +32,7 @@ fn dummy_enum_type() -> ResolvedType {
         cell: Rc::new(RefCell::new(ResolvedEnumType {
             id: id(1),
             name: Ident("E".into()),
-            module_path: vec![],
+            module_path: omega_hir::ModulePath::default(),
             generic_args: vec![],
             tag_type: ResolvedType::U16,
             header: vec![],

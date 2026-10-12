@@ -140,9 +140,10 @@ impl<'r> Analyzer<'r> {
     ) -> Option<Vec<Option<ResolvedGenericArg>>> {
         let (params, owner) = {
             let cell = spec.borrow();
-            let mut owner = cell.module_path.clone();
-            owner.push(cell.name.clone());
-            (cell.generics.clone(), owner)
+            (
+                cell.generics.clone(),
+                cell.module_path.join(cell.name.clone()),
+            )
         };
         self.check_generic_arity(node_id, span, &owner, &params, written.len())?;
         let mut args = Vec::with_capacity(written.len());
@@ -817,13 +818,7 @@ fn spec_displays(applications: &[crate::resolved_type::ResolvedSpecApplication])
         .map(|(application, display)| {
             if plain.iter().filter(|other| *other == display).count() > 1 {
                 let spec = application.spec.borrow();
-                let mut qualified = spec
-                    .module_path
-                    .iter()
-                    .chain(std::iter::once(&spec.name))
-                    .map(AsRef::as_ref)
-                    .collect::<Vec<&str>>()
-                    .join("::");
+                let mut qualified = spec.module_path.join(spec.name.clone()).to_string();
                 if !application.spec_args.is_empty() {
                     let args = application
                         .spec_args
@@ -859,7 +854,7 @@ mod tests {
                 local: 0,
             },
             name: Ident("P".into()),
-            module_path: vec![Ident("pkg".into())],
+            module_path: omega_hir::ModulePath::from(vec![Ident("pkg".into())]),
             visibility: omega_parser::prelude::Visibility::Exposed,
             generics: vec![],
             generic_args: vec![],
@@ -874,7 +869,7 @@ mod tests {
                     local,
                 },
                 name: Ident("X".into()),
-                module_path: vec![Ident(module.into())],
+                module_path: omega_hir::ModulePath::from(vec![Ident(module.into())]),
                 generic_args: vec![],
                 fields: vec![],
                 functions: vec![],

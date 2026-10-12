@@ -38,7 +38,7 @@ impl TestPackage {
             Target::DEFAULT,
         )
         .expect("construct driver with the real core extern")
-        .compile(&[Ident("main".to_string())])
+        .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]))
     }
 }
 

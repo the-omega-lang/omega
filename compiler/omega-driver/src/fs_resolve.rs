@@ -1,5 +1,5 @@
-use crate::ModulePath;
 use omega_analyzer::resolver::ResolveError;
+use omega_hir::ModulePath;
 use omega_parser::prelude::Ident;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -15,18 +15,20 @@ pub fn relabel_root(
     let Some(physical) = tree
         .keys()
         .find(|path| path.len() == 1)
-        .map(|path| path[0].clone())
+        .and_then(|path| path.root().cloned())
     else {
         return tree;
     };
     if &physical == declared {
         return tree;
     }
-    let relabel = |mut path: ModulePath| {
-        if path.first() == Some(&physical) {
-            path[0] = declared.clone();
+    let relabel = |path: ModulePath| {
+        if path.root() != Some(&physical) {
+            return path;
         }
-        path
+        std::iter::once(declared.clone())
+            .chain(path.segments()[1..].iter().cloned())
+            .collect()
     };
     tree.into_iter()
         .map(|(path, location)| {
@@ -125,26 +127,29 @@ pub fn discover_tree(root: &Path) -> HashMap<ModulePath, Result<ModuleLocation, 
 
     let own_file = root.join(format!("{}.omg", name.as_ref()));
     let same_named_child = root.join(name.as_ref());
-    let root_path = vec![name.clone()];
+    let root_path = ModulePath::new([name.clone()]);
     if own_file.is_file() && same_named_child.is_dir() {
-        out.insert(root_path, Err(ResolveError::AmbiguousModule(vec![name])));
+        out.insert(
+            root_path.clone(),
+            Err(ResolveError::AmbiguousModule(root_path)),
+        );
         return out;
     }
 
     out.insert(
-        root_path,
+        root_path.clone(),
         Ok(ModuleLocation {
             own_file: own_file.is_file().then_some(own_file),
             children_dir: Some(root.to_path_buf()),
         }),
     );
-    discover_into(root, &mut vec![name.clone()], &mut out, Some(&name));
+    discover_into(root, &root_path, &mut out, Some(&name));
     out
 }
 
 fn discover_into(
     dir: &Path,
-    prefix: &mut ModulePath,
+    prefix: &ModulePath,
     out: &mut HashMap<ModulePath, Result<ModuleLocation, ResolveError>>,
     skip: Option<&Ident>,
 ) {
@@ -177,10 +182,8 @@ fn discover_into(
             let is_source_bearing =
                 file_path.is_file() || (dir_path.is_dir() && contains_omg_source(&dir_path));
             if is_source_bearing {
-                let mut key = prefix.clone();
-                key.push(Ident(candidate.clone()));
                 out.insert(
-                    key,
+                    prefix.child(Ident(candidate.clone())),
                     Err(ResolveError::InvalidModuleName {
                         path: prefix.clone(),
                         invalid: candidate,
@@ -191,25 +194,21 @@ fn discover_into(
         }
 
         let name = Ident(candidate);
-        prefix.push(name.clone());
+        let path = prefix.child(name.clone());
         match resolve_segment(dir, &name) {
             Ok(location) => {
                 let children_dir = location.children_dir.clone();
-                out.insert(prefix.clone(), Ok(location));
+                out.insert(path.clone(), Ok(location));
                 if let Some(children_dir) = children_dir {
-                    discover_into(&children_dir, prefix, out, Some(&name));
+                    discover_into(&children_dir, &path, out, Some(&name));
                 }
             }
             Err(SegmentError::Ambiguous) => {
-                out.insert(
-                    prefix.clone(),
-                    Err(ResolveError::AmbiguousModule(prefix.clone())),
-                );
+                out.insert(path.clone(), Err(ResolveError::AmbiguousModule(path)));
             }
             // Only a filesystem race (entry vanished after read_dir) could hit this.
             Err(SegmentError::NotFound) => {}
         }
-        prefix.pop();
     }
 }
 
@@ -261,13 +260,13 @@ mod tests {
 
         let tree = discover_tree(&root.0);
         let root_location = tree
-            .get(&vec![name.clone()])
+            .get(&ModulePath::new([name.clone()]))
             .expect("root module is discovered")
             .as_ref()
             .expect("root module is unambiguous");
         assert!(root_location.own_file.is_some());
         assert!(root_location.children_dir.is_some());
-        assert!(tree.contains_key(&vec![name, Ident("foo".to_string())]));
+        assert!(tree.contains_key(&ModulePath::new([name, Ident("foo".to_string())])));
     }
 
     #[test]
@@ -278,12 +277,12 @@ mod tests {
 
         let tree = discover_tree(&root.0);
         let root_location = tree
-            .get(&vec![name.clone()])
+            .get(&ModulePath::new([name.clone()]))
             .expect("namespace root is discovered")
             .as_ref()
             .expect("namespace root is unambiguous");
         assert!(root_location.own_file.is_none());
-        assert!(tree.contains_key(&vec![name, Ident("foo".to_string())]));
+        assert!(tree.contains_key(&ModulePath::new([name, Ident("foo".to_string())])));
     }
 
     #[test]
@@ -294,12 +293,12 @@ mod tests {
 
         let tree = discover_tree(&root.0);
         let root_location = tree
-            .get(&vec![name.clone()])
+            .get(&ModulePath::new([name.clone()]))
             .expect("namespace root is discovered")
             .as_ref()
             .expect("namespace root is unambiguous");
         assert!(root_location.own_file.is_none());
-        assert!(tree.contains_key(&vec![name, Ident("mathlib".to_string())]));
+        assert!(tree.contains_key(&ModulePath::new([name, Ident("mathlib".to_string())])));
     }
 
     #[test]
@@ -310,12 +309,12 @@ mod tests {
         root.write("foo/bar.omg");
 
         let tree = discover_tree(&root.0);
-        assert!(tree.contains_key(&vec![name.clone(), Ident("foo".to_string())]));
-        assert!(tree.contains_key(&vec![
+        assert!(tree.contains_key(&ModulePath::new([name.clone(), Ident("foo".to_string())])));
+        assert!(tree.contains_key(&ModulePath::new([
             name,
             Ident("foo".to_string()),
             Ident("bar".to_string()),
-        ]));
+        ])));
     }
 
     #[test]
@@ -327,7 +326,8 @@ mod tests {
 
         let tree = discover_tree(&root.0);
         assert!(matches!(
-            tree.get(&vec![name]).expect("collision is retained"),
+            tree.get(&ModulePath::new([name]))
+                .expect("collision is retained"),
             Err(ResolveError::AmbiguousModule(_))
         ));
     }
@@ -339,7 +339,7 @@ mod tests {
         root.write("foo-bar.omg");
 
         let tree = discover_tree(&root.0);
-        let key = vec![name, Ident("foo-bar".to_string())];
+        let key = ModulePath::new([name, Ident("foo-bar".to_string())]);
         assert!(matches!(
             tree.get(&key),
             Some(Err(ResolveError::InvalidModuleName { invalid, .. })) if invalid == "foo-bar"
@@ -372,7 +372,7 @@ mod tests {
             root.write(&format!("{reserved}.omg"));
 
             let tree = discover_tree(&root.0);
-            let key = vec![name, Ident(reserved.to_string())];
+            let key = ModulePath::new([name, Ident(reserved.to_string())]);
             assert!(
                 matches!(
                     tree.get(&key),
@@ -391,7 +391,7 @@ mod tests {
             root.write(&format!("{reserved}/child.omg"));
 
             let tree = discover_tree(&root.0);
-            let key = vec![name, Ident(reserved.to_string())];
+            let key = ModulePath::new([name, Ident(reserved.to_string())]);
             assert!(
                 matches!(
                     tree.get(&key),
@@ -411,17 +411,17 @@ mod tests {
         root.write("foo-bar/baz.omg");
 
         let tree = discover_tree(&root.0);
-        let key = vec![name.clone(), Ident("foo-bar".to_string())];
+        let key = ModulePath::new([name.clone(), Ident("foo-bar".to_string())]);
         assert!(matches!(
             tree.get(&key),
             Some(Err(ResolveError::InvalidModuleName { invalid, .. })) if invalid == "foo-bar"
         ));
         // The subtree under an unreachable prefix is not separately walked.
-        assert!(!tree.contains_key(&vec![
+        assert!(!tree.contains_key(&ModulePath::new([
             name,
             Ident("foo-bar".to_string()),
             Ident("baz".to_string())
-        ]));
+        ])));
     }
 
     #[test]
@@ -438,7 +438,7 @@ mod tests {
         assert!(
             !tree
                 .keys()
-                .any(|path| path.iter().any(|i| i.as_ref() == ".git"))
+                .any(|path| path.segments().iter().any(|i| i.as_ref() == ".git"))
         );
     }
 
@@ -450,6 +450,6 @@ mod tests {
 
         let declared = Ident("plat".to_string());
         let tree = relabel_root(discover_tree(&root.0), &declared);
-        assert!(tree.contains_key(&vec![declared]));
+        assert!(tree.contains_key(&ModulePath::new([declared])));
     }
 }

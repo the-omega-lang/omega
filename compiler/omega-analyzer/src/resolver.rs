@@ -4,7 +4,7 @@ use crate::resolved_type::{
     ResolvedMethod, ResolvedSpecType, ResolvedType,
 };
 use omega_diagnostics::SourceId;
-use omega_hir::{HirGenericParam, HirId};
+use omega_hir::{HirGenericParam, HirId, ItemPath, ModulePath};
 use omega_parser::macros::MacroAuthorship;
 use omega_parser::prelude::{Ident, Origin, Path, Type, Visibility};
 use std::cell::RefCell;
@@ -28,11 +28,11 @@ pub enum ResolvedItem {
 /// syntax the target was written as.
 #[derive(Debug, Clone)]
 pub enum ResolvedAlias {
-    Module(Vec<Ident>),
+    Module(ModulePath),
     /// A top-level declaration, named exactly as if its own path were written
     /// at the use site. Covers types, specs, functions and overload sets, and
     /// macros alike -- the use site decides which namespace it wanted.
-    Item(Vec<Ident>),
+    Item(ItemPath),
     /// A structural target, expanded before the use site applies contextual
     /// type semantics so that `spec A + B` behaves identically whether it was
     /// written literally or reached through an alias. Every path in `r#type`
@@ -49,7 +49,7 @@ pub enum ResolvedAlias {
     /// for them -- and it must not widen the set later either, which is what
     /// re-deriving visibility at each caller would do.
     Overloads {
-        absolute: Vec<Ident>,
+        absolute: ItemPath,
         candidates: Vec<HirId>,
     },
 }
@@ -59,7 +59,7 @@ pub enum ResolvedAlias {
 /// forwards its target's identity.
 #[derive(Debug, Clone)]
 pub struct ResolvedOverloadSet {
-    pub absolute: Vec<Ident>,
+    pub absolute: ItemPath,
     pub candidates: OverloadCandidates,
 }
 
@@ -75,13 +75,13 @@ pub struct ResolvedOverloadSet {
 /// unauthorized one.
 #[derive(Debug, Clone)]
 pub struct ItemAccess {
-    pub absolute: Vec<Ident>,
+    pub absolute: ItemPath,
     pub bypass_visibility: bool,
 }
 
 impl ItemAccess {
     /// A path the accessor must still be allowed to name for itself.
-    pub fn gated(absolute: Vec<Ident>) -> Self {
+    pub fn gated(absolute: ItemPath) -> Self {
         Self {
             absolute,
             bypass_visibility: false,
@@ -89,7 +89,7 @@ impl ItemAccess {
     }
 
     /// A path whose target the accessor has already been authorized to reach.
-    pub fn authorized(absolute: Vec<Ident>) -> Self {
+    pub fn authorized(absolute: ItemPath) -> Self {
         Self {
             absolute,
             bypass_visibility: true,
@@ -105,8 +105,8 @@ impl ItemAccess {
 
 #[derive(Debug, Clone)]
 pub enum ImportTarget {
-    Module(Vec<Ident>),
-    Item(Vec<Ident>, ResolvedItem),
+    Module(ModulePath),
+    Item(ItemPath, ResolvedItem),
     /// A name bound to a path whose item is resolved later: an ordinary
     /// (non-alias) generic template, whose arity and contents are unknown
     /// until a use site supplies arguments, or a declared alias, which never
@@ -118,7 +118,7 @@ pub enum ImportTarget {
 
 #[derive(Debug, Clone)]
 pub enum ResolveError {
-    UnknownModule(Vec<Ident>),
+    UnknownModule(ModulePath),
     /// An unprefixed import's head is not a known top-level package
     /// identity (the local package or a registered dependency).
     UnknownTopLevelPackage(Ident),
@@ -126,40 +126,40 @@ pub enum ResolveError {
     /// module's package-relative depth allows.
     SuperAboveRoot {
         depth: u32,
-        importer: Vec<Ident>,
+        importer: ModulePath,
     },
     UnknownItem {
-        module: Vec<Ident>,
+        module: ModulePath,
         item: Ident,
     },
     NotVisible {
-        module: Vec<Ident>,
+        module: ModulePath,
         item: Ident,
     },
-    Cycle(Vec<Vec<Ident>>),
-    AmbiguousModule(Vec<Ident>),
+    Cycle(Vec<ItemPath>),
+    AmbiguousModule(ModulePath),
     /// A filesystem module candidate whose `.omg` file stem or directory
     /// segment is not a spelling the parser can tokenize as an identifier.
     /// `path` is the valid ancestor prefix; `invalid` is the raw offending
     /// segment (not wrapped in `Ident`, since it is by definition not one).
     InvalidModuleName {
-        path: Vec<Ident>,
+        path: ModulePath,
         invalid: String,
     },
     LoadFailed {
-        path: Vec<Ident>,
+        path: ModulePath,
         message: String,
     },
     RecursiveTypeWithoutIndirection {
-        module: Vec<Ident>,
+        module: ModulePath,
         item: Ident,
     },
     ItemFailed {
-        module: Vec<Ident>,
+        module: ModulePath,
         item: Ident,
     },
     GenericArgCountMismatch {
-        module: Vec<Ident>,
+        module: ModulePath,
         item: Ident,
         expected: usize,
         found: usize,
@@ -170,19 +170,19 @@ pub enum ResolveError {
         missing: Vec<Ident>,
     },
     SpecDependencyCycle {
-        module: Vec<Ident>,
+        module: ModulePath,
         spec: Ident,
     },
     AmbiguousAmbientName {
         name: Ident,
-        candidates: Vec<Vec<Ident>>,
+        candidates: Vec<ModulePath>,
     },
     /// An `alias`'s own generic parameter list binds a name it may not:
     /// a language type spelling, or one it already bound. Alias placeholders
     /// are validated symbolically here rather than through the analyzer's
     /// generic registration, so the rule has to be restated at this site.
     InvalidAliasGenericParam {
-        module: Vec<Ident>,
+        module: ModulePath,
         declared: Ident,
         param: Ident,
         /// Predicate completing "generic parameter '<param>' ...".
@@ -190,9 +190,11 @@ pub enum ResolveError {
     },
     /// An `alias` whose target is a declaration kind an alias never names.
     InvalidAliasTarget {
-        module: Vec<Ident>,
+        module: ModulePath,
         declared: Ident,
-        target: Vec<Ident>,
+        /// The target as written or resolved, rendered for the message: a
+        /// bare name, a module, or an item.
+        target: String,
         kind: &'static str,
         /// The target was written inside type syntax, where the legal alias
         /// namespace is narrower: only a type or spec belongs there, even
@@ -201,17 +203,10 @@ pub enum ResolveError {
     },
 }
 
-fn join(path: &[Ident]) -> String {
-    path.iter()
-        .map(|i| i.as_ref())
-        .collect::<Vec<_>>()
-        .join("::")
-}
-
 impl fmt::Display for ResolveError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UnknownModule(path) => write!(f, "cannot find module '{}'", join(path)),
+            Self::UnknownModule(path) => write!(f, "cannot find module '{}'", path),
             Self::UnknownTopLevelPackage(name) => write!(
                 f,
                 "'{}' is not a known top-level package (unprefixed imports are top-level; use `root::`, `self::`, or `super::` for local navigation, or register a dependency with --import={}=<path>)",
@@ -221,37 +216,26 @@ impl fmt::Display for ResolveError {
             Self::SuperAboveRoot { depth, importer } => write!(
                 f,
                 "'super' used {} time(s) from '{}' would cross the package root",
-                depth,
-                join(importer)
+                depth, importer
             ),
             Self::UnknownItem { module, item } => {
-                write!(
-                    f,
-                    "cannot find '{}' in module '{}'",
-                    item.as_ref(),
-                    join(module)
-                )
+                write!(f, "cannot find '{}' in module '{}'", item.as_ref(), module)
             }
             Self::NotVisible { module, item } => {
-                write!(
-                    f,
-                    "'{}::{}' is not visible here",
-                    join(module),
-                    item.as_ref()
-                )
+                write!(f, "'{}::{}' is not visible here", module, item.as_ref())
             }
             Self::Cycle(path) => write!(
                 f,
                 "cyclic resolution dependency: {}",
                 path.iter()
-                    .map(|p| join(p))
+                    .map(ToString::to_string)
                     .collect::<Vec<_>>()
                     .join(" -> ")
             ),
             Self::AmbiguousModule(path) => write!(
                 f,
                 "module '{}' is ambiguous (both a file and a directory claim this name)",
-                join(path)
+                path
             ),
             Self::InvalidModuleName { path, invalid } => {
                 if path.is_empty() {
@@ -260,24 +244,24 @@ impl fmt::Display for ResolveError {
                     write!(
                         f,
                         "'{invalid}' under module '{}' is not a valid Omega module name",
-                        join(path)
+                        path
                     )
                 }
             }
             Self::LoadFailed { path, message } => {
-                write!(f, "failed to load module '{}': {message}", join(path))
+                write!(f, "failed to load module '{}': {message}", path)
             }
             Self::RecursiveTypeWithoutIndirection { module, item } => write!(
                 f,
                 "recursive type '{}::{}' has infinite size",
-                join(module),
+                module,
                 item.as_ref()
             ),
             Self::ItemFailed { module, item } => {
                 write!(
                     f,
                     "cannot use '{}::{}' because of its own error",
-                    join(module),
+                    module,
                     item.as_ref()
                 )
             }
@@ -289,7 +273,7 @@ impl fmt::Display for ResolveError {
             } => write!(
                 f,
                 "'{}::{}' expects {expected} generic argument(s), found {found}",
-                join(module),
+                module,
                 item.as_ref()
             ),
             Self::SpecNotImplemented {
@@ -318,12 +302,7 @@ impl fmt::Display for ResolveError {
                     .join(", ")
             ),
             Self::SpecDependencyCycle { module, spec } => {
-                write!(
-                    f,
-                    "spec '{}::{}' depends on itself",
-                    join(module),
-                    spec.as_ref()
-                )
+                write!(f, "spec '{}::{}' depends on itself", module, spec.as_ref())
             }
             Self::InvalidAliasGenericParam {
                 module,
@@ -334,7 +313,7 @@ impl fmt::Display for ResolveError {
                 f,
                 "generic parameter '{}' of alias '{}::{}' {reason}",
                 param.as_ref(),
-                join(module),
+                module,
                 declared.as_ref()
             ),
             Self::InvalidAliasTarget {
@@ -346,9 +325,9 @@ impl fmt::Display for ResolveError {
             } => write!(
                 f,
                 "alias '{}::{}' cannot name {kind} '{}'",
-                join(module),
+                module,
                 declared.as_ref(),
-                join(target)
+                target
             ),
             Self::AmbiguousAmbientName { name, candidates } => write!(
                 f,
@@ -356,7 +335,7 @@ impl fmt::Display for ResolveError {
                 name.as_ref(),
                 candidates
                     .iter()
-                    .map(|c| join(c))
+                    .map(ToString::to_string)
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
@@ -410,12 +389,12 @@ impl ResolveItemOptions {
 }
 
 pub trait ModuleResolver {
-    fn macro_origin_module(&self, origin: Origin) -> Option<Vec<Ident>>;
+    fn macro_origin_module(&self, origin: Origin) -> Option<ModulePath>;
 
     /// The retained source file of a module, when one has been read. Findings
     /// use it to name the file their spans index, so a diagnostic can still
     /// be rendered once it leaves the module it was produced in.
-    fn module_source(&self, _module: &[Ident]) -> Option<SourceId> {
+    fn module_source(&self, _module: &ModulePath) -> Option<SourceId> {
         None
     }
 
@@ -442,7 +421,7 @@ pub trait ModuleResolver {
     /// lookup rules instead of treating the path as navigation.
     fn resolve_explicit_anchor(
         &self,
-        origin_module: &[Ident],
+        origin_module: &ModulePath,
         path: &Path,
     ) -> Option<Result<Vec<Ident>, ResolveError>>;
 
@@ -453,15 +432,15 @@ pub trait ModuleResolver {
     /// type/item-qualified interpretation instead.
     fn resolve_module_path(
         &mut self,
-        accessor: &[Ident],
-        absolute_path: &[Ident],
-    ) -> Result<Option<Vec<Ident>>, ResolveError>;
+        accessor: &ModulePath,
+        absolute_path: &ModulePath,
+    ) -> Result<Option<ModulePath>, ResolveError>;
 
-    fn declared_item_visibility(&mut self, absolute_path: &[Ident]) -> Option<Visibility>;
+    fn declared_item_visibility(&mut self, absolute_path: &ItemPath) -> Option<Visibility>;
 
     fn resolve_import_alias(
         &mut self,
-        module_path: &[Ident],
+        module_path: &ModulePath,
         alias: &Ident,
     ) -> Result<Option<ImportTarget>, ResolveError>;
 
@@ -477,24 +456,24 @@ pub trait ModuleResolver {
     /// recursed.
     fn resolve_visible_alias(
         &mut self,
-        accessor: &[Ident],
-        alias_module: &[Ident],
+        accessor: &ModulePath,
+        alias_module: &ModulePath,
         name: &Ident,
         bypass_visibility: bool,
     ) -> Result<Option<ResolvedAlias>, ResolveError>;
 
     fn ambient_core_candidates(
         &mut self,
-        accessor: &[Ident],
+        accessor: &ModulePath,
         name: &Ident,
-    ) -> Result<Option<Vec<Ident>>, ResolveError>;
+    ) -> Result<Option<ItemPath>, ResolveError>;
 
-    fn import_alias_names(&mut self, module_path: &[Ident]) -> Vec<Ident>;
+    fn import_alias_names(&mut self, module_path: &ModulePath) -> Vec<Ident>;
 
     fn resolve_item(
         &mut self,
-        accessor_module_path: &[Ident],
-        absolute_path: &[Ident],
+        accessor_module_path: &ModulePath,
+        absolute_path: &ItemPath,
         generic_args: &[ResolvedGenericArg],
         options: ResolveItemOptions,
     ) -> Result<ResolvedItem, ResolveError>;
@@ -505,7 +484,7 @@ pub trait ModuleResolver {
     /// value, and asking for that must not instantiate the item.
     fn item_generic_params(
         &mut self,
-        absolute_path: &[Ident],
+        absolute_path: &ItemPath,
     ) -> Result<Option<Vec<HirGenericParam>>, ResolveError>;
 
     /// Completes positional generic arguments for `absolute_path`, filling
@@ -513,23 +492,27 @@ pub trait ModuleResolver {
     /// declaring module. A gap may precede a bound position.
     fn complete_generic_args(
         &mut self,
-        absolute_path: &[Ident],
+        absolute_path: &ItemPath,
         arguments: &[Option<ResolvedGenericArg>],
     ) -> Result<Vec<ResolvedGenericArg>, ResolveError> {
         let _ = absolute_path;
         Ok(arguments.iter().map_while(Clone::clone).collect())
     }
 
-    fn is_item_visible(&mut self, accessor_module_path: &[Ident], absolute_path: &[Ident]) -> bool;
+    fn is_item_visible(
+        &mut self,
+        accessor_module_path: &ModulePath,
+        absolute_path: &ItemPath,
+    ) -> bool;
 
     fn generic_function_signature(
         &mut self,
-        absolute_path: &[Ident],
+        absolute_path: &ItemPath,
     ) -> Result<Option<GenericSignature>, ResolveError>;
 
     fn generic_literal_signature(
         &mut self,
-        absolute_path: &[Ident],
+        absolute_path: &ItemPath,
         variant: Option<&Ident>,
     ) -> Result<Option<GenericLiteralSignature>, ResolveError>;
 
@@ -540,7 +523,7 @@ pub trait ModuleResolver {
     /// solve the owner's type arguments from the explicit receiver.
     fn generic_owner_function_signature(
         &mut self,
-        owner_absolute: &[Ident],
+        owner_absolute: &ItemPath,
         function_name: &Ident,
         namespace: crate::resolved_type::FunctionNamespace,
     ) -> Result<Option<GenericOwnerFunctionSignature>, ResolveError>;
@@ -580,7 +563,7 @@ pub trait ModuleResolver {
     /// and never re-filters it.
     fn resolve_overload_set(
         &mut self,
-        accessor: &[Ident],
+        accessor: &ModulePath,
         access: &ItemAccess,
     ) -> Result<Option<ResolvedOverloadSet>, ResolveError>;
 
@@ -593,7 +576,7 @@ pub trait ModuleResolver {
     /// differently than they would among overload candidates.
     fn function_value_candidates(
         &mut self,
-        accessor: &[Ident],
+        accessor: &ModulePath,
         access: &ItemAccess,
     ) -> Result<Option<ResolvedOverloadSet>, ResolveError> {
         self.resolve_overload_set(accessor, access)
@@ -678,14 +661,14 @@ pub trait ModuleResolver {
 
     fn similar_item_name(
         &mut self,
-        module_path: &[Ident],
+        module_path: &ModulePath,
         target: &Ident,
         namespace: ItemNamespace,
     ) -> Option<Ident>;
 
     fn spec_declaration(
         &mut self,
-        absolute_path: &[Ident],
+        absolute_path: &ItemPath,
     ) -> Result<Option<Rc<RefCell<ResolvedSpecType>>>, ResolveError>;
 
     fn primitive_methods(
@@ -730,7 +713,7 @@ pub struct OverloadCandidate {
     pub decl_id: HirId,
     pub signature: OverloadSignature,
     pub visibility: Visibility,
-    pub declaring_module: Vec<Ident>,
+    pub declaring_module: ModulePath,
 }
 
 #[derive(Debug, Clone)]
@@ -813,7 +796,7 @@ pub enum GenericCallTarget<'a> {
     /// An overload candidate, by the declaration identity it carries.
     Declaration(HirId),
     /// A free generic function named by its absolute path.
-    Function(&'a [Ident]),
+    Function(&'a ItemPath),
     /// The one generic function an owner declares under this name.
     Method {
         owner: &'a ResolvedType,

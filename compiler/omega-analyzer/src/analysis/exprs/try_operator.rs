@@ -174,7 +174,12 @@ fn canonical_fallible(
     };
     let kind = {
         let definition = cell.borrow();
-        let module: Vec<&str> = definition.module_path.iter().map(Ident::as_ref).collect();
+        let module: Vec<&str> = definition
+            .module_path
+            .segments()
+            .iter()
+            .map(Ident::as_ref)
+            .collect();
         match (module.as_slice(), definition.name.as_ref()) {
             (["core", "option"], "Option") => CheckedTryKind::Option,
             (["core", "result"], "Result") => CheckedTryKind::Result,

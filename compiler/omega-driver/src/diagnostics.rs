@@ -1,12 +1,12 @@
+use crate::Driver;
 use crate::error::CompileError;
-use crate::{Driver, ModulePath};
 use omega_analyzer::analysis::{AnalysisMode, AnalysisSite, Analyzer};
 use omega_analyzer::dead_code::FieldUsage;
 use omega_analyzer::error::{AnalysisError, AnalysisWarning};
 use omega_analyzer::generics::GenericSubstitution;
 use omega_diagnostics::Span;
 use omega_hir::HirId;
-use omega_parser::prelude::Ident;
+use omega_hir::ModulePath;
 use std::collections::{HashMap, HashSet};
 
 /// The frontend's finding sink. Every phase records into it at the unit that
@@ -31,16 +31,16 @@ pub(crate) struct Diagnostics {
 }
 
 impl Diagnostics {
-    pub fn error(&mut self, module: &[Ident], error: AnalysisError) {
+    pub fn error(&mut self, module: &ModulePath, error: AnalysisError) {
         if !self.is_new(module, &error) {
             return;
         }
-        self.errors.entry(module.to_vec()).or_default().push(error);
+        self.errors.entry(module.clone()).or_default().push(error);
     }
 
-    fn is_new(&mut self, module: &[Ident], error: &AnalysisError) -> bool {
+    fn is_new(&mut self, module: &ModulePath, error: &AnalysisError) -> bool {
         self.reported.insert((
-            module.to_vec(),
+            module.clone(),
             error.node_id,
             error.span,
             error.kind.to_string(),
@@ -49,8 +49,8 @@ impl Diagnostics {
 
     /// Records a non-analysis frontend failure. A module reports at most one:
     /// a second load attempt returns the same unavailability, not a new fault.
-    pub fn fail(&mut self, module: Option<&[Ident]>, error: CompileError) {
-        let module = module.map(<[Ident]>::to_vec);
+    pub fn fail(&mut self, module: Option<&ModulePath>, error: CompileError) {
+        let module = module.cloned();
         if let Some(module) = &module
             && self
                 .failures
@@ -65,21 +65,21 @@ impl Diagnostics {
     /// Whether anything has already been recorded against `module`. A
     /// secondary "already failed" marker is only worth printing when its
     /// module produced no finding of its own.
-    pub fn reported_for(&self, module: &[Ident]) -> bool {
+    pub fn reported_for(&self, module: &ModulePath) -> bool {
         self.errors
             .get(module)
             .is_some_and(|errors| !errors.is_empty())
             || self
                 .failures
                 .iter()
-                .any(|(owner, _)| owner.as_deref() == Some(module))
+                .any(|(owner, _)| owner.as_ref() == Some(module))
     }
 
-    pub fn poison(&mut self, module: &[Ident]) {
-        self.poisoned.insert(module.to_vec());
+    pub fn poison(&mut self, module: &ModulePath) {
+        self.poisoned.insert(module.clone());
     }
 
-    pub fn is_poisoned(&self, module: &[Ident]) -> bool {
+    pub fn is_poisoned(&self, module: &ModulePath) -> bool {
         self.poisoned.contains(module)
     }
 
@@ -103,7 +103,7 @@ impl Diagnostics {
         // `errors` is a hash map, so anything recorded outside `scope` has to
         // be ordered explicitly or the output would vary between runs.
         let mut leftover: Vec<ModulePath> = self.errors.keys().cloned().collect();
-        leftover.sort_by(|a, b| a.iter().map(Ident::as_ref).cmp(b.iter().map(Ident::as_ref)));
+        leftover.sort();
         for path in leftover {
             let errors = self.errors.remove(&path).unwrap_or_default();
             if !errors.is_empty() {
@@ -133,7 +133,7 @@ impl Diagnostics {
     /// Returns whether the unit that produced these findings failed, which
     /// stays true even when every finding was already reported by an earlier
     /// phase re-running the same query.
-    pub fn record_errors(&mut self, module: &[Ident], errors: Vec<AnalysisError>) -> bool {
+    pub fn record_errors(&mut self, module: &ModulePath, errors: Vec<AnalysisError>) -> bool {
         if errors.is_empty() {
             return false;
         }
@@ -143,10 +143,10 @@ impl Diagnostics {
         true
     }
 
-    pub fn record_warnings(&mut self, module: &[Ident], warnings: Vec<AnalysisWarning>) {
+    pub fn record_warnings(&mut self, module: &ModulePath, warnings: Vec<AnalysisWarning>) {
         if !warnings.is_empty() {
             self.warnings
-                .entry(module.to_vec())
+                .entry(module.clone())
                 .or_default()
                 .extend(warnings);
         }
@@ -184,7 +184,7 @@ impl Driver {
 
     pub(crate) fn with_analyzer<R>(
         &mut self,
-        module: &[Ident],
+        module: &ModulePath,
         generics: &GenericSubstitution,
         owner: AnalysisSite,
         f: impl FnOnce(&mut Analyzer) -> R,
@@ -194,7 +194,7 @@ impl Driver {
 
     pub(crate) fn with_analyzer_in<R>(
         &mut self,
-        module: &[Ident],
+        module: &ModulePath,
         generics: &GenericSubstitution,
         bounds: &[omega_analyzer::resolved_type::ResolvedBound],
         owner: AnalysisSite,
@@ -211,9 +211,9 @@ impl Driver {
                 requested_at: self.enclosing_analysis_site(),
             }
         };
-        self.analysis_stack.push((module.to_vec(), owner));
+        self.analysis_stack.push((module.clone(), owner));
         let mut analyzer =
-            Analyzer::new_in(self, module.to_vec(), generics, bounds, owner, target).in_mode(mode);
+            Analyzer::new_in(self, module.clone(), generics, bounds, owner, target).in_mode(mode);
         let result = f(&mut analyzer);
         let (errors, warnings, field_usage) = analyzer.finish();
         self.analysis_stack.pop();
@@ -228,7 +228,7 @@ impl Driver {
 
     pub(crate) fn analyze<R>(
         &mut self,
-        module: &[Ident],
+        module: &ModulePath,
         generics: &GenericSubstitution,
         owner: AnalysisSite,
         f: impl FnOnce(&mut Analyzer) -> R,

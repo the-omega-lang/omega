@@ -10,7 +10,7 @@ pub enum TypePattern {
     Slice(Box<Self>, bool),
     Array(Box<Self>, bool),
     SizedArray(Box<Self>, ArgumentPattern),
-    Nominal(Vec<Ident>, Vec<ArgumentPattern>),
+    Nominal(ItemPath, Vec<ArgumentPattern>),
     Function(Vec<Self>, Box<Self>, CallingConvention, bool),
     AnonymousEnum(Vec<Self>),
     SpecObject(Vec<SpecPattern>, bool),
@@ -25,7 +25,7 @@ pub enum TypePattern {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpecPattern {
     pub spec: omega_hir::HirId,
-    pub module_path: Vec<Ident>,
+    pub module_path: ModulePath,
     pub name: Ident,
     pub args: Vec<ArgumentPattern>,
 }
@@ -579,7 +579,7 @@ impl ArgumentPattern {
     }
 }
 
-fn nominal(ty: &ResolvedType) -> Option<(Vec<Ident>, Vec<ResolvedGenericArg>)> {
+fn nominal(ty: &ResolvedType) -> Option<(ItemPath, Vec<ResolvedGenericArg>)> {
     let (module, name, args) = match ty {
         ResolvedType::Struct(cell) => {
             let t = cell.borrow();
@@ -607,8 +607,5 @@ fn nominal(ty: &ResolvedType) -> Option<(Vec<Ident>, Vec<ResolvedGenericArg>)> {
         }
         _ => return None,
     };
-    Some((
-        module.into_iter().chain(std::iter::once(name)).collect(),
-        args,
-    ))
+    Some((module.join(name), args))
 }

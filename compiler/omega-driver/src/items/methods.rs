@@ -187,7 +187,7 @@ impl Driver {
             decl_id,
             fn_type,
             visibility,
-            declaring_module: key.module().to_vec(),
+            declaring_module: key.module().clone(),
             annotations: self.items.function_annotations[&decl_id].clone(),
             source: None,
         })

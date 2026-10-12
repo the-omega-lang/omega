@@ -4,11 +4,12 @@
 //! `ItemKey`, a type cell, or a symbol, so this query deliberately sits beside
 //! the item queries rather than inside them.
 
-use crate::{Driver, ModulePath};
+use crate::Driver;
 use omega_analyzer::resolver::{
     ImportTarget, ItemAccess, ModuleResolver, ResolveError, ResolvedAlias,
 };
 use omega_hir::{AliasTarget, HirAlias, HirGenericParam, HirItem};
+use omega_hir::{ItemPath, ModulePath};
 use omega_parser::prelude::{
     ArrayLength, FunctionType, FunctionTypeParam, GenericArg, GenericParamKind, Ident, Origin,
     Path, Type, Visibility,
@@ -49,7 +50,7 @@ impl AliasState {
         self.resolved.insert(key.clone(), state);
     }
 
-    fn cycle_path(&self, key: &AliasKey) -> Vec<ModulePath> {
+    fn cycle_path(&self, key: &AliasKey) -> Vec<ItemPath> {
         let start = self
             .resolution_stack
             .iter()
@@ -58,11 +59,7 @@ impl AliasState {
         self.resolution_stack[start..]
             .iter()
             .chain(std::iter::once(key))
-            .map(|(module, name)| {
-                let mut path = module.clone();
-                path.push(name.clone());
-                path
-            })
+            .map(|(module, name)| module.join(name.clone()))
             .collect()
     }
 }
@@ -111,7 +108,7 @@ fn rejected_target_kind(item: &HirItem) -> Option<&'static str> {
 impl Driver {
     pub(crate) fn alias_index(
         &mut self,
-        module_path: &[Ident],
+        module_path: &ModulePath,
         name: &Ident,
     ) -> Result<Option<usize>, ResolveError> {
         self.ensure_module_indexed(module_path)?;
@@ -120,7 +117,7 @@ impl Driver {
 
     fn optional_item_index(
         &mut self,
-        module_path: &[Ident],
+        module_path: &ModulePath,
         name: &Ident,
     ) -> Result<Option<usize>, ResolveError> {
         self.ensure_module_indexed(module_path)?;
@@ -133,8 +130,8 @@ impl Driver {
     /// whether `accessor` may ask at all.
     pub(crate) fn visible_alias(
         &mut self,
-        accessor: &[Ident],
-        alias_module: &[Ident],
+        accessor: &ModulePath,
+        alias_module: &ModulePath,
         name: &Ident,
         bypass_visibility: bool,
     ) -> Result<Option<ResolvedAlias>, ResolveError> {
@@ -147,7 +144,7 @@ impl Driver {
                 .expect("just indexed by alias_index");
             if !Self::visibility_allows(visibility, alias_module, accessor) {
                 return Err(ResolveError::NotVisible {
-                    module: alias_module.to_vec(),
+                    module: alias_module.clone(),
                     item: name.clone(),
                 });
             }
@@ -157,13 +154,13 @@ impl Driver {
 
     pub(crate) fn declared_alias(
         &mut self,
-        module_path: &[Ident],
+        module_path: &ModulePath,
         name: &Ident,
     ) -> Result<Option<ResolvedAlias>, ResolveError> {
         let Some(index) = self.alias_index(module_path, name)? else {
             return Ok(None);
         };
-        let key: AliasKey = (module_path.to_vec(), name.clone());
+        let key: AliasKey = (module_path.clone(), name.clone());
         match self.aliases.resolved.get(&key) {
             Some(AliasQueryState::Resolved(target)) => return Ok(target.clone()),
             Some(AliasQueryState::Failed(error)) => return Err(error.clone()),
@@ -182,12 +179,12 @@ impl Driver {
     /// Alias placeholders never reach `Analyzer::new_in`, so the rules that
     /// govern every other generic parameter list are restated here.
     fn check_alias_generic_params(
-        module_path: &[Ident],
+        module_path: &ModulePath,
         declared: &Ident,
         placeholders: &[Ident],
     ) -> Result<(), ResolveError> {
         let invalid = |param: &Ident, reason| ResolveError::InvalidAliasGenericParam {
-            module: module_path.to_vec(),
+            module: module_path.clone(),
             declared: declared.clone(),
             param: param.clone(),
             reason,
@@ -205,7 +202,7 @@ impl Driver {
 
     fn compute_alias(
         &mut self,
-        module_path: &[Ident],
+        module_path: &ModulePath,
         index: usize,
     ) -> Result<Option<ResolvedAlias>, ResolveError> {
         let HirItem::Alias(declared) = &self.modules.parsed(module_path).hir.items[index] else {
@@ -303,7 +300,7 @@ impl Driver {
     /// forced so a cycle surfaces here rather than at a first use.
     fn validate_alias_target(
         &mut self,
-        module_path: &[Ident],
+        module_path: &ModulePath,
         declared: &HirAlias,
         placeholders: &[Ident],
         r#type: &Type,
@@ -351,9 +348,9 @@ impl Driver {
                         Type::Generic(path, args) => (path, args.as_slice()),
                         _ => {
                             return Err(ResolveError::InvalidAliasTarget {
-                                module: module_path.to_vec(),
+                                module: module_path.clone(),
                                 declared: declared.name.clone(),
-                                target: vec![declared.name.clone()],
+                                target: declared.name.to_string(),
                                 kind: "a non-spec type as a spec conjunction member,",
                                 type_position: true,
                             });
@@ -388,15 +385,15 @@ impl Driver {
     /// with an argument count its declared generics accept.
     fn validate_alias_target_path(
         &mut self,
-        module_path: &[Ident],
+        module_path: &ModulePath,
         declared: &HirAlias,
         placeholders: &[Ident],
         path: &Path,
         args: &[GenericArg],
         expect_spec: bool,
     ) -> Result<(), ResolveError> {
-        let invalid = |target: Vec<Ident>, kind: &'static str| ResolveError::InvalidAliasTarget {
-            module: module_path.to_vec(),
+        let invalid = |target: String, kind: &'static str| ResolveError::InvalidAliasTarget {
+            module: module_path.clone(),
             declared: declared.name.clone(),
             target,
             kind,
@@ -408,7 +405,7 @@ impl Driver {
         if path.is_unqualified() && placeholders.contains(&path.head) {
             Self::check_generic_arity(module_path, &path.head, &[], args.len())?;
             if expect_spec {
-                return Err(invalid(vec![path.head.clone()], "the generic parameter"));
+                return Err(invalid(path.head.to_string(), "the generic parameter"));
             }
             return Ok(());
         }
@@ -423,25 +420,27 @@ impl Driver {
         {
             Self::check_generic_arity(module_path, &path.head, &[], args.len())?;
             if expect_spec {
-                return Err(invalid(vec![path.head.clone()], "the non-spec type"));
+                return Err(invalid(path.head.to_string(), "the non-spec type"));
             }
             return Ok(());
         }
 
         let site = match self.alias_target_site(module_path, path)? {
             Some(site) => site,
-            None => return Err(ResolveError::UnknownModule(path.segments())),
+            None => {
+                return Err(ResolveError::UnknownModule(ModulePath::new(
+                    path.segments(),
+                )));
+            }
         };
         let access = match site {
-            AliasTargetSite::Module(target) => return Err(invalid(target, "the module")),
+            AliasTargetSite::Module(target) => {
+                return Err(invalid(target.to_string(), "the module"));
+            }
             AliasTargetSite::Declaration { access, .. } => access,
         };
-        let (name, module) = access
-            .absolute
-            .split_last()
-            .expect("an alias target declaration path is never empty");
-        let (name, module) = (name.clone(), module.to_vec());
-        let absolute = || access.absolute.clone();
+        let ItemPath { module, name } = access.absolute.clone();
+        let absolute = || access.absolute.to_string();
 
         // Forcing the nested alias while this one is still in progress is
         // what turns a cycle behind a pointer, a generic argument, a default
@@ -451,9 +450,9 @@ impl Driver {
             self.visible_alias(module_path, &module, &name, access.bypass_visibility)?
         {
             return match nested {
-                ResolvedAlias::Module(target) => Err(invalid(target, "the module")),
+                ResolvedAlias::Module(target) => Err(invalid(target.to_string(), "the module")),
                 ResolvedAlias::Overloads { absolute, .. } => {
-                    Err(invalid(absolute, "the overload set"))
+                    Err(invalid(absolute.to_string(), "the overload set"))
                 }
                 ResolvedAlias::Type { generics, r#type } => {
                     Self::check_generic_arity(&module, &name, &generics, args.len())?;
@@ -471,11 +470,10 @@ impl Driver {
                     Ok(())
                 }
                 ResolvedAlias::Item(target) => {
-                    let (target_name, target_module) = target
-                        .split_last()
-                        .expect("an alias item target is never empty");
-                    let (target_name, target_module) =
-                        (target_name.clone(), target_module.to_vec());
+                    let ItemPath {
+                        module: target_module,
+                        name: target_name,
+                    } = target;
                     self.check_type_position_declaration(
                         module_path,
                         declared,
@@ -502,10 +500,10 @@ impl Driver {
             let Some(ambient) = ambient else {
                 return Err(ResolveError::UnknownItem { module, item: name });
             };
-            let (ambient_name, ambient_module) = ambient
-                .split_last()
-                .expect("an ambient candidate path is never empty");
-            let (ambient_name, ambient_module) = (ambient_name.clone(), ambient_module.to_vec());
+            let ItemPath {
+                module: ambient_module,
+                name: ambient_name,
+            } = ambient;
             self.check_type_position_declaration(
                 module_path,
                 declared,
@@ -542,7 +540,7 @@ impl Driver {
     /// itself resolved successfully.
     fn validate_alias_spec_type(
         &mut self,
-        module_path: &[Ident],
+        module_path: &ModulePath,
         declared: &HirAlias,
         placeholders: &[Ident],
         r#type: &Type,
@@ -570,9 +568,9 @@ impl Driver {
                 self.validate_alias_target(module_path, declared, placeholders, r#type)
             }
             _ => Err(ResolveError::InvalidAliasTarget {
-                module: module_path.to_vec(),
+                module: module_path.clone(),
                 declared: declared.name.clone(),
-                target: vec![declared.name.clone()],
+                target: declared.name.to_string(),
                 kind: "the non-spec type",
                 type_position: true,
             }),
@@ -580,7 +578,7 @@ impl Driver {
     }
 
     fn instantiate_alias_type_syntax(
-        module: &[Ident],
+        module: &ModulePath,
         name: &Ident,
         generics: &[HirGenericParam],
         r#type: &Type,
@@ -608,7 +606,7 @@ impl Driver {
     /// a use site applies, checked here so a malformed application is
     /// reported even when the alias is never used.
     fn check_generic_arity(
-        module: &[Ident],
+        module: &ModulePath,
         name: &Ident,
         generics: &[HirGenericParam],
         found: usize,
@@ -616,7 +614,7 @@ impl Driver {
         let required = generics.iter().filter(|g| g.default.is_none()).count();
         if found > generics.len() || found < required {
             return Err(ResolveError::GenericArgCountMismatch {
-                module: module.to_vec(),
+                module: module.clone(),
                 item: name.clone(),
                 expected: generics.len(),
                 found,
@@ -632,16 +630,16 @@ impl Driver {
     /// a type.
     fn check_type_position_declaration(
         &mut self,
-        module_path: &[Ident],
+        module_path: &ModulePath,
         declared: &HirAlias,
-        target_module: &[Ident],
+        target_module: &ModulePath,
         name: &Ident,
         expect_spec: bool,
         bypass_visibility: bool,
     ) -> Result<(), ResolveError> {
         let Some(index) = self.optional_item_index(target_module, name)? else {
             return Err(ResolveError::UnknownItem {
-                module: target_module.to_vec(),
+                module: target_module.clone(),
                 item: name.clone(),
             });
         };
@@ -669,13 +667,9 @@ impl Driver {
         };
         if let Some(kind) = rejected {
             return Err(ResolveError::InvalidAliasTarget {
-                module: module_path.to_vec(),
+                module: module_path.clone(),
                 declared: declared.name.clone(),
-                target: target_module
-                    .iter()
-                    .cloned()
-                    .chain(std::iter::once(name.clone()))
-                    .collect(),
+                target: target_module.join(name.clone()).to_string(),
                 kind,
                 type_position: true,
             });
@@ -685,7 +679,7 @@ impl Driver {
             .expect("just indexed by optional_item_index");
         if !bypass_visibility && !Self::visibility_allows(visibility, target_module, module_path) {
             return Err(ResolveError::NotVisible {
-                module: target_module.to_vec(),
+                module: target_module.clone(),
                 item: name.clone(),
             });
         }
@@ -700,12 +694,14 @@ impl Driver {
     /// of being reported as a missing item.
     fn forward_alias_path(
         &mut self,
-        module_path: &[Ident],
+        module_path: &ModulePath,
         declared: &HirAlias,
         path: &Path,
     ) -> Result<Option<ResolvedAlias>, ResolveError> {
         let access = if let Some(anchored) = Driver::resolve_explicit_anchor(module_path, path) {
-            ItemAccess::gated(anchored?)
+            ItemAccess::gated(
+                ItemPath::from_segments(&anchored?).expect("an anchored path keeps its head"),
+            )
         } else if path.tail.is_empty() {
             if let Some(chained) = self.declared_alias(module_path, &path.head)? {
                 return Ok(Some(chained));
@@ -722,13 +718,7 @@ impl Driver {
                     access.bypass_visibility |= reveal;
                     access
                 }
-                Ok(None) => ItemAccess::gated(
-                    module_path
-                        .iter()
-                        .cloned()
-                        .chain(std::iter::once(path.head.clone()))
-                        .collect(),
-                ),
+                Ok(None) => ItemAccess::gated(module_path.join(path.head.clone())),
                 // A macro has no item, so an import that binds only a macro
                 // cannot resolve as one. The macro namespace is separate and
                 // is a legal alias target, subject to the same gate a direct
@@ -740,28 +730,26 @@ impl Driver {
                 )?),
             }
         } else {
-            let Some((mut absolute, _)) = self.alias_path_base(module_path, &path.head)? else {
+            let Some((base, _)) = self.alias_path_base(module_path, &path.head)? else {
                 return Ok(None);
             };
-            absolute.extend(path.tail.iter().cloned());
-            ItemAccess::gated(absolute)
+            ItemAccess::gated(
+                base.join_segments(&path.tail)
+                    .expect("a qualified path has a tail"),
+            )
         };
 
         let mut access = access;
-        if let Some(module) = self.resolve_module_path(module_path, &access.absolute)? {
+        if let Some(module) = self.resolve_module_path(module_path, &access.absolute.as_module())? {
             return Ok(Some(ResolvedAlias::Module(module)));
         }
-        if let Some((item, target_module)) = access.absolute.split_last() {
-            let item = item.clone();
-            let target_module = target_module.to_vec();
-            if let Some(module) = self.resolve_module_path(module_path, &target_module)? {
-                access.absolute = module.into_iter().chain(std::iter::once(item)).collect();
-            }
+        if let Some(module) = self.resolve_module_path(module_path, &access.absolute.module)? {
+            access.absolute.module = module;
         }
-        let (name, target_module) = access
-            .absolute
-            .split_last()
-            .expect("an alias target path is never empty");
+        let ItemPath {
+            module: target_module,
+            name,
+        } = &access.absolute.clone();
         // An intermediate alias in a chain is its own visibility gate. A
         // revealed import has already passed this particular gate, so its
         // authorization travels with the imported path instead of being
@@ -812,8 +800,8 @@ impl Driver {
     /// as a single inaccessible declaration would.
     pub(crate) fn visible_overload_decls(
         &mut self,
-        accessor: &[Ident],
-        target_module: &[Ident],
+        accessor: &ModulePath,
+        target_module: &ModulePath,
         name: &Ident,
         bypass_visibility: bool,
     ) -> Result<Option<Vec<omega_hir::HirId>>, ResolveError> {
@@ -841,7 +829,7 @@ impl Driver {
             .collect();
         if visible.is_empty() {
             return Err(ResolveError::NotVisible {
-                module: target_module.to_vec(),
+                module: target_module.clone(),
                 item: name.clone(),
             });
         }
@@ -855,7 +843,7 @@ impl Driver {
     /// importing it.
     fn alias_path_base(
         &mut self,
-        module_path: &[Ident],
+        module_path: &ModulePath,
         head: &Ident,
     ) -> Result<Option<(ModulePath, bool)>, ResolveError> {
         if let Some(ResolvedAlias::Module(target)) = self.declared_alias(module_path, head)? {
@@ -869,7 +857,7 @@ impl Driver {
         Ok(self
             .roots
             .is_known_top_level(head)
-            .then(|| (vec![head.clone()], true)))
+            .then(|| (ModulePath::new([head.clone()]), true)))
     }
 
     /// Where an alias target path points, resolved once from the alias
@@ -881,63 +869,62 @@ impl Driver {
     /// expression instead.
     fn alias_target_site(
         &mut self,
-        module_path: &[Ident],
+        module_path: &ModulePath,
         path: &Path,
     ) -> Result<Option<AliasTargetSite>, ResolveError> {
-        let (access, top_level_head) =
-            if let Some(anchored) = Driver::resolve_explicit_anchor(module_path, path) {
-                (ItemAccess::gated(anchored?), false)
-            } else if path.tail.is_empty() {
-                // Alias validation is speculative until the whole declaration
-                // succeeds, so inspect an import without consuming it here.
-                // Its reveal capability still travels with the target and is
-                // applied if this alias actually uses that binding.
-                match self.peek_import_alias_binding(module_path, &path.head)? {
-                    Some((ImportTarget::Module(target), _)) => {
-                        return Ok(Some(AliasTargetSite::Module(target)));
-                    }
-                    Some((ImportTarget::Item(target, _), reveal)) => (
-                        ItemAccess {
-                            absolute: target,
-                            bypass_visibility: reveal,
-                        },
-                        false,
-                    ),
-                    Some((ImportTarget::ItemPath(mut access), reveal)) => {
-                        access.bypass_visibility |= reveal;
-                        (access, false)
-                    }
-                    None => (
-                        ItemAccess::gated(
-                            module_path
-                                .iter()
-                                .cloned()
-                                .chain(std::iter::once(path.head.clone()))
-                                .collect(),
-                        ),
-                        false,
-                    ),
+        let (access, top_level_head) = if let Some(anchored) =
+            Driver::resolve_explicit_anchor(module_path, path)
+        {
+            (
+                ItemAccess::gated(
+                    ItemPath::from_segments(&anchored?).expect("an anchored path keeps its head"),
+                ),
+                false,
+            )
+        } else if path.tail.is_empty() {
+            // Alias validation is speculative until the whole declaration
+            // succeeds, so inspect an import without consuming it here.
+            // Its reveal capability still travels with the target and is
+            // applied if this alias actually uses that binding.
+            match self.peek_import_alias_binding(module_path, &path.head)? {
+                Some((ImportTarget::Module(target), _)) => {
+                    return Ok(Some(AliasTargetSite::Module(target)));
                 }
-            } else {
-                let Some((base, top_level_head)) = self.alias_path_base(module_path, &path.head)?
-                else {
-                    return Ok(None);
-                };
-                (
-                    ItemAccess::gated(base.into_iter().chain(path.tail.iter().cloned()).collect()),
-                    top_level_head,
-                )
+                Some((ImportTarget::Item(target, _), reveal)) => (
+                    ItemAccess {
+                        absolute: target,
+                        bypass_visibility: reveal,
+                    },
+                    false,
+                ),
+                Some((ImportTarget::ItemPath(mut access), reveal)) => {
+                    access.bypass_visibility |= reveal;
+                    (access, false)
+                }
+                None => (
+                    ItemAccess::gated(module_path.join(path.head.clone())),
+                    false,
+                ),
+            }
+        } else {
+            let Some((base, top_level_head)) = self.alias_path_base(module_path, &path.head)?
+            else {
+                return Ok(None);
             };
+            (
+                ItemAccess::gated(
+                    base.join_segments(&path.tail)
+                        .expect("a qualified path has a tail"),
+                ),
+                top_level_head,
+            )
+        };
         let mut access = access;
-        if let Some(module) = self.resolve_module_path(module_path, &access.absolute)? {
+        if let Some(module) = self.resolve_module_path(module_path, &access.absolute.as_module())? {
             return Ok(Some(AliasTargetSite::Module(module)));
         }
-        if let Some((item, target_module)) = access.absolute.split_last() {
-            let item = item.clone();
-            let target_module = target_module.to_vec();
-            if let Some(module) = self.resolve_module_path(module_path, &target_module)? {
-                access.absolute = module.into_iter().chain(std::iter::once(item)).collect();
-            }
+        if let Some(module) = self.resolve_module_path(module_path, &access.absolute.module)? {
+            access.absolute.module = module;
         }
         Ok(Some(AliasTargetSite::Declaration {
             access,
@@ -957,7 +944,7 @@ impl Driver {
     /// would validate and then fail at every use with `ModuleNotImported`.
     fn rebind_alias_target(
         &mut self,
-        module_path: &[Ident],
+        module_path: &ModulePath,
         placeholders: &[Ident],
         ty: &Type,
         origin: Origin,
@@ -968,13 +955,12 @@ impl Driver {
                     access,
                     top_level_head: true,
                 })) = driver.alias_target_site(module_path, path)
-                && let Some((name, module)) = access.absolute.split_last()
             {
                 return Path {
                     anchor: None,
-                    head: name.clone(),
+                    head: access.absolute.name.clone(),
                     tail: Vec::new(),
-                    origin: driver.modules.definition_origin(module),
+                    origin: driver.modules.definition_origin(&access.absolute.module),
                 };
             }
             Path {
@@ -1039,24 +1025,23 @@ impl Driver {
     /// not an imported macro after all.
     fn imported_macro_target(
         &mut self,
-        module_path: &[Ident],
+        module_path: &ModulePath,
         name: &Ident,
         fallback: ResolveError,
-    ) -> Result<ModulePath, ResolveError> {
+    ) -> Result<ItemPath, ResolveError> {
         let Some((target, reveal)) = self.peek_import_entry(module_path, name)? else {
             return Err(fallback);
         };
-        let Some((macro_name, macro_module)) = target.split_last() else {
+        let Some(target) = ItemPath::from_segments(&target) else {
             return Err(fallback);
         };
-        let (macro_name, macro_module) = (macro_name.clone(), macro_module.to_vec());
-        let Some(visibility) = self.macro_visibility(&macro_module, &macro_name) else {
+        let Some(visibility) = self.macro_visibility(&target.module, &target.name) else {
             return Err(fallback);
         };
-        if !reveal && !Self::visibility_allows(visibility, &macro_module, module_path) {
+        if !reveal && !Self::visibility_allows(visibility, &target.module, module_path) {
             return Err(ResolveError::NotVisible {
-                module: macro_module,
-                item: macro_name,
+                module: target.module,
+                item: target.name,
             });
         }
         Ok(target)
@@ -1067,20 +1052,16 @@ impl Driver {
     /// item at all, which is legal: the macro namespace is separate.
     fn check_alias_target_declaration(
         &mut self,
-        module_path: &[Ident],
+        module_path: &ModulePath,
         declared: &HirAlias,
-        target_module: &[Ident],
+        target_module: &ModulePath,
         name: &Ident,
         bypass_visibility: bool,
     ) -> Result<(), ResolveError> {
         let invalid = |kind: &'static str| ResolveError::InvalidAliasTarget {
-            module: module_path.to_vec(),
+            module: module_path.clone(),
             declared: declared.name.clone(),
-            target: target_module
-                .iter()
-                .cloned()
-                .chain(std::iter::once(name.clone()))
-                .collect(),
+            target: target_module.join(name.clone()).to_string(),
             kind,
             type_position: false,
         };
@@ -1097,7 +1078,7 @@ impl Driver {
             .expect("just indexed by local_item_index");
         if !bypass_visibility && !Self::visibility_allows(visibility, target_module, module_path) {
             return Err(ResolveError::NotVisible {
-                module: target_module.to_vec(),
+                module: target_module.clone(),
                 item: name.clone(),
             });
         }
@@ -1109,7 +1090,7 @@ impl Driver {
     /// signature the analyzer will collect.
     pub(crate) fn normalized_function(
         &mut self,
-        module_path: &[Ident],
+        module_path: &ModulePath,
         f: &omega_hir::HirFunctionDef,
     ) -> Result<omega_hir::HirFunctionDef, ResolveError> {
         omega_analyzer::generics::normalize_static_spec_params(self, module_path, f)
@@ -1117,7 +1098,7 @@ impl Driver {
 
     /// Forces every alias in a module so an alias that is never used still
     /// reports an invalid target, an inaccessible target, or a cycle.
-    pub(crate) fn validate_aliases(&mut self, module_path: &[Ident]) {
+    pub(crate) fn validate_aliases(&mut self, module_path: &ModulePath) {
         for name in self.alias_names(module_path) {
             match self.declared_alias(module_path, &name) {
                 Ok(Some(_)) => {
@@ -1147,7 +1128,7 @@ impl Driver {
         }
     }
 
-    pub(crate) fn alias_names(&mut self, module_path: &[Ident]) -> Vec<Ident> {
+    pub(crate) fn alias_names(&mut self, module_path: &ModulePath) -> Vec<Ident> {
         if self.ensure_module_indexed(module_path).is_err() {
             return vec![];
         }
@@ -1161,7 +1142,7 @@ impl Driver {
 
     pub(crate) fn alias_visibility(
         &mut self,
-        module_path: &[Ident],
+        module_path: &ModulePath,
         name: &Ident,
     ) -> Option<Visibility> {
         let index = self.alias_index(module_path, name).ok()??;

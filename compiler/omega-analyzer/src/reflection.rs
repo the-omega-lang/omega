@@ -12,15 +12,15 @@ use crate::resolved_type::{
     CallingConvention, CanonicalType, CompScalar, ConstValue, Reflected, ResolvedField,
     ResolvedGenericArg, ResolvedSpecApplication, ResolvedType,
 };
+use omega_hir::{ItemPath, ModulePath};
 use omega_parser::prelude::{Ident, Visibility};
 
 /// The absolute path of the table type `typeinfo<T>` addresses.
 pub const TYPE_INFO_PATH: [&str; 3] = ["core", "reflection", "TypeInfo"];
 
-pub fn type_info_path() -> Vec<Ident> {
-    TYPE_INFO_PATH
-        .map(|segment| Ident(segment.to_string()))
-        .to_vec()
+pub fn type_info_path() -> ItemPath {
+    let [module @ .., name] = TYPE_INFO_PATH;
+    ModulePath::from_names(&module).join(Ident(name.to_string()))
 }
 
 /// The address of `described`'s table, stored as `table`. Refinement never
@@ -72,7 +72,7 @@ struct Builder<'a> {
 
 struct Naming {
     name: String,
-    path: Vec<Ident>,
+    path: ModulePath,
     generic_args: Vec<ResolvedGenericArg>,
 }
 
@@ -442,9 +442,9 @@ impl Builder<'_> {
 }
 
 fn naming(described: &ResolvedType) -> Naming {
-    let named = |name: &Ident, path: &[Ident], generic_args: &[ResolvedGenericArg]| Naming {
+    let named = |name: &Ident, path: &ModulePath, generic_args: &[ResolvedGenericArg]| Naming {
         name: name.as_ref().to_string(),
-        path: path.to_vec(),
+        path: path.clone(),
         generic_args: generic_args.to_vec(),
     };
     match described {
@@ -462,7 +462,7 @@ fn naming(described: &ResolvedType) -> Naming {
         }
         unnamed => Naming {
             name: CanonicalType(unnamed).to_string(),
-            path: Vec::new(),
+            path: ModulePath::new([]),
             generic_args: Vec::new(),
         },
     }
@@ -497,9 +497,10 @@ fn prototype_ref(described: &ResolvedType, variant: usize) -> ConstValue {
     })
 }
 
-fn path_value(path: &[Ident]) -> ConstValue {
+fn path_value(path: &ModulePath) -> ConstValue {
     ConstValue::Slice(
-        path.iter()
+        path.segments()
+            .iter()
             .map(|segment| ConstValue::Str(segment.as_ref().to_string()))
             .collect(),
     )

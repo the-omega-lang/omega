@@ -30,7 +30,7 @@ fn structure(n: u32, name: &str, fields: Vec<ResolvedField>, layout: Layout) -> 
     ResolvedType::Struct(Rc::new(RefCell::new(ResolvedStructType {
         id: id(n),
         name: ident(name),
-        module_path: vec![ident("app")],
+        module_path: omega_hir::ModulePath::from(vec![ident("app")]),
         generic_args: vec![],
         fields,
         functions: vec![],
@@ -68,7 +68,7 @@ fn enumeration(
         cell: Rc::new(RefCell::new(ResolvedEnumType {
             id: id(n),
             name: ident(name),
-            module_path: vec![ident("app")],
+            module_path: omega_hir::ModulePath::from(vec![ident("app")]),
             generic_args: vec![],
             tag_type,
             header,
@@ -753,7 +753,7 @@ fn a_spec_object_describes_each_spec_by_declaration() {
             name: ident("S"),
             visibility: Visibility::Exposed,
             generics: vec![],
-            module_path: vec![ident("app"), ident(module)],
+            module_path: omega_hir::ModulePath::from(vec![ident("app"), ident(module)]),
             generic_args: vec![],
             is_object_safe: true,
             functions: vec![],

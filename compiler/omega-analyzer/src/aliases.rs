@@ -8,6 +8,7 @@
 //! and force each of those positions to learn a second, alias-only format.
 
 use crate::resolver::{ImportTarget, ItemAccess, ModuleResolver, ResolveError, ResolvedAlias};
+use omega_hir::{ItemPath, ModulePath};
 use omega_parser::prelude::{
     ArrayLength, FunctionType, FunctionTypeParam, GenericArg, Ident, Type,
 };
@@ -98,16 +99,15 @@ fn substitute_array_length(length: &ArrayLength, subst: &[(Ident, GenericArg)]) 
 /// was written in, which is the module the alias's own visibility is judged
 /// against.
 struct AliasReference {
-    accessor: Vec<Ident>,
-    module: Vec<Ident>,
-    name: Ident,
+    accessor: ModulePath,
+    item: ItemPath,
     args: Vec<GenericArg>,
     bypass_visibility: bool,
 }
 
 fn alias_reference(
     resolver: &mut dyn ModuleResolver,
-    module_path: &[Ident],
+    module_path: &ModulePath,
     ty: &Type,
 ) -> Result<Option<AliasReference>, ResolveError> {
     let (path, args) = match ty {
@@ -117,22 +117,18 @@ fn alias_reference(
     };
     let accessor = resolver
         .macro_origin_module(path.origin)
-        .unwrap_or_else(|| module_path.to_vec());
+        .unwrap_or_else(|| module_path.clone());
     let access = if let Some(anchored) = resolver.resolve_explicit_anchor(&accessor, path) {
-        ItemAccess::gated(anchored?)
+        ItemAccess::gated(
+            ItemPath::from_segments(&anchored?).expect("an anchored path keeps its head"),
+        )
     } else if path.tail.is_empty() {
         // An import binds the same name a local declaration would, so a bare
         // reference to an imported structural alias must resolve at the
         // alias's own declaration module, not `accessor` itself.
         match resolver.resolve_import_alias(&accessor, &path.head)? {
             Some(ImportTarget::ItemPath(access)) => access,
-            _ => ItemAccess::gated(
-                accessor
-                    .iter()
-                    .cloned()
-                    .chain(std::iter::once(path.head.clone()))
-                    .collect(),
-            ),
+            _ => ItemAccess::gated(accessor.join(path.head.clone())),
         }
     } else {
         let Some(ImportTarget::Module(base)) =
@@ -140,27 +136,20 @@ fn alias_reference(
         else {
             return Ok(None);
         };
-        ItemAccess::gated(base.into_iter().chain(path.tail.iter().cloned()).collect())
+        ItemAccess::gated(
+            base.join_segments(&path.tail)
+                .expect("a qualified path has a tail"),
+        )
     };
     let mut access = access;
-    if let Some((name, module)) = access.absolute.split_last() {
-        let name = name.clone();
-        let module = module.to_vec();
-        if let Some(canonical_module) = resolver.resolve_module_path(&accessor, &module)? {
-            access.absolute = canonical_module
-                .into_iter()
-                .chain(std::iter::once(name))
-                .collect();
-        }
+    if let Some(canonical_module) =
+        resolver.resolve_module_path(&accessor, &access.absolute.module)?
+    {
+        access.absolute.module = canonical_module;
     }
-    let (name, module) = access
-        .absolute
-        .split_last()
-        .expect("an alias reference path is never empty");
     Ok(Some(AliasReference {
         accessor,
-        module: module.to_vec(),
-        name: name.clone(),
+        item: access.absolute,
         args,
         bypass_visibility: access.bypass_visibility,
     }))
@@ -184,7 +173,7 @@ fn alias_reference(
 /// opaque here: they name nothing resolvable until they are substituted.
 fn apply_alias_once(
     resolver: &mut dyn ModuleResolver,
-    module_path: &[Ident],
+    module_path: &ModulePath,
     placeholders: &[Ident],
     ty: &Type,
     obligations: &mut Vec<(Type, Type)>,
@@ -200,16 +189,16 @@ fn apply_alias_once(
     };
     let Some(ResolvedAlias::Type { generics, r#type }) = resolver.resolve_visible_alias(
         &reference.accessor,
-        &reference.module,
-        &reference.name,
+        &reference.item.module,
+        &reference.item.name,
         reference.bypass_visibility,
     )?
     else {
         return Ok(None);
     };
     let arity_mismatch = || ResolveError::GenericArgCountMismatch {
-        module: reference.module.clone(),
-        item: reference.name.clone(),
+        module: reference.item.module.clone(),
+        item: reference.item.name.clone(),
         expected: generics.len(),
         found: reference.args.len(),
     };
@@ -261,7 +250,7 @@ fn apply_alias_once(
 /// root-only expansion loop could not do.
 fn normalize_generic_arg(
     resolver: &mut dyn ModuleResolver,
-    module_path: &[Ident],
+    module_path: &ModulePath,
     placeholders: &[Ident],
     arg: &GenericArg,
     obligations: &mut Vec<(Type, Type)>,
@@ -280,7 +269,7 @@ fn normalize_generic_arg(
 
 fn normalize_type(
     resolver: &mut dyn ModuleResolver,
-    module_path: &[Ident],
+    module_path: &ModulePath,
     placeholders: &[Ident],
     ty: &Type,
     obligations: &mut Vec<(Type, Type)>,
@@ -355,7 +344,7 @@ fn normalize_type(
 /// collects them separately via [`applied_alias_bounds`].
 pub fn expand_type_alias(
     resolver: &mut dyn ModuleResolver,
-    module_path: &[Ident],
+    module_path: &ModulePath,
     ty: Type,
 ) -> Result<Type, ResolveError> {
     normalize_type(resolver, module_path, &[], &ty, &mut Vec::new())
@@ -363,7 +352,7 @@ pub fn expand_type_alias(
 
 pub fn expand_template_type(
     resolver: &mut dyn ModuleResolver,
-    module_path: &[Ident],
+    module_path: &ModulePath,
     parameters: &[Ident],
     ty: &Type,
 ) -> Result<Type, ResolveError> {
@@ -375,7 +364,7 @@ pub fn expand_template_type(
 /// bound set rather than making bound checking learn an alias-only format.
 pub fn expand_bounds(
     resolver: &mut dyn ModuleResolver,
-    module_path: &[Ident],
+    module_path: &ModulePath,
     bounds: &[Type],
 ) -> Result<Vec<Type>, ResolveError> {
     let mut expanded = Vec::with_capacity(bounds.len());
@@ -393,7 +382,7 @@ pub fn expand_bounds(
 /// resolves and checks them; normalization itself stays syntactic.
 pub fn applied_alias_bounds(
     resolver: &mut dyn ModuleResolver,
-    module_path: &[Ident],
+    module_path: &ModulePath,
     ty: &Type,
 ) -> Result<Vec<(Type, Type)>, ResolveError> {
     let mut obligations = Vec::new();

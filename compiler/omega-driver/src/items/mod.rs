@@ -1,4 +1,4 @@
-use crate::{Driver, ModulePath};
+use crate::Driver;
 use indexmap::IndexMap;
 use omega_analyzer::analysis::{AnalysisSite, Analyzer, item_site, item_visibility};
 use omega_analyzer::annotations::ResolvedAnnotations;
@@ -11,6 +11,7 @@ use omega_analyzer::resolved_type::{
 use omega_analyzer::resolver::{ResolveError, ResolveItemOptions, ResolvedItem};
 use omega_diagnostics::Span;
 use omega_hir::{HirFunctionDef, HirGenericParam, HirId, HirItem, SYNTHETIC_MODULE};
+use omega_hir::{ItemPath, ModulePath};
 use omega_parser::prelude::{Ident, Type, Visibility};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -32,13 +33,13 @@ pub(crate) enum ItemScope {
 
 impl ItemKey {
     pub fn new(
-        module: &[Ident],
+        module: &ModulePath,
         name: &Ident,
         disambiguator: usize,
         generic_args: &[ResolvedGenericArg],
     ) -> Self {
         Self {
-            scope: ItemScope::Module(module.to_vec()),
+            scope: ItemScope::Module(module.clone()),
             disambiguator,
             name: name.clone(),
             generic_args: generic_args.to_vec(),
@@ -68,13 +69,12 @@ impl ItemKey {
         }
     }
 
-    fn path(&self) -> ModulePath {
-        let mut path = match &self.scope {
+    fn path(&self) -> ItemPath {
+        let module = match &self.scope {
             ItemScope::Module(module) => module.clone(),
-            ItemScope::Owner(owner) => owner.path(),
+            ItemScope::Owner(owner) => owner.path().as_module(),
         };
-        path.push(self.name.clone());
-        path
+        module.join(self.name.clone())
     }
 
     pub fn is_instantiation(&self) -> bool {
@@ -387,7 +387,7 @@ impl ItemQueries {
         }
     }
 
-    fn cycle_path(&self, key: &ItemKey) -> Vec<ModulePath> {
+    fn cycle_path(&self, key: &ItemKey) -> Vec<ItemPath> {
         let start = self
             .resolution_stack
             .iter()
@@ -493,7 +493,7 @@ mod tests {
 
     #[test]
     fn a_failed_query_never_keeps_its_own_already_failed_marker_as_the_cause() {
-        let key = ItemKey::new(&[ident("a")], &ident("Broken"), 0, &[]);
+        let key = ItemKey::new(&ModulePath::new([ident("a")]), &ident("Broken"), 0, &[]);
         let mut queries = ItemQueries::default();
 
         queries.begin(&key);
@@ -515,14 +515,16 @@ mod tests {
 
     #[test]
     fn a_failed_query_retains_the_reason_it_failed() {
-        let key = ItemKey::new(&[ident("a")], &ident("Broken"), 0, &[]);
+        let key = ItemKey::new(&ModulePath::new([ident("a")]), &ident("Broken"), 0, &[]);
         let mut queries = ItemQueries::default();
 
         queries.begin(&key);
         queries.finish(
             &key,
             Visibility::Exposed,
-            Err(&ResolveError::UnknownModule(vec![ident("missing")])),
+            Err(&ResolveError::UnknownModule(ModulePath::new([ident(
+                "missing",
+            )]))),
         );
 
         assert!(queries.failures_retain_a_cause());
@@ -536,8 +538,8 @@ mod tests {
 
     #[test]
     fn item_cycle_path_preserves_resolution_order() {
-        let first = ItemKey::new(&[ident("a")], &ident("First"), 0, &[]);
-        let second = ItemKey::new(&[ident("b")], &ident("Second"), 0, &[]);
+        let first = ItemKey::new(&ModulePath::new([ident("a")]), &ident("First"), 0, &[]);
+        let second = ItemKey::new(&ModulePath::new([ident("b")]), &ident("Second"), 0, &[]);
         let mut queries = ItemQueries::default();
         queries.begin(&first);
         queries.begin(&second);
@@ -545,9 +547,9 @@ mod tests {
         assert_eq!(
             queries.cycle_path(&first),
             vec![
-                vec![ident("a"), ident("First")],
-                vec![ident("b"), ident("Second")],
-                vec![ident("a"), ident("First")],
+                ModulePath::new([ident("a")]).join(ident("First")),
+                ModulePath::new([ident("b")]).join(ident("Second")),
+                ModulePath::new([ident("a")]).join(ident("First")),
             ]
         );
     }
@@ -561,7 +563,7 @@ mod tests {
             omega_analyzer::Target::DEFAULT,
         )
         .unwrap();
-        let owner = ItemKey::new(&[ident("a")], &ident("Holder"), 0, &[]);
+        let owner = ItemKey::new(&ModulePath::new([ident("a")]), &ident("Holder"), 0, &[]);
         let first = ItemKey::member(owner.clone(), ident("first"), 0);
         let second = ItemKey::member(owner, ident("second"), 1);
         let error = driver

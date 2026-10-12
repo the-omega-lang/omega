@@ -10,25 +10,25 @@ use omega_hir::ModuleId;
 pub(crate) struct NoResolver;
 
 impl ModuleResolver for NoResolver {
-    fn macro_origin_module(&self, _origin: Origin) -> Option<Vec<Ident>> {
+    fn macro_origin_module(&self, _origin: Origin) -> Option<ModulePath> {
         None
     }
 
     fn resolve_explicit_anchor(
         &self,
-        _origin_module: &[Ident],
+        _origin_module: &ModulePath,
         _path: &omega_parser::prelude::Path,
     ) -> Option<Result<Vec<Ident>, ResolveError>> {
         None
     }
 
-    fn declared_item_visibility(&mut self, _absolute_path: &[Ident]) -> Option<Visibility> {
+    fn declared_item_visibility(&mut self, _absolute_path: &ItemPath) -> Option<Visibility> {
         None
     }
 
     fn resolve_import_alias(
         &mut self,
-        _module_path: &[Ident],
+        _module_path: &ModulePath,
         _alias: &Ident,
     ) -> Result<Option<ImportTarget>, ResolveError> {
         unreachable!("test never triggers import resolution")
@@ -36,8 +36,8 @@ impl ModuleResolver for NoResolver {
 
     fn resolve_visible_alias(
         &mut self,
-        _accessor: &[Ident],
-        _alias_module: &[Ident],
+        _accessor: &ModulePath,
+        _alias_module: &ModulePath,
         _name: &Ident,
         _bypass_visibility: bool,
     ) -> Result<Option<crate::resolver::ResolvedAlias>, ResolveError> {
@@ -46,28 +46,28 @@ impl ModuleResolver for NoResolver {
 
     fn ambient_core_candidates(
         &mut self,
-        _accessor: &[Ident],
+        _accessor: &ModulePath,
         _name: &Ident,
-    ) -> Result<Option<Vec<Ident>>, ResolveError> {
+    ) -> Result<Option<ItemPath>, ResolveError> {
         unreachable!("test never triggers import resolution")
     }
 
-    fn import_alias_names(&mut self, _module_path: &[Ident]) -> Vec<Ident> {
+    fn import_alias_names(&mut self, _module_path: &ModulePath) -> Vec<Ident> {
         vec![]
     }
 
     fn resolve_module_path(
         &mut self,
-        _accessor: &[Ident],
-        _absolute_path: &[Ident],
-    ) -> Result<Option<Vec<Ident>>, ResolveError> {
+        _accessor: &ModulePath,
+        _absolute_path: &ModulePath,
+    ) -> Result<Option<ModulePath>, ResolveError> {
         Ok(None)
     }
 
     fn resolve_item(
         &mut self,
-        _accessor_module_path: &[Ident],
-        _absolute_path: &[Ident],
+        _accessor_module_path: &ModulePath,
+        _absolute_path: &ItemPath,
         _generic_args: &[crate::resolved_type::ResolvedGenericArg],
         _options: ResolveItemOptions,
     ) -> Result<ResolvedItem, ResolveError> {
@@ -76,29 +76,29 @@ impl ModuleResolver for NoResolver {
 
     fn item_generic_params(
         &mut self,
-        _absolute_path: &[Ident],
+        _absolute_path: &ItemPath,
     ) -> Result<Option<Vec<omega_hir::HirGenericParam>>, ResolveError> {
         Ok(None)
     }
 
     fn is_item_visible(
         &mut self,
-        _accessor_module_path: &[Ident],
-        _absolute_path: &[Ident],
+        _accessor_module_path: &ModulePath,
+        _absolute_path: &ItemPath,
     ) -> bool {
         true
     }
 
     fn generic_function_signature(
         &mut self,
-        _absolute_path: &[Ident],
+        _absolute_path: &ItemPath,
     ) -> Result<Option<GenericSignature>, ResolveError> {
         unreachable!("test never triggers generic resolution")
     }
 
     fn generic_literal_signature(
         &mut self,
-        _absolute_path: &[Ident],
+        _absolute_path: &ItemPath,
         _variant: Option<&Ident>,
     ) -> Result<Option<GenericLiteralSignature>, ResolveError> {
         unreachable!("test never triggers generic resolution")
@@ -106,7 +106,7 @@ impl ModuleResolver for NoResolver {
 
     fn generic_owner_function_signature(
         &mut self,
-        _owner_absolute: &[Ident],
+        _owner_absolute: &ItemPath,
         _function_name: &Ident,
         _namespace: crate::resolved_type::FunctionNamespace,
     ) -> Result<Option<GenericOwnerFunctionSignature>, ResolveError> {
@@ -134,7 +134,7 @@ impl ModuleResolver for NoResolver {
 
     fn resolve_overload_set(
         &mut self,
-        _accessor: &[Ident],
+        _accessor: &ModulePath,
         _access: &crate::resolver::ItemAccess,
     ) -> Result<Option<crate::resolver::ResolvedOverloadSet>, ResolveError> {
         unreachable!("test never triggers overload resolution")
@@ -146,7 +146,7 @@ impl ModuleResolver for NoResolver {
 
     fn similar_item_name(
         &mut self,
-        _module_path: &[Ident],
+        _module_path: &ModulePath,
         _target: &Ident,
         _namespace: ItemNamespace,
     ) -> Option<Ident> {
@@ -155,7 +155,7 @@ impl ModuleResolver for NoResolver {
 
     fn spec_declaration(
         &mut self,
-        _absolute_path: &[Ident],
+        _absolute_path: &ItemPath,
     ) -> Result<Option<Rc<RefCell<ResolvedSpecType>>>, ResolveError> {
         unreachable!("test never triggers spec resolution")
     }
@@ -217,7 +217,7 @@ pub(crate) fn sp() -> Span {
 pub(crate) fn analyzer(resolver: &mut NoResolver) -> Analyzer<'_> {
     Analyzer::new(
         resolver,
-        vec![],
+        ModulePath::default(),
         &crate::generics::GenericSubstitution::new(),
         AnalysisSite::new(id(0), sp()),
         Target::DEFAULT,
@@ -228,7 +228,7 @@ pub(crate) fn dummy_struct_type() -> ResolvedType {
     ResolvedType::Struct(Rc::new(RefCell::new(ResolvedStructType {
         id: id(1),
         name: Ident("S".into()),
-        module_path: vec![],
+        module_path: omega_hir::ModulePath::default(),
         generic_args: vec![],
         fields: vec![],
         functions: vec![],

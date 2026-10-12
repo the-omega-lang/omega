@@ -1,4 +1,3 @@
-use crate::ModulePath;
 use crate::roots::LocalSource;
 use omega_analyzer::annotation_eval::{ConditionError, ConditionErrorKind};
 use omega_analyzer::checked::{CheckedModule, ExternFunctionRef, ExternGlobalRef};
@@ -6,6 +5,7 @@ use omega_analyzer::error::{AnalysisError, AnalysisWarning};
 use omega_analyzer::resolver::ResolveError;
 use omega_analyzer::source_annotations::{SourceAnnotationError, SourceAnnotationErrorKind};
 use omega_diagnostics::{Diagnostic, SourceSpan, Span};
+use omega_hir::ModulePath;
 use omega_parser::macros::MacroError;
 use omega_parser::prelude::{Ident, ParseError};
 use std::path::PathBuf;
@@ -77,11 +77,9 @@ pub enum CompileError {
 }
 
 impl CompileError {
-    pub fn module(&self) -> Option<&[Ident]> {
+    pub fn module(&self) -> Option<&ModulePath> {
         match self {
-            Self::Resolve { importer, .. } => {
-                importer.as_ref().map(|(module, _)| module.as_slice())
-            }
+            Self::Resolve { importer, .. } => importer.as_ref().map(|(module, _)| module),
             Self::Parse { module, .. }
             | Self::MacroExpansion { module, .. }
             | Self::Condition { module, .. }
@@ -194,18 +192,8 @@ impl CompileError {
                 first,
                 second,
             } => vec![Diagnostic::error(format!(
-                "exposed macro '{}' is provided by both core modules '{}' and '{}'",
+                "exposed macro '{}' is provided by both core modules '{first}' and '{second}'",
                 name.as_ref(),
-                first
-                    .iter()
-                    .map(Ident::as_ref)
-                    .collect::<Vec<_>>()
-                    .join("::"),
-                second
-                    .iter()
-                    .map(Ident::as_ref)
-                    .collect::<Vec<_>>()
-                    .join("::"),
             ))],
         }
     }

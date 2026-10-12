@@ -72,7 +72,8 @@ use omega_hir::{
     HirForIn, HirFunctionCall, HirFunctionDef, HirGenericParam, HirId, HirIf, HirInlineAsm,
     HirItem, HirMatch, HirMatchArm, HirParam, HirPattern, HirPatternValue, HirPlace, HirPlaceRoot,
     HirProjection, HirRange, HirRangeEnd, HirReveal, HirSlice, HirSpecDef, HirStmt, HirStructDef,
-    HirStructLiteral, HirStructLiteralField, HirUnionDef, HirWalrusDeclaration, LogicalOp,
+    HirStructLiteral, HirStructLiteralField, HirUnionDef, HirWalrusDeclaration, ItemPath,
+    LogicalOp, ModulePath,
 };
 use omega_parser::prelude::{
     ArrayLength, ExprGenericArg, ExprPath, GenericArg, Ident, NumberBase, NumberExpr, Origin, Path,
@@ -91,7 +92,7 @@ pub struct Analyzer<'r> {
     /// The file this analysis run's spans index.
     source: Option<SourceId>,
     mode: AnalysisMode,
-    module_path: Vec<Ident>,
+    module_path: ModulePath,
     current_return_type: ResolvedType,
     loop_stack: Vec<HirId>,
     loops_with_break: HashSet<HirId>,
@@ -243,7 +244,7 @@ pub(super) enum ModuleQualifiedPath {
 }
 
 impl<'r> Analyzer<'r> {
-    pub(super) fn path_module(&self, path: &Path) -> Vec<Ident> {
+    pub(super) fn path_module(&self, path: &Path) -> ModulePath {
         self.origin_module(path.origin)
     }
 
@@ -304,16 +305,17 @@ impl<'r> Analyzer<'r> {
         let accessor = self.path_module(path);
         let absolute = match self.anchored_path(node_id, span, path) {
             AnchoredPath::Failed => return ModuleQualifiedPath::Failed,
-            AnchoredPath::Absolute(absolute) => absolute,
+            AnchoredPath::Absolute(absolute) => {
+                ItemPath::from_segments(&absolute).expect("an anchored path keeps its head")
+            }
             AnchoredPath::Unanchored => {
                 if path.is_unqualified() {
                     return ModuleQualifiedPath::NotModule;
                 }
                 match self.resolver.resolve_import_alias(&accessor, &path.head) {
                     Ok(Some(ImportTarget::Module(target))) => target
-                        .into_iter()
-                        .chain(path.tail.iter().cloned())
-                        .collect(),
+                        .join_segments(&path.tail)
+                        .expect("a qualified path has a tail"),
                     Ok(_) => return ModuleQualifiedPath::NotModule,
                     Err(error) => {
                         self.error(node_id, span, AnalysisErrorKind::ModuleResolution(error));
@@ -330,16 +332,13 @@ impl<'r> Analyzer<'r> {
             return ModuleQualifiedPath::Item(ItemAccess::gated(absolute));
         }
 
-        let Some((item, module)) = absolute.split_last() else {
-            return ModuleQualifiedPath::NotModule;
-        };
-        match self.resolver.resolve_module_path(&accessor, module) {
-            Ok(Some(module)) => ModuleQualifiedPath::Item(ItemAccess::gated(
-                module
-                    .into_iter()
-                    .chain(std::iter::once(item.clone()))
-                    .collect(),
-            )),
+        match self
+            .resolver
+            .resolve_module_path(&accessor, &absolute.module)
+        {
+            Ok(Some(module)) => {
+                ModuleQualifiedPath::Item(ItemAccess::gated(module.join(absolute.name)))
+            }
             Ok(None) => ModuleQualifiedPath::NotModule,
             Err(error) => {
                 self.error(node_id, span, AnalysisErrorKind::ModuleResolution(error));
@@ -370,7 +369,7 @@ impl<'r> Analyzer<'r> {
         let head_absolute =
             match self.anchored_prefix(node_id, span, path, std::slice::from_ref(&path.head)) {
                 AnchoredPath::Failed => return None,
-                AnchoredPath::Absolute(absolute) => absolute,
+                AnchoredPath::Absolute(absolute) => ModulePath::from(absolute),
                 AnchoredPath::Unanchored => {
                     match self.resolve_path_alias_or_error(node_id, span, path)? {
                         Some(ImportTarget::Module(target)) => target,
@@ -381,9 +380,8 @@ impl<'r> Analyzer<'r> {
         match self.resolver.resolve_module_path(&accessor, &head_absolute) {
             Ok(Some(module)) => Some(Some(ItemAccess::gated(
                 module
-                    .into_iter()
-                    .chain(path.tail.iter().cloned())
-                    .collect(),
+                    .join_segments(&path.tail)
+                    .expect("a module-headed path has a tail"),
             ))),
             Ok(None) => Some(None),
             Err(error) => {
@@ -401,17 +399,15 @@ impl<'r> Analyzer<'r> {
         &mut self,
         node_id: HirId,
         span: Span,
-        accessor: &[Ident],
+        accessor: &ModulePath,
         access: ItemAccess,
     ) -> Option<ItemAccess> {
-        let Some((item, module)) = access.absolute.split_last() else {
-            return Some(access);
-        };
-        let item = item.clone();
-        let module = module.to_vec();
-        match self.resolver.resolve_module_path(accessor, &module) {
+        match self
+            .resolver
+            .resolve_module_path(accessor, &access.absolute.module)
+        {
             Ok(Some(module)) => Some(ItemAccess {
-                absolute: module.into_iter().chain(std::iter::once(item)).collect(),
+                absolute: module.join(access.absolute.name),
                 bypass_visibility: access.bypass_visibility,
             }),
             Ok(None) => Some(access),
@@ -424,7 +420,7 @@ impl<'r> Analyzer<'r> {
 
     pub fn new(
         resolver: &'r mut dyn ModuleResolver,
-        module_path: Vec<Ident>,
+        module_path: ModulePath,
         generics: &GenericSubstitution,
         owner: AnalysisSite,
         target: Target,
@@ -434,7 +430,7 @@ impl<'r> Analyzer<'r> {
 
     pub fn new_in(
         resolver: &'r mut dyn ModuleResolver,
-        module_path: Vec<Ident>,
+        module_path: ModulePath,
         generics: &GenericSubstitution,
         bounds: &[ResolvedBound],
         owner: AnalysisSite,
@@ -603,14 +599,17 @@ impl<'r> Analyzer<'r> {
     fn authored_site(&self, origin: Origin) -> Option<AuthoredSite> {
         let authorship = self.resolver.macro_authorship(origin)?;
         let at = SourceSpan::new(
-            self.resolver.module_source(&authorship.defining_module)?,
+            self.resolver
+                .module_source(&ModulePath::from(authorship.defining_module.as_slice()))?,
             authorship.definition,
         );
         let expansion = authorship
             .expansion
             .into_iter()
             .filter_map(|site| {
-                let source = self.resolver.module_source(&site.module)?;
+                let source = self
+                    .resolver
+                    .module_source(&ModulePath::from(site.module.as_slice()))?;
                 Some((site.macro_name, SourceSpan::new(source, site.span)))
             })
             .collect();
@@ -1245,7 +1244,7 @@ impl<'r> Analyzer<'r> {
 
     fn resolve_item_with_ambient_from(
         &mut self,
-        accessor: &[Ident],
+        accessor: &ModulePath,
         prefix: &[Ident],
         access: &ItemAccess,
         generic_args: &[ResolvedGenericArg],
@@ -1313,7 +1312,7 @@ impl<'r> Analyzer<'r> {
         span: Span,
         typ: &Type,
         indirect: bool,
-        module: &[Ident],
+        module: &ModulePath,
     ) -> Option<ResolvedType> {
         self.resolve_type_or_error_checked_in(id, span, typ, indirect, true, module)
     }
@@ -1325,7 +1324,7 @@ impl<'r> Analyzer<'r> {
         typ: &Type,
         indirect: bool,
         allow_never: bool,
-        module: &[Ident],
+        module: &ModulePath,
     ) -> Option<ResolvedType> {
         let resolved = self.resolve_type_or_error_in(id, span, typ, indirect, module)?;
         if let ResolvedType::Spec(spec) = &resolved {
@@ -1403,7 +1402,7 @@ impl<'r> Analyzer<'r> {
         id: HirId,
         span: Span,
         typ: &Type,
-        module: &[Ident],
+        module: &ModulePath,
     ) -> bool {
         let applied = match crate::aliases::applied_alias_bounds(&mut *self.resolver, module, typ) {
             Ok(applied) => applied,
@@ -1443,7 +1442,7 @@ impl<'r> Analyzer<'r> {
         span: Span,
         arg: &GenericArg,
         param: Option<&HirGenericParam>,
-        module: &[Ident],
+        module: &ModulePath,
     ) -> Option<ResolvedGenericArg> {
         let reveals = &self.reveals;
         match self.context.resolve_generic_arg(
@@ -1468,7 +1467,7 @@ impl<'r> Analyzer<'r> {
         span: Span,
         typ: &Type,
         indirect: bool,
-        module: &[Ident],
+        module: &ModulePath,
     ) -> Option<ResolvedType> {
         // An unmet alias obligation is reported, but the expansion it
         // applies is still a usable type here; the caller that owns the

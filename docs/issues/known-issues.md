@@ -175,8 +175,6 @@ Remaining known conformance/spec issues:
 
 Shape problems in `omega-driver` and `omega-analyzer` that still need a deliberate design change — full writeups in [design-debt.md](design-debt.md).
 
-- **Module paths and item paths are the same untyped `Vec<Ident>`**, so nothing in the type system prevents confusing a module identity with `module + item`. A distinct/interned path model would be cross-crate and is intentionally deferred.
-
 - **`ModuleResolver` is still a broad semantic service facade.** The dependency direction is sound (analyzer asks, driver owns lifetime), but one trait currently spans imports, item lookup, generic signatures, overloads, specs, conformances, compile-time bodies/values, macro-origin metadata, and synthetic IDs. A narrower capability/query model is a deliberate future architecture change, not something to simulate with more ad-hoc helpers.
 
 - **`reveal` activation is centralized but not structurally enforced by place resolution.** `RevealState` and the shared operand helpers remove the old raw-frame duplication and nested-reveal warning bug, but a future syntactic position can still forget to enter the helper before resolving a revealed place.

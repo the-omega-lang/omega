@@ -45,7 +45,7 @@ impl<'r> Analyzer<'r> {
     /// The module whose rights a piece of syntax carrying `origin` is
     /// checked with: the macro or alias definition module that authored it,
     /// or the module currently being analyzed for ordinary source syntax.
-    pub(crate) fn origin_module(&self, origin: Origin) -> Vec<Ident> {
+    pub(crate) fn origin_module(&self, origin: Origin) -> ModulePath {
         self.resolver
             .macro_origin_module(origin)
             .unwrap_or_else(|| self.module_path.clone())
@@ -64,7 +64,7 @@ impl<'r> Analyzer<'r> {
     pub(crate) fn check_visibility(
         &mut self,
         visibility: Visibility,
-        declaring_module: &[Ident],
+        declaring_module: &ModulePath,
         origin: Origin,
     ) -> bool {
         if Self::visibility_allows(visibility, declaring_module, &self.origin_module(origin)) {
@@ -75,12 +75,12 @@ impl<'r> Analyzer<'r> {
 
     pub(super) fn visibility_allows(
         visibility: Visibility,
-        declaring_module: &[Ident],
-        accessor_module: &[Ident],
+        declaring_module: &ModulePath,
+        accessor_module: &ModulePath,
     ) -> bool {
         match visibility {
             Visibility::Exposed => true,
-            Visibility::Shared => declaring_module.first() == accessor_module.first(),
+            Visibility::Shared => declaring_module.root() == accessor_module.root(),
             Visibility::Hidden => declaring_module == accessor_module,
         }
     }

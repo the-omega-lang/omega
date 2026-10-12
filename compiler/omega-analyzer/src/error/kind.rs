@@ -152,7 +152,7 @@ pub enum AnalysisErrorKind {
     BreakOutsideLoop,
     ContinueOutsideLoop,
     ModuleResolution(crate::resolver::ResolveError),
-    NotAValue(Vec<Ident>),
+    NotAValue(ItemPath),
     UnresolvedGenericParam(Ident),
     GenericParamFromFatPointer {
         parameter: Ident,
@@ -906,7 +906,7 @@ impl fmt::Display for AnalysisErrorKind {
             Self::BreakOutsideLoop => write!(f, "'break' outside of a loop"),
             Self::ContinueOutsideLoop => write!(f, "'continue' outside of a loop"),
             Self::ModuleResolution(e) => write!(f, "{e}"),
-            Self::NotAValue(path) => write!(f, "'{}' is a type, not a value", join(path)),
+            Self::NotAValue(path) => write!(f, "'{path}' is a type, not a value"),
             Self::UnresolvedGenericParam(ident) => write!(
                 f,
                 "cannot infer generic parameter '{}' from this call's arguments",

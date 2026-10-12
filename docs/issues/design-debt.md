@@ -119,22 +119,6 @@ bound-checking, alias-application obligations). Breaking: touches every
 generic-parameter-keyed data structure across the analyzer and driver, so it
 is its own dedicated task rather than a local patch.
 
-### Module paths and item paths are the same untyped `Vec<Ident>`
-
-Everything module-shaped is `Vec<Ident>`: cloned per lookup, hashed per query,
-carried in every cache key and every diagnostic. It is also structurally
-identical to an *item* path — several functions take an "absolute path" that is
-really module + item and immediately `split_last()` it, and nothing in the type
-system stops the two from being confused (the one place they genuinely differ,
-a root's declared name vs. its real on-disk stem, needed a dedicated
-translation step and a doc comment warning every other cache to key off the
-declared one).
-
-An interned `ModulePathId` plus a distinct `ItemPath` type would make the
-confusion unrepresentable and cut the cloning. Breaking across crates: the
-`ModuleResolver` trait speaks `&[Ident]` in every method.
-
-
 ### `CodegenRequest::entry` outlives the phase that owns entry-point identity
 
 `omega-mir::lower_program` consumes the checked program's entry path when it

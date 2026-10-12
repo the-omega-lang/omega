@@ -84,17 +84,13 @@ impl Driver {
     /// member is `shared`, so the compiler's own reference to it bypasses
     /// visibility; nothing about what source may name changes.
     fn resolve_panic_support(&mut self) -> Result<PanicSupport, String> {
-        let module: Vec<Ident> = PANIC_MODULE.iter().map(|s| Ident(s.to_string())).collect();
+        let module = ModulePath::from_names(&PANIC_MODULE);
         let options = ResolveItemOptions::DIRECT.bypassing_visibility(true);
 
-        let info_path: Vec<Ident> = module
-            .iter()
-            .cloned()
-            .chain([Ident(INFO.to_string())])
-            .collect();
+        let info_path = module.join(Ident(INFO.to_string()));
         let info_type = match self.resolve_item(&module, &info_path, &[], options) {
             Ok(ResolvedItem::Type(r#type @ ResolvedType::Struct(_))) => r#type,
-            Ok(_) => return Err(format!("'{}' is not a struct", join(&info_path))),
+            Ok(_) => return Err(format!("'{}' is not a struct", info_path)),
             Err(error) => return Err(error.to_string()),
         };
         let ResolvedType::Struct(cell) = &info_type else {
@@ -107,12 +103,12 @@ impl Driver {
                     .fields
                     .iter()
                     .position(|f| f.name.as_ref() == name)
-                    .ok_or_else(|| format!("'{}' declares no '{name}' field", join(&info_path)))?;
+                    .ok_or_else(|| format!("'{}' declares no '{name}' field", info_path))?;
                 let found = definition.fields[index].r#type.clone();
                 if found != expected {
                     return Err(format!(
                         "'{}::{name}' must be '{expected}', found '{found}'",
-                        join(&info_path)
+                        info_path
                     ));
                 }
                 Ok(PanicInfoField {
@@ -129,14 +125,10 @@ impl Driver {
             )
         };
 
-        let handler_path: Vec<Ident> = module
-            .iter()
-            .cloned()
-            .chain([Ident(HANDLER.to_string())])
-            .collect();
+        let handler_path = module.join(Ident(HANDLER.to_string()));
         let gap = match self.resolve_item(&module, &handler_path, &[], options) {
             Ok(ResolvedItem::Gap(gap)) => gap,
-            Ok(_) => return Err(format!("'{}' is not a gap", join(&handler_path))),
+            Ok(_) => return Err(format!("'{}' is not a gap", handler_path)),
             Err(error) => return Err(error.to_string()),
         };
         let Some((_, handler)) = gap
@@ -146,7 +138,7 @@ impl Driver {
         else {
             return Err(format!(
                 "gap '{}' declares no '{HANDLER_FUNCTION}' function",
-                join(&handler_path)
+                handler_path
             ));
         };
         let signature = &handler.fn_type;
@@ -159,14 +151,14 @@ impl Driver {
             _ => {
                 return Err(format!(
                     "'{}::{HANDLER_FUNCTION}' must take exactly one '*{INFO}' parameter",
-                    join(&handler_path)
+                    handler_path
                 ));
             }
         }
         if *signature.return_type != ResolvedType::Never || signature.is_variadic {
             return Err(format!(
                 "'{}::{HANDLER_FUNCTION}' must be a non-variadic '=> never' function",
-                join(&handler_path)
+                handler_path
             ));
         }
 
@@ -181,13 +173,6 @@ impl Driver {
             message,
         })
     }
-}
-
-fn join(path: &[Ident]) -> String {
-    path.iter()
-        .map(Ident::as_ref)
-        .collect::<Vec<_>>()
-        .join("::")
 }
 
 /// Every emitted body in one item, paired with what identifies its source.

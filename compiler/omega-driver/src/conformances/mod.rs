@@ -1,5 +1,5 @@
+use crate::Driver;
 use crate::items::ItemKey;
-use crate::{Driver, ModulePath};
 use omega_analyzer::analysis::AnalysisSite;
 use omega_analyzer::analysis::Analyzer;
 use omega_analyzer::analysis::PendingSpecMethod;
@@ -11,6 +11,7 @@ use omega_analyzer::resolved_type::{
 };
 use omega_analyzer::resolver::ResolveError;
 use omega_diagnostics::Span;
+use omega_hir::ModulePath;
 use omega_hir::{AliasTarget, HirConformDef, HirFunctionDef, HirGenericParam, HirId, HirItem};
 use omega_parser::prelude::{Ident, Type};
 use std::cell::RefCell;
@@ -132,7 +133,7 @@ impl Driver {
 
     fn implementation_owner_key(
         &self,
-        module: &[Ident],
+        module: &ModulePath,
         declaration: HirId,
         target: &ResolvedType,
     ) -> ItemKey {
@@ -158,7 +159,7 @@ impl Driver {
 
     pub(crate) fn conformance_method_ids(
         &mut self,
-        module: &[Ident],
+        module: &ModulePath,
         declaration: HirId,
         target: &ResolvedType,
         functions: &[HirFunctionDef],

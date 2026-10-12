@@ -502,7 +502,7 @@ fn fallible_enum(
         cell: std::rc::Rc::new(std::cell::RefCell::new(ResolvedEnumType {
             id: id(local),
             name: Ident(name.to_string()),
-            module_path: vec![Ident("core".into())],
+            module_path: omega_hir::ModulePath::from(vec![Ident("core".into())]),
             generic_args: vec![],
             tag_type: ResolvedType::U8,
             header: vec![],

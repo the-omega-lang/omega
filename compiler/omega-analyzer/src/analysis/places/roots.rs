@@ -85,11 +85,7 @@ impl<'r> Analyzer<'r> {
         if origin.0.is_none() {
             match self.resolve_bare_overload_candidates(ident, origin) {
                 Ok(Some(set)) if !set.candidates.is_empty() => {
-                    let name = set
-                        .absolute
-                        .last()
-                        .expect("an absolute item path always ends in the item's own name")
-                        .clone();
+                    let name = set.absolute.name.clone();
                     match self.select_function_value(
                         node_id,
                         span,
@@ -168,13 +164,7 @@ impl<'r> Analyzer<'r> {
         let (access, unqualified) = match alias {
             Some(ImportTarget::ItemPath(access)) => (access, None),
             _ => (
-                ItemAccess::gated(
-                    resolution_module
-                        .iter()
-                        .cloned()
-                        .chain(std::iter::once(ident.clone()))
-                        .collect(),
-                ),
+                ItemAccess::gated(resolution_module.join(ident.clone())),
                 Some(ident),
             ),
         };

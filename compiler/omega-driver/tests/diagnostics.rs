@@ -38,7 +38,7 @@ impl TestPackage {
     fn result(&self) -> Result<CompiledProgram, Vec<CompileError>> {
         Driver::new(self.0.clone(), None, vec![], Target::DEFAULT)
             .expect("construct driver")
-            .compile(&[Ident("main".into())])
+            .compile(&omega_hir::ModulePath::new([Ident("main".into())]))
     }
 
     fn expect_errors(&self) -> Vec<CompileError> {
@@ -66,13 +66,7 @@ fn modules_with_errors(errors: &[CompileError]) -> Vec<String> {
     errors
         .iter()
         .filter_map(|error| error.module())
-        .map(|module| {
-            module
-                .iter()
-                .map(Ident::as_ref)
-                .collect::<Vec<_>>()
-                .join("::")
-        })
+        .map(ToString::to_string)
         .collect()
 }
 

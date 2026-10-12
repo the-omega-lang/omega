@@ -15,7 +15,7 @@ fn pair(a: Type, b: Type) -> Type {
 
 fn pair_pattern(a: TypePattern, b: TypePattern) -> TypePattern {
     TypePattern::Nominal(
-        vec![Ident("Pair".into())],
+        omega_hir::ItemPath::new(omega_hir::ModulePath::default(), Ident("Pair".into())),
         vec![
             ArgumentPattern::Type(Box::new(a)),
             ArgumentPattern::Type(Box::new(b)),
@@ -199,7 +199,7 @@ fn structure_is_followed_through_pointers_and_function_types() {
 #[test]
 fn a_different_nominal_binds_nothing() {
     let other = TypePattern::Nominal(
-        vec![Ident("Other".into())],
+        omega_hir::ItemPath::new(omega_hir::ModulePath::default(), Ident("Other".into())),
         vec![
             ty(TypePattern::Parameter(0)),
             ty(TypePattern::Fixed(ResolvedType::U8)),
@@ -218,7 +218,12 @@ fn a_different_nominal_binds_nothing() {
 #[test]
 fn known_values_seed_comp_parameters() {
     let usize_kind = CompScalarType::Int(crate::resolved_type::CompIntType::USize);
-    let buffer = |args| TypePattern::Nominal(vec![Ident("Buffer".into())], args);
+    let buffer = |args| {
+        TypePattern::Nominal(
+            omega_hir::ItemPath::new(omega_hir::ModulePath::default(), Ident("Buffer".into())),
+            args,
+        )
+    };
     let seeded = seed(
         &buffer(vec![
             ArgumentPattern::Parameter(0, usize_kind),
@@ -267,14 +272,14 @@ fn known_values_seed_comp_parameters() {
 fn mismatched_argument_kinds_bind_nothing() {
     let usize_kind = CompScalarType::Int(crate::resolved_type::CompIntType::USize);
     let callee = TypePattern::Nominal(
-        vec![Ident("Buffer".into())],
+        omega_hir::ItemPath::new(omega_hir::ModulePath::default(), Ident("Buffer".into())),
         vec![
             ArgumentPattern::Parameter(0, usize_kind),
             ty(TypePattern::Parameter(1)),
         ],
     );
     let expected = TypePattern::Nominal(
-        vec![Ident("Buffer".into())],
+        omega_hir::ItemPath::new(omega_hir::ModulePath::default(), Ident("Buffer".into())),
         vec![
             ty(TypePattern::Fixed(ResolvedType::U8)),
             ty(TypePattern::Fixed(ResolvedType::U8)),

@@ -1,5 +1,5 @@
+use crate::Driver;
 use crate::error::{CompileError, ImportSite};
-use crate::{Driver, ModulePath};
 use indexmap::IndexMap;
 use indexmap::map::Entry;
 use omega_analyzer::analysis::{AnalysisSite, item_id_span, item_name};
@@ -11,6 +11,7 @@ use omega_analyzer::generics::GenericSubstitution;
 use omega_analyzer::resolver::ResolveError;
 use omega_diagnostics::{SourceFile, SourceId, SourceRegistry, Span};
 use omega_hir::{HirGenericParam, HirId, HirItem, HirModule, ModuleId};
+use omega_hir::{ItemPath, ModulePath};
 use omega_parser::macros::{ExpansionConfiguration, ExpansionFailure, MacroError};
 use omega_parser::prelude::{
     AliasItem, AliasTarget, Ident, ImportLeaf, Item, ParseError, Path, PathAnchor, SourceModule,
@@ -67,7 +68,8 @@ impl ModuleIndex {
 pub(crate) struct ImportEntry {
     pub id: HirId,
     pub span: Span,
-    pub target: ModulePath,
+    /// The absolute written target, which names a module or an item.
+    pub target: Vec<Ident>,
     pub suppress: Vec<Ident>,
     pub reveal: bool,
 }
@@ -107,22 +109,22 @@ impl ModuleStore {
         id
     }
 
-    pub fn get(&self, path: &[Ident]) -> Option<&ParsedModule> {
+    pub fn get(&self, path: &ModulePath) -> Option<&ParsedModule> {
         self.modules.get(path)
     }
 
-    pub fn parsed(&self, path: &[Ident]) -> &ParsedModule {
+    pub fn parsed(&self, path: &ModulePath) -> &ParsedModule {
         self.modules
             .get(path)
             .expect("module was parsed before this point")
     }
 
-    pub fn hir(&self, path: &[Ident]) -> Rc<HirModule> {
+    pub fn hir(&self, path: &ModulePath) -> Rc<HirModule> {
         self.parsed(path).hir.clone()
     }
 
-    pub fn invoked_macro(&self, module: &[Ident], name: &Ident) -> bool {
-        self.macro_expansions.invoked_macro(module, name)
+    pub fn invoked_macro(&self, module: &ModulePath, name: &Ident) -> bool {
+        self.macro_expansions.invoked_macro(module.segments(), name)
     }
 
     pub fn authorship(
@@ -135,36 +137,38 @@ impl ModuleStore {
     pub fn macro_origin_module(&self, origin: omega_parser::prelude::Origin) -> Option<ModulePath> {
         self.macro_expansions
             .defining_module(origin)
-            .map(ToOwned::to_owned)
+            .map(ModulePath::from)
     }
 
     /// One shared origin per module naming that module as the place syntax
     /// carrying it must resolve in. Alias expansion stamps it onto a target
     /// type so the target keeps resolving at its declaration site.
-    pub fn definition_origin(&mut self, module: &[Ident]) -> omega_parser::prelude::Origin {
+    pub fn definition_origin(&mut self, module: &ModulePath) -> omega_parser::prelude::Origin {
         if let Some(origin) = self.definition_origins.get(module) {
             return *origin;
         }
-        let origin = self.macro_expansions.register_definition_module(module);
-        self.definition_origins.insert(module.to_vec(), origin);
+        let origin = self
+            .macro_expansions
+            .register_definition_module(module.segments());
+        self.definition_origins.insert(module.clone(), origin);
         origin
     }
 
-    pub fn index(&self, path: &[Ident]) -> &ModuleIndex {
+    pub fn index(&self, path: &ModulePath) -> &ModuleIndex {
         self.parsed(path)
             .index
             .as_ref()
             .expect("module was indexed before this point")
     }
 
-    pub fn set_index(&mut self, path: &[Ident], index: ModuleIndex) {
+    pub fn set_index(&mut self, path: &ModulePath, index: ModuleIndex) {
         self.modules
             .get_mut(path)
             .expect("module was parsed before this point")
             .index = Some(index);
     }
 
-    pub fn set_imports(&mut self, path: &[Ident], imports: IndexMap<Ident, ImportEntry>) {
+    pub fn set_imports(&mut self, path: &ModulePath, imports: IndexMap<Ident, ImportEntry>) {
         self.modules
             .get_mut(path)
             .expect("module was indexed before this point")
@@ -174,17 +178,17 @@ impl ModuleStore {
             .imports = imports;
     }
 
-    pub fn is_indexed(&self, path: &[Ident]) -> bool {
+    pub fn is_indexed(&self, path: &ModulePath) -> bool {
         self.modules.get(path).is_some_and(|m| m.index.is_some())
     }
 
-    pub fn item(&self, path: &[Ident], name: &Ident) -> Option<&HirItem> {
+    pub fn item(&self, path: &ModulePath, name: &Ident) -> Option<&HirItem> {
         let module = self.modules.get(path)?;
         let index = *module.index.as_ref()?.items.get(name)?;
         module.hir.items.get(index)
     }
 
-    pub fn source_id(&self, path: &[Ident]) -> Option<SourceId> {
+    pub fn source_id(&self, path: &ModulePath) -> Option<SourceId> {
         self.source_ids.get(path).copied()
     }
 
@@ -192,11 +196,11 @@ impl ModuleStore {
         &self.sources
     }
 
-    fn source_text(&self, path: &[Ident]) -> Option<Rc<SourceFile>> {
+    fn source_text(&self, path: &ModulePath) -> Option<Rc<SourceFile>> {
         self.source_id(path).and_then(|id| self.sources.shared(id))
     }
 
-    pub fn take_failure(&mut self, path: &[Ident]) -> Option<LoadFailure> {
+    pub fn take_failure(&mut self, path: &ModulePath) -> Option<LoadFailure> {
         self.failures.remove(path)
     }
 }
@@ -204,12 +208,12 @@ impl ModuleStore {
 impl Driver {
     pub(crate) fn ensure_raw_ast(
         &mut self,
-        path: &[Ident],
+        path: &ModulePath,
         file: &std::path::Path,
     ) -> Result<Rc<SourceModule>, ResolveError> {
         if let Some(message) = self.modules.raw_failures.get(path) {
             return Err(ResolveError::LoadFailed {
-                path: path.to_vec(),
+                path: path.clone(),
                 message: message.clone(),
             });
         }
@@ -220,9 +224,9 @@ impl Driver {
         let source = std::fs::read_to_string(file).map_err(|e| {
             self.modules
                 .raw_failures
-                .insert(path.to_vec(), e.to_string());
+                .insert(path.clone(), e.to_string());
             ResolveError::LoadFailed {
-                path: path.to_vec(),
+                path: path.clone(),
                 message: e.to_string(),
             }
         })?;
@@ -230,34 +234,34 @@ impl Driver {
             .modules
             .sources
             .add(SourceFile::new(file.display().to_string(), source.as_str()));
-        self.modules.source_ids.insert(path.to_vec(), id);
+        self.modules.source_ids.insert(path.clone(), id);
         let ast = SourceModule::parse(&source).map_err(|errors| {
             self.modules
                 .raw_failures
-                .insert(path.to_vec(), "the module has syntax errors".into());
+                .insert(path.clone(), "the module has syntax errors".into());
             self.modules
                 .failures
-                .insert(path.to_vec(), LoadFailure::Parse(errors));
+                .insert(path.clone(), LoadFailure::Parse(errors));
             ResolveError::LoadFailed {
-                path: path.to_vec(),
+                path: path.clone(),
                 message: "the module has syntax errors".into(),
             }
         })?;
         let ast = Rc::new(ast);
-        self.modules.raw_asts.insert(path.to_vec(), ast.clone());
+        self.modules.raw_asts.insert(path.clone(), ast.clone());
         Ok(ast)
     }
 
-    pub(crate) fn source_selection_failure(&mut self, path: &[Ident], failure: LoadFailure) {
+    pub(crate) fn source_selection_failure(&mut self, path: &ModulePath, failure: LoadFailure) {
         self.modules
             .raw_failures
-            .insert(path.to_vec(), "the source annotations are invalid".into());
-        self.modules.failures.insert(path.to_vec(), failure);
+            .insert(path.clone(), "the source annotations are invalid".into());
+        self.modules.failures.insert(path.clone(), failure);
     }
 
     fn ensure_ast(
         &mut self,
-        path: &[Ident],
+        path: &ModulePath,
         file: &std::path::Path,
     ) -> Result<Rc<SourceModule>, ResolveError> {
         if let Some(ast) = self.modules.asts.get(path) {
@@ -275,9 +279,9 @@ impl Driver {
                 Err(error) => {
                     self.modules
                         .failures
-                        .insert(path.to_vec(), LoadFailure::Condition(error));
+                        .insert(path.clone(), LoadFailure::Condition(error));
                     return Err(ResolveError::LoadFailed {
-                        path: path.to_vec(),
+                        path: path.clone(),
                         message: "a condition could not be evaluated".into(),
                     });
                 }
@@ -287,13 +291,13 @@ impl Driver {
             annotations: vec![],
             nodes,
         });
-        self.modules.asts.insert(path.to_vec(), ast.clone());
+        self.modules.asts.insert(path.clone(), ast.clone());
         Ok(ast)
     }
 
     fn module_macros(
         &mut self,
-        path: &[Ident],
+        path: &ModulePath,
     ) -> Result<Rc<HashMap<Ident, MacroDefinitionStmt>>, ResolveError> {
         if let Some(definitions) = self.modules.macro_defs.get(path) {
             return Ok(definitions.clone());
@@ -309,13 +313,13 @@ impl Driver {
                     if let Item::MacroDefinition(definition) = &node.item {
                         let mut definition = definition.clone();
                         if let Err(error) =
-                            omega_parser::macros::bind_definition(&mut definition, path)
+                            omega_parser::macros::bind_definition(&mut definition, path.segments())
                         {
                             self.modules
                                 .failures
-                                .insert(path.to_vec(), LoadFailure::MacroExpansion(error));
+                                .insert(path.clone(), LoadFailure::MacroExpansion(error));
                             return Err(ResolveError::LoadFailed {
-                                path: path.to_vec(),
+                                path: path.clone(),
                                 message: "macro expansion failed".into(),
                             });
                         }
@@ -325,23 +329,23 @@ impl Driver {
                 let aliased = self.bind_macro_aliases(path, &ast, &mut definitions);
                 self.modules
                     .macro_alias_names
-                    .insert(path.to_vec(), Rc::new(aliased));
+                    .insert(path.clone(), Rc::new(aliased));
                 definitions
             }
         };
         let definitions = Rc::new(definitions);
         self.modules
             .macro_expansions
-            .register_environment(path, definitions.as_ref());
+            .register_environment(path.segments(), definitions.as_ref());
         self.modules
             .macro_defs
-            .insert(path.to_vec(), definitions.clone());
+            .insert(path.clone(), definitions.clone());
         Ok(definitions)
     }
 
     /// The names this module binds in the macro namespace through an `alias`.
     /// Only meaningful after `module_macros` has run for `path`.
-    fn macro_alias_names(&self, path: &[Ident]) -> Rc<HashSet<Ident>> {
+    fn macro_alias_names(&self, path: &ModulePath) -> Rc<HashSet<Ident>> {
         self.modules
             .macro_alias_names
             .get(path)
@@ -358,7 +362,7 @@ impl Driver {
     /// body may reach.
     fn bind_macro_aliases(
         &mut self,
-        path: &[Ident],
+        path: &ModulePath,
         ast: &SourceModule,
         definitions: &mut HashMap<Ident, MacroDefinitionStmt>,
     ) -> HashSet<Ident> {
@@ -425,15 +429,14 @@ impl Driver {
     /// than reimplementing it here.
     fn raw_macro_target(
         &mut self,
-        path: &[Ident],
+        path: &ModulePath,
         imports: &[ImportLeaf],
         target: &Path,
         local: &HashMap<Ident, MacroDefinitionStmt>,
     ) -> Option<MacroDefinitionStmt> {
         if let Some(anchored) = Driver::resolve_explicit_anchor(path, target) {
-            let absolute = anchored.ok()?;
-            let (name, module) = absolute.split_last()?;
-            return self.gate_macro_target(path, module, name, local);
+            let absolute = ItemPath::from_segments(&anchored.ok()?)?;
+            return self.gate_macro_target(path, &absolute.module, &absolute.name, local);
         }
         if target.is_unqualified() {
             if let Some(definition) = local.get(&target.head) {
@@ -445,8 +448,7 @@ impl Driver {
             // as it does when the macro is invoked directly instead.
             let import = Self::binding_import(imports, &target.head)?;
             let absolute = self.import_absolute_path(path, &import.path).ok()?;
-            let (name, module) = absolute.split_last()?;
-            let (name, module) = (name.clone(), module.to_vec());
+            let ItemPath { module, name } = ItemPath::from_segments(&absolute)?;
             if import.reveal {
                 return self.module_macros(&module).ok()?.get(&name).cloned();
             }
@@ -463,7 +465,7 @@ impl Driver {
                     .is_known_top_level(&target.head)
                     .then(|| vec![target.head.clone()])
             })?;
-        let absolute: Vec<Ident> = base.into_iter().chain(module.into_iter().skip(1)).collect();
+        let absolute: ModulePath = base.into_iter().chain(module.into_iter().skip(1)).collect();
         self.gate_macro_target(path, &absolute, &name, local)
     }
 
@@ -478,8 +480,8 @@ impl Driver {
     /// more than a hidden item may.
     fn gate_macro_target(
         &mut self,
-        accessor: &[Ident],
-        module: &[Ident],
+        accessor: &ModulePath,
+        module: &ModulePath,
         name: &Ident,
         local: &HashMap<Ident, MacroDefinitionStmt>,
     ) -> Option<MacroDefinitionStmt> {
@@ -491,14 +493,14 @@ impl Driver {
         Self::visibility_allows(definition.visibility, module, accessor).then_some(definition)
     }
 
-    pub(crate) fn module_has_macro(&mut self, module: &[Ident], name: &Ident) -> bool {
+    pub(crate) fn module_has_macro(&mut self, module: &ModulePath, name: &Ident) -> bool {
         self.module_macros(module)
             .is_ok_and(|definitions| definitions.contains_key(name))
     }
 
     pub(crate) fn macro_visibility(
         &mut self,
-        module: &[Ident],
+        module: &ModulePath,
         name: &Ident,
     ) -> Option<Visibility> {
         Some(self.module_macros(module).ok()?.get(name)?.visibility)
@@ -546,7 +548,7 @@ impl Driver {
     /// source-order pass rather than layered by insertion order.
     fn macro_env(
         &mut self,
-        path: &[Ident],
+        path: &ModulePath,
     ) -> Result<HashMap<Ident, MacroDefinitionStmt>, CompileError> {
         let resolve_failed = |error| CompileError::Resolve {
             error,
@@ -554,7 +556,7 @@ impl Driver {
         };
         let mut environment = (*self.prelude_macros()?).clone();
         let own = self.module_macros(path).map_err(resolve_failed)?;
-        if path.first().map(Ident::as_ref) == Some("core") {
+        if path.root().map(Ident::as_ref) == Some("core") {
             for name in own.keys() {
                 environment.remove(name);
             }
@@ -598,7 +600,7 @@ impl Driver {
             for (name, span, definition) in bound {
                 if let Some(previous) = explicit.insert(name.clone(), span) {
                     return Err(CompileError::MacroNameCollision {
-                        module: path.to_vec(),
+                        module: path.clone(),
                         name,
                         previous,
                         span,
@@ -616,7 +618,7 @@ impl Driver {
     /// The macro one import leaf binds in `path`, if it binds one at all.
     fn imported_macro(
         &mut self,
-        path: &[Ident],
+        path: &ModulePath,
         import: &ImportLeaf,
     ) -> Option<MacroDefinitionStmt> {
         let absolute = self.import_absolute_path(path, &import.path).ok()?;
@@ -629,15 +631,15 @@ impl Driver {
     /// tells import validation that a binding never had to name an item.
     pub(crate) fn macro_binding(
         &mut self,
-        importer: &[Ident],
+        importer: &ModulePath,
         absolute: &[Ident],
         reveal: bool,
     ) -> Option<MacroDefinitionStmt> {
-        if self.roots.module_exists(absolute) || absolute.len() < 2 {
+        if self.roots.module_exists(&ModulePath::from(absolute)) || absolute.len() < 2 {
             return None;
         }
-        let module = absolute[..absolute.len() - 1].to_vec();
-        let name = absolute.last().expect("non-empty import path").clone();
+        let ItemPath { module, name } =
+            ItemPath::from_segments(absolute).expect("non-empty import path");
         if !self.roots.module_exists(&module) {
             return None;
         }
@@ -649,7 +651,10 @@ impl Driver {
             .then_some(definition)
     }
 
-    pub(crate) fn parse_module(&mut self, path: &[Ident]) -> Result<Rc<HirModule>, ResolveError> {
+    pub(crate) fn parse_module(
+        &mut self,
+        path: &ModulePath,
+    ) -> Result<Rc<HirModule>, ResolveError> {
         if let Some(module) = self.modules.get(path) {
             return Ok(module.hir.clone());
         }
@@ -663,9 +668,9 @@ impl Driver {
                 let macros = self.macro_env(path).map_err(|e| {
                     self.modules
                         .failures
-                        .insert(path.to_vec(), LoadFailure::Compile(e));
+                        .insert(path.clone(), LoadFailure::Compile(e));
                     ResolveError::LoadFailed {
-                        path: path.to_vec(),
+                        path: path.clone(),
                         message: "building macro environment failed".into(),
                     }
                 })?;
@@ -677,7 +682,7 @@ impl Driver {
                 let ast = omega_parser::macros::expand_with_origins(
                     (*ast).clone(),
                     &macros,
-                    path,
+                    path.segments(),
                     source.as_deref(),
                     &mut self.modules.macro_expansions,
                     &mut configuration,
@@ -687,9 +692,9 @@ impl Driver {
                         ExpansionFailure::Macro(error) => LoadFailure::MacroExpansion(error),
                         ExpansionFailure::Configuration(error) => LoadFailure::Condition(error),
                     };
-                    self.modules.failures.insert(path.to_vec(), failure);
+                    self.modules.failures.insert(path.clone(), failure);
                     ResolveError::LoadFailed {
-                        path: path.to_vec(),
+                        path: path.clone(),
                         message: "macro expansion failed".into(),
                     }
                 })?;
@@ -699,7 +704,7 @@ impl Driver {
 
         let hir = Rc::new(hir);
         self.modules.modules.insert(
-            path.to_vec(),
+            path.clone(),
             ParsedModule {
                 id,
                 hir: hir.clone(),
@@ -711,24 +716,25 @@ impl Driver {
 
     pub(crate) fn load_failure(
         &mut self,
-        module: &[Ident],
+        module: &ModulePath,
         error: ResolveError,
         importer: Option<ImportSite>,
     ) -> CompileError {
         match self.modules.take_failure(module) {
             Some(LoadFailure::Parse(errors)) => CompileError::Parse {
-                module: module.to_vec(),
+                module: module.clone(),
                 errors,
             },
             Some(LoadFailure::MacroExpansion(error)) => {
                 let definition = error.site.definition.as_ref().and_then(|(module, span)| {
                     Some(omega_diagnostics::SourceSpan::new(
-                        self.modules.source_id(module)?,
+                        self.modules
+                            .source_id(&ModulePath::from(module.as_slice()))?,
                         *span,
                     ))
                 });
                 CompileError::MacroExpansion {
-                    module: module.to_vec(),
+                    module: module.clone(),
                     error,
                     definition,
                 }
@@ -736,7 +742,7 @@ impl Driver {
             Some(LoadFailure::Condition(error)) => {
                 let definition = self.condition_macro_definition(&error);
                 CompileError::Condition {
-                    module: module.to_vec(),
+                    module: module.clone(),
                     error,
                     definition,
                 }
@@ -752,10 +758,13 @@ impl Driver {
         error: &ConditionError,
     ) -> Option<omega_diagnostics::SourceSpan> {
         let authorship = self.modules.authorship(error.origin)?;
-        self.site(&authorship.defining_module, authorship.definition)
+        self.site(
+            &ModulePath::from(authorship.defining_module.as_slice()),
+            authorship.definition,
+        )
     }
 
-    pub fn source_id(&self, module: &[Ident]) -> Option<SourceId> {
+    pub fn source_id(&self, module: &ModulePath) -> Option<SourceId> {
         self.modules.source_id(module)
     }
 
@@ -768,7 +777,7 @@ impl Driver {
     /// of the diagnostic rather than pointing it at the wrong file.
     pub(crate) fn site(
         &self,
-        module: &[Ident],
+        module: &ModulePath,
         span: Span,
     ) -> Option<omega_diagnostics::SourceSpan> {
         Some(omega_diagnostics::SourceSpan::new(
@@ -777,7 +786,7 @@ impl Driver {
         ))
     }
 
-    pub(crate) fn ensure_module_indexed(&mut self, path: &[Ident]) -> Result<(), ResolveError> {
+    pub(crate) fn ensure_module_indexed(&mut self, path: &ModulePath) -> Result<(), ResolveError> {
         if self.modules.is_indexed(path) {
             return Ok(());
         }
@@ -809,7 +818,7 @@ impl Driver {
     /// name collide whichever forms they take; function overloads are the one
     /// deliberate exception. Scanning them together is what keeps the reported
     /// collision the later claim regardless of which kind came first.
-    fn index_items(&mut self, path: &[Ident], hir: &HirModule) -> ModuleIndex {
+    fn index_items(&mut self, path: &ModulePath, hir: &HirModule) -> ModuleIndex {
         let mut items: IndexMap<Ident, usize> = IndexMap::new();
         let mut overloads: IndexMap<Ident, Vec<usize>> = IndexMap::new();
         let mut aliases: IndexMap<Ident, usize> = IndexMap::new();
@@ -867,7 +876,7 @@ impl Driver {
 
     fn report_redeclaration(
         &mut self,
-        path: &[Ident],
+        path: &ModulePath,
         item: &HirItem,
         name: Ident,
         previous: Span,
@@ -890,7 +899,11 @@ impl Driver {
     /// `index_items`. Only their targets are resolved here: an import that
     /// lost its name binds nothing, and one whose target fails to resolve
     /// still keeps the name it claimed.
-    fn index_imports(&mut self, path: &[Ident], hir: &HirModule) -> IndexMap<Ident, ImportEntry> {
+    fn index_imports(
+        &mut self,
+        path: &ModulePath,
+        hir: &HirModule,
+    ) -> IndexMap<Ident, ImportEntry> {
         let mut imports: IndexMap<Ident, ImportEntry> = IndexMap::new();
         // Every leaf of one import tree carries a copy of the same written
         // annotations, so they are resolved once per source item -- keyed by
@@ -968,11 +981,11 @@ impl Driver {
     ///
     /// Only the target's existence and visibility are established here; see
     /// `validate_import_target`. Returns whether any binding failed.
-    pub(crate) fn validate_imports(&mut self, path: &[Ident]) -> bool {
+    pub(crate) fn validate_imports(&mut self, path: &ModulePath) -> bool {
         if self.ensure_module_indexed(path).is_err() {
             return false;
         }
-        let bindings: Vec<(HirId, Span, ModulePath, bool)> = self
+        let bindings: Vec<(HirId, Span, Vec<Ident>, bool)> = self
             .modules
             .index(path)
             .imports
@@ -1012,7 +1025,7 @@ impl Driver {
 
     pub(crate) fn local_item_index(
         &mut self,
-        module_path: &[Ident],
+        module_path: &ModulePath,
         name: &Ident,
     ) -> Result<usize, ResolveError> {
         self.ensure_module_indexed(module_path)?;
@@ -1022,14 +1035,14 @@ impl Driver {
             .get(name)
             .copied()
             .ok_or_else(|| ResolveError::UnknownItem {
-                module: module_path.to_vec(),
+                module: module_path.clone(),
                 item: name.clone(),
             })
     }
 
     pub(crate) fn item_generics(
         &mut self,
-        module_path: &[Ident],
+        module_path: &ModulePath,
         name: &Ident,
     ) -> Result<Vec<HirGenericParam>, ResolveError> {
         let index = self.local_item_index(module_path, name)?;
@@ -1038,7 +1051,7 @@ impl Driver {
 
     pub(crate) fn item_generics_at(
         &mut self,
-        module_path: &[Ident],
+        module_path: &ModulePath,
         index: usize,
     ) -> Result<Vec<HirGenericParam>, ResolveError> {
         // A static-spec parameter contributes an anonymous bounded generic, so
@@ -1071,7 +1084,7 @@ impl Driver {
 
     pub(crate) fn is_generic_template(
         &mut self,
-        module_path: &[Ident],
+        module_path: &ModulePath,
         name: &Ident,
     ) -> Result<bool, ResolveError> {
         Ok(!self.item_generics(module_path, name)?.is_empty())
@@ -1082,9 +1095,9 @@ impl Driver {
     /// top-level-by-default.
     fn import_absolute_path(
         &self,
-        importer: &[Ident],
+        importer: &ModulePath,
         path: &Path,
-    ) -> Result<ModulePath, ResolveError> {
+    ) -> Result<Vec<Ident>, ResolveError> {
         match Self::resolve_explicit_anchor(importer, path) {
             Some(result) => result,
             None => {
@@ -1103,20 +1116,20 @@ impl Driver {
     /// the path carries no explicit anchor, so callers fall back to their own
     /// (import-default-top-level vs. ordinary-relative) unanchored lookup.
     pub(crate) fn resolve_explicit_anchor(
-        origin_module: &[Ident],
+        origin_module: &ModulePath,
         path: &Path,
-    ) -> Option<Result<ModulePath, ResolveError>> {
+    ) -> Option<Result<Vec<Ident>, ResolveError>> {
         Some(match path.anchor? {
             PathAnchor::Root => {
                 let mut absolute = Vec::new();
-                if let Some(package_root) = origin_module.first() {
+                if let Some(package_root) = origin_module.root() {
                     absolute.push(package_root.clone());
                 }
                 absolute.extend(path.segments());
                 Ok(absolute)
             }
             PathAnchor::SelfModule => {
-                let mut absolute = origin_module.to_vec();
+                let mut absolute = origin_module.segments().to_vec();
                 absolute.extend(path.segments());
                 Ok(absolute)
             }
@@ -1125,10 +1138,11 @@ impl Driver {
                 if depth >= origin_module.len() {
                     Err(ResolveError::SuperAboveRoot {
                         depth: depth as u32,
-                        importer: origin_module.to_vec(),
+                        importer: origin_module.clone(),
                     })
                 } else {
-                    let mut absolute = origin_module[..origin_module.len() - depth].to_vec();
+                    let segments = origin_module.segments();
+                    let mut absolute = segments[..segments.len() - depth].to_vec();
                     absolute.extend(path.segments());
                     Ok(absolute)
                 }

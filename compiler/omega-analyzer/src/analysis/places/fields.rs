@@ -2,7 +2,7 @@ use super::*;
 
 struct MemberOwner {
     visibility: Visibility,
-    module_path: Vec<Ident>,
+    module_path: ModulePath,
 }
 
 struct EnumMember {

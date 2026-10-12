@@ -1,13 +1,13 @@
 use crate::error::CompileError;
 pub(crate) const CORE_MODULE: &str = "core";
 
-pub(crate) fn is_core_module(path: &[Ident]) -> bool {
-    path.first().map(Ident::as_ref) == Some(CORE_MODULE)
+pub(crate) fn is_core_module(path: &ModulePath) -> bool {
+    path.root().map(Ident::as_ref) == Some(CORE_MODULE)
 }
-use crate::ModulePath;
 use crate::fs_resolve::{self, ModuleLocation};
 use indexmap::IndexMap;
 use omega_analyzer::resolver::ResolveError;
+use omega_hir::ModulePath;
 use omega_parser::prelude::Ident;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -45,7 +45,7 @@ impl ModuleRoots {
         let mut errors = Vec::new();
         let invalid_identity = |name: &Ident| CompileError::Resolve {
             error: ResolveError::InvalidModuleName {
-                path: vec![],
+                path: ModulePath::new([]),
                 invalid: name.to_string(),
             },
             importer: None,
@@ -83,7 +83,7 @@ impl ModuleRoots {
         let local_identity = local_tree
             .keys()
             .find(|path| path.len() == 1)
-            .and_then(|path| path.first())
+            .and_then(|path| path.root())
             .cloned();
         if let Some(identity) = &local_identity
             && let Some(extern_root) = registered.get(identity)
@@ -120,12 +120,7 @@ impl ModuleRoots {
             .chain(extern_trees.values().flat_map(invalid_module_name_errors))
             .collect();
         if !invalid.is_empty() {
-            invalid.sort_by_key(|(path, _)| {
-                path.iter()
-                    .map(Ident::as_ref)
-                    .collect::<Vec<_>>()
-                    .join("::")
-            });
+            invalid.sort_by_key(|(path, _)| path.to_string());
             return Err(invalid.into_iter().map(|(_, error)| error).collect());
         }
 
@@ -138,8 +133,8 @@ impl ModuleRoots {
         })
     }
 
-    pub fn is_extern(&self, path: &[Ident]) -> bool {
-        path.first()
+    pub fn is_extern(&self, path: &ModulePath) -> bool {
+        path.root()
             .is_some_and(|head| self.externs.contains_key(head))
     }
 
@@ -150,19 +145,19 @@ impl ModuleRoots {
         self.local_identity.as_ref() == Some(name) || self.externs.contains_key(name)
     }
 
-    pub fn locate(&self, path: &[Ident]) -> Result<ModuleLocation, ResolveError> {
+    pub fn locate(&self, path: &ModulePath) -> Result<ModuleLocation, ResolveError> {
         let tree = if self.is_extern(path) {
-            &self.extern_trees[&path[0]]
+            &self.extern_trees[path.root().expect("an extern path names its package")]
         } else {
             &self.local_tree
         };
         match tree.get(path) {
             Some(result) => result.clone(),
-            None => Err(ResolveError::UnknownModule(path.to_vec())),
+            None => Err(ResolveError::UnknownModule(path.clone())),
         }
     }
 
-    pub fn module_exists(&self, path: &[Ident]) -> bool {
+    pub fn module_exists(&self, path: &ModulePath) -> bool {
         self.locate(path).is_ok()
     }
 
@@ -183,7 +178,7 @@ impl ModuleRoots {
     pub fn source_modules(&self) -> Vec<ModulePath> {
         let mut paths = Self::real_modules(&self.local_tree);
         paths.extend(self.extern_modules());
-        paths.sort_by(|a, b| a.iter().map(Ident::as_ref).cmp(b.iter().map(Ident::as_ref)));
+        paths.sort();
         paths
     }
 
@@ -199,7 +194,7 @@ impl ModuleRoots {
             .local_tree
             .keys()
             .find(|path| path.len() == 1)
-            .and_then(|path| path.first())
+            .and_then(|path| path.root())
             .cloned();
     }
 
@@ -238,7 +233,7 @@ impl ModuleRoots {
             Some(tree) => Self::real_modules(tree),
             None => Self::real_modules(&self.local_tree)
                 .into_iter()
-                .filter(|path| path.first().map(Ident::as_ref) == Some(CORE_MODULE))
+                .filter(is_core_module)
                 .collect(),
         }
     }
@@ -331,15 +326,22 @@ mod tests {
             }],
         )
         .unwrap();
-        roots.prune(&[vec![name.clone(), Ident("thing".into())], vec![ext.clone()]]);
+        roots.prune(&[
+            ModulePath::new([name.clone(), Ident("thing".into())]),
+            ModulePath::new([ext.clone()]),
+        ]);
         assert_eq!(roots.local_sources().len(), 1);
         assert!(roots.extern_modules().is_empty());
         assert!(matches!(
-            roots.locate(&[name.clone(), Ident("thing".into()), Ident("child".into())]),
+            roots.locate(&ModulePath::new([
+                name.clone(),
+                Ident("thing".into()),
+                Ident("child".into())
+            ])),
             Err(ResolveError::UnknownModule(_))
         ));
         assert!(roots.is_known_top_level(&name));
-        roots.prune(&[vec![name.clone()]]);
+        roots.prune(&[ModulePath::new([name.clone()])]);
         assert!(!roots.is_known_top_level(&name));
         assert!(roots.local_sources().is_empty());
     }
@@ -439,14 +441,13 @@ mod tests {
         expected.sort();
         assert_eq!(relative_paths(&sources), expected);
         assert!(
-            !sources
-                .iter()
-                .any(|source| source.module == vec![name.clone(), Ident("space".to_string())]),
+            !sources.iter().any(|source| source.module
+                == ModulePath::new([name.clone(), Ident("space".to_string())])),
             "a namespace-only directory owns no source and must have no emission identity"
         );
         let root_source = sources
             .iter()
-            .find(|source| source.module == vec![name.clone()])
+            .find(|source| source.module == ModulePath::new([name.clone()]))
             .expect("the root module is source-bearing");
         assert_eq!(
             root_source.relative_path,
@@ -482,9 +483,10 @@ mod tests {
         expected.sort();
         assert_eq!(relative_paths(&sources), expected);
         assert!(
-            sources
-                .iter()
-                .all(|source| source.module[0].as_ref() == "renamed"),
+            sources.iter().all(|source| source
+                .module
+                .root()
+                .is_some_and(|root| root.as_ref() == "renamed")),
             "declared identity renames the logical module path"
         );
     }

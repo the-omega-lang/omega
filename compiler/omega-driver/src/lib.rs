@@ -24,6 +24,7 @@ use items::ItemQueries;
 use modules::ModuleStore;
 use omega_analyzer::Target;
 use omega_analyzer::compiler_definitions::CompilerDefinitions;
+use omega_hir::ModulePath;
 use omega_parser::prelude::Ident;
 use omega_parser::prelude::MacroDefinitionStmt;
 use primitives::Primitives;
@@ -32,8 +33,6 @@ use roots::ModuleRoots;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
-
-pub(crate) type ModulePath = Vec<Ident>;
 
 pub struct Driver {
     roots: ModuleRoots,

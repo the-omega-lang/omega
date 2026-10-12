@@ -12,7 +12,7 @@ use crate::resolved_type::{
 use crate::resolver::ResolveError;
 use crate::target::Target;
 use omega_diagnostics::{Diagnostic, LabelStyle, SourceId, SourceSpan};
-use omega_hir::HirId;
+use omega_hir::{HirId, ItemPath};
 use omega_parser::prelude::{BinaryOp, Ident, Span};
 use std::fmt;
 

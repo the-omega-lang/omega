@@ -27,10 +27,7 @@ impl<'r> Analyzer<'r> {
                     id,
                     span,
                     AnalysisErrorKind::GlueTargetNotGap {
-                        target: absolute
-                            .last()
-                            .cloned()
-                            .expect("an absolute path has a name"),
+                        target: absolute.name.clone(),
                     },
                 );
                 None
@@ -69,7 +66,7 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         written_path: &Path,
-        accessor: &[Ident],
+        accessor: &ModulePath,
         access: ItemAccess,
         unqualified: Option<&Ident>,
         expected: Option<&ResolvedType>,
@@ -84,9 +81,7 @@ impl<'r> Analyzer<'r> {
             match self.select_function_value(
                 node_id,
                 span,
-                set.absolute
-                    .last()
-                    .expect("an item path always ends in the item's own name"),
+                &set.absolute.name,
                 &set.absolute,
                 &set.candidates,
                 &[],
@@ -150,11 +145,17 @@ impl<'r> Analyzer<'r> {
                 );
                 None
             }
-            Err(ResolveError::UnknownModule(missing))
-                if missing.len() + 1 == absolute.len() && missing == absolute[..missing.len()] =>
-            {
+            Err(ResolveError::UnknownModule(missing)) if missing == absolute.module => {
+                let Some(prefix) = missing.as_item() else {
+                    self.error(
+                        node_id,
+                        span,
+                        AnalysisErrorKind::ModuleResolution(ResolveError::UnknownModule(missing)),
+                    );
+                    return None;
+                };
                 match self.resolve_item_checked(
-                    &ItemAccess::gated(missing.clone()),
+                    &ItemAccess::gated(prefix),
                     &[],
                     true,
                     written_path.origin,
@@ -164,7 +165,7 @@ impl<'r> Analyzer<'r> {
                             node_id,
                             span,
                             &t,
-                            &absolute[missing.len()..],
+                            std::slice::from_ref(&absolute.name),
                             &[],
                             expected,
                             written_path.origin,
@@ -176,7 +177,7 @@ impl<'r> Analyzer<'r> {
                             span,
                             written_path,
                             &gap,
-                            &absolute[missing.len()..],
+                            std::slice::from_ref(&absolute.name),
                         )
                         .map(|(root, r#type)| (root, r#type, false)),
                     // The prefix genuinely doesn't resolve either: the
@@ -251,9 +252,10 @@ impl<'r> Analyzer<'r> {
             // The anchor resolves the whole written path, so the head alone
             // is its own absolute path and `path.tail` stays the member
             // chain, exactly as for an unanchored head.
-            Some(absolute) => {
-                ItemAccess::gated(absolute[..absolute.len() - path.tail.len()].to_vec())
-            }
+            Some(absolute) => ItemAccess::gated(
+                ItemPath::from_segments(&absolute[..absolute.len() - path.tail.len()])
+                    .expect("an anchored path keeps its head"),
+            ),
             None => {
                 let alias = self.resolve_path_alias_or_error(node_id, span, path)?;
                 if let Some(ImportTarget::Item(_, ResolvedItem::Type(t))) = alias {
@@ -272,14 +274,12 @@ impl<'r> Analyzer<'r> {
                 }
                 match alias {
                     Some(ImportTarget::ItemPath(access)) => access,
-                    Some(ImportTarget::Module(absolute)) => ItemAccess::gated(absolute),
-                    _ => ItemAccess::gated(
-                        self.path_module(path)
-                            .iter()
-                            .cloned()
-                            .chain(std::iter::once(path.head.clone()))
-                            .collect(),
+                    Some(ImportTarget::Module(module)) => ItemAccess::gated(
+                        module
+                            .as_item()
+                            .expect("an imported module is never the root"),
                     ),
+                    _ => ItemAccess::gated(self.path_module(path).join(path.head.clone())),
                 }
             }
         };
@@ -554,11 +554,7 @@ impl<'r> Analyzer<'r> {
         if !set.candidates.iter().any(|c| c.template().is_some()) {
             return None;
         }
-        let name = set
-            .absolute
-            .last()
-            .expect("an item path always ends in the item's own name")
-            .clone();
+        let name = set.absolute.name.clone();
         Some(
             match self.select_function_value(
                 node_id,
@@ -622,14 +618,18 @@ impl<'r> Analyzer<'r> {
             Some(Ok(absolute)) => absolute,
             Some(Err(_)) => return false,
             None => match self.resolver.resolve_import_alias(&accessor, &prefix.head) {
-                Ok(Some(ImportTarget::Module(target))) => {
-                    target.into_iter().chain(prefix.tail).collect()
-                }
+                Ok(Some(ImportTarget::Module(target))) => target
+                    .segments()
+                    .iter()
+                    .cloned()
+                    .chain(prefix.tail)
+                    .collect(),
                 _ => return false,
             },
         };
         matches!(
-            self.resolver.resolve_module_path(&accessor, &absolute),
+            self.resolver
+                .resolve_module_path(&accessor, &ModulePath::from(absolute)),
             Ok(Some(_))
         )
     }
@@ -736,7 +736,7 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         written: &[GenericArg],
-        owner: &[Ident],
+        owner: &ItemPath,
         params: &[HirGenericParam],
     ) -> Option<Vec<ResolvedGenericArg>> {
         self.check_generic_arity(node_id, span, owner, params, written.len())?;
@@ -777,20 +777,19 @@ impl<'r> Analyzer<'r> {
         &mut self,
         node_id: HirId,
         span: Span,
-        owner: &[Ident],
+        owner: &ItemPath,
         params: &[HirGenericParam],
         found: usize,
     ) -> Option<()> {
         if params.is_empty() || found <= params.len() {
             return Some(());
         }
-        let (item, module) = owner.split_last()?;
         self.error(
             node_id,
             span,
             AnalysisErrorKind::ModuleResolution(ResolveError::GenericArgCountMismatch {
-                module: module.to_vec(),
-                item: item.clone(),
+                module: owner.module.clone(),
+                item: owner.name.clone(),
                 expected: params.len(),
                 found,
             }),
@@ -862,7 +861,7 @@ impl<'r> Analyzer<'r> {
     /// resolves as types and the item query reports the real problem.
     pub(super) fn item_generic_params_for(
         &mut self,
-        accessor: &[Ident],
+        accessor: &ModulePath,
         prefix: &[Ident],
         access: &ItemAccess,
     ) -> Vec<HirGenericParam> {
@@ -901,13 +900,7 @@ impl<'r> Analyzer<'r> {
             {
                 return Some(access);
             }
-            return Some(ItemAccess::gated(
-                module
-                    .iter()
-                    .cloned()
-                    .chain(std::iter::once(single.clone()))
-                    .collect(),
-            ));
+            return Some(ItemAccess::gated(module.join(single.clone())));
         }
 
         let Some((head, tail)) = prefix.split_first() else {
@@ -987,12 +980,7 @@ impl<'r> Analyzer<'r> {
                 node_id,
                 span,
                 AnalysisErrorKind::ModuleResolution(ResolveError::NotVisible {
-                    module: gap
-                        .module_path
-                        .iter()
-                        .cloned()
-                        .chain(std::iter::once(gap.name.clone()))
-                        .collect(),
+                    module: gap.module_path.child(gap.name.clone()),
                     item: member.clone(),
                 }),
             );

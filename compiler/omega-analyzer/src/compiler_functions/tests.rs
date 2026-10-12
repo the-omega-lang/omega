@@ -15,8 +15,8 @@ fn function(source: &str) -> HirFunctionDef {
         .expect("a function definition")
 }
 
-fn path(segments: &[&str]) -> Vec<Ident> {
-    segments.iter().map(|s| Ident(s.to_string())).collect()
+fn path(segments: &[&str]) -> ModulePath {
+    ModulePath::from_names(segments)
 }
 
 fn classify(module: &[&str], source: &str) -> Result<Option<CompilerFunction>, AnalysisErrorKind> {

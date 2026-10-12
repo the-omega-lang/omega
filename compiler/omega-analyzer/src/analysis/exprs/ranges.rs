@@ -86,12 +86,8 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    fn core_range_path(name: &str) -> Vec<Ident> {
-        vec![
-            Ident("core".to_string()),
-            Ident("range".to_string()),
-            Ident(name.to_string()),
-        ]
+    fn core_range_path(name: &str) -> ItemPath {
+        ModulePath::from_names(&["core", "range"]).join(Ident(name.to_string()))
     }
 
     fn expected_range_element(expected: Option<&ResolvedType>) -> Option<ResolvedType> {
@@ -99,10 +95,8 @@ impl<'r> Analyzer<'r> {
             return None;
         };
         let definition = cell.borrow();
-        let is_core_range = definition.name.as_ref() == "Range"
-            && definition.module_path.len() == 2
-            && definition.module_path[0].as_ref() == "core"
-            && definition.module_path[1].as_ref() == "range";
+        let is_core_range =
+            definition.name.as_ref() == "Range" && definition.module_path.is(&["core", "range"]);
         is_core_range
             .then(|| {
                 definition

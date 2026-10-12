@@ -1,6 +1,7 @@
 use crate::modules::LoadFailure;
-use crate::{CompileError, Driver, ModulePath};
+use crate::{CompileError, Driver};
 use omega_analyzer::{annotation_eval, source_annotations};
+use omega_hir::ModulePath;
 
 impl Driver {
     pub(crate) fn select_modules(&mut self) -> Result<(), Vec<CompileError>> {

@@ -12,7 +12,7 @@ use crate::resolver::{
 use crate::similarity::best_match;
 use crate::target::Target;
 use indexmap::IndexMap;
-use omega_hir::{HirGenericParam, HirId};
+use omega_hir::{HirGenericParam, HirId, ItemPath, ModulePath};
 use omega_parser::prelude::*;
 
 /// Whether an active `reveal` speaks for syntax carrying a given origin.
@@ -346,7 +346,7 @@ impl Context {
         &self,
         fntype: FunctionType,
         resolver: &mut dyn ModuleResolver,
-        module_path: &[Ident],
+        module_path: &ModulePath,
         options: ResolveItemOptions,
         reveals: RevealAuthority<'_>,
     ) -> Result<ResolvedFunctionType, TypeResolutionError> {
@@ -401,33 +401,25 @@ impl Context {
         &self,
         resolver: &mut dyn ModuleResolver,
         path: &Path,
-        module_path: &[Ident],
+        module_path: &ModulePath,
     ) -> Result<ItemAccess, TypeResolutionError> {
         let resolution_module = resolver
             .macro_origin_module(path.origin)
-            .unwrap_or_else(|| module_path.to_vec());
+            .unwrap_or_else(|| module_path.clone());
         if let Some(anchored) = resolver.resolve_explicit_anchor(&resolution_module, path) {
-            let absolute = anchored.map_err(TypeResolutionError::ModuleResolution)?;
+            let mut absolute =
+                ItemPath::from_segments(&anchored.map_err(TypeResolutionError::ModuleResolution)?)
+                    .expect("an anchored path always has at least one segment");
             if path.tail.is_empty() {
                 return Ok(ItemAccess::gated(absolute));
             }
-            let (item, module) = absolute
-                .split_last()
-                .expect("an anchored path always has at least one segment");
-            let item = item.clone();
-            let module = module.to_vec();
-            let Some(canonical_module) = resolver
-                .resolve_module_path(&resolution_module, &module)
+            if let Some(canonical_module) = resolver
+                .resolve_module_path(&resolution_module, &absolute.module)
                 .map_err(TypeResolutionError::ModuleResolution)?
-            else {
-                return Ok(ItemAccess::gated(absolute));
-            };
-            return Ok(ItemAccess::gated(
-                canonical_module
-                    .into_iter()
-                    .chain(std::iter::once(item))
-                    .collect(),
-            ));
+            {
+                absolute.module = canonical_module;
+            }
+            return Ok(ItemAccess::gated(absolute));
         }
         if path.is_unqualified() {
             // `ImportTarget::Item`'s eagerly-resolved snapshot is ignored
@@ -442,36 +434,23 @@ impl Context {
                 Some(ImportTarget::Item(absolute, _)) => return Ok(ItemAccess::gated(absolute)),
                 _ => {}
             }
-            Ok(ItemAccess::gated(
-                resolution_module
-                    .iter()
-                    .cloned()
-                    .chain(std::iter::once(path.head.clone()))
-                    .collect(),
-            ))
+            Ok(ItemAccess::gated(resolution_module.join(path.head.clone())))
         } else {
             match resolver
                 .resolve_import_alias(&resolution_module, &path.head)
                 .map_err(TypeResolutionError::ModuleResolution)?
             {
                 Some(ImportTarget::Module(target)) => {
-                    let absolute: Vec<Ident> = target
-                        .into_iter()
-                        .chain(path.tail.iter().cloned())
-                        .collect();
-                    let (item, module) = absolute
-                        .split_last()
+                    let mut absolute = target
+                        .join_segments(&path.tail)
                         .expect("a qualified path always has a final item");
-                    let module = resolver
-                        .resolve_module_path(&resolution_module, module)
+                    if let Some(module) = resolver
+                        .resolve_module_path(&resolution_module, &absolute.module)
                         .map_err(TypeResolutionError::ModuleResolution)?
-                        .unwrap_or_else(|| module.to_vec());
-                    Ok(ItemAccess::gated(
-                        module
-                            .into_iter()
-                            .chain(std::iter::once(item.clone()))
-                            .collect(),
-                    ))
+                    {
+                        absolute.module = module;
+                    }
+                    Ok(ItemAccess::gated(absolute))
                 }
                 _ => Err(TypeResolutionError::ModuleNotImported {
                     name: path.head.clone(),
@@ -488,7 +467,7 @@ impl Context {
         &self,
         typ: Type,
         resolver: &mut dyn ModuleResolver,
-        module_path: &[Ident],
+        module_path: &ModulePath,
         options: ResolveItemOptions,
         reveals: RevealAuthority<'_>,
     ) -> Result<ResolvedType, TypeResolutionError> {
@@ -565,7 +544,7 @@ impl Context {
         &self,
         members: Vec<Type>,
         resolver: &mut dyn ModuleResolver,
-        module_path: &[Ident],
+        module_path: &ModulePath,
         options: ResolveItemOptions,
         reveals: RevealAuthority<'_>,
     ) -> Result<ResolvedType, TypeResolutionError> {
@@ -597,13 +576,13 @@ impl Context {
         &self,
         path: Path,
         resolver: &mut dyn ModuleResolver,
-        module_path: &[Ident],
+        module_path: &ModulePath,
         options: ResolveItemOptions,
         reveals: RevealAuthority<'_>,
     ) -> Result<ResolvedType, TypeResolutionError> {
         let resolution_module = resolver
             .macro_origin_module(path.origin)
-            .unwrap_or_else(|| module_path.to_vec());
+            .unwrap_or_else(|| module_path.clone());
         let options =
             options.bypassing_visibility(options.bypasses_visibility() || reveals(path.origin));
         let resolved = {
@@ -632,22 +611,20 @@ impl Context {
                     }
                     let access = match alias {
                         Some(ImportTarget::ItemPath(access)) => access,
-                        Some(ImportTarget::Item(absolute, _))
-                        | Some(ImportTarget::Module(absolute)) => ItemAccess::gated(absolute),
-                        None => ItemAccess::gated(
-                            resolution_module
-                                .iter()
-                                .cloned()
-                                .chain(std::iter::once(path.head.clone()))
-                                .collect(),
+                        Some(ImportTarget::Item(absolute, _)) => ItemAccess::gated(absolute),
+                        Some(ImportTarget::Module(module)) => ItemAccess::gated(
+                            module
+                                .as_item()
+                                .expect("an imported module is never the root"),
                         ),
+                        None => ItemAccess::gated(resolution_module.join(path.head.clone())),
                     };
                     let options = access.options(options);
                     let absolute = access.absolute;
                     match resolver.resolve_item(&resolution_module, &absolute, &[], options) {
                         Ok(ResolvedItem::Type(t)) => t,
                         Ok(ResolvedItem::Value { .. }) | Ok(ResolvedItem::Gap(_)) => {
-                            return Err(TypeResolutionError::NotAType(absolute));
+                            return Err(TypeResolutionError::NotAType(absolute.to_segments()));
                         }
                         // A bare type name that doesn't exist gets one
                         // more try against every exposed name in `core`'s
@@ -668,7 +645,7 @@ impl Context {
                                         Ok(ResolvedItem::Value { .. })
                                         | Ok(ResolvedItem::Gap(_)) => {
                                             return Err(TypeResolutionError::NotAType(
-                                                ambient_absolute,
+                                                ambient_absolute.to_segments(),
                                             ));
                                         }
                                         Err(e) => {
@@ -715,7 +692,7 @@ impl Context {
                 {
                     ResolvedItem::Type(t) => t,
                     ResolvedItem::Value { .. } | ResolvedItem::Gap(_) => {
-                        return Err(TypeResolutionError::NotAType(absolute));
+                        return Err(TypeResolutionError::NotAType(absolute.to_segments()));
                     }
                 }
             }
@@ -728,13 +705,13 @@ impl Context {
         path: Path,
         args: Vec<GenericArg>,
         resolver: &mut dyn ModuleResolver,
-        module_path: &[Ident],
+        module_path: &ModulePath,
         options: ResolveItemOptions,
         reveals: RevealAuthority<'_>,
     ) -> Result<ResolvedType, TypeResolutionError> {
         let resolution_module = resolver
             .macro_origin_module(path.origin)
-            .unwrap_or_else(|| module_path.to_vec());
+            .unwrap_or_else(|| module_path.clone());
         let inner_options =
             options.bypassing_visibility(options.bypasses_visibility() || reveals(path.origin));
         let access = self.resolve_absolute_item_path(resolver, &path, module_path)?;
@@ -766,14 +743,11 @@ impl Context {
 
         // A surplus argument has no parameter to be read against, so it is
         // rejected before resolution rather than at the item query.
-        if !params.is_empty()
-            && args.len() > params.len()
-            && let Some((item, module)) = absolute.split_last()
-        {
+        if !params.is_empty() && args.len() > params.len() {
             return Err(TypeResolutionError::ModuleResolution(
                 ResolveError::GenericArgCountMismatch {
-                    module: module.to_vec(),
-                    item: item.clone(),
+                    module: absolute.module.clone(),
+                    item: absolute.name.clone(),
                     expected: params.len(),
                     found: args.len(),
                 },
@@ -794,7 +768,7 @@ impl Context {
         {
             ResolvedItem::Type(t) => Ok(t),
             ResolvedItem::Value { .. } | ResolvedItem::Gap(_) => {
-                Err(TypeResolutionError::NotAType(absolute))
+                Err(TypeResolutionError::NotAType(absolute.to_segments()))
             }
         }
     }
@@ -807,7 +781,7 @@ impl Context {
         args: &[GenericArg],
         params: &[HirGenericParam],
         resolver: &mut dyn ModuleResolver,
-        module_path: &[Ident],
+        module_path: &ModulePath,
         options: ResolveItemOptions,
         reveals: RevealAuthority<'_>,
     ) -> Result<Vec<ResolvedGenericArg>, TypeResolutionError> {
@@ -831,7 +805,7 @@ impl Context {
         arg: &GenericArg,
         param: Option<&HirGenericParam>,
         resolver: &mut dyn ModuleResolver,
-        module_path: &[Ident],
+        module_path: &ModulePath,
         options: ResolveItemOptions,
         reveals: RevealAuthority<'_>,
     ) -> Result<ResolvedGenericArg, TypeResolutionError> {
@@ -881,7 +855,7 @@ impl Context {
         &self,
         param: &HirGenericParam,
         resolver: &mut dyn ModuleResolver,
-        module_path: &[Ident],
+        module_path: &ModulePath,
         reveals: RevealAuthority<'_>,
     ) -> Result<CompScalarType, TypeResolutionError> {
         let written = param
@@ -911,7 +885,7 @@ impl Context {
         &self,
         length: &ArrayLength,
         resolver: &mut dyn ModuleResolver,
-        module_path: &[Ident],
+        module_path: &ModulePath,
         options: ResolveItemOptions,
         reveals: RevealAuthority<'_>,
     ) -> Result<u32, TypeResolutionError> {
@@ -959,7 +933,7 @@ impl Context {
         &self,
         path: &Path,
         resolver: &mut dyn ModuleResolver,
-        module_path: &[Ident],
+        module_path: &ModulePath,
         options: ResolveItemOptions,
         reveals: RevealAuthority<'_>,
     ) -> Result<ConstValue, TypeResolutionError> {
@@ -987,7 +961,7 @@ impl Context {
         }
         let resolution_module = resolver
             .macro_origin_module(path.origin)
-            .unwrap_or_else(|| module_path.to_vec());
+            .unwrap_or_else(|| module_path.clone());
         let options =
             options.bypassing_visibility(options.bypasses_visibility() || reveals(path.origin));
         let access = self.resolve_absolute_item_path(resolver, path, module_path)?;
@@ -1019,7 +993,7 @@ impl Context {
         pointee_type: Type,
         mutable: bool,
         resolver: &mut dyn ModuleResolver,
-        module_path: &[Ident],
+        module_path: &ModulePath,
         options: ResolveItemOptions,
         reveals: RevealAuthority<'_>,
     ) -> Result<ResolvedType, TypeResolutionError> {
@@ -1111,7 +1085,7 @@ impl Context {
         members: Vec<Type>,
         mutable: bool,
         resolver: &mut dyn ModuleResolver,
-        module_path: &[Ident],
+        module_path: &ModulePath,
         options: ResolveItemOptions,
         reveals: RevealAuthority<'_>,
     ) -> Result<ResolvedType, TypeResolutionError> {
@@ -1163,7 +1137,7 @@ impl Context {
         &self,
         path: &Path,
         resolver: &mut dyn ModuleResolver,
-        module_path: &[Ident],
+        module_path: &ModulePath,
         options: ResolveItemOptions,
         reveals: RevealAuthority<'_>,
     ) -> Result<Option<ResolvedType>, TypeResolutionError> {

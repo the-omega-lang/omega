@@ -36,7 +36,7 @@ impl TestPackage {
             Target::DEFAULT,
         )
         .expect("construct driver with the real core extern")
-        .compile(&[Ident("main".to_string())])
+        .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]))
     }
 
     fn expect_ok(&self) -> omega_driver::CompiledProgram {
@@ -346,7 +346,7 @@ fn codegen_ir(
         opt_level,
         emit: omega_codegen::EmitKind::Ir,
         units: omega_mir::plan_emission(modules, &sources),
-        entry,
+        entry: entry.segments().to_vec(),
         extern_functions,
         extern_globals,
     })
@@ -432,7 +432,7 @@ fn naked_function_x86_64_asm_has_no_compiler_generated_frame_setup() {
             opt_level,
             emit: omega_codegen::EmitKind::Asm,
             units: omega_mir::plan_emission(modules, &sources),
-            entry,
+            entry: entry.segments().to_vec(),
             extern_functions,
             extern_globals,
         });

@@ -422,7 +422,7 @@ impl<'r> Analyzer<'r> {
         &mut self,
         node_id: HirId,
         span: Span,
-        absolute: &[Ident],
+        absolute: &ItemPath,
         inferred: Vec<Option<ResolvedGenericArg>>,
     ) -> Option<Vec<ResolvedGenericArg>> {
         if inferred.iter().all(Option::is_some) {
@@ -439,15 +439,13 @@ impl<'r> Analyzer<'r> {
 
     /// How a diagnostic names the declaration a generic call reached: the
     /// owner's own path with the function appended.
-    pub(crate) fn owner_item_path(owner: &ResolvedType, member: &Ident) -> Vec<Ident> {
+    pub(crate) fn owner_item_path(owner: &ResolvedType, member: &Ident) -> ItemPath {
         let owner = owner.autoderef();
-        let mut path = owner
+        let module = owner
             .declaring_owner()
             .map(|(module_path, _)| module_path)
-            .unwrap_or_default();
-        path.push(Self::owner_name(owner));
-        path.push(member.clone());
-        path
+            .unwrap_or_else(|| ModulePath::new([]));
+        module.child(Self::owner_name(owner)).join(member.clone())
     }
 
     /// `GenericOwner::name(...)` and `GenericOwner::self::name(receiver, ...)`
@@ -550,17 +548,17 @@ impl<'r> Analyzer<'r> {
 
     fn generic_owner_function_signature_with_ambient(
         &mut self,
-        accessor: &[Ident],
+        accessor: &ModulePath,
         prefix: &[Ident],
-        absolute: &[Ident],
+        absolute: &ItemPath,
         function_name: &Ident,
         namespace: FunctionNamespace,
-    ) -> Option<(Vec<Ident>, GenericOwnerFunctionSignature)> {
+    ) -> Option<(ItemPath, GenericOwnerFunctionSignature)> {
         if let Ok(Some(sig)) =
             self.resolver
                 .generic_owner_function_signature(absolute, function_name, namespace)
         {
-            return Some((absolute.to_vec(), sig));
+            return Some((absolute.clone(), sig));
         }
         let [single] = prefix else { return None };
         let ambient = self
@@ -641,7 +639,7 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         call: &HirFunctionCall,
-        accessor: &[Ident],
+        accessor: &ModulePath,
         prefix: &[Ident],
         owner: &ItemAccess,
         member: &Ident,
@@ -693,11 +691,7 @@ impl<'r> Analyzer<'r> {
                         node_id,
                         span,
                         AnalysisErrorKind::UnresolvedLiteralGeneric {
-                            r#type: owner
-                                .absolute
-                                .last()
-                                .cloned()
-                                .expect("an absolute path always has a last segment"),
+                            r#type: owner.absolute.name.clone(),
                             generics: missing,
                         },
                     );
@@ -799,13 +793,7 @@ impl<'r> Analyzer<'r> {
                 .flatten()
             {
                 Some(ImportTarget::ItemPath(access)) => access,
-                _ => ItemAccess::gated(
-                    accessor
-                        .iter()
-                        .cloned()
-                        .chain(std::iter::once(path.head.clone()))
-                        .collect(),
-                ),
+                _ => ItemAccess::gated(accessor.join(path.head.clone())),
             }
         } else {
             match self.module_qualified_path(node_id, span, path) {
@@ -844,7 +832,7 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         call: &HirFunctionCall,
-        accessor: &[Ident],
+        accessor: &ModulePath,
         access: &ItemAccess,
         sig: &GenericSignature,
         explicit: &WrittenGenerics,
@@ -882,10 +870,7 @@ impl<'r> Analyzer<'r> {
                     self.undetermined_generic_param(
                         node_id,
                         span,
-                        access
-                            .absolute
-                            .last()
-                            .expect("an item path always ends in the item's own name"),
+                        &access.absolute.name,
                         &sig.generics,
                         explicit,
                         generic,
@@ -894,11 +879,7 @@ impl<'r> Analyzer<'r> {
                 return None;
             }
         };
-        let name = access
-            .absolute
-            .last()
-            .expect("an item path always ends in the item's own name")
-            .clone();
+        let name = access.absolute.name.clone();
         let target = crate::resolver::GenericCallTarget::Function(&access.absolute);
         let generic_args = self.complete_call_generic_args(node_id, span, target, generic_args)?;
         self.check_written_selectors(node_id, span, &name, target, explicit, &generic_args)?;

@@ -477,7 +477,7 @@ impl<'r> Analyzer<'r> {
         owner: &ResolvedType,
         pattern: &HirFieldsPattern,
         declared: &[ResolvedField],
-        declaring_module: &[Ident],
+        declaring_module: &ModulePath,
         header: &[Ident],
         proof: &mut Proof,
     ) -> Option<Product> {

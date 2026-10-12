@@ -4,12 +4,12 @@ mod place;
 
 use crate::mir::MirModule;
 use omega_analyzer::checked::CheckedModule;
-use omega_parser::prelude::Ident;
+use omega_hir::ModulePath;
 
 pub fn lower_program(
-    modules: Vec<(Vec<Ident>, CheckedModule)>,
-    entry: &[Ident],
-) -> Vec<(Vec<Ident>, MirModule)> {
+    modules: Vec<(ModulePath, CheckedModule)>,
+    entry: &ModulePath,
+) -> Vec<(ModulePath, MirModule)> {
     modules
         .into_iter()
         .map(|(path, module)| {

@@ -12,9 +12,14 @@ use omega_analyzer::checked::{
     CheckedModule, CheckedStmt, CheckedStructDef, CheckedUnionDef,
 };
 use omega_analyzer::resolved_type::{ResolvedGenericArg, ResolvedType};
+use omega_hir::ModulePath;
 use omega_parser::prelude::Ident;
 
-pub(crate) fn lower_module(module: CheckedModule, path: &[Ident], entry: &[Ident]) -> MirModule {
+pub(crate) fn lower_module(
+    module: CheckedModule,
+    path: &ModulePath,
+    entry: &ModulePath,
+) -> MirModule {
     MirModule {
         id: module.id,
         items: module
@@ -25,7 +30,7 @@ pub(crate) fn lower_module(module: CheckedModule, path: &[Ident], entry: &[Ident
     }
 }
 
-fn lower_item(item: CheckedItem, path: &[Ident], entry: &[Ident]) -> MirItem {
+fn lower_item(item: CheckedItem, path: &ModulePath, entry: &ModulePath) -> MirItem {
     match item {
         CheckedItem::Declaration(declaration) => {
             MirItem::Declaration(lower_declaration(declaration, path))
@@ -45,7 +50,7 @@ fn lower_item(item: CheckedItem, path: &[Ident], entry: &[Ident]) -> MirItem {
     }
 }
 
-fn lower_declaration(declaration: CheckedDeclaration, path: &[Ident]) -> MirDeclaration {
+fn lower_declaration(declaration: CheckedDeclaration, path: &ModulePath) -> MirDeclaration {
     let symbol = global_symbol(&declaration, path);
     MirDeclaration {
         id: declaration.id,
@@ -61,11 +66,14 @@ fn lower_declaration(declaration: CheckedDeclaration, path: &[Ident]) -> MirDecl
 /// A definition owns storage, so its symbol is always a data symbol: a global
 /// whose type happens to be a function type still names its own storage, not
 /// the function it holds.
-fn global_symbol(declaration: &CheckedDeclaration, path: &[Ident]) -> String {
+fn global_symbol(declaration: &CheckedDeclaration, path: &ModulePath) -> String {
     mangle::data_global_symbol(&declaration.symbol.mangling, path, &declaration.ident)
 }
 
-fn lower_foreign_binding(declaration: CheckedForeignBinding, path: &[Ident]) -> MirForeignBinding {
+fn lower_foreign_binding(
+    declaration: CheckedForeignBinding,
+    path: &ModulePath,
+) -> MirForeignBinding {
     let symbol = foreign_binding_symbol(&declaration, path);
     MirForeignBinding {
         id: declaration.id,
@@ -81,7 +89,7 @@ fn lower_foreign_binding(declaration: CheckedForeignBinding, path: &[Ident]) -> 
 /// `docs/language/foreign-function-interface.md`): disabled uses the source
 /// name verbatim, forced/glued use their exact symbol, and enabled builds an
 /// ordinary Omega function/global symbol from module identity and type.
-fn foreign_binding_symbol(declaration: &CheckedForeignBinding, path: &[Ident]) -> String {
+fn foreign_binding_symbol(declaration: &CheckedForeignBinding, path: &ModulePath) -> String {
     match (&declaration.symbol.mangling, &declaration.r#type) {
         (
             ManglingMode::Glued {
@@ -100,7 +108,7 @@ fn foreign_binding_symbol(declaration: &CheckedForeignBinding, path: &[Ident]) -
 
 fn lower_foreign_function(
     function: CheckedForeignFunctionDef,
-    path: &[Ident],
+    path: &ModulePath,
 ) -> MirForeignFunctionDef {
     let symbol = foreign_function_symbol(&function, path);
     let CheckedForeignFunctionDef {
@@ -140,7 +148,7 @@ fn lower_foreign_function(
     }
 }
 
-fn foreign_function_symbol(function: &CheckedForeignFunctionDef, path: &[Ident]) -> String {
+fn foreign_function_symbol(function: &CheckedForeignFunctionDef, path: &ModulePath) -> String {
     match &function.symbol.mangling {
         ManglingMode::Disabled => function.name.as_ref().to_owned(),
         ManglingMode::Forced(name) => name.clone(),
@@ -166,8 +174,8 @@ fn foreign_function_symbol(function: &CheckedForeignFunctionDef, path: &[Ident])
 
 fn lower_free_function(
     function: CheckedFunctionDef,
-    path: &[Ident],
-    entry: &[Ident],
+    path: &ModulePath,
+    entry: &ModulePath,
 ) -> MirFunctionDef {
     let symbol = free_function_symbol(&function, path, entry);
     let linkage = function_linkage(&function);
@@ -176,7 +184,7 @@ fn lower_free_function(
 
 fn lower_method(
     function: CheckedFunctionDef,
-    path: &[Ident],
+    path: &ModulePath,
     owner_name: &Ident,
     owner_generic_args: &[ResolvedGenericArg],
 ) -> MirFunctionDef {
@@ -286,7 +294,11 @@ fn lower_naked_body(body: CheckedBlock) -> MirInlineAsm {
 /// owned forms as well as an ordinary free function: conformance methods,
 /// primitive methods, and instantiated generic methods are all emitted
 /// outside their owner's definition and name their owner here.
-fn free_function_symbol(function: &CheckedFunctionDef, path: &[Ident], entry: &[Ident]) -> String {
+fn free_function_symbol(
+    function: &CheckedFunctionDef,
+    path: &ModulePath,
+    entry: &ModulePath,
+) -> String {
     if let ManglingMode::Enabled = &function.symbol.mangling
         && let Some(owner) = &function.method_owner
     {
@@ -357,7 +369,7 @@ fn free_function_symbol(function: &CheckedFunctionDef, path: &[Ident], entry: &[
 
 fn method_symbol(
     function: &CheckedFunctionDef,
-    path: &[Ident],
+    path: &ModulePath,
     owner_name: &Ident,
     owner_generic_args: &[ResolvedGenericArg],
 ) -> String {
@@ -401,13 +413,13 @@ fn function_linkage(function: &CheckedFunctionDef) -> MirLinkage {
     }
 }
 
-fn is_root_main(function: &CheckedFunctionDef, path: &[Ident], entry: &[Ident]) -> bool {
+fn is_root_main(function: &CheckedFunctionDef, path: &ModulePath, entry: &ModulePath) -> bool {
     path == entry && function.name.as_ref() == "main"
 }
 
 fn lower_methods(
     functions: Vec<CheckedFunctionDef>,
-    path: &[Ident],
+    path: &ModulePath,
     owner_name: &Ident,
     owner_generic_args: &[ResolvedGenericArg],
 ) -> Vec<MirFunctionDef> {
@@ -417,7 +429,7 @@ fn lower_methods(
         .collect()
 }
 
-fn lower_struct_def(definition: CheckedStructDef, path: &[Ident]) -> MirStructDef {
+fn lower_struct_def(definition: CheckedStructDef, path: &ModulePath) -> MirStructDef {
     let CheckedStructDef {
         id,
         span,
@@ -438,7 +450,7 @@ fn lower_struct_def(definition: CheckedStructDef, path: &[Ident]) -> MirStructDe
     }
 }
 
-fn lower_union_def(definition: CheckedUnionDef, path: &[Ident]) -> MirUnionDef {
+fn lower_union_def(definition: CheckedUnionDef, path: &ModulePath) -> MirUnionDef {
     let CheckedUnionDef {
         id,
         span,
@@ -459,7 +471,7 @@ fn lower_union_def(definition: CheckedUnionDef, path: &[Ident]) -> MirUnionDef {
     }
 }
 
-fn lower_enum_def(definition: CheckedEnumDef, path: &[Ident]) -> MirEnumDef {
+fn lower_enum_def(definition: CheckedEnumDef, path: &ModulePath) -> MirEnumDef {
     let CheckedEnumDef {
         id,
         span,
@@ -510,8 +522,8 @@ mod tests {
         }
     }
 
-    fn path(segments: &[&str]) -> Vec<Ident> {
-        segments.iter().map(|s| Ident(s.to_string())).collect()
+    fn path(segments: &[&str]) -> ModulePath {
+        ModulePath::from_names(segments)
     }
 
     /// A global's linker identity is settled here, from its declaring module

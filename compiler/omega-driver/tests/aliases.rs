@@ -44,7 +44,7 @@ impl TestPackage {
             Target::DEFAULT,
         )
         .expect("construct driver with the real core extern")
-        .compile(&[Ident("main".to_string())])
+        .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]))
     }
 
     fn expect_ok(&self) -> omega_driver::CompiledProgram {
@@ -348,7 +348,7 @@ fn a_qualified_reference_to_a_hidden_type_reports_not_visible_not_unknown_module
     assert!(
         !resolve_errors(&errors)
             .iter()
-            .any(|error| matches!(error, ResolveError::UnknownModule(path) if path.last().map(Ident::as_ref) == Some("Hidden"))),
+            .any(|error| matches!(error, ResolveError::UnknownModule(path) if path.segments().last().map(Ident::as_ref) == Some("Hidden"))),
         "the misleading UnknownModule reading must not surface once the real cause is known: {}",
         rendered(&errors)
     );
@@ -699,13 +699,7 @@ fn a_multi_hop_alias_cycle_reports_the_whole_chain_in_order() {
         .filter_map(|error| match error {
             ResolveError::Cycle(path) => Some(
                 path.into_iter()
-                    .map(|segments| {
-                        segments
-                            .last()
-                            .expect("a cycle entry names an item")
-                            .as_ref()
-                            .to_string()
-                    })
+                    .map(|entry| entry.name.as_ref().to_string())
                     .collect(),
             ),
             _ => None,

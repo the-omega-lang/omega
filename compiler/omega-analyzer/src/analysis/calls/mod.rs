@@ -69,12 +69,6 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    fn split_item_path(absolute: &[Ident]) -> Option<(Ident, Vec<Ident>)> {
-        absolute
-            .split_last()
-            .map(|(name, module)| (name.clone(), module.to_vec()))
-    }
-
     /// The arguments a path writes on its last segment -- the function or
     /// item it names. `None` when a list is written on any earlier segment.
     fn trailing_generic_args(expr_path: &ExprPath) -> Option<&[ExprGenericArg]> {

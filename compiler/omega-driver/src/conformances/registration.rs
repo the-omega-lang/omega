@@ -6,7 +6,7 @@ use omega_parser::prelude::GenericArg;
 impl Driver {
     pub(crate) fn mark_bound_type_imports(
         &mut self,
-        module: &[Ident],
+        module: &ModulePath,
         generics: &[HirGenericParam],
     ) {
         let mut seen = HashSet::new();
@@ -29,7 +29,7 @@ impl Driver {
     /// at the use site, and a chained alias is followed through every link.
     fn mark_type_import_dependencies(
         &mut self,
-        module: &[Ident],
+        module: &ModulePath,
         ty: &Type,
         seen: &mut HashSet<(ModulePath, Ident)>,
     ) {
@@ -78,21 +78,18 @@ impl Driver {
     /// to the alias's own module, not the accessor's.
     pub(crate) fn mark_alias_declaration_import_dependencies(
         &mut self,
-        module: &[Ident],
+        module: &ModulePath,
         name: &Ident,
         seen: &mut HashSet<(ModulePath, Ident)>,
     ) {
         let (alias_module, alias_name) = if matches!(self.alias_index(module, name), Ok(Some(_))) {
-            (module.to_vec(), name.clone())
+            (module.clone(), name.clone())
         } else {
             let imported = self.resolve_import_alias_entry(module, name);
             let Ok(Some(ImportTarget::ItemPath(access))) = imported else {
                 return;
             };
-            let Some((alias_name, alias_module)) = access.absolute.split_last() else {
-                return;
-            };
-            (alias_module.to_vec(), alias_name.clone())
+            (access.absolute.module, access.absolute.name)
         };
         // Keyed by the alias's own declaration rather than by the name a use
         // site happened to bind it to, so a chain that revisits a link stops
@@ -186,10 +183,10 @@ impl Driver {
                     let spec_package = spec
                         .borrow()
                         .module_path
-                        .first()
+                        .root()
                         .cloned()
                         .unwrap_or_else(|| Ident(String::new()));
-                    if module.first() != Some(&spec_package) {
+                    if module.root() != Some(&spec_package) {
                         self.diagnostics.error(
                             module,
                             AnalysisError::new(
@@ -227,7 +224,7 @@ impl Driver {
 
     pub(super) fn instantiate_conformance(
         &mut self,
-        module: &[Ident],
+        module: &ModulePath,
         conform: &HirConformDef,
         substitution: &GenericSubstitution,
         origin: ConformanceOrigin,
@@ -346,7 +343,7 @@ impl Driver {
         // In particular, a blanket superseded by an explicit conform must not
         // surface diagnostics from a body that can never be emitted.
         let header = ConformanceEntry {
-            module: module.to_vec(),
+            module: module.clone(),
             id: conform.id,
             span: conform.span,
             target: target.lookup_key(),
@@ -391,7 +388,7 @@ impl Driver {
         self.diagnostics.record_warnings(module, run.warnings);
         let (spec, spec_args, methods, pending, templates) = run.result?;
         let entry = ConformanceEntry {
-            module: module.to_vec(),
+            module: module.clone(),
             id: conform.id,
             span: conform.span,
             target: target.lookup_key(),
@@ -416,19 +413,19 @@ impl Driver {
     fn check_conformance_orphan(&mut self, entry: &ConformanceEntry) -> bool {
         let local = entry
             .module
-            .first()
+            .root()
             .cloned()
             .unwrap_or_else(|| Ident(String::new()));
         let target_package = entry
             .target
             .declaring_owner()
-            .and_then(|(path, _)| path.first().cloned())
+            .and_then(|(path, _)| path.root().cloned())
             .unwrap_or_else(|| Ident("core".to_string()));
         let spec_package = entry
             .spec
             .borrow()
             .module_path
-            .first()
+            .root()
             .cloned()
             .unwrap_or_else(|| Ident(String::new()));
         if local == target_package || local == spec_package {

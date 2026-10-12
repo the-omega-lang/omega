@@ -2,7 +2,7 @@
 //! `docs/language/volatile.md`; this module is their single owner.
 
 use crate::error::AnalysisErrorKind;
-use omega_hir::HirFunctionDef;
+use omega_hir::{HirFunctionDef, ModulePath};
 use omega_parser::prelude::{GenericParamKind, Ident, Path, Type, Visibility};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14,8 +14,8 @@ pub enum CompilerFunction {
 impl CompilerFunction {
     const MODULE: [&'static str; 2] = ["core", "volatile"];
 
-    fn from_path(module_path: &[Ident], name: &str) -> Option<Self> {
-        if !module_path.iter().map(Ident::as_ref).eq(Self::MODULE) {
+    fn from_path(module_path: &ModulePath, name: &str) -> Option<Self> {
+        if !module_path.is(&Self::MODULE) {
             return None;
         }
         match name {
@@ -66,7 +66,7 @@ impl CompilerFunction {
 /// with the wrong declaration shape is an error even when it has a body, so a
 /// compiler-implemented name never silently becomes an ordinary function.
 pub fn compiler_function(
-    module_path: &[Ident],
+    module_path: &ModulePath,
     f: &HirFunctionDef,
 ) -> Result<Option<CompilerFunction>, AnalysisErrorKind> {
     match CompilerFunction::from_path(module_path, f.name.as_ref()) {

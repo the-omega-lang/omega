@@ -41,7 +41,8 @@ impl Package {
         .unwrap()
     }
     fn compile(&self) -> Result<CompiledProgram, Vec<CompileError>> {
-        self.driver(vec![]).compile(&[Ident("main".into())])
+        self.driver(vec![])
+            .compile(&omega_hir::ModulePath::new([Ident("main".into())]))
     }
     fn errors(&self) -> Vec<CompileError> {
         self.compile().err().expect("must fail")
@@ -60,7 +61,7 @@ fn tree(package: &Package, condition: &str, child: &str) {
     package.write("thing/child.omg", child);
 }
 fn unknown_module(errors: &[CompileError], expected: &[&str]) {
-    assert!(errors.iter().any(|error| matches!(error, CompileError::Analysis { errors, .. } if errors.iter().any(|error| matches!(&error.kind, AnalysisErrorKind::ModuleResolution(ResolveError::UnknownModule(path)) if path.iter().map(Ident::as_ref).collect::<Vec<_>>() == expected)))), "{errors:?}");
+    assert!(errors.iter().any(|error| matches!(error, CompileError::Analysis { errors, .. } if errors.iter().any(|error| matches!(&error.kind, AnalysisErrorKind::ModuleResolution(ResolveError::UnknownModule(path)) if path.segments().iter().map(Ident::as_ref).collect::<Vec<_>>() == expected)))), "{errors:?}");
 }
 
 #[test]
@@ -95,7 +96,7 @@ fn malformed_and_unevaluable_conditions_retain_modules_and_report_the_cause() {
             matches!(&errors[0], CompileError::SourceAnnotation { error, .. } if matches!(error.kind, SourceAnnotationErrorKind::InvalidArguments { .. })),
             "{errors:?}"
         );
-        assert_eq!(errors[0].module().unwrap()[0].as_ref(), "main");
+        assert_eq!(errors[0].module().unwrap().segments()[0].as_ref(), "main");
     }
     let package = Package::new("@[cond(unknown)] exposed keep: i32 = 1;");
     assert!(
@@ -160,7 +161,10 @@ fn extern_trees_use_the_same_selection_and_core_pruning_does_not_panic() {
         name: Ident("core".into()),
         dir: external.0.clone(),
     }]);
-    let errors = driver.compile(&[Ident("main".into())]).err().unwrap();
+    let errors = driver
+        .compile(&omega_hir::ModulePath::new([Ident("main".into())]))
+        .err()
+        .unwrap();
     unknown_module(&errors, &["core", "thing", "child"]);
 }
 

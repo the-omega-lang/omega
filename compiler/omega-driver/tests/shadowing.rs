@@ -41,7 +41,7 @@ impl TestPackage {
             Target::DEFAULT,
         )
         .expect("construct driver")
-        .compile(&[Ident("main".to_string())])
+        .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]))
         .expect("package should compile")
         .warnings
         .into_iter()

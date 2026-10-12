@@ -10,19 +10,19 @@ enum DefaultFailure {
 impl Driver {
     pub(crate) fn visibility_allows(
         visibility: Visibility,
-        declaring: &[Ident],
-        accessor: &[Ident],
+        declaring: &ModulePath,
+        accessor: &ModulePath,
     ) -> bool {
         match visibility {
             Visibility::Exposed => true,
-            Visibility::Shared => declaring.first() == accessor.first(),
+            Visibility::Shared => declaring.root() == accessor.root(),
             Visibility::Hidden => declaring == accessor,
         }
     }
 
     pub(crate) fn declared_visibility(
         &mut self,
-        module_path: &[Ident],
+        module_path: &ModulePath,
         name: &Ident,
     ) -> Option<Visibility> {
         let index = self.local_item_index(module_path, name).ok()?;
@@ -38,7 +38,7 @@ impl Driver {
         item: ResolvedItem,
         visibility: Visibility,
         key: &ItemKey,
-        accessor: &[Ident],
+        accessor: &ModulePath,
         bypass: bool,
     ) -> Result<ResolvedItem, ResolveError> {
         if bypass || Self::visibility_allows(visibility, key.module(), accessor) {
@@ -73,8 +73,8 @@ impl Driver {
 
     pub(crate) fn ensure_item(
         &mut self,
-        accessor_module_path: &[Ident],
-        module_path: &[Ident],
+        accessor_module_path: &ModulePath,
+        module_path: &ModulePath,
         name: &Ident,
         generic_args: &[ResolvedGenericArg],
         options: ResolveItemOptions,
@@ -96,8 +96,8 @@ impl Driver {
 
     pub(crate) fn ensure_item_at(
         &mut self,
-        accessor_module_path: &[Ident],
-        module_path: &[Ident],
+        accessor_module_path: &ModulePath,
+        module_path: &ModulePath,
         name: &Ident,
         index: usize,
         generic_args: &[ResolvedGenericArg],
@@ -174,7 +174,7 @@ impl Driver {
     /// defaults of the parameters it leaves off.
     pub(crate) fn pad_generic_defaults(
         &mut self,
-        module_path: &[Ident],
+        module_path: &ModulePath,
         name: &Ident,
         owner: AnalysisSite,
         generic_params: &[HirGenericParam],
@@ -188,7 +188,7 @@ impl Driver {
     /// from its parameter's declared default.
     pub(crate) fn complete_item_generic_args(
         &mut self,
-        module_path: &[Ident],
+        module_path: &ModulePath,
         name: &Ident,
         owner: AnalysisSite,
         generic_params: &[HirGenericParam],
@@ -196,7 +196,7 @@ impl Driver {
     ) -> Result<Vec<ResolvedGenericArg>, ResolveError> {
         if arguments.len() > generic_params.len() {
             return Err(ResolveError::GenericArgCountMismatch {
-                module: module_path.to_vec(),
+                module: module_path.clone(),
                 item: name.clone(),
                 expected: generic_params.len(),
                 found: arguments.len(),
@@ -211,13 +211,13 @@ impl Driver {
         )
         .map_err(|failure| match failure {
             DefaultFailure::Missing => ResolveError::GenericArgCountMismatch {
-                module: module_path.to_vec(),
+                module: module_path.clone(),
                 item: name.clone(),
                 expected: generic_params.len(),
                 found: arguments.len(),
             },
             DefaultFailure::Failed => ResolveError::ItemFailed {
-                module: module_path.to_vec(),
+                module: module_path.clone(),
                 item: name.clone(),
             },
         })
@@ -229,7 +229,7 @@ impl Driver {
     /// at the use site, with the arguments before it and `enclosing` bound.
     fn fill_generic_defaults(
         &mut self,
-        module: &[Ident],
+        module: &ModulePath,
         site: AnalysisSite,
         enclosing: &GenericSubstitution,
         params: &[HirGenericParam],
@@ -268,7 +268,7 @@ impl Driver {
 
     pub(crate) fn check_generic_bounds(
         &mut self,
-        module: &[Ident],
+        module: &ModulePath,
         owner: AnalysisSite,
         generic_params: &[HirGenericParam],
         generic_args: &[ResolvedGenericArg],
@@ -287,7 +287,7 @@ impl Driver {
     /// only `enclosing` binds.
     pub(crate) fn check_generic_bounds_under(
         &mut self,
-        module: &[Ident],
+        module: &ModulePath,
         owner: AnalysisSite,
         enclosing: &GenericSubstitution,
         generic_params: &[HirGenericParam],
@@ -588,8 +588,7 @@ impl Driver {
             }
 
             HirItem::Spec(_) => {
-                let absolute: Vec<Ident> =
-                    module.iter().cloned().chain([key.name.clone()]).collect();
+                let absolute = module.join(key.name.clone());
                 self.resolve_spec_declaration(&absolute)?
                     .map(|cell| ResolvedItem::Type(ResolvedType::Spec(cell)))
             }
@@ -626,12 +625,10 @@ impl Driver {
 
     pub(crate) fn resolve_spec_declaration(
         &mut self,
-        absolute_path: &[Ident],
+        absolute_path: &ItemPath,
     ) -> Result<Option<Rc<RefCell<ResolvedSpecType>>>, ResolveError> {
-        let Some((name, module_path)) = absolute_path.split_last() else {
-            return Err(ResolveError::UnknownModule(absolute_path.to_vec()));
-        };
-        let key: SpecKey = (module_path.to_vec(), name.clone());
+        let (name, module_path) = (&absolute_path.name, &absolute_path.module);
+        let key: SpecKey = (module_path.clone(), name.clone());
         match self.items.spec_states.get(&key) {
             Some(SpecQueryState::Resolved(cell)) => return Ok(Some(cell.clone())),
             Some(SpecQueryState::Failed(_)) => {
@@ -682,7 +679,7 @@ impl Driver {
             name: sp.name.clone(),
             visibility: sp.visibility,
             generics: sp.generics.clone(),
-            module_path: module_path.to_vec(),
+            module_path: module_path.clone(),
             generic_args: vec![],
             is_object_safe,
             functions,

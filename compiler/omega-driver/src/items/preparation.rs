@@ -79,9 +79,7 @@ impl Driver {
             }
             GenericCallTarget::Function(absolute) => {
                 let absolute = self.canonical_query_path(absolute);
-                let Some((name, module)) = absolute.split_last() else {
-                    return Ok(None);
-                };
+                let (name, module) = (&absolute.name, &absolute.module);
                 let Ok(index) = self.local_item_index(module, name) else {
                     return Ok(None);
                 };
@@ -95,7 +93,7 @@ impl Driver {
                 let site = AnalysisSite::new(function.id, function.span);
                 Ok(Some(GenericDeclaration {
                     key: ItemKey {
-                        scope: ItemScope::Module(module.to_vec()),
+                        scope: ItemScope::Module(module.clone()),
                         disambiguator: index,
                         name: name.clone(),
                         generic_args: Vec::new(),

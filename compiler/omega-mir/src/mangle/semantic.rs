@@ -5,6 +5,7 @@ use omega_analyzer::resolved_type::{
 use omega_analyzer::template::{
     TemplateArg, TemplateBound, TemplateDescriptor, TemplateParam, TemplateType,
 };
+use omega_hir::ModulePath;
 use omega_mangle::{
     FunctionSignature, MangleConvention, MangleGenericArg, MangleIntType, ManglePath,
     MangleTemplate, MangleTemplateArg, MangleTemplateBound, MangleTemplateParam,
@@ -20,8 +21,9 @@ fn mangle_convention(convention: CallingConvention) -> MangleConvention {
     }
 }
 
-pub(super) fn module_path(segments: &[Ident]) -> ManglePath {
-    let (root, nested) = segments
+pub(super) fn module_path(module: &ModulePath) -> ManglePath {
+    let (root, nested) = module
+        .segments()
         .split_first()
         .expect("checked module paths are never empty");
     nested.iter().fold(
@@ -37,7 +39,7 @@ pub(super) fn module_path(segments: &[Ident]) -> ManglePath {
 }
 
 pub(super) fn nominal_path(
-    module: &[Ident],
+    module: &ModulePath,
     name: &Ident,
     generic_args: &[ResolvedGenericArg],
 ) -> ManglePath {
@@ -197,7 +199,7 @@ pub(super) fn owner_path(target: &ResolvedType) -> ManglePath {
 }
 
 fn named_type(
-    module: &[Ident],
+    module: &ModulePath,
     name: &Ident,
     generic_args: &[ResolvedGenericArg],
     variant: Option<u32>,
@@ -277,14 +279,9 @@ fn mangle_template_type(ty: &TemplateType) -> MangleTemplateType {
                 mangle_convention(*convention),
             )
         }
-        TemplateType::Nominal(absolute, args) => {
-            let (name, module) = absolute
-                .split_last()
-                .expect("an absolute item path always ends in the item's own name");
-            MangleTemplateType::Nominal(
-                nominal_path(module, name, &[]),
-                args.iter().map(mangle_template_arg).collect(),
-            )
-        }
+        TemplateType::Nominal(absolute, args) => MangleTemplateType::Nominal(
+            nominal_path(&absolute.module, &absolute.name, &[]),
+            args.iter().map(mangle_template_arg).collect(),
+        ),
     }
 }

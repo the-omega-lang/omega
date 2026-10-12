@@ -47,7 +47,7 @@ impl TestPackage {
             Target::DEFAULT,
         )
         .expect("construct driver")
-        .compile(&[Ident("main".to_string())])
+        .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]))
         {
             Ok(program) => program,
             Err(errors) => panic!("expected this to compile, got: {errors:#?}"),
@@ -93,7 +93,7 @@ fn generate_at(
         opt_level,
         emit: omega_codegen::EmitKind::Ir,
         units: omega_mir::plan_emission(modules, &sources),
-        entry,
+        entry: entry.segments().to_vec(),
         extern_functions,
         extern_globals,
     };

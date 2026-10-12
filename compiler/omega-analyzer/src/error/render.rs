@@ -1130,7 +1130,7 @@ pub fn resolve_error_diagnostic(error: &ResolveError, span: Option<Span>) -> Dia
     };
     match error {
         ResolveError::UnknownModule(path) => {
-            let name = path.last().map(|i| i.as_ref()).unwrap_or_default();
+            let name = path.segments().last().map(|i| i.as_ref()).unwrap_or_default();
             with_label(d, "module not found".to_string()).with_note(format!(
                 "modules are looked up as `{name}.omg` files or `{name}/` directories under the compiler's search roots"
             ))
@@ -1145,12 +1145,12 @@ pub fn resolve_error_diagnostic(error: &ResolveError, span: Option<Span>) -> Dia
             .with_help(
                 "a `super::` chain may remove segments only down to the importing module's package root".to_string(),
             ),
-        ResolveError::UnknownItem { module, .. } => with_label(d, format!("not found in `{}`", join(module))),
+        ResolveError::UnknownItem { module, .. } => with_label(d, format!("not found in `{module}`")),
         ResolveError::NotVisible { .. } => with_label(d, "not visible from this module".to_string()),
         ResolveError::Cycle(_) => with_label(d, "this reference completes the cycle".to_string())
             .with_note("these resolution dependencies eventually refer back to an item that is still being resolved"),
         ResolveError::AmbiguousModule(path) => {
-            let name = path.last().map(|i| i.as_ref()).unwrap_or_default();
+            let name = path.segments().last().map(|i| i.as_ref()).unwrap_or_default();
             with_label(d, "ambiguous module reference".to_string())
                 .with_help(format!("keep either the `{name}.omg` file or the `{name}/` directory, not both"))
         }
@@ -1198,10 +1198,10 @@ pub fn resolve_error_diagnostic(error: &ResolveError, span: Option<Span>) -> Dia
             .with_note("an alias is a second source name, never a new declaration, so it cannot name storage or a compile-time value")
             .with_help("alias a type, spec, function, macro, or module instead"),
         ResolveError::AmbiguousAmbientName { name: _, candidates } => with_label(d, "ambiguous name".to_string())
-            .with_note(format!("exposed by: {}", candidates.iter().map(|c| join(c)).collect::<Vec<_>>().join(", ")))
+            .with_note(format!("exposed by: {}", candidates.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")))
             .with_help(format!(
                 "write the fully-qualified path instead, e.g. '{}'",
-                candidates.first().map(|c| join(c)).unwrap_or_default(),
+                candidates.first().map(ToString::to_string).unwrap_or_default(),
             )),
     }
 }

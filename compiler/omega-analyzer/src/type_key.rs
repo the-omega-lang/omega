@@ -19,6 +19,7 @@ use crate::resolved_type::{
     CallingConvention, ResolvedFunctionType, ResolvedGenericArg, ResolvedSpecApplication,
     ResolvedType,
 };
+use omega_hir::ModulePath;
 use omega_parser::prelude::{Ident, SelfMode};
 
 pub fn structural_key(ty: &ResolvedType) -> String {
@@ -35,9 +36,9 @@ pub fn spec_application_key(application: &ResolvedSpecApplication) -> String {
 
 /// Identifiers cannot contain any of the delimiters used below, so nominal
 /// names and paths need no escaping.
-fn write_nominal(out: &mut String, tag: char, module_path: &[Ident], name: &Ident) {
+fn write_nominal(out: &mut String, tag: char, module_path: &ModulePath, name: &Ident) {
     out.push(tag);
-    for segment in module_path {
+    for segment in module_path.segments() {
         out.push_str(segment.as_ref());
         out.push('.');
     }

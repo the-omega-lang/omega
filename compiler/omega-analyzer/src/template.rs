@@ -19,6 +19,7 @@ use crate::resolved_type::{
     CallingConvention, CompIntType, CompScalar, ResolvedGenericArg, ResolvedType,
 };
 use crate::resolver::OverloadTemplate;
+use omega_hir::{ItemPath, ModulePath};
 use omega_parser::prelude::Ident;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,7 +45,7 @@ pub enum TemplateParam {
 /// that two modules declaring the same short name stay distinct.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TemplateBound {
-    pub module_path: Vec<Ident>,
+    pub module_path: ModulePath,
     pub name: Ident,
     pub args: Vec<TemplateArg>,
 }
@@ -71,7 +72,7 @@ pub enum TemplateType {
     AnonymousEnum(Vec<Self>),
     Function(Vec<Self>, Box<Self>, CallingConvention, bool),
     /// An application of a nominal declaration, by its absolute item path.
-    Nominal(Vec<Ident>, Vec<TemplateArg>),
+    Nominal(ItemPath, Vec<TemplateArg>),
 }
 
 impl TemplateDescriptor {
@@ -126,7 +127,7 @@ fn bound_key(bound: &TemplateBound) -> String {
 }
 
 fn write_bound(out: &mut String, bound: &TemplateBound) {
-    for segment in &bound.module_path {
+    for segment in bound.module_path.segments() {
         out.push_str(segment.as_ref());
         out.push('.');
     }
@@ -207,7 +208,7 @@ fn write_type(out: &mut String, ty: &TemplateType) {
         }
         TemplateType::Nominal(path, args) => {
             out.push('n');
-            for segment in path {
+            for segment in path.segments() {
                 out.push_str(segment.as_ref());
                 out.push('.');
             }
@@ -310,13 +311,9 @@ fn convert_resolved_arg(arg: &ResolvedGenericArg) -> TemplateArg {
     }
 }
 
-fn convert_nominal(module: &[Ident], name: &Ident, args: &[ResolvedGenericArg]) -> TemplateType {
+fn convert_nominal(module: &ModulePath, name: &Ident, args: &[ResolvedGenericArg]) -> TemplateType {
     TemplateType::Nominal(
-        module
-            .iter()
-            .cloned()
-            .chain(std::iter::once(name.clone()))
-            .collect(),
+        module.join(name.clone()),
         args.iter().map(convert_resolved_arg).collect(),
     )
 }

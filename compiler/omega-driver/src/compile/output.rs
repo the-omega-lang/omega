@@ -17,7 +17,11 @@ impl Driver {
         });
     }
 
-    pub(super) fn report_unused_imports(&mut self, path: &[Ident], warnings: &mut TaggedWarnings) {
+    pub(super) fn report_unused_imports(
+        &mut self,
+        path: &ModulePath,
+        warnings: &mut TaggedWarnings,
+    ) {
         for (alias, import) in &self.modules.index(path).imports {
             // A macro import is consumed by expansion, before HIR exists, so
             // ordinary import-usage tracking never sees the use.
@@ -31,7 +35,7 @@ impl Driver {
                 continue;
             }
             warnings.push((
-                path.to_vec(),
+                path.clone(),
                 AnalysisWarning::new(import.id, import.span, kind),
             ));
         }
@@ -285,33 +289,26 @@ impl Driver {
         // across all three kinds together, instead of every struct warning,
         // then every union warning, then every enum warning.
         warnings.sort_by(|(a_path, a), (b_path, b)| {
-            let key = |path: &ModulePath| {
-                path.iter()
-                    .map(|i| i.as_ref().to_string())
-                    .collect::<Vec<_>>()
-            };
-            key(a_path)
-                .cmp(&key(b_path))
-                .then(a.span.start.cmp(&b.span.start))
+            a_path.cmp(b_path).then(a.span.start.cmp(&b.span.start))
         });
         warnings
     }
 
-    fn hir_struct(&self, module: &[Ident], name: &Ident) -> Option<&HirStructDef> {
+    fn hir_struct(&self, module: &ModulePath, name: &Ident) -> Option<&HirStructDef> {
         match self.modules.item(module, name)? {
             HirItem::Struct(s) => Some(s),
             _ => None,
         }
     }
 
-    fn hir_union(&self, module: &[Ident], name: &Ident) -> Option<&HirUnionDef> {
+    fn hir_union(&self, module: &ModulePath, name: &Ident) -> Option<&HirUnionDef> {
         match self.modules.item(module, name)? {
             HirItem::Union(u) => Some(u),
             _ => None,
         }
     }
 
-    fn hir_enum(&self, module: &[Ident], name: &Ident) -> Option<&HirEnumDef> {
+    fn hir_enum(&self, module: &ModulePath, name: &Ident) -> Option<&HirEnumDef> {
         match self.modules.item(module, name)? {
             HirItem::Enum(e) => Some(e),
             _ => None,

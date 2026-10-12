@@ -422,7 +422,7 @@ impl<'r> Analyzer<'r> {
         span: Span,
         ty: &Type,
         ambient_fallback: bool,
-        module: &[Ident],
+        module: &ModulePath,
     ) -> Option<(Rc<RefCell<ResolvedSpecType>>, Vec<GenericArg>)> {
         let (path, raw_args) = match ty {
             Type::Generic(path, args) => (path, args.clone()),
@@ -548,7 +548,7 @@ impl<'r> Analyzer<'r> {
         span: Span,
         raw: &RawSpecFunctionSig,
         substitution: &GenericSubstitution,
-        module: &[Ident],
+        module: &ModulePath,
     ) -> Option<(
         ResolvedFunctionType,
         Vec<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedGenericArg>)>,

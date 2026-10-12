@@ -215,7 +215,7 @@ fn structure(fields: Vec<ResolvedField>, layout: Layout) -> ResolvedType {
     ResolvedType::Struct(Rc::new(RefCell::new(ResolvedStructType {
         id: hir_id(1),
         name: Ident("S".into()),
-        module_path: vec![],
+        module_path: omega_hir::ModulePath::default(),
         generic_args: vec![],
         fields,
         functions: vec![],
@@ -229,7 +229,7 @@ fn union(fields: Vec<ResolvedField>) -> ResolvedType {
     ResolvedType::Union(Rc::new(RefCell::new(ResolvedUnionType {
         id: hir_id(2),
         name: Ident("U".into()),
-        module_path: vec![],
+        module_path: omega_hir::ModulePath::default(),
         generic_args: vec![],
         fields,
         functions: vec![],
@@ -247,7 +247,7 @@ fn named_enum(
         cell: Rc::new(RefCell::new(ResolvedEnumType {
             id: hir_id(3),
             name: Ident("E".into()),
-            module_path: vec![],
+            module_path: omega_hir::ModulePath::default(),
             generic_args: vec![],
             tag_type: ResolvedType::U32,
             header,
@@ -317,7 +317,7 @@ fn pack_places_fields_without_weakening_alignment() {
     let outer = ResolvedType::Struct(Rc::new(RefCell::new(ResolvedStructType {
         id: hir_id(1),
         name: Ident("S".into()),
-        module_path: vec![],
+        module_path: omega_hir::ModulePath::default(),
         generic_args: vec![],
         fields: vec![field("pad", ResolvedType::U8), field("inner", inner)],
         functions: vec![],

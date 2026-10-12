@@ -49,7 +49,7 @@ impl Driver {
 
     /// Records a failure that makes a whole module unusable and stops
     /// dependent work on it. Independent modules keep going.
-    pub(super) fn record_module_failure(&mut self, path: &[Ident], error: ResolveError) {
+    pub(super) fn record_module_failure(&mut self, path: &ModulePath, error: ResolveError) {
         self.record_item_failure(path, error);
         self.diagnostics.poison(path);
     }
@@ -57,7 +57,7 @@ impl Driver {
     /// Records a failure of one item. `ItemFailed` is the marker for a query
     /// whose real reason was already reported where it happened, so recording
     /// it again would make the secondary message the only visible one.
-    pub(super) fn record_item_failure(&mut self, path: &[Ident], error: ResolveError) {
+    pub(super) fn record_item_failure(&mut self, path: &ModulePath, error: ResolveError) {
         if let ResolveError::ItemFailed { module, .. } = &error
             && self.diagnostics.reported_for(module)
         {
@@ -237,7 +237,7 @@ impl Driver {
         (warnings, errors)
     }
 
-    pub(super) fn collect_signatures(&mut self, local: &[ModulePath], entry: &[Ident]) {
+    pub(super) fn collect_signatures(&mut self, local: &[ModulePath], entry: &ModulePath) {
         // Import processing comes first and completely: a module whose
         // bindings are broken cannot be read reliably, so every local module's
         // import targets are answered before any of them resolves a name.
@@ -367,7 +367,7 @@ impl Driver {
     // `main() => never` -- command-line arguments and process exit codes
     // are platform-dependent, so `main` stays a portable, argument-less
     // entry point. See `docs/language/foreign-function-interface.md`.
-    fn check_main_signature(&mut self, entry: &[Ident]) {
+    fn check_main_signature(&mut self, entry: &ModulePath) {
         // A namespace-only root directory (a library package with no root
         // `.omg` file of its own) was never parsed/indexed and cannot
         // declare a `main` at all.

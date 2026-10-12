@@ -1,7 +1,7 @@
+use crate::Driver;
 use crate::conformances::ConformanceOrigin;
 use crate::error::{CompileError, CompiledProgram};
 use crate::items::{CheckedBody, GlueSignature, ItemKey};
-use crate::{Driver, ModulePath};
 use indexmap::IndexMap;
 use omega_analyzer::analysis::AnalysisSite;
 use omega_analyzer::annotations::{ManglingMode, SymbolPolicy};
@@ -15,6 +15,7 @@ use omega_analyzer::error::{
 };
 use omega_analyzer::resolved_type::{ResolvedFunctionType, ResolvedType};
 use omega_analyzer::resolver::{ModuleResolver, ResolveError, ResolveItemOptions, ResolvedItem};
+use omega_hir::ModulePath;
 use omega_hir::{
     HirEnumDef, HirField, HirGenericParam, HirGlueDef, HirId, HirItem, HirStructDef, HirUnionDef,
 };
@@ -65,7 +66,7 @@ mod runtime_checks;
 mod signatures;
 
 impl Driver {
-    pub fn compile(&mut self, entry: &[Ident]) -> Result<CompiledProgram, Vec<CompileError>> {
+    pub fn compile(&mut self, entry: &ModulePath) -> Result<CompiledProgram, Vec<CompileError>> {
         self.select_modules()?;
         let Some(local) = self.local_module_paths() else {
             // Reject an empty package before semantic sweeps so the user gets
@@ -147,7 +148,7 @@ impl Driver {
         let extern_globals = self.collect_extern_globals();
         Ok(CompiledProgram {
             modules,
-            entry: entry.to_vec(),
+            entry: entry.clone(),
             warnings,
             extern_functions,
             extern_globals,
@@ -188,9 +189,8 @@ impl Driver {
         if declared.is_empty() && failed.is_empty() {
             return None;
         }
-        declared.sort_by(|a, b| a.iter().map(Ident::as_ref).cmp(b.iter().map(Ident::as_ref)));
-        failed
-            .sort_by(|(a, _), (b, _)| a.iter().map(Ident::as_ref).cmp(b.iter().map(Ident::as_ref)));
+        declared.sort();
+        failed.sort_by(|(a, _), (b, _)| a.cmp(b));
 
         for (path, error) in failed {
             let failure = self.load_failure(&path, error, None);
@@ -237,7 +237,7 @@ mod tests {
     use super::*;
 
     fn path(name: &str) -> ModulePath {
-        vec![Ident(name.to_string())]
+        ModulePath::new([Ident(name.to_string())])
     }
 
     #[test]

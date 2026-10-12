@@ -57,7 +57,7 @@ impl TestWorkspace {
     fn compile(&self) -> Result<omega_driver::CompiledProgram, Vec<CompileError>> {
         Driver::new(self.main.clone(), None, self.externs(), Target::DEFAULT)
             .expect("construct driver")
-            .compile(&[Ident("main".to_string())])
+            .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]))
     }
 
     fn expect_errors(&self) -> Vec<CompileError> {

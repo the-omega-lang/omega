@@ -135,7 +135,7 @@ impl<'r> Analyzer<'r> {
     /// reconstructed here.
     pub(crate) fn overload_set(
         &mut self,
-        accessor: &[Ident],
+        accessor: &ModulePath,
         access: &ItemAccess,
         origin: Origin,
     ) -> Result<Option<ResolvedOverloadSet>, ResolveError> {
@@ -146,7 +146,7 @@ impl<'r> Analyzer<'r> {
     /// also belongs to. See [`ModuleResolver::function_value_candidates`].
     pub(crate) fn function_value_set(
         &mut self,
-        accessor: &[Ident],
+        accessor: &ModulePath,
         access: &ItemAccess,
         origin: Origin,
     ) -> Result<Option<ResolvedOverloadSet>, ResolveError> {
@@ -155,7 +155,7 @@ impl<'r> Analyzer<'r> {
 
     fn candidate_set(
         &mut self,
-        accessor: &[Ident],
+        accessor: &ModulePath,
         access: &ItemAccess,
         origin: Origin,
         values: bool,
@@ -172,11 +172,9 @@ impl<'r> Analyzer<'r> {
         };
         if revealed
             && let Some(set) = &set
-            && let Some((_, module)) = set.absolute.split_last()
-            && set
-                .candidates
-                .iter()
-                .any(|candidate| !Self::visibility_allows(candidate.visibility, module, accessor))
+            && set.candidates.iter().any(|candidate| {
+                !Self::visibility_allows(candidate.visibility, &set.absolute.module, accessor)
+            })
         {
             self.reveals.mark_used();
         }
@@ -193,13 +191,7 @@ impl<'r> Analyzer<'r> {
         let access = match alias {
             Some(ImportTarget::ItemPath(access)) => access,
             Some(ImportTarget::Item(absolute, _)) => ItemAccess::gated(absolute),
-            _ => ItemAccess::gated(
-                accessor
-                    .iter()
-                    .cloned()
-                    .chain(std::iter::once(ident.clone()))
-                    .collect(),
-            ),
+            _ => ItemAccess::gated(accessor.join(ident.clone())),
         };
         self.overload_set(&accessor, &access, origin)
     }
@@ -258,9 +250,7 @@ impl<'r> Analyzer<'r> {
                 }
             }
         };
-        let Some((name, _)) = Self::split_item_path(&set.absolute) else {
-            return Intercepted::Declined;
-        };
+        let name = set.absolute.name.clone();
         let candidates = set.candidates;
 
         let Some((winner, instantiated, args)) = self.resolve_overload_candidates(
@@ -308,7 +298,7 @@ impl<'r> Analyzer<'r> {
                 decl_id: *decl_id,
                 signature: crate::resolver::OverloadSignature::Concrete(fn_type.clone()),
                 visibility: Visibility::Exposed,
-                declaring_module: Vec::new(),
+                declaring_module: ModulePath::new([]),
             })
             .collect();
         let (winner, _, args) = self.select_overload(

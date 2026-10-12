@@ -31,7 +31,7 @@ impl TestPackage {
     fn symbols(&self) -> Vec<String> {
         let program = Driver::new(self.0.clone(), None, vec![], Target::DEFAULT)
             .expect("construct driver")
-            .compile(&[Ident("main".into())])
+            .compile(&omega_hir::ModulePath::new([Ident("main".into())]))
             .unwrap_or_else(|errors| panic!("expected this to compile, got: {errors:#?}"));
         let entry = program.entry.clone();
         omega_mir::lower_program(program.modules, &entry)

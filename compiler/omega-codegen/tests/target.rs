@@ -32,7 +32,7 @@ impl TestPackage {
     fn compile(&self, target: Target) -> Result<omega_driver::CompiledProgram, Vec<CompileError>> {
         Driver::new(self.0.clone(), None, Vec::<ExternRoot>::new(), target)
             .expect("construct driver")
-            .compile(&[Ident("main".to_string())])
+            .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]))
     }
 }
 
@@ -62,7 +62,7 @@ fn emit_for(source: &str, target: Target, emit: omega_codegen::EmitKind) -> Stri
         opt_level: omega_codegen::OptLevel::O0,
         emit,
         units: omega_mir::plan_emission(modules, &sources),
-        entry,
+        entry: entry.segments().to_vec(),
         extern_functions,
         extern_globals,
     })

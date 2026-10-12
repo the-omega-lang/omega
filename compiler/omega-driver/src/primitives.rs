@@ -1,9 +1,10 @@
-use crate::{Driver, ModulePath};
+use crate::Driver;
 use omega_analyzer::analysis::AnalysisSite;
 use omega_analyzer::error::{AnalysisError, AnalysisErrorKind};
 use omega_analyzer::generics::GenericSubstitution;
 use omega_analyzer::resolved_type::ResolvedGenericArg;
 use omega_analyzer::resolved_type::{ResolvedMethod, ResolvedType};
+use omega_hir::ModulePath;
 use omega_hir::{HirFunctionDef, HirId, HirItem, HirPrimitiveDef};
 use omega_parser::prelude::{Ident, Type};
 
@@ -48,7 +49,7 @@ impl Driver {
                 .collect();
 
             for primitive in declarations {
-                if module.first().map(Ident::as_ref) != Some("core") {
+                if module.root().map(Ident::as_ref) != Some("core") {
                     self.diagnostics.error(
                         module,
                         AnalysisError::new(
@@ -79,7 +80,7 @@ impl Driver {
 
     fn instantiate_primitive(
         &mut self,
-        module: &[Ident],
+        module: &ModulePath,
         primitive: &HirPrimitiveDef,
         substitution: &GenericSubstitution,
         actual_target: Option<&ResolvedType>,
@@ -177,7 +178,7 @@ impl Driver {
                                     decl_id: *method_id,
                                     fn_type,
                                     visibility: function.visibility,
-                                    declaring_module: module.to_vec(),
+                                    declaring_module: module.clone(),
                                     annotations,
                                     source: None,
                                 },
@@ -189,7 +190,7 @@ impl Driver {
         )?;
 
         let entry = PrimitiveEntry {
-            module: module.to_vec(),
+            module: module.clone(),
             span: primitive.span,
             target: target.lookup_key(),
             methods: signatures,

@@ -66,6 +66,8 @@ At `Driver::new` time:
 
 After construction, `ModuleRoots::locate` is a map lookup rather than a live filesystem traversal.
 
+Module and item identities are distinct types from `omega-hir`: `ModulePath` is a shared, content-compared segment list, and `ItemPath` is a declaring `ModulePath` plus the item's name. Every analyzer/driver/MIR signature that names a module or an item takes one of these. A plain `Vec<Ident>` remains only for written syntax whose meaning is not yet known: an anchored or imported path, which may still turn out to name a module, an item, or a member below a type.
+
 This separation matters:
 
 - **existence/discovery is eager metadata**;

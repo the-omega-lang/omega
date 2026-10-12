@@ -1,4 +1,4 @@
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, PartialOrd, Ord)]
 pub struct Ident(pub String);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

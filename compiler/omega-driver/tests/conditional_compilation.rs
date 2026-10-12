@@ -62,7 +62,7 @@ impl TestPackage {
 
     fn compile(&self, options: &[&str]) -> CompiledProgram {
         self.driver(options)
-            .compile(&[Ident("main".into())])
+            .compile(&omega_hir::ModulePath::new([Ident("main".into())]))
             .unwrap_or_else(|errors| {
                 panic!(
                     "package should compile with {options:?}: {}",
@@ -72,7 +72,10 @@ impl TestPackage {
     }
 
     fn compile_errors(&self, options: &[&str]) -> Vec<CompileError> {
-        match self.driver(options).compile(&[Ident("main".into())]) {
+        match self
+            .driver(options)
+            .compile(&omega_hir::ModulePath::new([Ident("main".into())]))
+        {
             Ok(_) => panic!("the package should not have compiled with {options:?}"),
             Err(errors) => errors,
         }
@@ -354,7 +357,7 @@ fn malformed_generated_conditions_report_the_annotation_author() {
         );
         let mut driver = package.driver(&[]);
         let errors = driver
-            .compile(&[Ident("main".into())])
+            .compile(&omega_hir::ModulePath::new([Ident("main".into())]))
             .err()
             .expect("invalid condition");
         let failure = errors
@@ -379,7 +382,10 @@ fn malformed_generated_conditions_report_the_annotation_author() {
         assert_eq!(
             definition.source,
             driver
-                .source_id(&[Ident("main".into()), Ident("helper".into())])
+                .source_id(&omega_hir::ModulePath::new([
+                    Ident("main".into()),
+                    Ident("helper".into()),
+                ]))
                 .unwrap()
         );
         assert!(
@@ -416,7 +422,7 @@ fn an_ambient_core_macro_is_selected_under_the_same_configuration() {
                     dir: core.clone(),
                 }],
             )
-            .compile(&[Ident("main".into())])
+            .compile(&omega_hir::ModulePath::new([Ident("main".into())]))
             .unwrap_or_else(|errors| panic!("{}", render(&errors)));
         assert_eq!(names(&program), [selected]);
     }

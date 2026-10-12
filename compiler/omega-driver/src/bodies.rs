@@ -6,7 +6,7 @@ use omega_analyzer::error::{AnalysisError, AnalysisErrorKind};
 use omega_analyzer::generics::GenericSubstitution;
 use omega_analyzer::resolved_type::{ResolvedFunctionType, ResolvedGenericArg, ResolvedType};
 use omega_analyzer::resolver::ResolvedItem;
-use omega_hir::{HirGenericParam, HirItem};
+use omega_hir::{HirGenericParam, HirItem, ModulePath};
 use omega_parser::prelude::Ident;
 
 trait CheckedAggregate: Sized {
@@ -324,7 +324,7 @@ impl Driver {
 impl Driver {
     pub(crate) fn check_overload_duplicates(
         &mut self,
-        module_path: &[Ident],
+        module_path: &ModulePath,
         name: &Ident,
         indices: &[usize],
         signatures: &[ResolvedFunctionType],

@@ -40,7 +40,7 @@ impl TestPackage {
             Target::DEFAULT,
         )
         .expect("construct driver with the real core extern")
-        .compile(&[Ident("main".to_string())])
+        .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]))
     }
 
     fn expect_ok(&self) -> omega_driver::CompiledProgram {
@@ -91,7 +91,7 @@ fn compile_bare(
         Target::DEFAULT,
     )
     .expect("construct driver")
-    .compile(&[Ident(root_name.to_string())])
+    .compile(&omega_hir::ModulePath::new([Ident(root_name.to_string())]))
 }
 
 fn method_not_visible_count(errors: &[CompileError]) -> usize {

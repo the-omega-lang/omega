@@ -40,7 +40,7 @@ impl TestPackage {
     ) -> Result<omega_driver::CompiledProgram, Vec<CompileError>> {
         Driver::new(self.0.clone(), None, externs, HOST)
             .expect("construct driver")
-            .compile(&[Ident("main".to_string())])
+            .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]))
     }
 }
 

@@ -6,6 +6,7 @@ use omega_analyzer::resolved_type::{
     ResolvedFunctionType, ResolvedGenericArg, ResolvedSpecShape, ResolvedType,
 };
 use omega_analyzer::template::TemplateDescriptor;
+use omega_hir::ModulePath;
 use omega_mangle::{ManglePath, Namespace, Symbol};
 use omega_parser::prelude::Ident;
 use semantic::{generic_path, mangle_template, module_path, nominal_path, owner_path, signature};
@@ -13,7 +14,7 @@ use semantic::{generic_path, mangle_template, module_path, nominal_path, owner_p
 pub use omega_mangle::encode;
 
 pub fn free_function_symbol(
-    module: &[Ident],
+    module: &ModulePath,
     name: &Ident,
     template: Option<&TemplateDescriptor>,
     generic_args: &[ResolvedGenericArg],
@@ -41,7 +42,7 @@ fn template_path(path: ManglePath, template: Option<&TemplateDescriptor>) -> Man
     }
 }
 
-pub fn global_symbol(module: &[Ident], name: &Ident) -> Symbol {
+pub fn global_symbol(module: &ModulePath, name: &Ident) -> Symbol {
     data_item_symbol(value_path(module_path(module), name))
 }
 
@@ -51,7 +52,7 @@ pub fn global_symbol(module: &[Ident], name: &Ident) -> Symbol {
 /// declaration are two symbols.
 #[allow(clippy::too_many_arguments)]
 pub fn method_symbol(
-    module: &[Ident],
+    module: &ModulePath,
     owner_name: &Ident,
     owner_generic_args: &[ResolvedGenericArg],
     method_name: &Ident,
@@ -91,7 +92,7 @@ fn associated_function_path(
 }
 
 pub fn glued_symbol(
-    spec_module_path: &[Ident],
+    spec_module_path: &ModulePath,
     spec_name: &Ident,
     function_name: &Ident,
     fn_type: &ResolvedFunctionType,
@@ -127,7 +128,7 @@ pub fn primitive_method_symbol(
 #[allow(clippy::too_many_arguments)]
 pub fn conformance_method_symbol(
     target: &ResolvedType,
-    spec_module_path: &[Ident],
+    spec_module_path: &ModulePath,
     spec_name: &Ident,
     spec_args: &[ResolvedGenericArg],
     method_name: &Ident,
@@ -184,14 +185,14 @@ pub fn data_symbol(bytes: &[u8]) -> String {
     format!("_omgdata_{:016x}", rapidhash::v3::rapidhash_v3(bytes))
 }
 
-pub fn global_symbol_string(module: &[Ident], name: &Ident) -> String {
+pub fn global_symbol_string(module: &ModulePath, name: &Ident) -> String {
     encode(&global_symbol(module, name))
 }
 
 /// The linker symbol of module-level data storage, whether an Omega global
 /// defines it or a `foreign` binding names it. Lowering a definition and
 /// declaring another package's global both use this, so the two always agree.
-pub fn data_global_symbol(mangling: &ManglingMode, module: &[Ident], name: &Ident) -> String {
+pub fn data_global_symbol(mangling: &ManglingMode, module: &ModulePath, name: &Ident) -> String {
     match mangling {
         ManglingMode::Enabled => global_symbol_string(module, name),
         ManglingMode::Disabled => name.as_ref().to_owned(),
@@ -360,7 +361,7 @@ mod tests {
     #[test]
     fn free_function_adapter_round_trips() {
         let symbol = free_function_symbol(
-            &[ident("pkg"), ident("math")],
+            &ModulePath::new([ident("pkg"), ident("math")]),
             &ident("sum"),
             None,
             &[ResolvedGenericArg::Type(ResolvedType::U32)],
@@ -377,7 +378,7 @@ mod tests {
         use omega_analyzer::resolved_type::{CompIntType, CompScalar};
         let symbol_for = |value: i128| {
             encode(&free_function_symbol(
-                &[ident("pkg")],
+                &ModulePath::new([ident("pkg")]),
                 &ident("take"),
                 None,
                 &[ResolvedGenericArg::Comp(CompScalar::Int {
@@ -394,7 +395,7 @@ mod tests {
     fn an_all_type_generic_argument_list_keeps_its_legacy_symbol_form() {
         // The mixed model must not silently migrate existing generic ABI.
         let symbol = free_function_symbol(
-            &[ident("pkg")],
+            &ModulePath::new([ident("pkg")]),
             &ident("take"),
             None,
             &[ResolvedGenericArg::Type(ResolvedType::U32)],
@@ -414,7 +415,7 @@ mod tests {
         };
         let symbol_for = |argument: ResolvedType| {
             method_symbol(
-                &[ident("mymod")],
+                &ModulePath::new([ident("mymod")]),
                 &ident("Thing"),
                 &[],
                 &ident("echo"),
@@ -439,7 +440,7 @@ mod tests {
         };
         let fn_type = member_fn_type(owner, vec![], ResolvedType::I32);
         let symbol = method_symbol(
-            &[ident("mymod")],
+            &ModulePath::new([ident("mymod")]),
             &ident("Thing"),
             &[],
             &ident("same"),
@@ -473,7 +474,7 @@ mod tests {
                 local: 0,
             },
             name: ident(name),
-            module_path: vec![ident("mymod")],
+            module_path: omega_hir::ModulePath::from(vec![ident("mymod")]),
             generic_args: vec![],
             fields: vec![],
             functions: vec![],
@@ -499,7 +500,7 @@ mod tests {
             mutable: false,
         };
         let r#static = method_symbol(
-            &[ident("mymod")],
+            &ModulePath::new([ident("mymod")]),
             &ident("Thing"),
             &[],
             &ident("same"),
@@ -508,7 +509,7 @@ mod tests {
             &fn_type(vec![owner.clone()], ResolvedType::I32),
         );
         let member = method_symbol(
-            &[ident("mymod")],
+            &ModulePath::new([ident("mymod")]),
             &ident("Thing"),
             &[],
             &ident("same"),
@@ -528,7 +529,7 @@ mod tests {
             mutable: false,
         };
         let member = method_symbol(
-            &[ident("mymod")],
+            &ModulePath::new([ident("mymod")]),
             &ident("Thing"),
             &[],
             &ident("same"),
@@ -564,7 +565,7 @@ mod tests {
 
         let conform_member = conformance_method_symbol(
             &ResolvedType::I32,
-            &[ident("pkg")],
+            &ModulePath::new([ident("pkg")]),
             &ident("Show"),
             &[],
             &ident("show"),
@@ -574,7 +575,7 @@ mod tests {
         );
         let conform_static = conformance_method_symbol(
             &ResolvedType::I32,
-            &[ident("pkg")],
+            &ModulePath::new([ident("pkg")]),
             &ident("Show"),
             &[],
             &ident("show"),
@@ -595,7 +596,7 @@ mod tests {
         };
         let fn_type = member_fn_type(owner, vec![], ResolvedType::I32);
         let definition = encode(&method_symbol(
-            &[ident("mymod")],
+            &ModulePath::new([ident("mymod")]),
             &ident("Thing"),
             &[],
             &ident("same"),
@@ -608,7 +609,7 @@ mod tests {
                 module: ModuleId(0),
                 local: 0,
             },
-            module_path: vec![ident("mymod")],
+            module_path: omega_hir::ModulePath::from(vec![ident("mymod")]),
             kind: ExternFunctionKind::Method {
                 type_name: ident("Thing"),
                 method_name: ident("same"),
@@ -631,7 +632,7 @@ mod tests {
 
     fn bound(name: &str, args: Vec<omega_analyzer::template::TemplateArg>) -> TemplateBound {
         TemplateBound {
-            module_path: vec![ident("pkg")],
+            module_path: omega_hir::ModulePath::from(vec![ident("pkg")]),
             name: ident(name),
             args,
         }
@@ -640,7 +641,7 @@ mod tests {
     #[test]
     fn a_template_qualified_function_round_trips_and_precedes_its_arguments() {
         let symbol = free_function_symbol(
-            &[ident("pkg")],
+            &ModulePath::new([ident("pkg")]),
             &ident("pick"),
             Some(&template(vec![bound("A", vec![])])),
             &[ResolvedGenericArg::Type(ResolvedType::U32)],
@@ -659,7 +660,7 @@ mod tests {
     fn two_declarations_at_one_instantiation_produce_two_symbols() {
         let symbol_for = |descriptor: TemplateDescriptor| {
             encode(&free_function_symbol(
-                &[ident("pkg")],
+                &ModulePath::new([ident("pkg")]),
                 &ident("pick"),
                 Some(&descriptor),
                 &[ResolvedGenericArg::Type(ResolvedType::U32)],
@@ -673,7 +674,7 @@ mod tests {
         assert_ne!(
             a,
             encode(&free_function_symbol(
-                &[ident("pkg")],
+                &ModulePath::new([ident("pkg")]),
                 &ident("pick"),
                 None,
                 &[ResolvedGenericArg::Type(ResolvedType::U32)],
@@ -687,7 +688,7 @@ mod tests {
         use omega_analyzer::template::TemplateArg;
         let symbol_for = |argument: TemplateArg| {
             encode(&free_function_symbol(
-                &[ident("pkg")],
+                &ModulePath::new([ident("pkg")]),
                 &ident("pick"),
                 Some(&template(vec![bound("Holds", vec![argument])])),
                 &[ResolvedGenericArg::Type(ResolvedType::U32)],
@@ -714,7 +715,7 @@ mod tests {
             name: ident(name),
             visibility: Visibility::Exposed,
             generics: vec![],
-            module_path: vec![ident("pkg"), ident(module)],
+            module_path: omega_hir::ModulePath::from(vec![ident("pkg"), ident(module)]),
             generic_args: vec![],
             is_object_safe: true,
             functions: vec![],
@@ -734,7 +735,7 @@ mod tests {
         let symbol_in = |module: &str| {
             conformance_method_symbol(
                 &target,
-                &[ident("pkg"), ident(module)],
+                &ModulePath::new([ident("pkg"), ident(module)]),
                 &ident("P"),
                 &[],
                 &ident("f"),

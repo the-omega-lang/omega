@@ -1,4 +1,4 @@
-use omega_hir::{HirBlock, HirGenericParam, HirId, HirParam};
+use omega_hir::{HirBlock, HirGenericParam, HirId, HirParam, ModulePath};
 use omega_parser::prelude::{Ident, SelfMode, Span, Type, Visibility};
 use std::cell::RefCell;
 use std::hash::{Hash, Hasher};
@@ -209,7 +209,7 @@ pub struct ResolvedMethod {
     /// The module `visibility` is checked against: the owning aggregate's
     /// module for inherent methods, the spec's module for spec-sourced ones,
     /// and the declaring `core` module for primitive-block methods.
-    pub declaring_module: Vec<Ident>,
+    pub declaring_module: ModulePath,
     pub annotations: crate::annotations::ResolvedAnnotations,
     pub source: Option<ConformanceSource>,
 }
@@ -291,7 +291,7 @@ impl ResolvedField {
 pub struct ResolvedStructType {
     pub id: HirId,
     pub name: Ident,
-    pub module_path: Vec<Ident>,
+    pub module_path: ModulePath,
     pub generic_args: Vec<ResolvedGenericArg>,
     pub fields: Vec<ResolvedField>,
     pub functions: Vec<(Ident, ResolvedMethod)>,
@@ -317,7 +317,7 @@ impl Hash for ResolvedStructType {
 pub struct ResolvedUnionType {
     pub id: HirId,
     pub name: Ident,
-    pub module_path: Vec<Ident>,
+    pub module_path: ModulePath,
     pub generic_args: Vec<ResolvedGenericArg>,
     pub fields: Vec<ResolvedField>,
     pub functions: Vec<(Ident, ResolvedMethod)>,
@@ -341,7 +341,7 @@ impl Hash for ResolvedUnionType {
 pub struct ResolvedEnumType {
     pub id: HirId,
     pub name: Ident,
-    pub module_path: Vec<Ident>,
+    pub module_path: ModulePath,
     pub generic_args: Vec<ResolvedGenericArg>,
     pub tag_type: ResolvedType,
     pub header: Vec<ResolvedField>,
@@ -388,7 +388,7 @@ pub struct ResolvedSpecType {
     pub name: Ident,
     pub visibility: Visibility,
     pub generics: Vec<omega_hir::HirGenericParam>,
-    pub module_path: Vec<Ident>,
+    pub module_path: ModulePath,
     pub generic_args: Vec<ResolvedGenericArg>,
     pub is_object_safe: bool,
     pub functions: Vec<(Ident, RawSpecFunctionSig)>,
@@ -639,7 +639,7 @@ pub struct GapFunction {
 pub struct ResolvedGap {
     pub id: HirId,
     pub name: Ident,
-    pub module_path: Vec<Ident>,
+    pub module_path: ModulePath,
     pub span: Span,
     pub functions: Vec<(Ident, GapFunction)>,
 }
@@ -1108,8 +1108,11 @@ impl std::fmt::Display for CanonicalType<'_> {
     }
 }
 
-fn write_module_path(f: &mut std::fmt::Formatter<'_>, module_path: &[Ident]) -> std::fmt::Result {
-    for segment in module_path {
+fn write_module_path(
+    f: &mut std::fmt::Formatter<'_>,
+    module_path: &ModulePath,
+) -> std::fmt::Result {
+    for segment in module_path.segments() {
         write!(f, "{}::", segment.as_ref())?;
     }
     Ok(())
@@ -1509,7 +1512,7 @@ impl ResolvedType {
         Some(namespace.select(&self.declared_functions()?, name))
     }
 
-    pub fn declaring_owner(&self) -> Option<(Vec<Ident>, HirId)> {
+    pub fn declaring_owner(&self) -> Option<(ModulePath, HirId)> {
         match self {
             Self::Struct(cell) => Some((cell.borrow().module_path.clone(), cell.borrow().id)),
             Self::Union(cell) => Some((cell.borrow().module_path.clone(), cell.borrow().id)),

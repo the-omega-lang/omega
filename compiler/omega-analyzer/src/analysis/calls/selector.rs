@@ -217,7 +217,7 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         written: &[ExprGenericArg],
-        owner: &[Ident],
+        owner: &ItemPath,
         params: &[HirGenericParam],
     ) -> Option<WrittenGenerics> {
         self.check_generic_arity(node_id, span, owner, params, written.len())?;

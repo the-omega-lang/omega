@@ -3,6 +3,7 @@ use omega_analyzer::Target;
 use omega_codegen::{CodegenRequest, EmitKind, EmitOutput, EmittedArtifact};
 use omega_diagnostics::{Diagnostic, GREEN, Renderer, SourceRegistry, paint};
 use omega_driver::{Driver, basename};
+use omega_hir::ModulePath;
 use omega_mir::EmissionSource;
 use omega_parser::highlight::OmegaHighlighter;
 use std::path::{Path, PathBuf};
@@ -100,10 +101,12 @@ fn compile(args: Args) -> Result<(), AppError> {
             AppError::Reported
         })?;
 
-    let program = driver.compile(&[entry_name.clone()]).map_err(|errors| {
-        render_compile_errors(&renderer, &driver, &errors);
-        AppError::Reported
-    })?;
+    let program = driver
+        .compile(&ModulePath::new([entry_name.clone()]))
+        .map_err(|errors| {
+            render_compile_errors(&renderer, &driver, &errors);
+            AppError::Reported
+        })?;
 
     for (module, warning) in &program.warnings {
         let source = driver.source_id(module);
@@ -154,7 +157,7 @@ fn compile(args: Args) -> Result<(), AppError> {
         opt_level,
         emit,
         units,
-        entry: program.entry.clone(),
+        entry: program.entry.segments().to_vec(),
         extern_functions: program.extern_functions,
         extern_globals: program.extern_globals,
     };

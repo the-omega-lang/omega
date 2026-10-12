@@ -178,7 +178,7 @@ impl Analyzer<'_> {
         written: &[GenericArg],
         generics: &[HirGenericParam],
         declared: &[HirGenericParam],
-        module: &[Ident],
+        module: &ModulePath,
         purpose: PatternPurpose<'_>,
     ) -> Option<Vec<ArgumentPattern>> {
         let mut args = written
@@ -227,7 +227,7 @@ impl Analyzer<'_> {
             };
             // Resolve before substitution: a default's names belong to its
             // declaration, even if the function has a parameter of that name.
-            let saved = std::mem::replace(&mut self.module_path, module.to_vec());
+            let saved = std::mem::replace(&mut self.module_path, module.clone());
             let saved_context = std::mem::replace(&mut self.context, Context::new(self.target));
             let pattern = self.with_substitution(&known, |this| {
                 this.argument_pattern(
@@ -252,7 +252,7 @@ impl Analyzer<'_> {
         id: HirId,
         span: Span,
         path: &Path,
-    ) -> Option<Vec<Ident>> {
+    ) -> Option<ItemPath> {
         let access =
             match self
                 .context
@@ -462,15 +462,14 @@ impl Analyzer<'_> {
                         return None;
                     }
                 };
-                let (module, item) = absolute.split_at(absolute.len() - 1);
                 if purpose.reports() && !declared.is_empty() && args.len() > declared.len() {
                     self.error(
                         id,
                         span,
                         AnalysisErrorKind::ModuleResolution(
                             ResolveError::GenericArgCountMismatch {
-                                module: module.to_vec(),
-                                item: item[0].clone(),
+                                module: absolute.module.clone(),
+                                item: absolute.name.clone(),
                                 expected: declared.len(),
                                 found: args.len(),
                             },
@@ -478,8 +477,15 @@ impl Analyzer<'_> {
                     );
                     return None;
                 }
-                let args =
-                    self.argument_patterns(id, span, args, generics, &declared, module, purpose)?;
+                let args = self.argument_patterns(
+                    id,
+                    span,
+                    args,
+                    generics,
+                    &declared,
+                    &absolute.module,
+                    purpose,
+                )?;
                 TypePattern::Nominal(absolute, args)
             }
             Type::Function(function) => {
@@ -529,7 +535,7 @@ impl Analyzer<'_> {
         arg: &GenericArg,
         generics: &[HirGenericParam],
         declared: Option<&HirGenericParam>,
-        module: &[Ident],
+        module: &ModulePath,
         purpose: PatternPurpose<'_>,
     ) -> Option<ArgumentPattern> {
         if declared.is_some_and(|p| p.is_comp()) {

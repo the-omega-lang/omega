@@ -1,6 +1,6 @@
 use crate::resolved_type::{CompScalar, CompScalarType, ResolvedGenericArg, ResolvedType};
 use crate::resolver::{ModuleResolver, ResolveError};
-use omega_hir::{HirFunctionDef, HirGenericParam};
+use omega_hir::{HirFunctionDef, HirGenericParam, ItemPath, ModulePath};
 use omega_parser::prelude::{ArrayLength, GenericArg, GenericParamKind, Ident, Type};
 
 pub mod pattern;
@@ -35,7 +35,7 @@ pub fn compare_bound_sets<T: PartialEq>(
 /// generics, signature, or body works from the result.
 pub fn normalize_static_spec_params(
     resolver: &mut dyn ModuleResolver,
-    module_path: &[Ident],
+    module_path: &ModulePath,
     f: &HirFunctionDef,
 ) -> Result<HirFunctionDef, ResolveError> {
     let mut normalized: Option<HirFunctionDef> = None;

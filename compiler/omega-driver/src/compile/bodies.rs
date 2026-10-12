@@ -26,7 +26,7 @@ impl Driver {
 
     fn check_module_bodies(
         &mut self,
-        path: &[Ident],
+        path: &ModulePath,
         warnings: &mut TaggedWarnings,
     ) -> Vec<CheckedItem> {
         let mut bodies: Vec<CheckedBody> = Vec::new();
@@ -41,7 +41,7 @@ impl Driver {
         let mut items = Vec::with_capacity(bodies.len());
         for body in bodies {
             items.push(body.item);
-            warnings.extend(body.warnings.into_iter().map(|w| (path.to_vec(), w)));
+            warnings.extend(body.warnings.into_iter().map(|w| (path.clone(), w)));
         }
         items.extend(self.synthesize_gap_items(path));
         items.extend(self.check_glue_bodies(path, warnings));
@@ -52,7 +52,7 @@ impl Driver {
 
     fn check_glue_bodies(
         &mut self,
-        path: &[Ident],
+        path: &ModulePath,
         warnings: &mut TaggedWarnings,
     ) -> Vec<CheckedItem> {
         let signatures: Vec<(
@@ -66,7 +66,7 @@ impl Driver {
             .items
             .glues
             .iter()
-            .filter(|glue| glue.module == path)
+            .filter(|glue| &glue.module == path)
             .map(|glue| (glue.gap.clone(), glue.functions.clone()))
             .collect();
         let mut items = Vec::new();
@@ -109,7 +109,7 @@ impl Driver {
                 warnings.extend(
                     run.warnings
                         .into_iter()
-                        .map(|warning| (path.to_vec(), warning)),
+                        .map(|warning| (path.clone(), warning)),
                 );
             }
         }
@@ -118,7 +118,7 @@ impl Driver {
 
     fn check_conformance_bodies(
         &mut self,
-        path: &[Ident],
+        path: &ModulePath,
         warnings: &mut TaggedWarnings,
     ) -> Vec<CheckedItem> {
         let entries: Vec<_> = self
@@ -126,7 +126,7 @@ impl Driver {
             .entries
             .iter()
             .filter(|entry| {
-                entry.module == path
+                &entry.module == path
                     && (!self.roots.is_extern(&entry.module)
                         || entry.origin != ConformanceOrigin::Concrete)
                     && !self.conformances.emitted.contains(&(
@@ -163,7 +163,7 @@ impl Driver {
 
     fn check_primitive_bodies(
         &mut self,
-        path: &[Ident],
+        path: &ModulePath,
         warnings: &mut TaggedWarnings,
     ) -> Vec<CheckedItem> {
         let entries: Vec<_> = self
@@ -171,7 +171,7 @@ impl Driver {
             .entries
             .iter()
             .filter(|entry| {
-                entry.module == path && !self.primitives.emitted.contains(&entry.target)
+                &entry.module == path && !self.primitives.emitted.contains(&entry.target)
             })
             .cloned()
             .collect();
@@ -206,7 +206,7 @@ impl Driver {
                 warnings.extend(
                     run.warnings
                         .into_iter()
-                        .map(|warning| (path.to_vec(), warning)),
+                        .map(|warning| (path.clone(), warning)),
                 );
             }
         }
@@ -216,7 +216,7 @@ impl Driver {
     pub(super) fn emission_module<'a>(
         &self,
         modules: &'a mut CheckedModules,
-        path: &[Ident],
+        path: &ModulePath,
     ) -> &'a mut CheckedModule {
         if let Some(index) = modules.iter().position(|(candidate, _)| candidate == path) {
             return &mut modules[index].1;
@@ -224,7 +224,7 @@ impl Driver {
 
         let id = self.modules.parsed(path).id;
         modules.push((
-            path.to_vec(),
+            path.clone(),
             CheckedModule {
                 id,
                 items: Vec::new(),
@@ -282,7 +282,7 @@ impl Driver {
         }
     }
 
-    fn synthesize_gap_items(&mut self, path: &[Ident]) -> Vec<CheckedItem> {
+    fn synthesize_gap_items(&mut self, path: &ModulePath) -> Vec<CheckedItem> {
         let mut items = Vec::new();
         for (name, index) in self.modules.index(path).plain_items() {
             if matches!(self.modules.parsed(path).hir.items[index], HirItem::Gap(_)) {

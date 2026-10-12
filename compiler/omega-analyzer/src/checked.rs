@@ -2,7 +2,7 @@ use crate::resolved_type::{
     CallingConvention, ConstValue, ResolvedFunctionParam, ResolvedFunctionType, ResolvedGenericArg,
     ResolvedType,
 };
-use omega_hir::{HirId, ModuleId};
+use omega_hir::{HirId, ModuleId, ModulePath};
 use omega_parser::prelude::{BinaryOp, Ident, SelfMode, Span};
 
 #[derive(Debug, Clone)]
@@ -25,7 +25,7 @@ pub enum CheckedItem {
 #[derive(Debug, Clone)]
 pub struct ExternFunctionRef {
     pub decl_id: HirId,
-    pub module_path: Vec<Ident>,
+    pub module_path: ModulePath,
     pub kind: ExternFunctionKind,
     pub fn_type: ResolvedFunctionType,
     pub symbol: crate::annotations::SymbolPolicy,
@@ -36,7 +36,7 @@ pub struct ExternFunctionRef {
 #[derive(Debug, Clone)]
 pub struct ExternGlobalRef {
     pub decl_id: HirId,
-    pub module_path: Vec<Ident>,
+    pub module_path: ModulePath,
     pub name: Ident,
     pub r#type: ResolvedType,
     pub symbol: crate::annotations::SymbolPolicy,
@@ -55,7 +55,7 @@ pub enum ExternFunctionKind {
     },
     Conform {
         target: ResolvedType,
-        spec_module_path: Vec<Ident>,
+        spec_module_path: ModulePath,
         spec_name: Ident,
         spec_args: Vec<ResolvedGenericArg>,
         method_name: Ident,
@@ -179,7 +179,7 @@ pub struct CheckedFunctionDef {
 
 #[derive(Debug, Clone)]
 pub struct CheckedMethodOwner {
-    pub module_path: Vec<Ident>,
+    pub module_path: ModulePath,
     pub name: Ident,
     pub generic_args: Vec<ResolvedGenericArg>,
 }
@@ -187,7 +187,7 @@ pub struct CheckedMethodOwner {
 #[derive(Debug, Clone)]
 pub struct ConformanceOwner {
     pub target: ResolvedType,
-    pub spec_module_path: Vec<Ident>,
+    pub spec_module_path: ModulePath,
     pub spec_name: Ident,
     pub spec_args: Vec<ResolvedGenericArg>,
     pub monomorphized: bool,
