@@ -26,9 +26,8 @@ impl FlattenedSpecFn {
     /// substituted with except the implementing `Self` type.
     pub(super) fn spec_args(&self) -> Vec<ResolvedGenericArg> {
         self.substitution
-            .iter()
-            .filter(|(name, _)| name.as_ref() != "Self")
-            .map(|(_, arg)| arg.clone())
+            .bindings()
+            .map(|binding| binding.arg.clone())
             .collect()
     }
 }
@@ -648,16 +647,8 @@ impl<'r> Analyzer<'r> {
             )
         };
 
-        let self_ident = Ident("Self".to_string());
-        let substitution: GenericSubstitution =
-            std::iter::once((self_ident, ResolvedGenericArg::Type(self_type.clone())))
-                .chain(
-                    generics
-                        .iter()
-                        .map(|p| p.ident.clone())
-                        .zip(spec_args.iter().cloned()),
-                )
-                .collect();
+        let substitution =
+            GenericSubstitution::zip(&generics, spec_args).with_self_type(self_type.clone());
 
         for (name, raw) in &functions {
             let signature = if raw.generics.is_empty() {

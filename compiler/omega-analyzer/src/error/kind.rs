@@ -153,14 +153,14 @@ pub enum AnalysisErrorKind {
     ContinueOutsideLoop,
     ModuleResolution(crate::resolver::ResolveError),
     NotAValue(ItemPath),
-    UnresolvedGenericParam(Ident),
+    UnresolvedGenericParam(String),
     GenericParamFromFatPointer {
-        parameter: Ident,
+        parameter: String,
         found: ResolvedType,
     },
     UnresolvedLiteralGeneric {
         r#type: Ident,
-        generics: Vec<Ident>,
+        generics: Vec<String>,
     },
     DeferInsideLoopNotSupported,
     ReturnInsideDefer,
@@ -469,7 +469,7 @@ pub enum AnalysisErrorKind {
     /// expected function type was available to infer it from.
     UndeterminedFunctionValue {
         name: Ident,
-        parameter: Ident,
+        parameter: String,
     },
 
     /// A bound selector was written where only ordinary generic arguments
@@ -482,7 +482,7 @@ pub enum AnalysisErrorKind {
     /// A bound selector was written for a `comp` parameter, which binds a
     /// compile-time value and never declares bounds.
     BoundSelectorOnCompParam {
-        parameter: Ident,
+        parameter: String,
     },
     /// No declaration of the name declares exactly the bounds the selector
     /// names. A selector is not a conformance assertion: it neither widens
@@ -496,7 +496,7 @@ pub enum AnalysisErrorKind {
     /// site determines what it stands for.
     UndeterminedInferenceHole {
         name: Ident,
-        parameter: Ident,
+        parameter: String,
     },
     /// `spec A` written as a function generic argument, which the removed
     /// selector form spelled. It is never a valid type argument either.
@@ -509,7 +509,7 @@ pub enum AnalysisErrorKind {
     /// said which declaration was meant.
     SelectedBoundNotSatisfied {
         name: Ident,
-        parameter: Ident,
+        parameter: String,
         r#type: String,
         spec: Ident,
     },
@@ -910,19 +910,19 @@ impl fmt::Display for AnalysisErrorKind {
             Self::UnresolvedGenericParam(ident) => write!(
                 f,
                 "cannot infer generic parameter '{}' from this call's arguments",
-                ident.as_ref()
+                ident
             ),
             Self::GenericParamFromFatPointer { parameter, .. } => write!(
                 f,
                 "cannot infer generic parameter '{}' from this call's arguments",
-                parameter.as_ref()
+                parameter
             ),
             Self::UnresolvedLiteralGeneric { r#type, generics } => write!(
                 f,
                 "cannot infer type argument(s) {} of '{}' here",
                 generics
                     .iter()
-                    .map(|g| format!("'{}'", g.as_ref()))
+                    .map(|g| format!("'{g}'"))
                     .collect::<Vec<_>>()
                     .join(", "),
                 r#type.as_ref()
@@ -1370,7 +1370,7 @@ impl fmt::Display for AnalysisErrorKind {
                 f,
                 "'{}' cannot be instantiated here: '{}' is not determined",
                 name.as_ref(),
-                parameter.as_ref()
+                parameter
             ),
             Self::BoundSelectorNotAllowed { applied_to } => {
                 write!(f, "a bound selector cannot be written on {applied_to}")
@@ -1378,7 +1378,7 @@ impl fmt::Display for AnalysisErrorKind {
             Self::BoundSelectorOnCompParam { parameter } => write!(
                 f,
                 "'{}' is a 'comp' parameter and declares no bounds",
-                parameter.as_ref()
+                parameter
             ),
             Self::NoMatchingBoundSelector { name, selector, .. } => write!(
                 f,
@@ -1392,7 +1392,7 @@ impl fmt::Display for AnalysisErrorKind {
                 f,
                 "'{}' cannot be instantiated here: '{}' is not determined",
                 name.as_ref(),
-                parameter.as_ref()
+                parameter
             ),
             Self::SelectedBoundNotSatisfied { r#type, spec, .. } => {
                 write!(f, "'{type}' does not implement '{}'", spec.as_ref())

@@ -216,7 +216,7 @@ fn hole_kinds(
                 let kinds = holed
                     .holes
                     .iter()
-                    .map(|hole| (hole.ident.as_ref().to_string(), hole.is_comp()))
+                    .map(|hole| (hole.label(), hole.is_comp()))
                     .collect();
                 (holed.rewritten, kinds)
             }))

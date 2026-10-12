@@ -2512,6 +2512,43 @@ fn an_aliased_static_spec_parameter_reports_the_real_spec_not_a_synthesized_para
 }
 
 #[test]
+fn a_static_spec_parameter_is_named_by_its_bound() {
+    // The anonymous parameter a `spec S` parameter introduces has no name;
+    // a diagnostic about it names the bound it was written as.
+    let errors = TestPackage::new(
+        r#"
+        exposed spec Countable {
+            count(*self) => i32;
+        }
+
+        take(value: spec Countable) => i32 { 0 }
+
+        entry_fn() => i32 {
+            take<5>(1)
+        }
+        "#,
+    )
+    .expect_errors();
+    let rendered = rendered(&errors);
+    assert!(
+        analysis_errors(&errors).iter().any(|kind| matches!(
+            kind,
+            AnalysisErrorKind::UnresolvedType(
+                omega_analyzer::error::TypeResolutionError::GenericArgKindMismatch {
+                    param,
+                    expected_value: false,
+                }
+            ) if param == "spec Countable"
+        )),
+        "the parameter must be named by its bound: {rendered}"
+    );
+    assert!(
+        !rendered.contains('$'),
+        "no synthesized name may appear in a diagnostic: {rendered}"
+    );
+}
+
+#[test]
 fn an_alias_carries_its_authorization_into_a_generic_call() {
     // A locally declared alias resolves to its target's own absolute path,
     // so the authorization the alias chain established travels with that

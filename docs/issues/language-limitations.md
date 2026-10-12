@@ -7,24 +7,21 @@ These notes were migrated out of normative language chapters. They describe curr
 
 Normative chapter: [`../language/functions.md`](../language/functions.md)
 
-- **`spec S` parameter sugar on a conformance method that satisfies a
-  generic requirement leaks its synthesized name.** Explicit generic
-  parameters in a `meet` block work, but writing the requirement's
-  parameter as `spec S` reports `cannot find type '$Param1'` instead of
-  matching the requirement. The sugar's synthesized parameter has no real
-  identity; see the [`$ParamN` design-debt entry](design-debt.md#a-static-spec-parameters-synthesized-generic-uses-a-fabricated-impossible-source-name-instead-of-a-real-identity).
+- **`spec S` parameter sugar on a conformance method cannot satisfy a
+  generic requirement.** Explicit generic parameters in a `meet` block work,
+  but writing the requirement's parameter as `spec S` reports that the
+  parameter's type is not determined instead of matching the requirement:
+  the conformance shape check still compares written signatures, so it does
+  not see that the sugar's anonymous parameter is the requirement's.
 - **A generic member cannot be called with its owner's arguments left to
   inference.** `Owner::name(...)` infers the owner's arguments from the call
   only when `name` is not itself generic; for a generic `name` the owner must
   already be concrete (`Owner<A>::name(...)`, `Owner<A>::name<B>(...)`, or
   the receiver of `value.name(...)`), and an owner list holding `_` next to
   the function's list (`Owner<_>::name<B>(...)`) reports the hole as not
-  determined. Solving both lists from one call is a single inference
-  problem, and its prerequisite is real generic-parameter identity: owner
-  instantiation rewrites `Self` as `Owner<T...>` keyed by parameter *names*,
-  so a member parameter that shadows an owner parameter would silently
-  capture it (the `GenericParamId` work in
-  [`design-debt.md`](design-debt.md#a-static-spec-parameters-synthesized-generic-uses-a-fabricated-impossible-source-name-instead-of-a-real-identity)).
+  determined. The owner and the member already form one positional
+  signature, but call inference over it still declines whenever the member
+  declares parameters of its own.
 
 
 ## Primitives & representation

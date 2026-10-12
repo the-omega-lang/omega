@@ -9,7 +9,7 @@ pub(crate) struct HoledAnnotation {
     /// user-facing text.
     pub(crate) written: Type,
     pub(crate) rewritten: Type,
-    pub(crate) holes: Vec<HirGenericParam>,
+    pub(crate) holes: Vec<GenericParam>,
 }
 
 impl<'r> Analyzer<'r> {
@@ -42,12 +42,12 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         ty: &Type,
-        holes: &mut Vec<HirGenericParam>,
+        holes: &mut Vec<GenericParam>,
     ) -> Result<Type, ()> {
         Ok(match ty {
-            Type::Infer => {
-                Type::Named(fresh_hole(holes, GenericParamKind::Type { bounds: vec![] }).into())
-            }
+            Type::Infer => Type::Named(
+                fresh_hole(holes, node_id, GenericParamKind::Type { bounds: vec![] }).into(),
+            ),
             Type::Pointer(inner, mutable) => Type::Pointer(
                 Box::new(self.rewrite_type_holes(node_id, span, inner, holes)?),
                 *mutable,
@@ -63,6 +63,7 @@ impl<'r> Analyzer<'r> {
                     ArrayLength::Infer => ArrayLength::Path(
                         fresh_hole(
                             holes,
+                            node_id,
                             GenericParamKind::Comp {
                                 value_type: Type::Named(Ident("usize".to_string()).into()),
                             },
@@ -90,7 +91,7 @@ impl<'r> Analyzer<'r> {
                                 Some(param) if param.is_comp() => param.kind.clone(),
                                 _ => GenericParamKind::Type { bounds: vec![] },
                             };
-                            GenericArg::Type(Type::Named(fresh_hole(holes, kind).into()))
+                            GenericArg::Type(Type::Named(fresh_hole(holes, node_id, kind).into()))
                         }
                         GenericArg::Type(inner) => {
                             GenericArg::Type(self.rewrite_type_holes(node_id, span, inner, holes)?)
@@ -135,7 +136,7 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         path: &Path,
-    ) -> Vec<HirGenericParam> {
+    ) -> Vec<GenericParam> {
         self.without_diagnostics(|this| {
             let absolute = this.pattern_item_path(node_id, span, path)?;
             this.resolver.item_generic_params(&absolute).ok().flatten()
@@ -184,8 +185,7 @@ impl<'r> Analyzer<'r> {
         annotation: &HoledAnnotation,
         solved: &[ResolvedGenericArg],
     ) -> Option<ResolvedType> {
-        let substitution =
-            GenericSubstitution::zip(annotation.holes.iter().map(|hole| &hole.ident), solved);
+        let substitution = GenericSubstitution::zip(&annotation.holes, solved);
         self.with_substitution(&substitution, |this| {
             this.resolve_type_or_error(id, span, &annotation.rewritten, true)
         })
@@ -229,10 +229,15 @@ fn contains_hole(ty: &Type) -> bool {
     }
 }
 
-fn fresh_hole(holes: &mut Vec<HirGenericParam>, kind: GenericParamKind) -> Ident {
+fn fresh_hole(holes: &mut Vec<GenericParam>, owner: HirId, kind: GenericParamKind) -> Ident {
     let ident = Ident(format!("$Hole{}", holes.len()));
-    holes.push(HirGenericParam {
-        ident: ident.clone(),
+    holes.push(GenericParam {
+        id: crate::generics::GenericParamId {
+            owner,
+            index: holes.len() as u32,
+        },
+        name: Some(ident.clone()),
+        origin: crate::generics::GenericParamOrigin::Written,
         kind,
         default: None,
     });

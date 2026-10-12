@@ -248,21 +248,21 @@ impl AnalysisErrorKind {
                 .with_label(span, "expected a value, found a type")
                 .with_note("a struct's name refers to the type itself; only its instances hold values"),
             Self::UnresolvedGenericParam(name) => d
-                .with_label(span, format!("cannot deduce `{}` from this call's arguments", name.as_ref()))
+                .with_label(span, format!("cannot deduce `{}` from this call's arguments", name))
                 .with_note("a generic function's parameters are deduced from its argument types only; a `comp` parameter is deduced only from compile-time structure such as a fixed array's length"),
             Self::GenericParamFromFatPointer { parameter, found } => d
-                .with_label(span, format!("cannot deduce `{}` from this call's arguments", parameter.as_ref()))
+                .with_label(span, format!("cannot deduce `{}` from this call's arguments", parameter))
                 .with_note(format!(
                     "'{found}' is a slice — a pointer with a length — so it does not match the thin pointer '*{}'",
-                    parameter.as_ref()
+                    parameter
                 ))
                 .with_help(format!(
                     "take the value directly (`x: {}`), or spell the slice out (`x: *[]{}`)",
-                    parameter.as_ref(),
-                    parameter.as_ref()
+                    parameter,
+                    parameter
                 )),
             Self::UnresolvedLiteralGeneric { r#type, generics } => {
-                let names = generics.iter().map(|g| format!("`{}`", g.as_ref())).collect::<Vec<_>>().join(", ");
+                let names = generics.iter().map(|g| format!("`{g}`")).collect::<Vec<_>>().join(", ");
                 d.with_label(span, format!("cannot infer type argument(s) {names} of `{type}` here"))
                     .with_help(format!("write them explicitly, e.g. `{type}<...>`"))
             }
@@ -638,7 +638,7 @@ impl AnalysisErrorKind {
                 d.with_help("a function value needs an exact signature match -- a call's argument conversions do not apply here")
             }
             Self::UndeterminedFunctionValue { name, parameter } => d
-                .with_label(span, format!("`{}` is not determined here", parameter.as_ref()))
+                .with_label(span, format!("`{parameter}` is not determined here"))
                 .with_help(format!(
                     "write the rest of `{}`'s generic arguments, or give this reference an expected function type",
                     name.as_ref()
@@ -650,7 +650,7 @@ impl AnalysisErrorKind {
                      write an ordinary generic argument here",
                 ),
             Self::BoundSelectorOnCompParam { parameter } => d
-                .with_label(span, format!("`{}` binds a compile-time value", parameter.as_ref()))
+                .with_label(span, format!("`{}` binds a compile-time value", parameter))
                 .with_help("only a type parameter declares bounds, so only a type position accepts a selector"),
             Self::NoMatchingBoundSelector { name, selector, candidates } => {
                 let mut d = d
@@ -665,11 +665,11 @@ impl AnalysisErrorKind {
                 )
             }
             Self::UndeterminedInferenceHole { parameter, .. } => d
-                .with_label(span, format!("`{}` is not determined here", parameter.as_ref()))
+                .with_label(span, format!("`{}` is not determined here", parameter))
                 .with_help(format!(
                     "`_` leaves `{}` to inference -- write it out, or give this call an argument or \
                      expected type that determines it",
-                    parameter.as_ref()
+                    parameter
                 )),
             Self::SpecSelectorSyntax { bounds } => d
                 .with_label(span, "`spec ...` is not a generic argument")
@@ -680,9 +680,8 @@ impl AnalysisErrorKind {
                     format!("`{type}` does not implement `{}`", spec.as_ref()),
                 )
                 .with_note(format!(
-                    "selected `{}`, whose `{}` is bound by `{}`",
+                    "selected `{}`, whose `{parameter}` is bound by `{}`",
                     name.as_ref(),
-                    parameter.as_ref(),
                     spec.as_ref()
                 ))
                 .with_help(
@@ -1027,6 +1026,9 @@ impl AnalysisErrorKind {
 fn type_resolution_diagnostic(error: &TypeResolutionError, span: Span) -> Diagnostic {
     let d = Diagnostic::error(error.to_string());
     match error {
+        TypeResolutionError::UnboundAnonymousGeneric { .. } => {
+            d.with_label(span, "no binding for this parameter's type")
+        }
         TypeResolutionError::UnrecognizedNamedType { similar, .. } => {
             let d = d.with_label(span, "not found in this scope");
             match similar {

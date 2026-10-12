@@ -500,6 +500,56 @@ impl<'r> Analyzer<'r> {
         // cycle.
         let resolved_type =
             self.resolve_type_or_error(param.id, param.span, &param.r#type, true)?;
+        self.declare_param(param, resolved_type)
+    }
+
+    pub(crate) fn analyze_function_params(
+        &mut self,
+        f: &NormalizedFunction,
+    ) -> Option<Vec<CheckedParam>> {
+        let params: Vec<(usize, &HirParam)> = f.function.params.iter().enumerate().collect();
+        self.analyze_all(&params, |this, &(index, param)| {
+            let resolved_type = this.normalized_param_type(f, index)?;
+            this.declare_param(param, resolved_type)
+        })
+    }
+
+    /// A function parameter's type. A `spec S` parameter's type is its
+    /// anonymous generic's binding, found by identity: nothing can name it.
+    pub(crate) fn normalized_param_type(
+        &mut self,
+        f: &NormalizedFunction,
+        index: usize,
+    ) -> Option<ResolvedType> {
+        let param = &f.function.params[index];
+        let Some(position) = f.static_spec_position(index) else {
+            // Passed by value at the call site, not laid out inline: taking
+            // `Self` by value is not a layout cycle.
+            return self.resolve_type_or_error(param.id, param.span, &param.r#type, true);
+        };
+        let generic = &f.generics[position];
+        match self.generic_binding(generic) {
+            Some(ResolvedGenericArg::Type(r#type)) => Some(r#type.clone()),
+            _ => {
+                self.error(
+                    param.id,
+                    param.span,
+                    AnalysisErrorKind::UnresolvedType(
+                        TypeResolutionError::UnboundAnonymousGeneric {
+                            parameter: generic.label(),
+                        },
+                    ),
+                );
+                None
+            }
+        }
+    }
+
+    fn declare_param(
+        &mut self,
+        param: &HirParam,
+        resolved_type: ResolvedType,
+    ) -> Option<CheckedParam> {
         self.declare_binding(
             param.id,
             param.span,
@@ -614,11 +664,13 @@ impl<'r> Analyzer<'r> {
         ResolvedFunctionType,
         crate::annotations::ResolvedAnnotations,
     )> {
-        let f = &self.normalized_function(f)?;
+        let normalized = self.normalized_function(f)?;
+        let f = &normalized.function;
         self.check_redundant_hidden(f.id, f.explicit_hidden_span);
-        let params = self.analyze_all(&f.params, |this, p| {
-            this.resolve_type_or_error(p.id, p.span, &p.r#type, true)
-                .map(|t| ResolvedFunctionParam::described(p.ident.clone(), t))
+        let indices: Vec<usize> = (0..f.params.len()).collect();
+        let params = self.analyze_all(&indices, |this, &index| {
+            this.normalized_param_type(&normalized, index)
+                .map(|t| ResolvedFunctionParam::described(f.params[index].ident.clone(), t))
         })?;
 
         for (p, r#type) in f
@@ -654,7 +706,7 @@ impl<'r> Analyzer<'r> {
             &f.annotations,
             kind,
             f.self_mode.is_some(),
-            owner_is_generic || !f.generics.is_empty(),
+            owner_is_generic || !normalized.generics.is_empty(),
             SymbolPolicy::ordinary(),
         );
         Some((

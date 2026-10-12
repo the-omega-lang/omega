@@ -1,6 +1,6 @@
 use super::*;
 use omega_analyzer::analysis::AnalysisSite;
-use omega_analyzer::generics::GenericSubstitution;
+use omega_analyzer::generics::{GenericParam, GenericSubstitution, NormalizedFunction};
 use omega_analyzer::resolved_type::{ResolvedGenericArg, ResolvedSpecType};
 use omega_analyzer::resolver::{DeclaredBound, GenericCallTarget, PreparedCall, UnmetBound};
 use std::cell::RefCell;
@@ -10,7 +10,7 @@ use std::rc::Rc;
 /// was reached through already binds for it.
 pub(crate) struct GenericDeclaration {
     pub key: ItemKey,
-    pub function: HirFunctionDef,
+    pub function: NormalizedFunction,
     pub site: AnalysisSite,
     /// The owner's generic arguments and `Self`, empty for a free function.
     pub enclosing: GenericSubstitution,
@@ -68,8 +68,8 @@ impl Driver {
                     return Ok(None);
                 };
                 let function = function.clone();
-                let function = self.normalized_function(key.module(), &function)?;
                 let site = AnalysisSite::new(function.id, function.span);
+                let function = self.normalized_function(key.module(), &function)?;
                 Ok(Some(GenericDeclaration {
                     key,
                     function,
@@ -89,8 +89,8 @@ impl Driver {
                     return Ok(None);
                 };
                 let function = function.clone();
-                let function = self.normalized_function(module, &function)?;
                 let site = AnalysisSite::new(function.id, function.span);
+                let function = self.normalized_function(module, &function)?;
                 Ok(Some(GenericDeclaration {
                     key: ItemKey {
                         scope: ItemScope::Module(module.clone()),
@@ -120,18 +120,12 @@ impl Driver {
         key: &ItemKey,
         site: AnalysisSite,
         enclosing: &GenericSubstitution,
-        generic_params: &[HirGenericParam],
+        generic_params: &[GenericParam],
         generic_args: &[ResolvedGenericArg],
     ) -> Result<Vec<Vec<Bound>>, ResolveError> {
         let module = key.module().clone();
-        let mut substitution: GenericSubstitution = generic_params
-            .iter()
-            .map(|g| g.ident.clone())
-            .zip(generic_args.iter().cloned())
-            .collect();
-        for (name, arg) in enclosing.iter() {
-            substitution.push(name.clone(), arg.clone());
-        }
+        let substitution =
+            enclosing.enclosing(&GenericSubstitution::zip(generic_params, generic_args));
 
         let mut declared = Vec::with_capacity(generic_params.len());
         for param in generic_params {
@@ -158,7 +152,7 @@ impl Driver {
     /// to declare matching methods.
     fn first_unmet_bound(
         &mut self,
-        generic_params: &[HirGenericParam],
+        generic_params: &[GenericParam],
         generic_args: &[ResolvedGenericArg],
         declared: &[Vec<Bound>],
     ) -> Option<UnmetBound> {
@@ -171,7 +165,7 @@ impl Driver {
             for (spec, bound) in set {
                 if self.conformance_for(&concrete, spec, &bound.args).is_none() {
                     return Some(UnmetBound {
-                        parameter: param.ident.clone(),
+                        parameter: param.label(),
                         r#type: concrete,
                         spec: bound.name.clone(),
                     });

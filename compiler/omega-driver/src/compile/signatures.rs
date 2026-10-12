@@ -286,19 +286,23 @@ impl Driver {
                 }
             }
 
-            let declared_generics: Vec<Vec<HirGenericParam>> = self
+            let declared_generics: Vec<Vec<GenericParam>> = self
                 .modules
                 .parsed(path)
                 .hir
                 .items
                 .iter()
-                .filter_map(|item| match item {
-                    HirItem::Struct(s) => Some(s.generics.clone()),
-                    HirItem::Enum(e) => Some(e.generics.clone()),
-                    HirItem::Union(u) => Some(u.generics.clone()),
-                    HirItem::Spec(sp) => Some(sp.generics.clone()),
-                    HirItem::Primitive(p) => Some(p.generics.clone()),
-                    _ => None,
+                .filter_map(|item| {
+                    let generics = match item {
+                        HirItem::Struct(s) => &s.generics,
+                        HirItem::Enum(e) => &e.generics,
+                        HirItem::Union(u) => &u.generics,
+                        HirItem::Spec(sp) => &sp.generics,
+                        HirItem::Primitive(p) => &p.generics,
+                        _ => return None,
+                    };
+                    let owner = omega_analyzer::analysis::item_site(item).id;
+                    Some(GenericParam::declared(owner, generics))
                 })
                 .collect();
             for generics in &declared_generics {

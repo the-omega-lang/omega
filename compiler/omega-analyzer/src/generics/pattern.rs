@@ -563,7 +563,7 @@ impl ArgumentPattern {
         }
     }
 
-    fn length(&self, bindings: &[Option<ResolvedGenericArg>]) -> Option<u32> {
+    pub(crate) fn length(&self, bindings: &[Option<ResolvedGenericArg>]) -> Option<u32> {
         let value = match self {
             Self::Value(value) => value,
             Self::Parameter(index, _) => match bindings.get(*index)?.as_ref()? {

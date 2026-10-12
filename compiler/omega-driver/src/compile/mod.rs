@@ -13,12 +13,11 @@ use omega_analyzer::dead_code::{self, FieldUsage};
 use omega_analyzer::error::{
     AnalysisError, AnalysisErrorKind, AnalysisWarning, AnalysisWarningKind,
 };
+use omega_analyzer::generics::GenericParam;
 use omega_analyzer::resolved_type::{ResolvedFunctionType, ResolvedType};
 use omega_analyzer::resolver::{ModuleResolver, ResolveError, ResolveItemOptions, ResolvedItem};
 use omega_hir::ModulePath;
-use omega_hir::{
-    HirEnumDef, HirField, HirGenericParam, HirGlueDef, HirId, HirItem, HirStructDef, HirUnionDef,
-};
+use omega_hir::{HirEnumDef, HirField, HirGlueDef, HirId, HirItem, HirStructDef, HirUnionDef};
 use omega_parser::prelude::Ident;
 use std::cell::RefCell;
 use std::rc::Rc;

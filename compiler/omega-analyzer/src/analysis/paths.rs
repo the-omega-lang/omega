@@ -298,7 +298,7 @@ impl<'r> Analyzer<'r> {
                     &sig,
                     &[],
                     expected.into(),
-                    GenericSubstitution::new(),
+                    Vec::new(),
                 )?;
                 self.resolve_item_checked_with_ambient_fallback(
                     std::slice::from_ref(&path.head),
@@ -737,7 +737,7 @@ impl<'r> Analyzer<'r> {
         span: Span,
         written: &[GenericArg],
         owner: &ItemPath,
-        params: &[HirGenericParam],
+        params: &[GenericParam],
     ) -> Option<Vec<ResolvedGenericArg>> {
         self.check_generic_arity(node_id, span, owner, params, written.len())?;
         let args: Vec<(usize, GenericArg)> = written.iter().cloned().enumerate().collect();
@@ -746,24 +746,24 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    /// What a written list with `_` holes binds, as a seed for inference.
-    /// Each hole leaves its parameter open, exactly as an omitted argument
-    /// would.
+    /// What a written list with `_` holes binds, positionally, as a seed for
+    /// inference. Each hole leaves its position open, exactly as an omitted
+    /// argument would.
     pub(super) fn written_hole_seed(
         &mut self,
         node_id: HirId,
         span: Span,
         written: &[GenericArg],
-        params: &[HirGenericParam],
-    ) -> Option<GenericSubstitution> {
-        let mut seed = GenericSubstitution::new();
+        params: &[GenericParam],
+    ) -> Option<Vec<Option<ResolvedGenericArg>>> {
+        let mut seed = vec![None; params.len()];
         let mut ok = true;
-        for (param, arg) in params.iter().zip(written) {
+        for (position, (param, arg)) in params.iter().zip(written).enumerate() {
             if *arg == GenericArg::Infer {
                 continue;
             }
             match self.resolve_generic_arg_or_error(node_id, span, arg, Some(param)) {
-                Some(resolved) => seed.push(param.ident.clone(), resolved),
+                Some(resolved) => seed[position] = Some(resolved),
                 None => ok = false,
             }
         }
@@ -778,7 +778,7 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         owner: &ItemPath,
-        params: &[HirGenericParam],
+        params: &[GenericParam],
         found: usize,
     ) -> Option<()> {
         if params.is_empty() || found <= params.len() {
@@ -802,7 +802,7 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         arg: &GenericArg,
-        param: Option<&HirGenericParam>,
+        param: Option<&GenericParam>,
     ) -> Option<ResolvedGenericArg> {
         self.resolve_generic_arg_validated(node_id, span, arg, param)
             .1
@@ -818,7 +818,7 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         arg: &GenericArg,
-        param: Option<&HirGenericParam>,
+        param: Option<&GenericParam>,
     ) -> (bool, Option<ResolvedGenericArg>) {
         let mut valid = true;
         if let GenericArg::Type(written) = arg {
@@ -836,7 +836,7 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         arg: &GenericArg,
-        param: Option<&HirGenericParam>,
+        param: Option<&GenericParam>,
     ) -> Option<ResolvedGenericArg> {
         let reveals = &self.reveals;
         match self.context.resolve_generic_arg(
@@ -864,7 +864,7 @@ impl<'r> Analyzer<'r> {
         accessor: &ModulePath,
         prefix: &[Ident],
         access: &ItemAccess,
-    ) -> Vec<HirGenericParam> {
+    ) -> Vec<GenericParam> {
         match self.resolver.item_generic_params(&access.absolute) {
             Ok(Some(params)) => return params,
             Ok(None) | Err(_) => {}

@@ -1,6 +1,7 @@
 use crate::Driver;
 use omega_analyzer::analysis::AnalysisSite;
 use omega_analyzer::error::{AnalysisError, AnalysisErrorKind};
+use omega_analyzer::generics::GenericParam;
 use omega_analyzer::generics::GenericSubstitution;
 use omega_analyzer::resolved_type::ResolvedGenericArg;
 use omega_analyzer::resolved_type::{ResolvedMethod, ResolvedType};
@@ -140,14 +141,13 @@ impl Driver {
             return None;
         }
 
-        let mut method_substitution = substitution.clone();
         let self_type = match (&primitive.target, &target) {
             (Type::InferredArray(_), ResolvedType::Slice { item, mutable }) => {
                 ResolvedType::Array(item.clone(), *mutable)
             }
             _ => target.clone(),
         };
-        method_substitution.push_type(Ident("Self".to_string()), self_type);
+        let method_substitution = substitution.clone().with_self_type(self_type);
 
         let method_ids =
             self.conformance_method_ids(module, primitive.id, &target, &primitive.functions);
@@ -271,17 +271,13 @@ impl Driver {
         let Type::Named(path) = raw_item.as_ref() else {
             return None;
         };
-        if !path.is_unqualified()
-            || !primitive
-                .generics
-                .iter()
-                .any(|generic| generic.ident == path.head)
-        {
+        if !path.is_unqualified() {
             return None;
         }
-        Some(GenericSubstitution::from_iter([(
-            path.head.clone(),
-            ResolvedGenericArg::Type((**item).clone()),
-        )]))
+        let params = GenericParam::declared(primitive.id, &primitive.generics);
+        let param = params.iter().find(|param| param.is_named(&path.head))?;
+        let mut substitution = GenericSubstitution::new();
+        substitution.bind(param, ResolvedGenericArg::Type((**item).clone()));
+        Some(substitution)
     }
 }

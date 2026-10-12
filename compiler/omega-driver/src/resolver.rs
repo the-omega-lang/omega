@@ -1,21 +1,23 @@
 use crate::Driver;
-use crate::anchoring::{anchor_generics, anchor_type};
+use crate::anchoring::{anchor_generics, anchor_template};
+use omega_analyzer::analysis::AnalysisSite;
 use omega_analyzer::analysis::item_visibility;
 use omega_analyzer::checked::{CheckedFunctionDef, CheckedItem};
+use omega_analyzer::generics::GenericParam;
 use omega_analyzer::generics::GenericSubstitution;
 use omega_analyzer::resolved_type::{
     ConstValue, FunctionNamespace, ResolvedConformance, ResolvedGenericArg, ResolvedMethod,
     ResolvedSpecType, ResolvedType,
 };
 use omega_analyzer::resolver::{
-    GenericLiteralSignature, GenericOwnerFunctionSignature, GenericSignature, ImportTarget,
-    ItemAccess, ItemNamespace, ModuleResolver, OverloadCandidate, OverloadCandidates, ResolveError,
-    ResolveItemOptions, ResolvedAlias, ResolvedItem, ResolvedOverloadSet,
+    GenericLiteralSignature, GenericOwnerFunctionSignature, ImportTarget, ItemAccess,
+    ItemNamespace, ModuleResolver, OverloadCandidate, OverloadCandidates, OverloadTemplate,
+    ResolveError, ResolveItemOptions, ResolvedAlias, ResolvedItem, ResolvedOverloadSet,
 };
 use omega_analyzer::similarity::best_match;
 use omega_hir::{HirFunctionDef, HirGenericParam, HirId, HirItem};
 use omega_hir::{ItemPath, ModulePath};
-use omega_parser::prelude::{FunctionType, GenericArg, Ident, Path, Type, Visibility};
+use omega_parser::prelude::{Ident, Type, Visibility};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -566,14 +568,11 @@ impl Driver {
         let owner = omega_analyzer::analysis::item_site(
             &self.modules.parsed(alias_module).hir.items[index],
         );
+        let generics = &GenericParam::declared(owner.id, generics);
         let generic_args =
             self.pad_generic_defaults(alias_module, alias_name, owner, generics, generic_args)?;
         let generic_args = generic_args.as_slice();
-        let substitution: GenericSubstitution = generics
-            .iter()
-            .map(|g| g.ident.clone())
-            .zip(generic_args.iter().cloned())
-            .collect();
+        let substitution = GenericSubstitution::zip(generics, generic_args);
         match self.check_generic_bounds(alias_module, owner, generics, generic_args) {
             Some(Ok(_)) => {}
             Some(Err(error)) => return Err(error),
@@ -796,10 +795,18 @@ impl ModuleResolver for Driver {
     fn item_generic_params(
         &mut self,
         absolute_path: &ItemPath,
-    ) -> Result<Option<Vec<HirGenericParam>>, ResolveError> {
+    ) -> Result<Option<Vec<GenericParam>>, ResolveError> {
         let (name, module_path) = (&absolute_path.name, &absolute_path.module);
         match self.declared_alias(module_path, name)? {
-            Some(ResolvedAlias::Type { generics, .. }) => return Ok(Some(generics)),
+            Some(ResolvedAlias::Type { generics, .. }) => {
+                let index = self
+                    .alias_index(module_path, name)?
+                    .expect("the alias was just resolved from this module");
+                let owner = omega_analyzer::analysis::item_site(
+                    &self.modules.parsed(module_path).hir.items[index],
+                );
+                return Ok(Some(GenericParam::declared(owner.id, &generics)));
+            }
             Some(
                 ResolvedAlias::Item(target)
                 | ResolvedAlias::Overloads {
@@ -836,7 +843,7 @@ impl ModuleResolver for Driver {
                     module_path,
                     name,
                     owner,
-                    &generics,
+                    &GenericParam::declared(owner.id, &generics),
                     arguments,
                 );
             }
@@ -880,7 +887,7 @@ impl ModuleResolver for Driver {
     fn generic_function_signature(
         &mut self,
         absolute_path: &ItemPath,
-    ) -> Result<Option<GenericSignature>, ResolveError> {
+    ) -> Result<Option<OverloadTemplate>, ResolveError> {
         let absolute_path = self.canonical_query_path(absolute_path);
         let (name, module_path) = (&absolute_path.name, &absolute_path.module);
         let Ok(index) = self.local_item_index(module_path, name) else {
@@ -891,20 +898,22 @@ impl ModuleResolver for Driver {
             return Ok(None);
         };
         let f = f.clone();
-        let f = self.normalized_function(module_path, &f)?;
-        if f.generics.is_empty() {
+        let normalized = self.normalized_function(module_path, &f)?;
+        if normalized.generics.is_empty() {
             return Ok(None);
         }
+        let run = self.with_analyzer(
+            module_path,
+            &GenericSubstitution::new(),
+            AnalysisSite::new(f.id, f.span),
+            |analyzer| analyzer.normalized_overload_template(&normalized, &[], None),
+        );
+        let template = run.result.ok_or_else(|| ResolveError::ItemFailed {
+            module: module_path.clone(),
+            item: name.clone(),
+        })?;
         let origin = self.modules.definition_origin(module_path);
-        Ok(Some(GenericSignature {
-            generics: anchor_generics(&f.generics, origin),
-            params: f
-                .params
-                .iter()
-                .map(|p| anchor_type(&p.r#type, origin))
-                .collect(),
-            return_type: anchor_type(&f.return_type, origin),
-        }))
+        Ok(Some(anchor_template(template, origin)))
     }
 
     fn generic_literal_signature(
@@ -917,47 +926,54 @@ impl ModuleResolver for Driver {
         let Ok(index) = self.local_item_index(module_path, name) else {
             return Ok(None);
         };
-        let (generics, fields) = match (&self.modules.parsed(module_path).hir.items[index], variant)
-        {
-            (HirItem::Struct(s), None) => (
-                &s.generics,
-                s.fields
-                    .iter()
-                    .map(|f| (f.ident.clone(), f.r#type.clone()))
-                    .collect(),
-            ),
-            (HirItem::Union(u), None) => (
-                &u.generics,
-                u.fields
-                    .iter()
-                    .map(|f| (f.ident.clone(), f.r#type.clone()))
-                    .collect(),
-            ),
-            (HirItem::Enum(e), Some(variant_name)) => {
-                let Some(v) = e.variants.iter().find(|v| &v.name == variant_name) else {
-                    return Ok(None);
-                };
-                let fields: Vec<(Ident, Type)> = e
-                    .dynamic_fields
-                    .iter()
-                    .chain(v.fields.iter())
-                    .map(|f| (f.ident.clone(), f.r#type.clone()))
-                    .collect();
-                (&e.generics, fields)
-            }
-            _ => return Ok(None),
-        };
+        let (generics, fields): (&Vec<HirGenericParam>, Vec<(Ident, Type)>) =
+            match (&self.modules.parsed(module_path).hir.items[index], variant) {
+                (HirItem::Struct(s), None) => (
+                    &s.generics,
+                    s.fields
+                        .iter()
+                        .map(|f| (f.ident.clone(), f.r#type.clone()))
+                        .collect(),
+                ),
+                (HirItem::Union(u), None) => (
+                    &u.generics,
+                    u.fields
+                        .iter()
+                        .map(|f| (f.ident.clone(), f.r#type.clone()))
+                        .collect(),
+                ),
+                (HirItem::Enum(e), Some(variant_name)) => {
+                    let Some(v) = e.variants.iter().find(|v| &v.name == variant_name) else {
+                        return Ok(None);
+                    };
+                    let fields: Vec<(Ident, Type)> = e
+                        .dynamic_fields
+                        .iter()
+                        .chain(v.fields.iter())
+                        .map(|f| (f.ident.clone(), f.r#type.clone()))
+                        .collect();
+                    (&e.generics, fields)
+                }
+                _ => return Ok(None),
+            };
         if generics.is_empty() {
             return Ok(None);
         }
-        let generics = generics.clone();
+        let site = omega_analyzer::analysis::item_site(&self.modules.hir(module_path).items[index]);
+        let generics = GenericParam::declared(site.id, generics);
+        let (names, types): (Vec<Ident>, Vec<Type>) = fields.into_iter().unzip();
+        let run = self.with_analyzer(module_path, &GenericSubstitution::new(), site, |analyzer| {
+            analyzer.declaration_patterns(site.id, site.span, &generics, &types)
+        });
+        let (patterns, comp_types) = run.result.ok_or_else(|| ResolveError::ItemFailed {
+            module: module_path.clone(),
+            item: name.clone(),
+        })?;
         let origin = self.modules.definition_origin(module_path);
         Ok(Some(GenericLiteralSignature {
             generics: anchor_generics(&generics, origin),
-            fields: fields
-                .into_iter()
-                .map(|(name, r#type)| (name, anchor_type(&r#type, origin)))
-                .collect(),
+            fields: names.into_iter().zip(patterns).collect(),
+            comp_types,
         }))
     }
 
@@ -995,24 +1011,27 @@ impl ModuleResolver for Driver {
         let Some(f) = f else {
             return Ok(None);
         };
-        let owner_generics = owner_generics.to_vec();
-        let generics: Vec<Ident> = owner_generics.iter().map(|g| g.ident.clone()).collect();
-        let function_generics = f.generics.iter().map(|g| g.ident.clone()).collect();
-        // A member's synthetic receiver is written in terms of `Self`, which
-        // inference cannot solve; the owner applied to its own generic
-        // parameters is the same type and is solvable.
-        let params: Vec<Type> = f
-            .params
-            .iter()
-            .map(|p| rewrite_self(&p.r#type, name, &generics))
-            .collect();
-        let return_type = rewrite_self(&f.return_type, name, &generics);
+        let site = omega_analyzer::analysis::item_site(&self.modules.hir(module_path).items[index]);
+        let owner_generics = GenericParam::declared(site.id, owner_generics);
+        let f = f.clone();
+        let normalized = self.normalized_function(module_path, &f)?;
+        let run = self.with_analyzer(module_path, &GenericSubstitution::new(), site, |analyzer| {
+            let self_pattern = analyzer.owner_self_pattern(
+                site.id,
+                site.span,
+                &owner_absolute,
+                &owner_generics,
+            )?;
+            analyzer.normalized_overload_template(&normalized, &owner_generics, Some(&self_pattern))
+        });
+        let template = run.result.ok_or_else(|| ResolveError::ItemFailed {
+            module: module_path.clone(),
+            item: name.clone(),
+        })?;
         let origin = self.modules.definition_origin(module_path);
         Ok(Some(GenericOwnerFunctionSignature {
-            function_generics,
-            params: params.iter().map(|p| anchor_type(p, origin)).collect(),
-            return_type: anchor_type(&return_type, origin),
-            owner_generics: anchor_generics(&owner_generics, origin),
+            template: anchor_template(template, origin),
+            owner_generics: owner_generics.len(),
         }))
     }
 
@@ -1335,92 +1354,5 @@ impl ModuleResolver for Driver {
 
     fn resolve_comp_value(&mut self, decl_id: HirId) -> Option<ConstValue> {
         self.items.comp_values.get(&decl_id).cloned()
-    }
-}
-
-fn rewrite_self(ty: &Type, owner: &Ident, owner_generics: &[Ident]) -> Type {
-    match ty {
-        Type::Named(path) if path.is_unqualified() && &path.head == &Ident("Self".to_string()) => {
-            Type::Generic(
-                Path::from(owner.clone()),
-                owner_generics
-                    .iter()
-                    .map(|generic| GenericArg::Type(Type::Named(Path::from(generic.clone()))))
-                    .collect(),
-            )
-        }
-        Type::Pointer(inner, mutable) => Type::Pointer(
-            Box::new(rewrite_self(inner, owner, owner_generics)),
-            *mutable,
-        ),
-        Type::InferredArray(inner) => {
-            Type::InferredArray(Box::new(rewrite_self(inner, owner, owner_generics)))
-        }
-        Type::UnknownSizeArray(inner) => {
-            Type::UnknownSizeArray(Box::new(rewrite_self(inner, owner, owner_generics)))
-        }
-        Type::SizedArray(inner, n) => Type::SizedArray(
-            Box::new(rewrite_self(inner, owner, owner_generics)),
-            n.clone(),
-        ),
-        Type::SpecStatic(members) => Type::SpecStatic(
-            members
-                .iter()
-                .map(|m| rewrite_self(m, owner, owner_generics))
-                .collect(),
-        ),
-        Type::Generic(path, args) => Type::Generic(
-            path.clone(),
-            args.iter()
-                .map(|arg| match arg {
-                    GenericArg::Type(inner) => {
-                        GenericArg::Type(rewrite_self(inner, owner, owner_generics))
-                    }
-                    GenericArg::Value(_) | GenericArg::Infer => arg.clone(),
-                })
-                .collect(),
-        ),
-        Type::Function(f) => Type::Function(FunctionType {
-            params: f
-                .params
-                .iter()
-                .map(|p| omega_parser::prelude::FunctionTypeParam {
-                    r#type: rewrite_self(&p.r#type, owner, owner_generics),
-                    ..p.clone()
-                })
-                .collect(),
-            return_type: Box::new(rewrite_self(&f.return_type, owner, owner_generics)),
-            is_variadic: f.is_variadic,
-            self_mode: f.self_mode,
-            convention: f.convention.clone(),
-        }),
-        other => other.clone(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn ident(name: &str) -> Ident {
-        Ident(name.to_string())
-    }
-
-    #[test]
-    fn import_cycle_path_preserves_resolution_order() {
-        let first = (ModulePath::new([ident("a")]), ident("x"));
-        let second = (ModulePath::new([ident("b")]), ident("y"));
-        let mut state = ImportState::default();
-        state.begin_resolution(&first);
-        state.begin_resolution(&second);
-
-        assert_eq!(
-            state.cycle_path(&first),
-            vec![
-                ModulePath::new([ident("a")]).join(ident("x")),
-                ModulePath::new([ident("b")]).join(ident("y")),
-                ModulePath::new([ident("a")]).join(ident("x")),
-            ]
-        );
     }
 }

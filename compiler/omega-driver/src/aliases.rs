@@ -403,7 +403,7 @@ impl Driver {
         // An alias's own generic parameter stands for a type supplied later;
         // it is not itself a template, so it takes no arguments.
         if path.is_unqualified() && placeholders.contains(&path.head) {
-            Self::check_generic_arity(module_path, &path.head, &[], args.len())?;
+            Self::check_generic_arity(module_path, &path.head, std::iter::empty(), args.len())?;
             if expect_spec {
                 return Err(invalid(path.head.to_string(), "the generic parameter"));
             }
@@ -418,7 +418,7 @@ impl Driver {
             && (omega_analyzer::is_reserved_type_name(path.head.as_ref())
                 || path.head.as_ref() == "Self")
         {
-            Self::check_generic_arity(module_path, &path.head, &[], args.len())?;
+            Self::check_generic_arity(module_path, &path.head, std::iter::empty(), args.len())?;
             if expect_spec {
                 return Err(invalid(path.head.to_string(), "the non-spec type"));
             }
@@ -455,7 +455,12 @@ impl Driver {
                     Err(invalid(absolute.to_string(), "the overload set"))
                 }
                 ResolvedAlias::Type { generics, r#type } => {
-                    Self::check_generic_arity(&module, &name, &generics, args.len())?;
+                    Self::check_generic_arity(
+                        &module,
+                        &name,
+                        generics.iter().map(|g| g.default.is_some()),
+                        args.len(),
+                    )?;
                     if expect_spec {
                         let instantiated = Self::instantiate_alias_type_syntax(
                             &module, &name, &generics, &r#type, args,
@@ -483,7 +488,12 @@ impl Driver {
                         access.bypass_visibility,
                     )?;
                     let generics = self.item_generics(&target_module, &target_name)?;
-                    Self::check_generic_arity(&target_module, &target_name, &generics, args.len())
+                    Self::check_generic_arity(
+                        &target_module,
+                        &target_name,
+                        generics.iter().map(|g| g.default.is_some()),
+                        args.len(),
+                    )
                 }
             };
         }
@@ -516,7 +526,7 @@ impl Driver {
             return Self::check_generic_arity(
                 &ambient_module,
                 &ambient_name,
-                &generics,
+                generics.iter().map(|g| g.default.is_some()),
                 args.len(),
             );
         }
@@ -530,7 +540,12 @@ impl Driver {
             access.bypass_visibility,
         )?;
         let generics = self.item_generics(&module, &name)?;
-        Self::check_generic_arity(&module, &name, &generics, args.len())
+        Self::check_generic_arity(
+            &module,
+            &name,
+            generics.iter().map(|g| g.default.is_some()),
+            args.len(),
+        )
     }
 
     /// Validates syntax that is required to denote a spec: a generic bound,
@@ -584,7 +599,12 @@ impl Driver {
         r#type: &Type,
         args: &[GenericArg],
     ) -> Result<Type, ResolveError> {
-        Self::check_generic_arity(module, name, generics, args.len())?;
+        Self::check_generic_arity(
+            module,
+            name,
+            generics.iter().map(|g| g.default.is_some()),
+            args.len(),
+        )?;
         let mut subst = Vec::with_capacity(generics.len());
         for (index, generic) in generics.iter().enumerate() {
             let argument = match (args.get(index), &generic.default) {
@@ -605,18 +625,21 @@ impl Driver {
     /// parameter left unsupplied must have a default. This is the same rule
     /// a use site applies, checked here so a malformed application is
     /// reported even when the alias is never used.
+    ///
+    /// `defaulted` says, per declared parameter, whether it has a default.
     fn check_generic_arity(
         module: &ModulePath,
         name: &Ident,
-        generics: &[HirGenericParam],
+        defaulted: impl ExactSizeIterator<Item = bool>,
         found: usize,
     ) -> Result<(), ResolveError> {
-        let required = generics.iter().filter(|g| g.default.is_none()).count();
-        if found > generics.len() || found < required {
+        let declared = defaulted.len();
+        let required = defaulted.filter(|defaulted| !defaulted).count();
+        if found > declared || found < required {
             return Err(ResolveError::GenericArgCountMismatch {
                 module: module.clone(),
                 item: name.clone(),
-                expected: generics.len(),
+                expected: declared,
                 found,
             });
         }
@@ -1092,8 +1115,8 @@ impl Driver {
         &mut self,
         module_path: &ModulePath,
         f: &omega_hir::HirFunctionDef,
-    ) -> Result<omega_hir::HirFunctionDef, ResolveError> {
-        omega_analyzer::generics::normalize_static_spec_params(self, module_path, f)
+    ) -> Result<omega_analyzer::generics::NormalizedFunction, ResolveError> {
+        omega_analyzer::generics::normalize_function(self, module_path, f)
     }
 
     /// Forces every alias in a module so an alias that is never used still

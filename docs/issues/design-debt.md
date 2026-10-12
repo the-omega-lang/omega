@@ -91,33 +91,18 @@ want the numeric tag for logging/serialization/FFI alongside a match),
 exhaustiveness checking gets categorically weaker with no warning that anything
 changed.
 
-### A static-spec parameter's synthesized generic uses a fabricated impossible-source name instead of a real identity
+### Annotation holes are synthesized parameters with fabricated names
 
-`normalize_static_spec_params` (`omega-analyzer/src/generics.rs`) rewrites
-`f(x: spec A + B)` into an ordinary anonymous bounded generic parameter so
-the rest of the compiler can treat a static-spec parameter exactly like any
-other generic. The synthesized parameter's identity is
-`Ident(format!("$Param{index}"))` — a string that can never collide with a
-real source identifier (`$` is not legal in Omega identifier syntax), used
-purely as a collision-safe internal name rather than a semantic
-generic-parameter identity with its own origin/provenance metadata.
+A binding annotation's `_` holes are solved by rewriting each one to a
+synthesized `$Hole{n}` generic parameter (`analysis/items/holes.rs`), building
+the annotation's pattern by looking those names up, and re-resolving the
+annotation under a substitution that binds them. Inference itself is
+positional, but the holes still reach their positions through names no source
+can write, the same shape the old `$ParamN` static-spec parameters had.
 
-This is deliberate, collision-safe compatibility representation, not a
-correctness bug: two different static-spec parameters in the same function
-get distinct `$Param0`/`$Param1` names, and nothing currently depends on the
-name meaning more than "this slot." The debt is that a real generic
-parameter has an origin-tracked identity a diagnostic or downstream query can
-point at meaningfully, while `$ParamN` is source-position-shaped text with no
-backing declaration — a diagnostic that needs to name *this* parameter
-specifically (rather than pointing at the parameter's own span, which still
-works fine today) has nothing better to say than the fabricated name.
-
-The fix is a real `GenericParamId`/anonymous generic-node representation with
-its own origin metadata, replacing the current `Ident`-keyed fabrication
-everywhere a generic parameter's identity is threaded (substitution maps,
-bound-checking, alias-application obligations). Breaking: touches every
-generic-parameter-keyed data structure across the analyzer and driver, so it
-is its own dedicated task rather than a local patch.
+The structural fix is to build the annotation pattern directly from the
+written syntax, with each hole a position of its own, and to materialize the
+solved annotation from that pattern rather than from rewritten syntax.
 
 ### `CodegenRequest::entry` outlives the phase that owns entry-point identity
 

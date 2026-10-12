@@ -290,7 +290,7 @@ impl<'r> Analyzer<'r> {
             {
                 None => determined.push(entry),
                 Some(position) => {
-                    let parameter = template.generics[position].ident.clone();
+                    let parameter = template.generics[position].label();
                     undetermined.get_or_insert((entry.written.is_hole(position), parameter));
                 }
             }

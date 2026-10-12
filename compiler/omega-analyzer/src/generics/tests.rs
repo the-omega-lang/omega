@@ -1,16 +1,10 @@
 use super::pattern::{ArgumentPattern, TypePattern};
 use super::*;
+use crate::resolved_type::CompScalarType;
 use omega_parser::prelude::Path;
 
 fn named(name: &str) -> Type {
     Type::Named(Path::from(Ident(name.into())))
-}
-
-fn pair(a: Type, b: Type) -> Type {
-    Type::Generic(
-        Path::from(Ident("Pair".into())),
-        vec![GenericArg::Type(a), GenericArg::Type(b)],
-    )
 }
 
 fn pair_pattern(a: TypePattern, b: TypePattern) -> TypePattern {
@@ -23,52 +17,39 @@ fn pair_pattern(a: TypePattern, b: TypePattern) -> TypePattern {
     )
 }
 
-fn unify(params: &[HirGenericParam], raw: &Type, expected: &TypePattern) -> GenericSubstitution {
-    let comp_types = vec![None; params.len()];
-    let generics = GenericParams {
-        params,
-        comp_types: &comp_types,
-        pointer_bits: 64,
-    };
-    let mut subst = GenericSubstitution::new();
-    unify_generic_pattern(&generics, raw, expected, &mut subst);
-    subst
-}
-
 #[test]
 fn a_known_part_binds_the_parameter_it_meets() {
-    let params = [HirGenericParam::r#type(Ident("T".into()), vec![], None)];
-    let subst = unify(
-        &params,
-        &pair(named("T"), named("T")),
+    let bindings = seed(
+        &pair_pattern(TypePattern::Parameter(0), TypePattern::Parameter(0)),
         &pair_pattern(
             TypePattern::Parameter(0),
             TypePattern::Fixed(ResolvedType::U8),
         ),
+        vec![None],
     );
-    assert_eq!(
-        subst.get(&Ident("T".into())),
-        Some(&ResolvedGenericArg::Type(ResolvedType::U8))
-    );
+    assert_eq!(bindings, vec![bound(ResolvedType::U8)]);
 }
 
 #[test]
 fn a_hole_binds_nothing() {
-    let params = [HirGenericParam::r#type(Ident("T".into()), vec![], None)];
-    let subst = unify(
-        &params,
-        &pair(named("T"), named("T")),
+    let bindings = seed(
+        &pair_pattern(TypePattern::Parameter(0), TypePattern::Parameter(0)),
         &pair_pattern(TypePattern::Parameter(0), TypePattern::Parameter(1)),
+        vec![None],
     );
-    assert!(subst.is_empty());
+    assert_eq!(bindings, vec![None]);
 }
 
 #[test]
 fn structure_is_followed_through_pointers() {
-    let params = [HirGenericParam::r#type(Ident("T".into()), vec![], None)];
-    let subst = unify(
-        &params,
-        &Type::Pointer(Box::new(pair(named("T"), named("u8"))), false),
+    let bindings = seed(
+        &TypePattern::Pointer(
+            Box::new(pair_pattern(
+                TypePattern::Parameter(0),
+                TypePattern::Fixed(ResolvedType::U8),
+            )),
+            false,
+        ),
         &TypePattern::Pointer(
             Box::new(pair_pattern(
                 TypePattern::Fixed(ResolvedType::I64),
@@ -76,11 +57,9 @@ fn structure_is_followed_through_pointers() {
             )),
             false,
         ),
+        vec![None],
     );
-    assert_eq!(
-        subst.get(&Ident("T".into())),
-        Some(&ResolvedGenericArg::Type(ResolvedType::I64))
-    );
+    assert_eq!(bindings, vec![bound(ResolvedType::I64)]);
 }
 
 fn ty(pattern: TypePattern) -> ArgumentPattern {
@@ -288,46 +267,31 @@ fn mismatched_argument_kinds_bind_nothing() {
     assert_eq!(seed(&callee, &expected, vec![None, None]), vec![None, None]);
 }
 
-fn inferred_args(
-    params: &[HirGenericParam],
-    bound: &[(&str, ResolvedType)],
-) -> Result<Vec<Option<ResolvedGenericArg>>, Ident> {
-    let comp_types = vec![None; params.len()];
-    let generics = GenericParams {
-        params,
-        comp_types: &comp_types,
-        pointer_bits: 64,
-    };
-    let mut subst = GenericSubstitution::new();
-    for (name, r#type) in bound {
-        subst.push(
-            Ident((*name).into()),
-            ResolvedGenericArg::Type(r#type.clone()),
-        );
+fn param(index: u32, name: &str, default: Option<&str>) -> GenericParam {
+    GenericParam {
+        id: GenericParamId {
+            owner: omega_hir::HirId {
+                module: omega_hir::ModuleId(0),
+                local: 0,
+            },
+            index,
+        },
+        name: Some(Ident(name.into())),
+        origin: GenericParamOrigin::Written,
+        kind: GenericParamKind::Type { bounds: vec![] },
+        default: default.map(|default| GenericArg::Type(named(default))),
     }
-    resolve_inferred_generic_args(&generics, &subst)
 }
 
 #[test]
 fn an_unbound_defaulted_parameter_is_a_gap_at_any_position() {
     let params = [
-        HirGenericParam::r#type(
-            Ident("T".into()),
-            vec![],
-            Some(GenericArg::Type(named("u16"))),
-        ),
-        HirGenericParam::r#type(
-            Ident("U".into()),
-            vec![],
-            Some(GenericArg::Type(named("u32"))),
-        ),
-        HirGenericParam::r#type(
-            Ident("V".into()),
-            vec![],
-            Some(GenericArg::Type(named("u64"))),
-        ),
+        param(0, "T", Some("u16")),
+        param(1, "U", Some("u32")),
+        param(2, "V", Some("u64")),
     ];
-    let args = inferred_args(&params, &[("U", ResolvedType::U8)]).unwrap();
+    let args =
+        resolve_inferred_generic_args(&params, &[None, bound(ResolvedType::U8), None]).unwrap();
     assert!(matches!(
         args.as_slice(),
         [None, Some(ResolvedGenericArg::Type(ResolvedType::U8)), None]
@@ -335,15 +299,9 @@ fn an_unbound_defaulted_parameter_is_a_gap_at_any_position() {
 }
 
 #[test]
-fn an_unbound_parameter_without_a_default_is_reported_by_name() {
-    let params = [
-        HirGenericParam::r#type(Ident("T".into()), vec![], None),
-        HirGenericParam::r#type(
-            Ident("U".into()),
-            vec![],
-            Some(GenericArg::Type(named("u32"))),
-        ),
-    ];
-    let missing = inferred_args(&params, &[("U", ResolvedType::U8)]).unwrap_err();
-    assert_eq!(missing.as_ref(), "T");
+fn an_unbound_parameter_without_a_default_is_reported_by_position() {
+    let params = [param(0, "T", None), param(1, "U", Some("u32"))];
+    let missing =
+        resolve_inferred_generic_args(&params, &[None, bound(ResolvedType::U8)]).unwrap_err();
+    assert_eq!(missing, 0);
 }

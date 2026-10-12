@@ -3,10 +3,11 @@ use crate::items::{CheckedBody, ItemKey};
 use omega_analyzer::analysis::{AnalysisSite, Analyzer};
 use omega_analyzer::checked::{CheckedEnumDef, CheckedItem, CheckedStructDef, CheckedUnionDef};
 use omega_analyzer::error::{AnalysisError, AnalysisErrorKind};
+use omega_analyzer::generics::GenericParam;
 use omega_analyzer::generics::GenericSubstitution;
 use omega_analyzer::resolved_type::{ResolvedFunctionType, ResolvedGenericArg, ResolvedType};
 use omega_analyzer::resolver::ResolvedItem;
-use omega_hir::{HirGenericParam, HirItem, ModulePath};
+use omega_hir::{HirItem, ModulePath};
 use omega_parser::prelude::Ident;
 
 trait CheckedAggregate: Sized {
@@ -139,8 +140,8 @@ impl Driver {
                 let generics = self
                     .normalized_function(key.module(), f)
                     .map(|f| f.generics)
-                    .unwrap_or_else(|_| f.generics.clone());
-                let substitution = Self::substitution(&generics, &key.generic_args);
+                    .unwrap_or_else(|_| GenericParam::declared(f.id, &f.generics));
+                let substitution = GenericSubstitution::zip(&generics, &key.generic_args);
                 let declared = self
                     .items
                     .declared_bounds
@@ -191,7 +192,7 @@ impl Driver {
                 self.check_aggregate_body(
                     key,
                     AnalysisSite::new(s.id, s.span),
-                    &s.generics,
+                    &GenericParam::declared(s.id, &s.generics),
                     self_type,
                     |a| a.check_struct_body(s, &cell),
                 )
@@ -206,7 +207,7 @@ impl Driver {
                 self.check_aggregate_body(
                     key,
                     AnalysisSite::new(e.id, e.span),
-                    &e.generics,
+                    &GenericParam::declared(e.id, &e.generics),
                     self_type,
                     |a| a.check_enum_body(e, &cell),
                 )
@@ -218,7 +219,7 @@ impl Driver {
                 self.check_aggregate_body(
                     key,
                     AnalysisSite::new(u.id, u.span),
-                    &u.generics,
+                    &GenericParam::declared(u.id, &u.generics),
                     self_type,
                     |a| a.check_union_body(u, &cell),
                 )
@@ -266,12 +267,12 @@ impl Driver {
         &mut self,
         key: &ItemKey,
         owner: AnalysisSite,
-        generics: &[HirGenericParam],
+        generics: &[GenericParam],
         self_type: ResolvedType,
         check: impl FnOnce(&mut Analyzer) -> Option<C>,
     ) -> Option<CheckedBody> {
-        let mut substitution = Self::substitution(generics, &key.generic_args);
-        substitution.push_type(Ident("Self".to_string()), self_type.clone());
+        let substitution =
+            GenericSubstitution::zip(generics, &key.generic_args).with_self_type(self_type.clone());
 
         let declared = self
             .items
@@ -307,17 +308,6 @@ impl Driver {
                 unreachable!("a declaration's own resolved item is always a value")
             }
         }
-    }
-
-    fn substitution(
-        generics: &[HirGenericParam],
-        generic_args: &[ResolvedGenericArg],
-    ) -> GenericSubstitution {
-        generics
-            .iter()
-            .map(|g| g.ident.clone())
-            .zip(generic_args.iter().cloned())
-            .collect()
     }
 }
 

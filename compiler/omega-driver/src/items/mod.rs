@@ -4,13 +4,14 @@ use omega_analyzer::analysis::{AnalysisSite, Analyzer, item_site, item_visibilit
 use omega_analyzer::annotations::ResolvedAnnotations;
 use omega_analyzer::checked::{CheckedItem, Storage};
 use omega_analyzer::error::AnalysisWarning;
+use omega_analyzer::generics::{GenericParam, NormalizedFunction};
 use omega_analyzer::resolved_type::{
     ResolvedBound, ResolvedEnumType, ResolvedFunctionType, ResolvedGenericArg, ResolvedMethod,
     ResolvedSpecType, ResolvedStructType, ResolvedType, ResolvedUnionType,
 };
 use omega_analyzer::resolver::{ResolveError, ResolveItemOptions, ResolvedItem};
 use omega_diagnostics::Span;
-use omega_hir::{HirFunctionDef, HirGenericParam, HirId, HirItem, SYNTHETIC_MODULE};
+use omega_hir::{HirFunctionDef, HirId, HirItem, SYNTHETIC_MODULE};
 use omega_hir::{ItemPath, ModulePath};
 use omega_parser::prelude::{Ident, Type, Visibility};
 use std::cell::RefCell;

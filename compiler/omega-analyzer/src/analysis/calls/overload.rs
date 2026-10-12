@@ -23,7 +23,7 @@ pub(crate) enum Applicability {
 pub(crate) enum Rejection {
     Selector(usize),
     UnmetBound(UnmetBound),
-    Undetermined(Ident),
+    Undetermined(String),
 }
 
 impl Rejection {
@@ -36,7 +36,7 @@ impl Rejection {
                 unmet.spec.as_ref()
             ),
             Self::Undetermined(parameter) => {
-                format!(" -- '{}' is not determined here", parameter.as_ref())
+                format!(" -- '{parameter}' is not determined here")
             }
         }
     }
@@ -430,7 +430,7 @@ impl<'r> Analyzer<'r> {
                     if written.selectors.get(position).is_some_and(Option::is_some) {
                         rejected.push((
                             index,
-                            Rejection::Undetermined(template.generics[position].ident.clone()),
+                            Rejection::Undetermined(template.generics[position].label()),
                         ));
                     }
                     continue;

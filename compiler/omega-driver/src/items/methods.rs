@@ -1,5 +1,5 @@
 use super::*;
-use crate::anchoring::{anchor_generics, anchor_type};
+use crate::anchoring::anchor_template;
 use omega_analyzer::checked::{CheckedMethodOwner, ConformanceOwner};
 use omega_analyzer::generics::GenericSubstitution;
 use omega_analyzer::resolved_type::{FunctionNamespace, ResolvedBound, ResolvedGenericArg};
@@ -9,12 +9,12 @@ use omega_analyzer::resolver::{GenericMethodTemplate, OverloadCandidate, Overloa
 /// instantiation it was reached through binds for it.
 struct MethodTemplate {
     key: ItemKey,
-    function: HirFunctionDef,
+    function: NormalizedFunction,
     site: AnalysisSite,
-    /// The owner's generic arguments and `Self`, with any name the method's
-    /// own generics shadow removed: an inner `T` must bind from the call, not
-    /// from the owner that happens to spell a parameter the same way.
-    owner_substitution: GenericSubstitution,
+    /// The owner's generic arguments and `Self`. A method parameter that
+    /// spells an owner parameter's name shadows it lexically; their
+    /// identities stay distinct.
+    enclosing: GenericSubstitution,
     conformance_owner: Option<ConformanceOwner>,
     enclosing_bounds: Vec<ResolvedBound>,
 }
@@ -77,9 +77,9 @@ impl Driver {
         for template in templates {
             let run = self.with_analyzer(
                 template.key.module(),
-                &template.owner_substitution,
+                &template.enclosing,
                 template.site,
-                |analyzer| analyzer.overload_template(&template.function),
+                |analyzer| analyzer.normalized_overload_template(&template.function, &[], None),
             );
             let pattern = run.result.ok_or_else(|| template.key.failed())?;
             let decl_id = self.items.fresh_synthetic_id();
@@ -88,7 +88,7 @@ impl Driver {
             candidates.push(OverloadCandidate {
                 decl_id,
                 signature: omega_analyzer::resolver::OverloadSignature::Template(pattern),
-                visibility: template.function.visibility,
+                visibility: template.function.function.visibility,
                 declaring_module,
             });
         }
@@ -107,17 +107,17 @@ impl Driver {
         let Some(template) = self.find_generic_method(owner, name, namespace)? else {
             return Ok(None);
         };
+        let run = self.with_analyzer(
+            template.key.module(),
+            &template.enclosing,
+            template.site,
+            |analyzer| analyzer.normalized_overload_template(&template.function, &[], None),
+        );
+        let signature = run.result.ok_or_else(|| template.key.failed())?;
         let origin = self.modules.definition_origin(template.key.module());
         Ok(Some(GenericMethodTemplate {
-            params: template
-                .function
-                .params
-                .iter()
-                .map(|p| anchor_type(&p.r#type, origin))
-                .collect(),
-            return_type: anchor_type(&template.function.return_type, origin),
-            generics: anchor_generics(&template.function.generics, origin),
-            owner_substitution: template.owner_substitution,
+            template: anchor_template(signature, origin),
+            enclosing: template.enclosing,
         }))
     }
 
@@ -147,7 +147,7 @@ impl Driver {
         let generic_args = self.complete_overload_arguments(
             key,
             &template.function,
-            &template.owner_substitution,
+            &template.enclosing,
             generic_args,
         )?;
         self.instantiate_method_template(template, &generic_args)
@@ -160,7 +160,7 @@ impl Driver {
     ) -> Result<ResolvedMethod, ResolveError> {
         let generic_args = self.pad_generic_defaults(
             template.key.module(),
-            &template.function.name,
+            &template.function.function.name,
             template.site,
             &template.function.generics,
             generic_args,
@@ -169,7 +169,7 @@ impl Driver {
             generic_args,
             ..template.key.clone()
         };
-        let visibility = template.function.visibility;
+        let visibility = template.function.function.visibility;
         let item =
             self.ensure_item_query(&key, visibility, ResolveItemOptions::INDIRECT, |driver| {
                 driver.compute_method_signature(&key, &template)
@@ -201,7 +201,7 @@ impl Driver {
         let declared = match self.check_generic_bounds_under(
             key.module(),
             template.site,
-            &template.owner_substitution,
+            &template.enclosing,
             &template.function.generics,
             &key.generic_args,
         ) {
@@ -211,14 +211,15 @@ impl Driver {
         };
         self.items.declared_bounds.insert(key.clone(), declared);
         let substitution = Self::method_substitution(template, &key.generic_args);
-        let site = AnalysisSite::new(template.function.id, template.function.span);
+        let function = &template.function.function;
+        let site = AnalysisSite::new(function.id, function.span);
         let signature = self.with_analyzer(key.module(), &substitution, site, |analyzer| {
-            analyzer.collect_function_signature(&template.function)
+            analyzer.collect_function_signature(function)
         });
         self.diagnostics
             .record_warnings(key.module(), signature.warnings);
         let (fn_type, annotations) = signature.result.ok_or_else(|| key.failed())?;
-        let decl_id = self.items.identity_for(key, template.function.id);
+        let decl_id = self.items.identity_for(key, template.function.function.id);
         self.items.function_annotations.insert(decl_id, annotations);
         Ok(ResolvedItem::Value {
             decl_id,
@@ -242,7 +243,7 @@ impl Driver {
         let descriptor = if template.function.generics.is_empty() {
             None
         } else {
-            Some(self.template_descriptor(key, &template.function, &template.owner_substitution)?)
+            Some(self.template_descriptor(key, &template.function.function, &template.enclosing)?)
         };
         let substitution = Self::method_substitution(&template, &key.generic_args);
         let declared = self
@@ -253,9 +254,10 @@ impl Driver {
             .unwrap_or_default();
         let mut bounds = self.method_bound_context(key, template.site, &substitution, &declared);
         bounds.extend(template.enclosing_bounds);
-        let site = AnalysisSite::new(template.function.id, template.function.span);
+        let function = &template.function.function;
+        let site = AnalysisSite::new(function.id, function.span);
         let run = self.with_analyzer_in(key.module(), &substitution, &bounds, site, |analyzer| {
-            analyzer.check_function_body(&template.function, &fn_type, decl_id, &annotations)
+            analyzer.check_function_body(function, &fn_type, decl_id, &annotations)
         });
         let mut checked = run.result?;
         checked.generic_args = key.generic_args.clone();
@@ -287,7 +289,7 @@ impl Driver {
             key: template.key,
             function: template.function,
             site: template.site,
-            enclosing: template.owner_substitution,
+            enclosing: template.enclosing,
         }
     }
 
@@ -305,7 +307,7 @@ impl Driver {
                 key: template.key,
                 function: template.function,
                 site: template.site,
-                enclosing: template.owner_substitution,
+                enclosing: template.enclosing,
             }))
     }
 
@@ -348,21 +350,17 @@ impl Driver {
         template
     }
 
-    /// The bindings one method instantiation analyzes under: its own generic
-    /// arguments first, so a parameter that shadows an owner parameter of the
-    /// same name wins, then everything the owner instantiation supplies.
+    /// The bindings one method instantiation analyzes under: everything the
+    /// owner instantiation supplies, then the method's own arguments, which
+    /// shadow an owner parameter of the same name.
     fn method_substitution(
         template: &MethodTemplate,
         generic_args: &[ResolvedGenericArg],
     ) -> GenericSubstitution {
-        let mut substitution = GenericSubstitution::zip(
-            template.function.generics.iter().map(|g| &g.ident),
+        template.enclosing.enclosing(&GenericSubstitution::zip(
+            &template.function.generics,
             generic_args,
-        );
-        for (name, arg) in template.owner_substitution.iter() {
-            substitution.push(name.clone(), arg.clone());
-        }
-        substitution
+        ))
     }
 
     fn method_bound_context(
@@ -477,30 +475,22 @@ impl Driver {
             }
             matches.push((*index, normalized));
         }
-        let mut templates = Vec::new();
-        for (index, function) in matches {
-            let mut owner_substitution = GenericSubstitution::new();
-            let shadows = |name: &Ident| function.generics.iter().any(|g| &g.ident == name);
-            for (param, arg) in generics.iter().zip(&key.generic_args) {
-                if !shadows(&param.ident) {
-                    owner_substitution.push(param.ident.clone(), arg.clone());
-                }
-            }
-            let self_name = Ident("Self".to_string());
-            if !shadows(&self_name) {
-                owner_substitution.push_type(self_name, self_type.clone());
-            }
-
-            templates.push(MethodTemplate {
-                key: ItemKey::member(key.clone(), function.name.clone(), index),
+        let enclosing = GenericSubstitution::zip(
+            &GenericParam::declared(site.id, &generics),
+            &key.generic_args,
+        )
+        .with_self_type(self_type);
+        Ok(matches
+            .into_iter()
+            .map(|(index, function)| MethodTemplate {
+                key: ItemKey::member(key.clone(), function.function.name.clone(), index),
                 site,
                 function,
-                owner_substitution,
+                enclosing: enclosing.clone(),
                 conformance_owner: None,
                 enclosing_bounds: Vec::new(),
-            });
-        }
-        Ok(templates)
+            })
+            .collect())
     }
 
     fn find_generic_conformance_methods(
@@ -524,18 +514,6 @@ impl Driver {
         }
         let mut templates = Vec::new();
         for (entry, index, mut function) in candidates {
-            let shadows = |name: &Ident| {
-                function
-                    .generics
-                    .iter()
-                    .any(|generic| &generic.ident == name)
-            };
-            let mut owner_substitution = GenericSubstitution::new();
-            for (bound, arg) in entry.substitution.iter() {
-                if !shadows(bound) {
-                    owner_substitution.push(bound.clone(), arg.clone());
-                }
-            }
             if let Some((_, requirement)) = entry
                 .spec
                 .borrow()
@@ -545,15 +523,18 @@ impl Driver {
             {
                 function.visibility = requirement.visibility;
             }
+            let key = ItemKey::member(
+                self.conformance_method_key(&entry),
+                function.name.clone(),
+                index,
+            );
+            let site = AnalysisSite::new(function.id, function.span);
+            let function = self.normalized_function(key.module(), &function)?;
             templates.push(MethodTemplate {
-                key: ItemKey::member(
-                    self.conformance_method_key(&entry),
-                    function.name.clone(),
-                    index,
-                ),
-                site: AnalysisSite::new(function.id, function.span),
+                key,
+                site,
                 function,
-                owner_substitution,
+                enclosing: entry.substitution.clone(),
                 conformance_owner: Some(Self::conformance_owner(&entry)),
                 enclosing_bounds: entry.declared_bounds.clone(),
             });

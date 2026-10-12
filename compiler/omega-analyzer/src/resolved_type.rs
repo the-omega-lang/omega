@@ -387,7 +387,7 @@ pub struct ResolvedSpecType {
     pub id: HirId,
     pub name: Ident,
     pub visibility: Visibility,
-    pub generics: Vec<omega_hir::HirGenericParam>,
+    pub generics: Vec<crate::generics::GenericParam>,
     pub module_path: ModulePath,
     pub generic_args: Vec<ResolvedGenericArg>,
     pub is_object_safe: bool,

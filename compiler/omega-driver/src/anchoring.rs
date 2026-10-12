@@ -1,13 +1,15 @@
 //! Declaration syntax handed to a use site in another module.
 //!
-//! A generic signature crosses the resolver interface as written syntax,
-//! because the call site still has to infer the arguments it is instantiated
-//! with. Its names must nevertheless keep meaning what they mean where the
-//! declaration is written, so every path is given its declaring module's
-//! definition origin before it leaves the driver. A path that already carries
-//! an origin -- macro-authored syntax -- keeps the one it has.
+//! A generic signature crosses the resolver interface as patterns already
+//! taken in the declaring module, but its parameters' defaults and bounds are
+//! still written syntax a call site may evaluate. Their names must keep
+//! meaning what they mean where the declaration is written, so every path is
+//! given its declaring module's definition origin before it leaves the
+//! driver. A path that already carries an origin -- macro-authored syntax --
+//! keeps the one it has.
 
-use omega_hir::HirGenericParam;
+use omega_analyzer::generics::GenericParam;
+use omega_analyzer::resolver::OverloadTemplate;
 use omega_parser::prelude::{
     ArrayLength, FunctionType, FunctionTypeParam, GenericArg, GenericParamKind, Origin, Path, Type,
 };
@@ -48,14 +50,10 @@ pub(crate) fn anchor_type(r#type: &Type, origin: Origin) -> Type {
     }
 }
 
-pub(crate) fn anchor_generics(
-    generics: &[HirGenericParam],
-    origin: Origin,
-) -> Vec<HirGenericParam> {
+pub(crate) fn anchor_generics(generics: &[GenericParam], origin: Origin) -> Vec<GenericParam> {
     generics
         .iter()
-        .map(|param| HirGenericParam {
-            ident: param.ident.clone(),
+        .map(|param| GenericParam {
             kind: match &param.kind {
                 GenericParamKind::Type { bounds } => GenericParamKind::Type {
                     bounds: bounds.iter().map(|b| anchor_type(b, origin)).collect(),
@@ -65,8 +63,18 @@ pub(crate) fn anchor_generics(
                 },
             },
             default: param.default.as_ref().map(|arg| anchor_arg(arg, origin)),
+            ..param.clone()
         })
         .collect()
+}
+
+/// A pattern signature whose declared defaults keep resolving where they
+/// were written. The patterns themselves were taken there already.
+pub(crate) fn anchor_template(template: OverloadTemplate, origin: Origin) -> OverloadTemplate {
+    OverloadTemplate {
+        generics: anchor_generics(&template.generics, origin),
+        ..template
+    }
 }
 
 fn anchor_arg(arg: &GenericArg, origin: Origin) -> GenericArg {

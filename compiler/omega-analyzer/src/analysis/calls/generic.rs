@@ -101,45 +101,16 @@ impl<'r> Analyzer<'r> {
         args: &[HirExprNode],
         expected: Expected<'_>,
     ) -> Option<(ResolvedMethod, Vec<CheckedExprNode>)> {
-        // The owner instantiation binds `Self` and the owner's own
-        // parameters, which the declaration's written types still name;
-        // explicitly written arguments come first, so they outrank an owner
-        // parameter this declaration shadows.
-        let mut seed = Self::written_substitution(&template.generics, explicit);
-        for (bound, arg) in template.owner_substitution.iter() {
-            seed.push(bound.clone(), arg.clone());
-        }
-
-        let comp_types = self.comp_param_types(node_id, span, &template.generics, &seed);
-        let generics = self.generic_params(&template.generics, &comp_types);
-        let params = &template.params[implicit_params.min(template.params.len())..];
-        let seed = Self::seed_from_expected(seed, expected, &generics, &template.return_type);
-        let (checked_args, subst) = self.infer_generic_args(&generics, params, args, seed)?;
-
-        let generic_args = match resolve_inferred_generic_args(&generics, &subst) {
-            Ok(generic_args) => generic_args,
-            Err(generic) => {
-                if let Some((parameter, found)) =
-                    Self::fat_pointer_generic_mismatch(&generics, params, &checked_args, &subst)
-                {
-                    self.error(
-                        node_id,
-                        span,
-                        AnalysisErrorKind::GenericParamFromFatPointer { parameter, found },
-                    );
-                } else {
-                    self.undetermined_generic_param(
-                        node_id,
-                        span,
-                        name,
-                        &template.generics,
-                        explicit,
-                        generic,
-                    );
-                }
-                return None;
-            }
-        };
+        // The owner instantiation already fixed `Self` and the owner's own
+        // parameters in the template, so only the declaration's own
+        // positions are open; explicitly written arguments bind first.
+        let signature = &template.template;
+        let mut inference =
+            Inference::of_template(signature, &template.enclosing, explicit.bindings.clone());
+        inference.seed_from_expected(&signature.return_type, expected);
+        let params = &signature.params[implicit_params.min(signature.params.len())..];
+        let (checked_args, generic_args) =
+            self.solve_generic_call(node_id, span, name, &mut inference, params, args, explicit)?;
         let target = crate::resolver::GenericCallTarget::Method {
             owner,
             name,
@@ -156,6 +127,47 @@ impl<'r> Analyzer<'r> {
             Ok(None) => None,
             Err(error) => {
                 self.error(node_id, span, AnalysisErrorKind::ModuleResolution(error));
+                None
+            }
+        }
+    }
+
+    /// Infers a call's generic arguments from its arguments, reporting the
+    /// first position nothing determined. The arguments are analyzed once,
+    /// whatever the outcome.
+    #[allow(clippy::too_many_arguments)]
+    fn solve_generic_call(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        name: &Ident,
+        inference: &mut Inference<'_>,
+        params: &[TypePattern],
+        args: &[HirExprNode],
+        explicit: &WrittenGenerics,
+    ) -> Option<(Vec<CheckedExprNode>, Vec<Option<ResolvedGenericArg>>)> {
+        let checked_args = self.infer_arguments(inference, params, args)?;
+        match Self::solved_generic_args(inference) {
+            Ok(generic_args) => Some((checked_args, generic_args)),
+            Err(position) => {
+                if let Some((parameter, found)) =
+                    inference.fat_pointer_mismatch(params, &checked_args)
+                {
+                    self.error(
+                        node_id,
+                        span,
+                        AnalysisErrorKind::GenericParamFromFatPointer { parameter, found },
+                    );
+                } else {
+                    self.undetermined_generic_param(
+                        node_id,
+                        span,
+                        name,
+                        inference.generics,
+                        explicit,
+                        position,
+                    );
+                }
                 None
             }
         }
@@ -238,7 +250,7 @@ impl<'r> Analyzer<'r> {
                 span,
                 function_generics,
                 &declared,
-                &template.generics,
+                &template.template.generics,
             ) {
                 Some(explicit) => explicit,
                 None => return Intercepted::Claimed(None),
@@ -329,7 +341,7 @@ impl<'r> Analyzer<'r> {
                     span,
                     AnalysisErrorKind::UndeterminedInferenceHole {
                         name,
-                        parameter: param.ident.clone(),
+                        parameter: param.label(),
                     },
                 );
                 return None;
@@ -519,7 +531,7 @@ impl<'r> Analyzer<'r> {
         ) else {
             return Intercepted::Declined;
         };
-        if !sig.function_generics.is_empty() {
+        if !sig.function_params().is_empty() {
             return Intercepted::Declined;
         }
 
@@ -574,65 +586,6 @@ impl<'r> Analyzer<'r> {
         Some((ambient, sig))
     }
 
-    /// The substitution call inference starts from. Explicitly written
-    /// arguments are already bound here and outrank the expected result: the
-    /// caller asked for them, so a conflicting expectation must be reported
-    /// by the ordinary result check rather than reinterpreted.
-    fn seed_from_expected(
-        explicit: GenericSubstitution,
-        expected: Expected<'_>,
-        generics: &GenericParams<'_>,
-        return_type: &Type,
-    ) -> GenericSubstitution {
-        let mut seed = explicit;
-        let mut inferred = GenericSubstitution::new();
-        match expected {
-            Expected::None => return seed,
-            Expected::Exact(expected) => {
-                unify_generic_type(generics, return_type, expected, &mut inferred)
-            }
-            Expected::Pattern(expected) => crate::generics::unify_generic_pattern(
-                generics,
-                return_type,
-                expected,
-                &mut inferred,
-            ),
-        }
-        for (generic, resolved) in inferred.iter() {
-            seed.bind_if_absent(generic, || resolved.widened());
-        }
-        seed
-    }
-
-    fn fat_pointer_generic_mismatch(
-        generics: &GenericParams<'_>,
-        params: &[Type],
-        args: &[CheckedExprNode],
-        subst: &GenericSubstitution,
-    ) -> Option<(Ident, ResolvedType)> {
-        for (raw, arg) in params.iter().zip(args) {
-            let Type::Pointer(inner, _) = raw else {
-                continue;
-            };
-            let Type::Named(path) = inner.as_ref() else {
-                continue;
-            };
-            if !path.is_unqualified()
-                || !generics.names().any(|name| name == &path.head)
-                || subst.contains(&path.head)
-            {
-                continue;
-            }
-            if matches!(
-                arg.r#type,
-                ResolvedType::Slice { .. } | ResolvedType::Str { .. }
-            ) {
-                return Some((path.head.clone(), arg.r#type.clone()));
-            }
-        }
-        None
-    }
-
     #[allow(clippy::too_many_arguments)]
     fn finish_generic_owner_function_call(
         &mut self,
@@ -653,40 +606,35 @@ impl<'r> Analyzer<'r> {
             node_id,
             span,
             &owner.absolute,
-            &sig.owner_generics,
+            sig.owner_params(),
             written.len(),
         )?;
-        let seed = self.written_hole_seed(node_id, span, written, &sig.owner_generics)?;
-        let comp_types = self.comp_param_types(node_id, span, &sig.owner_generics, &seed);
-        let generics = self.generic_params(&sig.owner_generics, &comp_types);
-        let (checked_args, subst) = self.infer_generic_args(
-            &generics,
-            &sig.params,
-            &call.args,
-            Self::seed_from_expected(seed, expected, &generics, &sig.return_type),
-        )?;
+        let seed = self.written_hole_seed(node_id, span, written, sig.owner_params())?;
+        let template = &sig.template;
+        let enclosing = GenericSubstitution::new();
+        let mut inference = Inference::of_template(template, &enclosing, seed);
+        inference.seed_from_expected(&template.return_type, expected);
+        let checked_args = self.infer_arguments(&mut inference, &template.params, &call.args)?;
 
-        let generic_args = match resolve_inferred_generic_args(&generics, &subst) {
-            Ok(generic_args) => generic_args,
+        let generic_args = match Self::solved_generic_args(&inference) {
+            Ok(generic_args) => generic_args[..sig.owner_generics].to_vec(),
             Err(_) => {
-                let missing: Vec<Ident> = sig
-                    .owner_generics
-                    .iter()
-                    .filter(|param| param.default.is_none() && !subst.contains(&param.ident))
-                    .map(|param| param.ident.clone())
-                    .collect();
-                if let Some((parameter, found)) = Self::fat_pointer_generic_mismatch(
-                    &generics,
-                    &sig.params,
-                    &checked_args,
-                    &subst,
-                ) {
+                if let Some((parameter, found)) =
+                    inference.fat_pointer_mismatch(&template.params, &checked_args)
+                {
                     self.error(
                         node_id,
                         span,
                         AnalysisErrorKind::GenericParamFromFatPointer { parameter, found },
                     );
                 } else {
+                    let missing = sig
+                        .owner_params()
+                        .iter()
+                        .zip(&inference.bindings)
+                        .filter(|(param, binding)| param.default.is_none() && binding.is_none())
+                        .map(|(param, _)| param.label())
+                        .collect();
                     self.error(
                         node_id,
                         span,
@@ -803,11 +751,15 @@ impl<'r> Analyzer<'r> {
             }
         };
 
-        let sig: GenericSignature = match self.resolver.generic_function_signature(&access.absolute)
-        {
+        // A declaration whose signature cannot be read reports why where it
+        // is declared; this use only says it cannot proceed.
+        let sig = match self.resolver.generic_function_signature(&access.absolute) {
             Ok(Some(sig)) => sig,
             Ok(None) => return Intercepted::Declined,
-            Err(_) => return Intercepted::Declined,
+            Err(error) => {
+                self.error(node_id, span, AnalysisErrorKind::ModuleResolution(error));
+                return Intercepted::Claimed(None);
+            }
         };
 
         let explicit = match self.resolve_written_generics(
@@ -834,51 +786,25 @@ impl<'r> Analyzer<'r> {
         call: &HirFunctionCall,
         accessor: &ModulePath,
         access: &ItemAccess,
-        sig: &GenericSignature,
+        sig: &OverloadTemplate,
         explicit: &WrittenGenerics,
         expected: Expected<'_>,
     ) -> Option<CheckedExprNode> {
         // Written arguments bind the declaration's generics left to right;
         // inference only ever fills what is left, including the position a
         // `spec ...` selector occupies without binding.
-        let bound = Self::written_substitution(&sig.generics, explicit);
-
-        let comp_types = self.comp_param_types(node_id, span, &sig.generics, &bound);
-        let generics = self.generic_params(&sig.generics, &comp_types);
-        let (checked_args, subst) = self.infer_generic_args(
-            &generics,
+        let enclosing = GenericSubstitution::new();
+        let mut inference = Inference::of_template(sig, &enclosing, explicit.bindings.clone());
+        inference.seed_from_expected(&sig.return_type, expected);
+        let (checked_args, generic_args) = self.solve_generic_call(
+            node_id,
+            span,
+            &access.absolute.name,
+            &mut inference,
             &sig.params,
             &call.args,
-            Self::seed_from_expected(bound, expected, &generics, &sig.return_type),
+            explicit,
         )?;
-
-        let generic_args = match resolve_inferred_generic_args(&generics, &subst) {
-            Ok(generic_args) => generic_args,
-            Err(generic) => {
-                if let Some((parameter, found)) = Self::fat_pointer_generic_mismatch(
-                    &generics,
-                    &sig.params,
-                    &checked_args,
-                    &subst,
-                ) {
-                    self.error(
-                        node_id,
-                        span,
-                        AnalysisErrorKind::GenericParamFromFatPointer { parameter, found },
-                    );
-                } else {
-                    self.undetermined_generic_param(
-                        node_id,
-                        span,
-                        &access.absolute.name,
-                        &sig.generics,
-                        explicit,
-                        generic,
-                    );
-                }
-                return None;
-            }
-        };
         let name = access.absolute.name.clone();
         let target = crate::resolver::GenericCallTarget::Function(&access.absolute);
         let generic_args = self.complete_call_generic_args(node_id, span, target, generic_args)?;

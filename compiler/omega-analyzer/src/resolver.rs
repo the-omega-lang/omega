@@ -1,4 +1,6 @@
 use crate::checked::Storage;
+use crate::generics::GenericParam;
+use crate::generics::pattern::TypePattern;
 use crate::resolved_type::{
     ConstValue, ResolvedConformance, ResolvedFunctionType, ResolvedGap, ResolvedGenericArg,
     ResolvedMethod, ResolvedSpecType, ResolvedType,
@@ -485,7 +487,7 @@ pub trait ModuleResolver {
     fn item_generic_params(
         &mut self,
         absolute_path: &ItemPath,
-    ) -> Result<Option<Vec<HirGenericParam>>, ResolveError>;
+    ) -> Result<Option<Vec<GenericParam>>, ResolveError>;
 
     /// Completes positional generic arguments for `absolute_path`, filling
     /// each gap from its parameter's declared default, evaluated in the
@@ -505,10 +507,12 @@ pub trait ModuleResolver {
         absolute_path: &ItemPath,
     ) -> bool;
 
+    /// The pattern signature of the one generic function `absolute_path`
+    /// names, taken in its declaring module, with defaults anchored there.
     fn generic_function_signature(
         &mut self,
         absolute_path: &ItemPath,
-    ) -> Result<Option<GenericSignature>, ResolveError>;
+    ) -> Result<Option<OverloadTemplate>, ResolveError>;
 
     fn generic_literal_signature(
         &mut self,
@@ -518,9 +522,8 @@ pub trait ModuleResolver {
 
     /// The one function `owner_absolute` declares under `function_name` in
     /// `namespace`, when the owner is generic. A member's signature includes
-    /// its receiver as parameter 0, with `Self` already rewritten to the
-    /// owner applied to its own generics, so ordinary argument inference can
-    /// solve the owner's type arguments from the explicit receiver.
+    /// its receiver as parameter 0, so ordinary argument inference can solve
+    /// the owner's type arguments from the explicit receiver.
     fn generic_owner_function_signature(
         &mut self,
         owner_absolute: &ItemPath,
@@ -740,10 +743,10 @@ impl OverloadCandidate {
 
 #[derive(Debug, Clone)]
 pub struct OverloadTemplate {
-    pub generics: Vec<HirGenericParam>,
-    pub params: Vec<crate::generics::pattern::TypePattern>,
-    pub return_type: crate::generics::pattern::TypePattern,
-    pub comp_types: Vec<Option<crate::generics::pattern::TypePattern>>,
+    pub generics: Vec<GenericParam>,
+    pub params: Vec<TypePattern>,
+    pub return_type: TypePattern,
+    pub comp_types: Vec<Option<TypePattern>>,
     pub bounds: Vec<(usize, crate::generics::pattern::SpecPattern)>,
     /// The ABI half of the signature every instantiation will have. A value
     /// reference must compare it against the expected function type, so it
@@ -822,48 +825,55 @@ pub struct PreparedCall {
 
 #[derive(Debug, Clone)]
 pub struct UnmetBound {
-    pub parameter: Ident,
+    /// The parameter's diagnostic label; see [`GenericParam::label`].
+    pub parameter: String,
     pub r#type: ResolvedType,
     pub spec: Ident,
 }
 
 pub type OverloadCandidates = Vec<OverloadCandidate>;
 
-#[derive(Debug, Clone)]
-pub struct GenericSignature {
-    pub generics: Vec<HirGenericParam>,
-    pub params: Vec<Type>,
-    pub return_type: Type,
-}
-
+/// The fields a generic aggregate literal can bind its parameters from, as
+/// patterns over the aggregate's own parameter positions.
 #[derive(Debug, Clone)]
 pub struct GenericLiteralSignature {
-    pub generics: Vec<HirGenericParam>,
-    pub fields: Vec<(Ident, Type)>,
+    /// Declared defaults are anchored to the declaring module, so a use site
+    /// can evaluate them where they were written.
+    pub generics: Vec<GenericParam>,
+    pub fields: Vec<(Ident, TypePattern)>,
+    pub comp_types: Vec<Option<TypePattern>>,
 }
 
-/// A generic function declared on a concrete owner, as written.
-///
-/// The types are still the declaration's own syntax: they may name the
-/// owner's generic parameters or `Self`, which `owner_substitution` binds.
+/// A generic function declared on a concrete owner, taken in that owner
+/// instantiation: the owner's own parameters and `Self` are already fixed in
+/// `template`, so only the declaration's own positions remain open.
 #[derive(Debug, Clone)]
 pub struct GenericMethodTemplate {
-    /// The declaration's effective generic parameters. A `spec S` parameter
-    /// is already normalized into one of them.
-    pub generics: Vec<HirGenericParam>,
-    /// Written parameter types, including the receiver of a member function.
-    pub params: Vec<Type>,
-    pub return_type: Type,
-    /// What the owner instantiation binds for the types above: its own
-    /// generic arguments and `Self`, minus any name the declaration's own
-    /// generics shadow.
-    pub owner_substitution: crate::generics::GenericSubstitution,
+    /// Declared defaults are anchored to the declaring module.
+    pub template: OverloadTemplate,
+    /// What the owner instantiation binds, for evaluating a default that
+    /// names an owner parameter or `Self`.
+    pub enclosing: crate::generics::GenericSubstitution,
 }
 
+/// A function declared on a generic owner, as one positional signature over
+/// the owner's parameters followed by the function's own. `Self` is the owner
+/// applied to its own parameter positions, so a receiver solves them like
+/// any other argument.
 #[derive(Debug, Clone)]
 pub struct GenericOwnerFunctionSignature {
-    pub owner_generics: Vec<HirGenericParam>,
-    pub function_generics: Vec<Ident>,
-    pub params: Vec<Type>,
-    pub return_type: Type,
+    /// Declared defaults are anchored to the declaring module.
+    pub template: OverloadTemplate,
+    /// How many leading positions of `template.generics` are the owner's.
+    pub owner_generics: usize,
+}
+
+impl GenericOwnerFunctionSignature {
+    pub fn owner_params(&self) -> &[GenericParam] {
+        &self.template.generics[..self.owner_generics]
+    }
+
+    pub fn function_params(&self) -> &[GenericParam] {
+        &self.template.generics[self.owner_generics..]
+    }
 }

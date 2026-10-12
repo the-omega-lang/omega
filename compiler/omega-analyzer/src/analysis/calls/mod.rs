@@ -1,13 +1,17 @@
 use super::*;
 
 mod generic;
+mod inference;
 mod overload;
 mod pattern;
 mod selector;
 mod spec;
+#[cfg(test)]
+mod tests;
 mod value;
 
 use generic::MethodTemplate;
+pub(crate) use inference::Inference;
 pub(crate) use selector::{ValidatedGenerics, WrittenGenerics};
 pub(crate) use value::FunctionValue;
 
@@ -457,7 +461,7 @@ impl<'r> Analyzer<'r> {
             callee.span,
             written_generics,
             &declared,
-            &template.generics,
+            &template.template.generics,
         )?;
         // The receiver is supplied by the instance syntax itself, so it is
         // the one parameter neither inference nor the argument check sees.

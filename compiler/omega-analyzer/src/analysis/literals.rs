@@ -735,7 +735,7 @@ impl<'r> Analyzer<'r> {
             sig,
             lit_fields,
             expected,
-            GenericSubstitution::new(),
+            Vec::new(),
         )?;
         Some(self.resolve_item_checked_with_ambient_fallback(prefix, access, &generic_args, origin))
     }
@@ -751,21 +751,22 @@ impl<'r> Analyzer<'r> {
         sig: &GenericLiteralSignature,
         lit_fields: &[HirStructLiteralField],
         expected: Expected<'_>,
-        mut seed: GenericSubstitution,
+        mut seed: Vec<Option<ResolvedGenericArg>>,
     ) -> Option<Vec<ResolvedGenericArg>> {
+        seed.resize(sig.generics.len(), None);
         if let Some(generic_args) = Self::expected_matches_generic_item(expected.exact(), absolute)
         {
-            if seed.is_empty() {
+            if seed.iter().all(Option::is_none) {
                 return Some(generic_args);
             }
-            for (param, arg) in sig.generics.iter().zip(generic_args) {
-                seed.bind_if_absent(&param.ident, || arg);
+            for (slot, arg) in seed.iter_mut().zip(generic_args) {
+                slot.get_or_insert(arg);
             }
         }
         if let Expected::Pattern(TypePattern::Nominal(path, args)) = expected
             && path == absolute
         {
-            for (param, arg) in sig.generics.iter().zip(args) {
+            for (slot, arg) in seed.iter_mut().zip(args) {
                 let known = match arg {
                     ArgumentPattern::Type(pattern) => match pattern.as_ref() {
                         TypePattern::Fixed(r#type) => ResolvedGenericArg::Type(r#type.clone()),
@@ -774,22 +775,23 @@ impl<'r> Analyzer<'r> {
                     ArgumentPattern::Value(value) => ResolvedGenericArg::Comp(*value),
                     ArgumentPattern::Parameter(..) => continue,
                 };
-                seed.bind_if_absent(&param.ident, || known);
+                slot.get_or_insert(known);
             }
         }
-        let comp_types = self.comp_param_types(node_id, span, &sig.generics, &seed);
-        let generics = self.generic_params(&sig.generics, &comp_types);
-        let subst = self.probe_literal_generic_args(sig, &generics, lit_fields, seed)?;
-        match resolve_inferred_generic_args(&generics, &subst) {
+        let enclosing = GenericSubstitution::new();
+        let mut inference = Inference::new(&sig.generics, &sig.comp_types, &enclosing, seed);
+        self.probe_literal_generic_args(sig, &mut inference, lit_fields)?;
+        match Self::solved_generic_args(&inference) {
             Ok(generic_args) => {
                 self.complete_item_generic_args(node_id, span, absolute, generic_args)
             }
             Err(_) => {
-                let missing: Vec<Ident> = sig
+                let missing = sig
                     .generics
                     .iter()
-                    .filter(|param| param.default.is_none() && !subst.contains(&param.ident))
-                    .map(|param| param.ident.clone())
+                    .zip(&inference.bindings)
+                    .filter(|(param, binding)| param.default.is_none() && binding.is_none())
+                    .map(|(param, _)| param.label())
                     .collect();
                 self.error(
                     node_id,
@@ -839,42 +841,35 @@ impl<'r> Analyzer<'r> {
         (cell_module == absolute.module && cell_name == absolute.name).then_some(generic_args)
     }
 
+    /// Binds what the written fields determine. The fields are analyzed
+    /// here only to learn their types: they are analyzed again against the
+    /// instantiated aggregate, so nothing this pass reports is kept.
     fn probe_literal_generic_args(
         &mut self,
         sig: &GenericLiteralSignature,
-        generics: &GenericParams<'_>,
+        inference: &mut Inference<'_>,
         lit_fields: &[HirStructLiteralField],
-        seed: GenericSubstitution,
-    ) -> Option<GenericSubstitution> {
+    ) -> Option<()> {
         let errors_before = self.errors.len();
         let warnings_before = self.warnings.len();
-        let mut subst = seed;
         let mut ok = true;
         for field in lit_fields {
-            let Some((_, raw_type)) = sig.fields.iter().find(|(name, _)| name == &field.name)
-            else {
+            let Some((_, pattern)) = sig.fields.iter().find(|(name, _)| name == &field.name) else {
                 continue;
             };
-            let expected = self.expected_for_generic_param(
-                field.value.id,
-                field.value.span,
-                raw_type,
-                generics,
-                &subst,
-            );
+            let expected = self.pattern_hint(field.value.id, field.value.span, inference, pattern);
             match self.analyze_expr(&field.value, expected.as_ref().into()) {
-                Some(checked) => {
-                    unify_generic_type(generics, raw_type, &checked.r#type, &mut subst)
-                }
+                Some(checked) => pattern.infer(&checked.r#type, &mut inference.bindings),
                 None => ok = false,
             }
         }
         if !ok {
             return None;
         }
+        inference.canonicalize_comp_bindings(self.target.pointer_bits());
         self.errors.truncate(errors_before);
         self.warnings.truncate(warnings_before);
-        Some(subst)
+        Some(())
     }
 
     fn literal_target_from_type(

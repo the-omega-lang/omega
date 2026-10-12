@@ -20,7 +20,7 @@ pub use specs::PendingSpecMethod;
 use specs::RequirementSignature;
 
 use crate::generics::pattern::{ArgumentPattern, TypePattern};
-use calls::{CalleeResolution, FunctionValue, Intercepted, Interceptor, ResolvedCallee};
+use calls::{CalleeResolution, FunctionValue, Inference, Intercepted, Interceptor, ResolvedCallee};
 use expected::Expected;
 use items::{HoledAnnotation, read_back_holes};
 use literals::{number_literal_text, parse_number_literal};
@@ -47,9 +47,7 @@ use crate::{
         AnalysisError, AnalysisErrorKind, AnalysisWarning, AnalysisWarningKind, AuthoredSite,
         TypeResolutionError,
     },
-    generics::{
-        GenericParams, GenericSubstitution, resolve_inferred_generic_args, unify_generic_type,
-    },
+    generics::{GenericParam, GenericSubstitution, NormalizedFunction},
     resolved_type::{
         CallingConvention, CastClass, CompScalar, CompScalarType, ConformanceSource, ConstValue,
         FunctionNamespace, NumericKind, RawSpecFunctionSig, ResolvedAnonymousEnum, ResolvedBound,
@@ -59,9 +57,9 @@ use crate::{
     },
     resolver::{
         GenericLiteralSignature, GenericMethodTemplate, GenericOwnerFunctionSignature,
-        GenericSignature, ImportTarget, ItemAccess, ItemNamespace, ModuleResolver,
-        OverloadCandidate, OverloadSignature, OverloadTemplate, ResolveError, ResolveItemOptions,
-        ResolvedItem, ResolvedOverloadSet,
+        ImportTarget, ItemAccess, ItemNamespace, ModuleResolver, OverloadCandidate,
+        OverloadSignature, OverloadTemplate, ResolveError, ResolveItemOptions, ResolvedItem,
+        ResolvedOverloadSet,
     },
     similarity::best_match,
 };
@@ -102,6 +100,9 @@ pub struct Analyzer<'r> {
     in_repeated_loop_header: bool,
     in_naked_asm: bool,
     suppressed: Vec<Vec<Ident>>,
+    /// Every generic binding in effect, including the anonymous ones no name
+    /// can reach: a `spec S` parameter's type is found here by identity.
+    generic_env: GenericSubstitution,
     reveals: visibility::RevealState,
     field_usage: crate::dead_code::FieldUsage,
     bounds: Vec<ResolvedBound>,
@@ -440,51 +441,8 @@ impl<'r> Analyzer<'r> {
         let source = resolver.module_source(&module_path);
         let mut errors = Vec::new();
 
-        let mut seen_generics = HashSet::new();
-        for (ident, arg) in generics.iter() {
-            // `str` is a language type name with no scalar entry in
-            // `Context`, so this cannot be a lookup in the installed types.
-            if crate::context::is_reserved_type_name(ident.as_ref()) {
-                errors.push(
-                    AnalysisError::new(
-                        owner.id,
-                        owner.span,
-                        AnalysisErrorKind::ReservedTypeName {
-                            name: ident.clone(),
-                        },
-                    )
-                    .in_source(source),
-                );
-                continue;
-            }
-            if !seen_generics.insert(ident) {
-                errors.push(
-                    AnalysisError::new(
-                        owner.id,
-                        owner.span,
-                        AnalysisErrorKind::Redeclaration {
-                            name: ident.clone(),
-                            previous: None,
-                        },
-                    )
-                    .in_source(source),
-                );
-                continue;
-            }
-            match arg {
-                ResolvedGenericArg::Type(resolved_type) => {
-                    context.define_type(ident.clone(), resolved_type.clone())
-                }
-                // A `comp` parameter is a storage-less compile-time binding,
-                // so it enters the scope the same way any other `comp`
-                // binding does and reaches MIR only as a constant.
-                ResolvedGenericArg::Comp(value) => context.define_comp(
-                    ident.clone(),
-                    resolver.fresh_synthetic_id(),
-                    owner.span,
-                    *value,
-                ),
-            }
+        for (name, finding) in install_substitution(&mut context, resolver, generics, owner.span) {
+            errors.push(AnalysisError::new(owner.id, owner.span, finding(name)).in_source(source));
         }
 
         Self {
@@ -503,6 +461,7 @@ impl<'r> Analyzer<'r> {
             in_repeated_loop_header: false,
             in_naked_asm: false,
             suppressed: vec![],
+            generic_env: generics.clone(),
             reveals: visibility::RevealState::default(),
             field_usage: crate::dead_code::FieldUsage::default(),
             bounds: bounds.to_vec(),
@@ -676,26 +635,24 @@ impl<'r> Analyzer<'r> {
         substitution: &GenericSubstitution,
         f: impl FnOnce(&mut Self) -> T,
     ) -> T {
-        let comps: Vec<(Ident, HirId, CompScalar)> = substitution
-            .iter()
-            .filter_map(|(name, arg)| {
-                arg.as_comp()
-                    .map(|value| (name.clone(), self.resolver.fresh_synthetic_id(), value))
+        let span = Span::new(0, 0);
+        let env = self.generic_env.enclosing(substitution);
+        let saved_env = std::mem::replace(&mut self.generic_env, env);
+        let result = self
+            .with_scope(|this| {
+                // Already-installed bindings were checked where they were
+                // first installed; nothing new can be reported here.
+                let _ = install_substitution(&mut this.context, this.resolver, substitution, span);
+                f(this)
             })
-            .collect();
-        self.with_scope(|this| {
-            for (name, arg) in substitution.iter() {
-                if let Some(r#type) = arg.as_type() {
-                    this.context.define_type(name.clone(), r#type.clone());
-                }
-            }
-            for (name, decl_id, value) in comps {
-                this.context
-                    .define_comp(name, decl_id, Span::new(0, 0), value);
-            }
-            f(this)
-        })
-        .0
+            .0;
+        self.generic_env = saved_env;
+        result
+    }
+
+    /// The binding in effect for one generic parameter.
+    pub(crate) fn generic_binding(&self, param: &GenericParam) -> Option<&ResolvedGenericArg> {
+        self.generic_env.get(param.id)
     }
 
     fn with_bounds<T>(
@@ -1272,12 +1229,8 @@ impl<'r> Analyzer<'r> {
     /// The function's signature after static-spec parameter normalization.
     /// Every signature and body query works from this shape, so a literal
     /// `spec A + B` parameter and an aliased one cannot diverge.
-    pub(crate) fn normalized_function(&mut self, f: &HirFunctionDef) -> Option<HirFunctionDef> {
-        match crate::generics::normalize_static_spec_params(
-            &mut *self.resolver,
-            &self.module_path,
-            f,
-        ) {
+    pub(crate) fn normalized_function(&mut self, f: &HirFunctionDef) -> Option<NormalizedFunction> {
+        match crate::generics::normalize_function(&mut *self.resolver, &self.module_path, f) {
             Ok(normalized) => Some(normalized),
             Err(error) => {
                 self.error(f.id, f.span, AnalysisErrorKind::ModuleResolution(error));
@@ -1441,7 +1394,7 @@ impl<'r> Analyzer<'r> {
         id: HirId,
         span: Span,
         arg: &GenericArg,
-        param: Option<&HirGenericParam>,
+        param: Option<&GenericParam>,
         module: &ModulePath,
     ) -> Option<ResolvedGenericArg> {
         let reveals = &self.reveals;
@@ -1501,101 +1454,13 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    /// The declared comp-parameter types an inference pass needs, resolved
-    /// under what is already known. A type that fails to resolve or is not a
-    /// supported comp scalar simply stops that parameter from being
-    /// inferred; the instantiation site reports the real reason.
-    pub(crate) fn comp_param_types(
-        &mut self,
-        id: HirId,
-        span: Span,
-        params: &[HirGenericParam],
-        subst: &GenericSubstitution,
-    ) -> Vec<Option<CompScalarType>> {
-        params
-            .iter()
-            .map(|param| {
-                let written = param.comp_type()?.clone();
-                let resolved = self.without_diagnostics(|this| {
-                    this.resolve_under_substitution(id, span, &written, subst)
-                })?;
-                CompScalarType::from_resolved(&resolved)
-            })
-            .collect()
-    }
-
-    pub(crate) fn generic_params<'p>(
-        &self,
-        params: &'p [HirGenericParam],
-        comp_types: &'p [Option<CompScalarType>],
-    ) -> GenericParams<'p> {
-        GenericParams {
-            params,
-            comp_types,
-            pointer_bits: self.target.pointer_bits(),
-        }
-    }
-
-    pub(crate) fn infer_generic_args(
-        &mut self,
-        generics: &GenericParams<'_>,
-        params: &[Type],
-        args: &[HirExprNode],
-        seed: GenericSubstitution,
-    ) -> Option<(Vec<CheckedExprNode>, GenericSubstitution)> {
-        let mut subst = seed;
-        let mut checked_args = Vec::with_capacity(args.len());
-        for (raw_type, arg) in params.iter().zip(args) {
-            let expected =
-                self.expected_for_generic_param(arg.id, arg.span, raw_type, generics, &subst);
-            let checked = self.analyze_expr(arg, expected.as_ref().into())?;
-            unify_generic_type(generics, raw_type, &checked.r#type, &mut subst);
-            checked_args.push(checked);
-        }
-        Some((checked_args, subst))
-    }
-
-    /// The expected type one written parameter contributes to an argument,
-    /// under what is bound so far.
-    ///
-    /// This is a hint, so nothing here is reported: a declaration whose
-    /// written types do not resolve is diagnosed once where its signature is
-    /// analyzed, not again at every call that tries to read a hint from it.
-    pub(crate) fn expected_for_generic_param(
-        &mut self,
-        id: HirId,
-        span: Span,
-        raw_type: &Type,
-        generics: &GenericParams<'_>,
-        subst: &GenericSubstitution,
-    ) -> Option<ResolvedType> {
-        if !Self::generic_refs_resolvable(raw_type, generics, subst) {
-            return None;
-        }
-        self.without_diagnostics(|this| {
-            let mut local = subst.clone();
-            for param in generics.params {
-                if local.contains(&param.ident) {
-                    continue;
-                }
-                let Some(default) = &param.default else {
-                    continue;
-                };
-                let resolved =
-                    this.resolve_default_generic_arg(id, span, param, default, &local)?;
-                local.push(param.ident.clone(), resolved);
-            }
-            this.resolve_under_substitution(id, span, raw_type, &local)
-        })
-    }
-
     /// One generic parameter's default, resolved as the kind the parameter
     /// declares under the bindings its predecessors already produced.
     pub fn resolve_default_generic_arg(
         &mut self,
         id: HirId,
         span: Span,
-        param: &HirGenericParam,
+        param: &GenericParam,
         default: &GenericArg,
         subst: &GenericSubstitution,
     ) -> Option<ResolvedGenericArg> {
@@ -1618,7 +1483,7 @@ impl<'r> Analyzer<'r> {
                         span,
                         AnalysisErrorKind::UnresolvedType(
                             TypeResolutionError::GenericArgKindMismatch {
-                                param: param.ident.clone(),
+                                param: param.label(),
                                 expected_value: false,
                             },
                         ),
@@ -1648,46 +1513,54 @@ impl<'r> Analyzer<'r> {
             }
         })
     }
+}
 
-    fn generic_refs_resolvable(
-        raw_type: &Type,
-        generics: &GenericParams<'_>,
-        subst: &GenericSubstitution,
-    ) -> bool {
-        let name_ok = |name: &Ident| match generics.params.iter().position(|p| &p.ident == name) {
-            Some(i) => subst.contains(name) || generics.params[i].default.is_some(),
-            None => true,
+/// Installs `substitution`'s named bindings into the current scope of
+/// `context`, in order, so a later binding of a name shadows an earlier one
+/// exactly as a member's parameter shadows its owner's. An anonymous binding
+/// has no name to install; it is reached by identity through the analyzer's
+/// generic environment. Returns the bindings no declaration may install.
+fn install_substitution(
+    context: &mut Context,
+    resolver: &mut dyn ModuleResolver,
+    substitution: &GenericSubstitution,
+    span: Span,
+) -> Vec<(Ident, fn(Ident) -> AnalysisErrorKind)> {
+    let mut findings: Vec<(Ident, fn(Ident) -> AnalysisErrorKind)> = Vec::new();
+    if let Some(self_type) = substitution.self_type() {
+        context.define_type(Ident("Self".to_string()), self_type.clone());
+    }
+    let mut seen: HashSet<(HirId, &Ident)> = HashSet::new();
+    for binding in substitution.bindings() {
+        let Some(name) = &binding.name else {
+            continue;
         };
-        let arg_ok = |arg: &GenericArg| match arg {
-            GenericArg::Type(inner) => Self::generic_refs_resolvable(inner, generics, subst),
-            GenericArg::Value(_) | GenericArg::Infer => true,
-        };
-        match raw_type {
-            Type::Named(path) => !path.is_unqualified() || name_ok(&path.head),
-            Type::Infer => true,
-            Type::Pointer(inner, _)
-            | Type::InferredArray(inner)
-            | Type::UnknownSizeArray(inner) => {
-                Self::generic_refs_resolvable(inner, generics, subst)
+        // `str` is a language type name with no scalar entry in `Context`,
+        // so this cannot be a lookup in the installed types.
+        if crate::context::is_reserved_type_name(name.as_ref()) {
+            findings.push((name.clone(), |name| AnalysisErrorKind::ReservedTypeName {
+                name,
+            }));
+            continue;
+        }
+        if !seen.insert((binding.param.owner, name)) {
+            findings.push((name.clone(), |name| AnalysisErrorKind::Redeclaration {
+                name,
+                previous: None,
+            }));
+            continue;
+        }
+        match &binding.arg {
+            ResolvedGenericArg::Type(resolved_type) => {
+                context.define_type(name.clone(), resolved_type.clone())
             }
-            Type::SizedArray(inner, length) => {
-                (match length {
-                    ArrayLength::Path(path) => !path.is_unqualified() || name_ok(&path.head),
-                    ArrayLength::Literal(_) | ArrayLength::Infer => true,
-                }) && Self::generic_refs_resolvable(inner, generics, subst)
-            }
-            Type::Generic(path, args) => {
-                (!path.is_unqualified() || name_ok(&path.head)) && args.iter().all(arg_ok)
-            }
-            Type::SpecStatic(members) | Type::AnonymousEnum(members) => members
-                .iter()
-                .all(|m| Self::generic_refs_resolvable(m, generics, subst)),
-            Type::Function(f) => {
-                f.params
-                    .iter()
-                    .all(|p| Self::generic_refs_resolvable(&p.r#type, generics, subst))
-                    && Self::generic_refs_resolvable(&f.return_type, generics, subst)
+            // A `comp` parameter is a storage-less compile-time binding, so
+            // it enters the scope the same way any other `comp` binding does
+            // and reaches MIR only as a constant.
+            ResolvedGenericArg::Comp(value) => {
+                context.define_comp(name.clone(), resolver.fresh_synthetic_id(), span, *value)
             }
         }
     }
+    findings
 }

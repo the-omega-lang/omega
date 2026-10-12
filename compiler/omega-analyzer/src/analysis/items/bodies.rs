@@ -9,12 +9,13 @@ impl<'r> Analyzer<'r> {
         id: HirId,
         annotations: &crate::annotations::ResolvedAnnotations,
     ) -> Option<CheckedFunctionDef> {
-        let f = &self.normalized_function(f)?;
+        let normalized = self.normalized_function(f)?;
+        let f = &normalized.function;
         let Some(body) = &f.body else {
             return self.check_compiler_function_body(f, fn_type, id, annotations);
         };
         if annotations.naked {
-            return self.check_naked_function_body(f, body, fn_type, id, annotations);
+            return self.check_naked_function_body(&normalized, body, fn_type, id, annotations);
         }
 
         let (params, body) = self.with_suppressed(&annotations.suppress, |this| {
@@ -23,7 +24,7 @@ impl<'r> Analyzer<'r> {
             }
 
             let ((params, body), scope) = this.with_scope(|this| {
-                let params = this.analyze_all(&f.params, Self::analyze_param);
+                let params = this.analyze_function_params(&normalized);
                 this.current_return_type = (*fn_type.return_type).clone();
                 debug_assert!(
                     this.loop_stack.is_empty(),
@@ -73,15 +74,16 @@ impl<'r> Analyzer<'r> {
     /// to own the entire function.
     fn check_naked_function_body(
         &mut self,
-        f: &HirFunctionDef,
+        normalized: &NormalizedFunction,
         body: &HirBlock,
         fn_type: &ResolvedFunctionType,
         id: HirId,
         annotations: &crate::annotations::ResolvedAnnotations,
     ) -> Option<CheckedFunctionDef> {
+        let f = &normalized.function;
         let (params, asm) = self.with_suppressed(&annotations.suppress, |this| {
             let ((params, asm), _scope) = this.with_scope(|this| {
-                let params = this.analyze_all(&f.params, Self::analyze_param);
+                let params = this.analyze_function_params(normalized);
                 this.current_return_type = (*fn_type.return_type).clone();
                 let asm = this.analyze_naked_body(f, body);
                 (params, asm)

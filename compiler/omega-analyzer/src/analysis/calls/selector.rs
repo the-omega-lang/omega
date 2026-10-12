@@ -218,7 +218,7 @@ impl<'r> Analyzer<'r> {
         span: Span,
         written: &[ExprGenericArg],
         owner: &ItemPath,
-        params: &[HirGenericParam],
+        params: &[GenericParam],
     ) -> Option<WrittenGenerics> {
         self.check_generic_arity(node_id, span, owner, params, written.len())?;
         let validated = self.validate_written_generics(node_id, span, written)?;
@@ -239,7 +239,7 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         validated: &ValidatedGenerics,
-        params: &[HirGenericParam],
+        params: &[GenericParam],
         report: bool,
     ) -> Option<WrittenGenerics> {
         let written = &validated.entries;
@@ -251,13 +251,13 @@ impl<'r> Analyzer<'r> {
         let mut ok = true;
         for (position, entry) in written.iter().enumerate() {
             let param = params.get(position);
-            if entry.written.selector().is_some() && param.is_some_and(HirGenericParam::is_comp) {
+            if entry.written.selector().is_some() && param.is_some_and(GenericParam::is_comp) {
                 if report {
                     self.error(
                         node_id,
                         entry.written.selector_span().unwrap_or(span),
                         AnalysisErrorKind::BoundSelectorOnCompParam {
-                            parameter: param.unwrap().ident.clone(),
+                            parameter: param.unwrap().label(),
                         },
                     );
                 }
@@ -286,7 +286,7 @@ impl<'r> Analyzer<'r> {
             }
             let plain_type = entry.written.selector().is_none()
                 && *entry.written.arg() != GenericArg::Infer
-                && !param.is_some_and(HirGenericParam::is_comp);
+                && !param.is_some_and(GenericParam::is_comp);
             if plain_type {
                 result.plain_type_positions.push(position);
             }
@@ -397,8 +397,7 @@ impl<'r> Analyzer<'r> {
                     let Some(default) = param.default.clone() else {
                         break;
                     };
-                    let substitution =
-                        GenericSubstitution::zip(params.iter().map(|p| &p.ident), &args);
+                    let substitution = GenericSubstitution::zip(&params, &args);
                     args.push(self.resolve_default_generic_arg(
                         node_id,
                         span,
@@ -421,22 +420,6 @@ impl<'r> Analyzer<'r> {
                 name,
             },
         ))
-    }
-
-    /// What a written list binds, as a substitution. A `_` occupies its
-    /// position without binding it, so the name it stands for stays open to
-    /// ordinary inference rather than shifting the arguments after it.
-    pub(crate) fn written_substitution(
-        params: &[HirGenericParam],
-        written: &WrittenGenerics,
-    ) -> GenericSubstitution {
-        let mut substitution = GenericSubstitution::new();
-        for (param, binding) in params.iter().zip(&written.bindings) {
-            if let Some(arg) = binding {
-                substitution.push(param.ident.clone(), arg.clone());
-            }
-        }
-        substitution
     }
 
     /// Checks the selectors a written list applied to a lone generic
@@ -510,15 +493,12 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         name: &Ident,
-        params: &[HirGenericParam],
+        params: &[GenericParam],
         written: &WrittenGenerics,
-        parameter: Ident,
+        position: usize,
     ) {
-        let hole = params
-            .iter()
-            .position(|param| param.ident == parameter)
-            .is_some_and(|position| written.is_hole(position));
-        let kind = if hole {
+        let parameter = params[position].label();
+        let kind = if written.is_hole(position) {
             AnalysisErrorKind::UndeterminedInferenceHole {
                 name: name.clone(),
                 parameter,

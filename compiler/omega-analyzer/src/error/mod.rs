@@ -122,6 +122,11 @@ pub enum TypeResolutionError {
         name: Ident,
         similar: Option<Ident>,
     },
+    /// A `spec S` parameter analyzed where its anonymous generic parameter
+    /// has no binding.
+    UnboundAnonymousGeneric {
+        parameter: String,
+    },
     ModuleNotImported {
         name: Ident,
         similar: Option<Ident>,
@@ -145,12 +150,12 @@ pub enum TypeResolutionError {
     /// A `comp` generic parameter declared with a type that has no canonical
     /// compile-time identity yet.
     UnsupportedCompParamType {
-        param: Ident,
+        param: String,
         r#type: ResolvedType,
     },
     /// A generic argument written as the wrong kind for its parameter.
     GenericArgKindMismatch {
-        param: Ident,
+        param: String,
         expected_value: bool,
     },
     /// A written scalar literal whose magnitude no compile-time integer can
@@ -159,7 +164,7 @@ pub enum TypeResolutionError {
     /// A compile-time value that cannot be represented exactly in the type
     /// its `comp` parameter declares.
     CompArgNotRepresentable {
-        param: Ident,
+        param: String,
         value: String,
         declared: ResolvedType,
     },
@@ -201,6 +206,12 @@ impl fmt::Display for TypeResolutionError {
             Self::UnrecognizedNamedType { name, .. } => {
                 write!(f, "cannot find type '{}' in this scope", name.as_ref())
             }
+            Self::UnboundAnonymousGeneric { parameter } => {
+                write!(
+                    f,
+                    "the type of this '{parameter}' parameter is not determined here"
+                )
+            }
             Self::ModuleNotImported { name, .. } => {
                 write!(f, "module '{}' is not imported", name.as_ref())
             }
@@ -234,7 +245,7 @@ impl fmt::Display for TypeResolutionError {
                 f,
                 "'comp {}: {type}' is not supported -- a 'comp' generic parameter must currently be \
                  an integer, 'bool', or 'char'",
-                param.as_ref()
+                param
             ),
             Self::GenericArgKindMismatch {
                 param,
@@ -243,7 +254,7 @@ impl fmt::Display for TypeResolutionError {
                 f,
                 "generic parameter '{}' is a 'comp' parameter, so it takes a compile-time value, \
                  not a type",
-                param.as_ref()
+                param
             ),
             Self::GenericArgKindMismatch {
                 param,
@@ -251,7 +262,7 @@ impl fmt::Display for TypeResolutionError {
             } => write!(
                 f,
                 "generic parameter '{}' is a type parameter, so it takes a type, not a value",
-                param.as_ref()
+                param
             ),
             Self::CompLiteralOutOfRange(literal) => write!(
                 f,
@@ -265,7 +276,7 @@ impl fmt::Display for TypeResolutionError {
             } => write!(
                 f,
                 "'{value}' cannot be represented as '{declared}', the declared type of 'comp {}'",
-                param.as_ref()
+                param
             ),
             Self::ModuleResolution(e) => write!(f, "{e}"),
             Self::NotAType(path) => write!(f, "'{}' is a value, not a type", join(path)),

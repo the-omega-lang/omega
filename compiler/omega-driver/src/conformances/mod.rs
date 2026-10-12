@@ -5,6 +5,7 @@ use omega_analyzer::analysis::Analyzer;
 use omega_analyzer::analysis::PendingSpecMethod;
 use omega_analyzer::checked::{CheckedFunctionDef, ConformanceOwner};
 use omega_analyzer::error::{AnalysisError, AnalysisErrorKind, AnalysisWarning};
+use omega_analyzer::generics::GenericParam;
 use omega_analyzer::generics::GenericSubstitution;
 use omega_analyzer::resolved_type::{
     ResolvedBound, ResolvedGenericArg, ResolvedMethod, ResolvedSpecType, ResolvedType,
@@ -12,7 +13,7 @@ use omega_analyzer::resolved_type::{
 use omega_analyzer::resolver::ResolveError;
 use omega_diagnostics::Span;
 use omega_hir::ModulePath;
-use omega_hir::{AliasTarget, HirConformDef, HirFunctionDef, HirGenericParam, HirId, HirItem};
+use omega_hir::{AliasTarget, HirConformDef, HirFunctionDef, HirId, HirItem};
 use omega_parser::prelude::{Ident, Type};
 use std::cell::RefCell;
 use std::cmp::Ordering;

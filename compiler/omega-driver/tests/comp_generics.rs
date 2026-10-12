@@ -349,7 +349,7 @@ fn an_unresolvable_comp_parameter_reports_inference_failure() {
     .expect_errors();
     assert!(has_analysis_error(&errors, |kind| matches!(
         kind,
-        AnalysisErrorKind::UnresolvedGenericParam(name) if name.as_ref() == "N"
+        AnalysisErrorKind::UnresolvedGenericParam(name) if name == "N"
     )));
 }
 

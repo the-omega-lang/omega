@@ -484,7 +484,7 @@ The analyzer asks for semantic/module facts such as:
 - resolve import alias;
 - resolve a declared `alias`;
 - lookup overload candidates;
-- obtain raw generic signatures for inference;
+- obtain generic signatures, as positional patterns, for inference;
 - obtain canonical spec declarations;
 - prove/query conformances;
 - resolve primitive methods;

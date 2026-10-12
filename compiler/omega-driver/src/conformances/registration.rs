@@ -7,7 +7,7 @@ impl Driver {
     pub(crate) fn mark_bound_type_imports(
         &mut self,
         module: &ModulePath,
-        generics: &[HirGenericParam],
+        generics: &[GenericParam],
     ) {
         let mut seen = HashSet::new();
         for param in generics {
@@ -143,7 +143,10 @@ impl Driver {
                 })
                 .collect();
             for conform in declarations {
-                self.mark_bound_type_imports(module, &conform.generics);
+                self.mark_bound_type_imports(
+                    module,
+                    &GenericParam::declared(conform.id, &conform.generics),
+                );
                 let Some(origin) = ConformanceOrigin::classify(&conform.target, &conform.generics)
                 else {
                     self.diagnostics.error(
@@ -246,12 +249,12 @@ impl Driver {
         );
         self.diagnostics.record_warnings(module, spec_run.warnings);
         let spec_reference = spec_run.result?;
-        let generic_args: Vec<_> = conform
-            .generics
+        let generic_params = GenericParam::declared(conform.id, &conform.generics);
+        let generic_args: Vec<_> = generic_params
             .iter()
             .map(|param| {
                 substitution
-                    .get(&param.ident)
+                    .get(param.id)
                     .cloned()
                     .expect("a generic conform template pins every parameter")
             })
@@ -274,7 +277,7 @@ impl Driver {
         let declared_bounds = match self.check_generic_bounds(
             module,
             AnalysisSite::new(conform.id, conform.span),
-            &conform.generics,
+            &generic_params,
             &generic_args,
         ) {
             Some(Ok(bounds)) => bounds,
@@ -326,8 +329,7 @@ impl Driver {
         {
             return Some(existing.clone());
         }
-        let mut method_substitution = substitution.clone();
-        method_substitution.push_type(Ident("Self".to_string()), target.clone());
+        let method_substitution = substitution.clone().with_self_type(target.clone());
         // The declared set's alias-expanded identity -- both blanket
         // precedence and derived-conformance admission compare on this, so
         // an alias bound and its inline spelling are interchangeable.

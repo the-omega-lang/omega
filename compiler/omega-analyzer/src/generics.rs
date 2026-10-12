@@ -1,7 +1,7 @@
-use crate::resolved_type::{CompScalar, CompScalarType, ResolvedGenericArg, ResolvedType};
+use crate::resolved_type::{CompScalar, ResolvedGenericArg, ResolvedType};
 use crate::resolver::{ModuleResolver, ResolveError};
-use omega_hir::{HirFunctionDef, HirGenericParam, ItemPath, ModulePath};
-use omega_parser::prelude::{ArrayLength, GenericArg, GenericParamKind, Ident, Type};
+use omega_hir::{HirFunctionDef, HirGenericParam, HirId, ItemPath, ModulePath};
+use omega_parser::prelude::{GenericArg, GenericParamKind, Ident, Type};
 
 pub mod pattern;
 
@@ -24,43 +24,171 @@ pub fn compare_bound_sets<T: PartialEq>(
     }
 }
 
-/// Rewrites each outermost static `spec ...` parameter into the anonymous
-/// bounded generic the rest of the compiler already understands, after
-/// expanding aliases so that `f(x: spec A + B)` and `f(x: AB)` normalize
-/// identically. Only a parameter's outermost type participates: `*spec A + B`
-/// is a dynamic object, and a spec buried in an array, generic argument, or
-/// function type is not a parameter bound at all.
+/// The identity of one declared generic parameter: the declaration that
+/// declares it, and its position in that declaration's list.
+///
+/// Signatures, inference, and substitution identify a parameter by this, never
+/// by its name; a name only resolves lexical references inside the
+/// declaration, so two parameters that spell the same name stay distinct.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct GenericParamId {
+    pub owner: HirId,
+    pub index: u32,
+}
+
+/// Where a generic parameter came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GenericParamOrigin {
+    /// Written in the declaration's generic parameter list.
+    Written,
+    /// Introduced by a `spec S` parameter type at this parameter index. Such
+    /// a parameter has no name: only that parameter's own type refers to it.
+    StaticSpecParameter { param_index: usize },
+}
+
+/// One declared generic parameter.
+#[derive(Debug, Clone)]
+pub struct GenericParam {
+    pub id: GenericParamId,
+    pub name: Option<Ident>,
+    pub origin: GenericParamOrigin,
+    pub kind: GenericParamKind,
+    pub default: Option<GenericArg>,
+}
+
+impl GenericParam {
+    /// The written parameters `owner` declares, in order.
+    pub fn declared(owner: HirId, params: &[HirGenericParam]) -> Vec<Self> {
+        params
+            .iter()
+            .enumerate()
+            .map(|(index, param)| Self {
+                id: GenericParamId {
+                    owner,
+                    index: index as u32,
+                },
+                name: Some(param.ident.clone()),
+                origin: GenericParamOrigin::Written,
+                kind: param.kind.clone(),
+                default: param.default.clone(),
+            })
+            .collect()
+    }
+
+    pub fn bounds(&self) -> &[Type] {
+        match &self.kind {
+            GenericParamKind::Type { bounds } => bounds,
+            GenericParamKind::Comp { .. } => &[],
+        }
+    }
+
+    pub fn comp_type(&self) -> Option<&Type> {
+        match &self.kind {
+            GenericParamKind::Comp { value_type } => Some(value_type),
+            GenericParamKind::Type { .. } => None,
+        }
+    }
+
+    pub fn is_comp(&self) -> bool {
+        matches!(self.kind, GenericParamKind::Comp { .. })
+    }
+
+    /// Whether a written reference to `name` inside the declaration means
+    /// this parameter.
+    pub fn is_named(&self, name: &Ident) -> bool {
+        self.name.as_ref() == Some(name)
+    }
+
+    /// How a diagnostic names this parameter: its declared name, or for an
+    /// anonymous parameter the `spec` bound it was written as.
+    pub fn label(&self) -> String {
+        match &self.name {
+            Some(name) => name.to_string(),
+            None => format!(
+                "spec {}",
+                self.bounds()
+                    .iter()
+                    .map(crate::error::raw_type_display)
+                    .collect::<Vec<_>>()
+                    .join(" + ")
+            ),
+        }
+    }
+}
+
+/// A function together with its effective generic parameters: the written
+/// ones, then one anonymous parameter per outermost static `spec ...`
+/// parameter type.
+#[derive(Debug, Clone)]
+pub struct NormalizedFunction {
+    pub function: HirFunctionDef,
+    pub generics: Vec<GenericParam>,
+}
+
+impl NormalizedFunction {
+    /// The generic position whose binding is parameter `param_index`'s type,
+    /// when that parameter was written as `spec ...`.
+    pub fn static_spec_position(&self, param_index: usize) -> Option<usize> {
+        self.generics.iter().position(|generic| {
+            generic.origin == GenericParamOrigin::StaticSpecParameter { param_index }
+        })
+    }
+}
+
+/// Gives each outermost static `spec ...` parameter its own anonymous
+/// bounded generic, after expanding aliases so that `f(x: spec A + B)` and
+/// `f(x: AB)` normalize identically. Only a parameter's outermost type
+/// participates: `*spec A + B` is a dynamic object, and a spec buried in an
+/// array, generic argument, or function type is not a parameter bound at all.
 ///
 /// This is the one place the rule lives; every query that reports a function's
 /// generics, signature, or body works from the result.
-pub fn normalize_static_spec_params(
+pub fn normalize_function(
     resolver: &mut dyn ModuleResolver,
     module_path: &ModulePath,
     f: &HirFunctionDef,
-) -> Result<HirFunctionDef, ResolveError> {
-    let mut normalized: Option<HirFunctionDef> = None;
-    for (index, param) in f.params.iter().enumerate() {
+) -> Result<NormalizedFunction, ResolveError> {
+    let mut generics = GenericParam::declared(f.id, &f.generics);
+    for (param_index, param) in f.params.iter().enumerate() {
         let expanded =
             crate::aliases::expand_type_alias(resolver, module_path, param.r#type.clone())?;
         let Type::SpecStatic(members) = expanded else {
             continue;
         };
-        let target = normalized.get_or_insert_with(|| f.clone());
-        let fresh = Ident(format!("$Param{index}"));
-        target
-            .generics
-            .push(HirGenericParam::r#type(fresh.clone(), members, None));
-        target.params[index].r#type = Type::Named(fresh.into());
+        generics.push(GenericParam {
+            id: GenericParamId {
+                owner: f.id,
+                index: generics.len() as u32,
+            },
+            name: None,
+            origin: GenericParamOrigin::StaticSpecParameter { param_index },
+            kind: GenericParamKind::Type { bounds: members },
+            default: None,
+        });
     }
-    Ok(normalized.unwrap_or_else(|| f.clone()))
+    Ok(NormalizedFunction {
+        function: f.clone(),
+        generics,
+    })
+}
+
+/// One parameter bound by an instantiation. The name is how the binding
+/// enters the declaration's lexical scope; it plays no part in identity.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GenericBinding {
+    pub param: GenericParamId,
+    pub name: Option<Ident>,
+    pub arg: ResolvedGenericArg,
 }
 
 /// The bindings one generic instantiation installs while the instantiated
-/// declaration is analyzed. Entries stay in declaration order, and a name is
-/// bound either to a type or to a canonical compile-time value.
+/// declaration is analyzed, together with the `Self` type of an owner
+/// instantiation. Later bindings shadow earlier ones that share a name, so an
+/// enclosing owner's bindings come first and a member's own come after.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct GenericSubstitution {
-    entries: Vec<(Ident, ResolvedGenericArg)>,
+    bindings: Vec<GenericBinding>,
+    self_type: Option<ResolvedType>,
 }
 
 impl GenericSubstitution {
@@ -71,281 +199,87 @@ impl GenericSubstitution {
     /// Pairs declared parameters with the arguments an instantiation
     /// resolved for them. Surplus on either side is ignored; argument count
     /// is checked where the instantiation is formed.
-    pub fn zip<'a>(
-        names: impl IntoIterator<Item = &'a Ident>,
-        args: &[ResolvedGenericArg],
-    ) -> Self {
-        Self {
-            entries: names
-                .into_iter()
-                .cloned()
-                .zip(args.iter().cloned())
-                .collect(),
+    pub fn zip(params: &[GenericParam], args: &[ResolvedGenericArg]) -> Self {
+        let mut substitution = Self::new();
+        for (param, arg) in params.iter().zip(args) {
+            substitution.bind(param, arg.clone());
         }
+        substitution
     }
 
-    pub fn push(&mut self, name: Ident, arg: ResolvedGenericArg) {
-        self.entries.push((name, arg));
-    }
-
-    pub fn push_type(&mut self, name: Ident, r#type: ResolvedType) {
-        self.push(name, ResolvedGenericArg::Type(r#type));
-    }
-
-    /// Records `arg` only if `name` is still unbound, so the first binding
-    /// an inference pass finds wins.
-    pub fn bind_if_absent(&mut self, name: &Ident, arg: impl FnOnce() -> ResolvedGenericArg) {
-        if !self.contains(name) {
-            self.entries.push((name.clone(), arg()));
+    /// The same for positional bindings, skipping the positions still open.
+    pub fn from_bindings(params: &[GenericParam], args: &[Option<ResolvedGenericArg>]) -> Self {
+        let mut substitution = Self::new();
+        for (param, arg) in params.iter().zip(args) {
+            if let Some(arg) = arg {
+                substitution.bind(param, arg.clone());
+            }
         }
+        substitution
     }
 
-    pub fn get(&self, name: &Ident) -> Option<&ResolvedGenericArg> {
-        self.entries
+    pub fn bind(&mut self, param: &GenericParam, arg: ResolvedGenericArg) {
+        self.bindings.push(GenericBinding {
+            param: param.id,
+            name: param.name.clone(),
+            arg,
+        });
+    }
+
+    pub fn with_self_type(mut self, self_type: ResolvedType) -> Self {
+        self.self_type = Some(self_type);
+        self
+    }
+
+    pub fn self_type(&self) -> Option<&ResolvedType> {
+        self.self_type.as_ref()
+    }
+
+    /// `own` analyzed inside `self`: the enclosing bindings first, so a name
+    /// `own` redeclares shadows the enclosing one.
+    pub fn enclosing(&self, own: &Self) -> Self {
+        let mut combined = self.clone();
+        combined.bindings.extend(own.bindings.iter().cloned());
+        if own.self_type.is_some() {
+            combined.self_type.clone_from(&own.self_type);
+        }
+        combined
+    }
+
+    pub fn get(&self, param: GenericParamId) -> Option<&ResolvedGenericArg> {
+        self.bindings
             .iter()
-            .find_map(|(bound, arg)| (bound == name).then_some(arg))
+            .rev()
+            .find_map(|binding| (binding.param == param).then_some(&binding.arg))
     }
 
-    pub fn contains(&self, name: &Ident) -> bool {
-        self.get(name).is_some()
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = (&Ident, &ResolvedGenericArg)> {
-        self.entries.iter().map(|(name, arg)| (name, arg))
+    pub fn bindings(&self) -> impl Iterator<Item = &GenericBinding> {
+        self.bindings.iter()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-}
-
-impl FromIterator<(Ident, ResolvedGenericArg)> for GenericSubstitution {
-    fn from_iter<I: IntoIterator<Item = (Ident, ResolvedGenericArg)>>(iter: I) -> Self {
-        Self {
-            entries: iter.into_iter().collect(),
-        }
-    }
-}
-
-/// The declaration side of one generic inference problem: the declared
-/// parameters together with the already-resolved type of each `comp`
-/// parameter. Resolving those types needs the analyzer, so it happens once
-/// at the call site rather than inside every unification step.
-pub struct GenericParams<'a> {
-    pub params: &'a [HirGenericParam],
-    pub comp_types: &'a [Option<CompScalarType>],
-    pub pointer_bits: u32,
-}
-
-impl GenericParams<'_> {
-    fn index_of(&self, name: &Ident) -> Option<usize> {
-        self.params.iter().position(|p| &p.ident == name)
-    }
-
-    pub fn names(&self) -> impl Iterator<Item = &Ident> {
-        self.params.iter().map(|p| &p.ident)
-    }
-
-    /// The scalar type a `comp` parameter was declared with, or `None` when
-    /// `name` is not a `comp` parameter of this declaration or its declared
-    /// type failed to resolve.
-    pub fn comp_type(&self, name: &Ident) -> Option<CompScalarType> {
-        let index = self.index_of(name)?;
-        self.params[index]
-            .is_comp()
-            .then(|| self.comp_types[index])?
-    }
-
-    fn is_type_param(&self, name: &Ident) -> bool {
-        self.index_of(name)
-            .is_some_and(|index| !self.params[index].is_comp())
-    }
-
-    fn normalize_length(&self, name: &Ident, length: u32) -> Option<ResolvedGenericArg> {
-        let CompScalarType::Int(r#type) = self.comp_type(name)? else {
-            return None;
-        };
-        let (min, max) = r#type.resolved().integer_domain(self.pointer_bits)?;
-        let value = i128::from(length);
-        (min..=max)
-            .contains(&value)
-            .then_some(ResolvedGenericArg::Comp(CompScalar::Int { r#type, value }))
-    }
-}
-
-/// Binds generic parameters by matching the written type of a declaration
-/// against a concrete type. Type parameters bind from the corresponding
-/// concrete position; `comp` parameters bind only from compile-time
-/// structural information -- currently a fixed array's length -- never from
-/// a runtime value.
-pub fn unify_generic_type(
-    generics: &GenericParams<'_>,
-    raw: &Type,
-    concrete: &ResolvedType,
-    subst: &mut GenericSubstitution,
-) {
-    match (raw, concrete) {
-        (Type::Named(path), _) if path.is_unqualified() && generics.is_type_param(&path.head) => {
-            subst.bind_if_absent(&path.head, || ResolvedGenericArg::Type(concrete.clone()));
-        }
-        (Type::Pointer(inner, _), ResolvedType::Slice { item: c, .. })
-            if matches!(inner.as_ref(), Type::InferredArray(_)) =>
-        {
-            let Type::InferredArray(elem) = inner.as_ref() else {
-                unreachable!()
-            };
-            unify_generic_type(generics, elem, c, subst);
-        }
-        (Type::Pointer(inner, _), ResolvedType::Array(c, _))
-            if matches!(inner.as_ref(), Type::UnknownSizeArray(_)) =>
-        {
-            let Type::UnknownSizeArray(elem) = inner.as_ref() else {
-                unreachable!()
-            };
-            unify_generic_type(generics, elem, c, subst);
-        }
-        (Type::Pointer(inner, _), ResolvedType::Pointer { pointee: c, .. }) => {
-            unify_generic_type(generics, inner, c, subst)
-        }
-        (Type::SizedArray(inner, length), ResolvedType::SizedArray(c, concrete_length)) => {
-            if let ArrayLength::Path(path) = length
-                && path.is_unqualified()
-                && generics.comp_type(&path.head).is_some()
-                && let Some(arg) = generics.normalize_length(&path.head, *concrete_length)
-            {
-                subst.bind_if_absent(&path.head, || arg);
-            }
-            unify_generic_type(generics, inner, c, subst)
-        }
-        (Type::Function(f), ResolvedType::Function(c)) => {
-            for (p, cp) in f.params.iter().zip(c.param_types()) {
-                unify_generic_type(generics, &p.r#type, cp, subst);
-            }
-            unify_generic_type(generics, &f.return_type, &c.return_type, subst);
-        }
-        // `Pair<T>` against `Pair<i32>`: zips `raw`'s written arguments
-        // positionally against the concrete owner's `generic_args` and
-        // recurses into each pair. No check that `raw`'s path actually
-        // names the same owner as `concrete` -- a wrong guess here is
-        // caught afterward by the ordinary argument check.
-        (Type::Generic(_, raw_args), _) => {
-            let Some(concrete_args) = owner_generic_args(concrete) else {
-                return;
-            };
-            for (r, c) in raw_args.iter().zip(&concrete_args) {
-                match (r, c) {
-                    (GenericArg::Type(raw), ResolvedGenericArg::Type(concrete)) => {
-                        unify_generic_type(generics, raw, concrete, subst)
-                    }
-                    // A bare path in a value position names the `comp`
-                    // parameter the concrete argument determines.
-                    (GenericArg::Type(Type::Named(path)), ResolvedGenericArg::Comp(value))
-                        if path.is_unqualified()
-                            && generics.comp_type(&path.head) == Some(comp_type_of(value)) =>
-                    {
-                        subst.bind_if_absent(&path.head, || c.clone());
-                    }
-                    _ => {}
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-/// [`unify_generic_type`] against an expectation pattern whose parameters
-/// are holes. Only the pattern's known parts bind anything: a declaration
-/// parameter that meets a hole stays open for the call's own inference, and
-/// the hole is solved later from the checked result.
-pub fn unify_generic_pattern(
-    generics: &GenericParams<'_>,
-    raw: &Type,
-    expected: &pattern::TypePattern,
-    subst: &mut GenericSubstitution,
-) {
-    use pattern::{ArgumentPattern, TypePattern};
-    match (raw, expected) {
-        (_, TypePattern::Fixed(concrete)) => unify_generic_type(generics, raw, concrete, subst),
-        (Type::Pointer(inner, _), TypePattern::Slice(item, _))
-            if matches!(inner.as_ref(), Type::InferredArray(_)) =>
-        {
-            let Type::InferredArray(elem) = inner.as_ref() else {
-                unreachable!()
-            };
-            unify_generic_pattern(generics, elem, item, subst);
-        }
-        (Type::Pointer(inner, _), TypePattern::Array(item, _))
-            if matches!(inner.as_ref(), Type::UnknownSizeArray(_)) =>
-        {
-            let Type::UnknownSizeArray(elem) = inner.as_ref() else {
-                unreachable!()
-            };
-            unify_generic_pattern(generics, elem, item, subst);
-        }
-        (Type::Pointer(inner, _), TypePattern::Pointer(pointee, _)) => {
-            unify_generic_pattern(generics, inner, pointee, subst)
-        }
-        (Type::SizedArray(inner, length), TypePattern::SizedArray(item, known_length)) => {
-            if let ArrayLength::Path(path) = length
-                && path.is_unqualified()
-                && let ArgumentPattern::Value(CompScalar::Int { value, .. }) = known_length
-                && let Ok(value) = u32::try_from(*value)
-                && let Some(arg) = generics.normalize_length(&path.head, value)
-            {
-                subst.bind_if_absent(&path.head, || arg);
-            }
-            unify_generic_pattern(generics, inner, item, subst)
-        }
-        (Type::Function(f), TypePattern::Function(params, result, _, _)) => {
-            for (p, expected) in f.params.iter().zip(params) {
-                unify_generic_pattern(generics, &p.r#type, expected, subst);
-            }
-            unify_generic_pattern(generics, &f.return_type, result, subst);
-        }
-        (Type::Generic(_, raw_args), TypePattern::Nominal(_, args)) => {
-            for (r, a) in raw_args.iter().zip(args) {
-                match (r, a) {
-                    (GenericArg::Type(raw), ArgumentPattern::Type(expected)) => {
-                        unify_generic_pattern(generics, raw, expected, subst)
-                    }
-                    (GenericArg::Type(Type::Named(path)), ArgumentPattern::Value(value))
-                        if path.is_unqualified()
-                            && generics.comp_type(&path.head) == Some(comp_type_of(value)) =>
-                    {
-                        subst.bind_if_absent(&path.head, || ResolvedGenericArg::Comp(*value));
-                    }
-                    _ => {}
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-fn comp_type_of(value: &CompScalar) -> CompScalarType {
-    match value {
-        CompScalar::Int { r#type, .. } => CompScalarType::Int(*r#type),
-        CompScalar::Bool(_) => CompScalarType::Bool,
-        CompScalar::Char(_) => CompScalarType::Char,
+        self.bindings.is_empty() && self.self_type.is_none()
     }
 }
 
 /// The argument list an inference pass produced, in declaration order. An
 /// unbound parameter with a default is a gap (`None`) at any position, which
 /// the instantiation site fills from that default; an unbound parameter
-/// without one is reported by name.
+/// without one is reported by its position.
 pub fn resolve_inferred_generic_args(
-    generics: &GenericParams<'_>,
-    subst: &GenericSubstitution,
-) -> Result<Vec<Option<ResolvedGenericArg>>, Ident> {
+    generics: &[GenericParam],
+    bindings: &[Option<ResolvedGenericArg>],
+) -> Result<Vec<Option<ResolvedGenericArg>>, usize> {
     generics
-        .params
         .iter()
-        .map(|param| match subst.get(&param.ident) {
-            Some(arg) => Ok(Some(arg.widened())),
-            None if param.default.is_some() => Ok(None),
-            None => Err(param.ident.clone()),
-        })
+        .enumerate()
+        .map(
+            |(position, param)| match bindings.get(position).cloned().flatten() {
+                Some(arg) => Ok(Some(arg.widened())),
+                None if param.default.is_some() => Ok(None),
+                None => Err(position),
+            },
+        )
         .collect()
 }
 
@@ -359,14 +293,5 @@ pub fn default_matches_kind(param: &HirGenericParam) -> bool {
         (GenericParamKind::Type { .. }, Some(GenericArg::Type(_))) => true,
         (GenericParamKind::Comp { .. }, Some(GenericArg::Value(_))) => true,
         _ => false,
-    }
-}
-
-fn owner_generic_args(concrete: &ResolvedType) -> Option<Vec<ResolvedGenericArg>> {
-    match concrete {
-        ResolvedType::Struct(cell) => Some(cell.borrow().generic_args.clone()),
-        ResolvedType::Enum { cell, .. } => Some(cell.borrow().generic_args.clone()),
-        ResolvedType::Union(cell) => Some(cell.borrow().generic_args.clone()),
-        _ => None,
     }
 }

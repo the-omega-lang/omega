@@ -301,38 +301,31 @@ impl Driver {
         conform: &HirConformDef,
         actual: &ResolvedType,
     ) -> Option<GenericSubstitution> {
-        if let Type::Named(path) = &conform.target
-            && path.is_unqualified()
-            && conform
-                .generics
-                .iter()
-                .any(|generic| generic.ident == path.head)
-        {
-            return Analyzer::is_conformable_target(actual).then(|| {
-                GenericSubstitution::from_iter([(
-                    path.head.clone(),
-                    ResolvedGenericArg::Type(actual.clone()),
-                )])
-            });
+        // A template's own parameters are written as bare paths in its
+        // target; each names the position it binds.
+        let params = GenericParam::declared(conform.id, &conform.generics);
+        let parameter = |r#type: &Type| match r#type {
+            Type::Named(path) if path.is_unqualified() => {
+                params.iter().find(|param| param.is_named(&path.head))
+            }
+            _ => None,
+        };
+        let mut substitution = GenericSubstitution::new();
+        if let Some(param) = parameter(&conform.target) {
+            if !Analyzer::is_conformable_target(actual) {
+                return None;
+            }
+            substitution.bind(param, ResolvedGenericArg::Type(actual.clone()));
+            return Some(substitution);
         }
         if let (Type::InferredArray(raw_item), ResolvedType::Slice { item, .. }) =
             (&conform.target, actual)
         {
-            let Type::Named(path) = raw_item.as_ref() else {
-                return None;
-            };
-            if !path.is_unqualified()
-                || !conform
-                    .generics
-                    .iter()
-                    .any(|generic| generic.ident == path.head)
-            {
-                return None;
-            }
-            return Some(GenericSubstitution::from_iter([(
-                path.head.clone(),
+            substitution.bind(
+                parameter(raw_item)?,
                 ResolvedGenericArg::Type((**item).clone()),
-            )]));
+            );
+            return Some(substitution);
         }
         let (actual_name, actual_args) = match actual {
             ResolvedType::Struct(cell) => {
@@ -356,23 +349,10 @@ impl Driver {
         if path.segments().last() != Some(&actual_name) || args.len() != actual_args.len() {
             return None;
         }
-        // A conform template's own parameters are written as bare paths, so
-        // a `comp` parameter is matched here exactly like a type parameter:
-        // the concrete argument, whichever kind it is, binds the name.
-        let mut substitution = GenericSubstitution::new();
+        // A `comp` parameter is matched here exactly like a type parameter:
+        // the concrete argument, whichever kind it is, binds the position.
         for (raw, concrete) in args.iter().zip(actual_args) {
-            let Some(Type::Named(path)) = raw.as_type() else {
-                return None;
-            };
-            if !path.is_unqualified()
-                || !conform
-                    .generics
-                    .iter()
-                    .any(|generic| generic.ident == path.head)
-            {
-                return None;
-            }
-            substitution.push(path.head.clone(), concrete);
+            substitution.bind(parameter(raw.as_type()?)?, concrete);
         }
         Some(substitution)
     }

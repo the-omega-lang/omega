@@ -2630,7 +2630,7 @@ fn an_uninferable_remainder_after_an_explicit_prefix_still_reports_the_generic()
     );
     assert!(has_analysis_error(&errors, |kind| matches!(
         kind,
-        AnalysisErrorKind::UnresolvedGenericParam(generic) if generic.as_ref() == "B"
+        AnalysisErrorKind::UnresolvedGenericParam(generic) if generic == "B"
     )));
 }
 

@@ -7,10 +7,10 @@ use omega_analyzer::annotation_eval::{ConditionError, evaluate_value, item_is_en
 use omega_analyzer::annotations::{self, ItemKind};
 use omega_analyzer::compiler_definitions::CompilerDefinitions;
 use omega_analyzer::error::{AnalysisError, AnalysisErrorKind};
-use omega_analyzer::generics::GenericSubstitution;
+use omega_analyzer::generics::{GenericParam, GenericSubstitution};
 use omega_analyzer::resolver::ResolveError;
 use omega_diagnostics::{SourceFile, SourceId, SourceRegistry, Span};
-use omega_hir::{HirGenericParam, HirId, HirItem, HirModule, ModuleId};
+use omega_hir::{HirId, HirItem, HirModule, ModuleId};
 use omega_hir::{ItemPath, ModulePath};
 use omega_parser::macros::{ExpansionConfiguration, ExpansionFailure, MacroError};
 use omega_parser::prelude::{
@@ -1044,7 +1044,7 @@ impl Driver {
         &mut self,
         module_path: &ModulePath,
         name: &Ident,
-    ) -> Result<Vec<HirGenericParam>, ResolveError> {
+    ) -> Result<Vec<GenericParam>, ResolveError> {
         let index = self.local_item_index(module_path, name)?;
         self.item_generics_at(module_path, index)
     }
@@ -1053,25 +1053,27 @@ impl Driver {
         &mut self,
         module_path: &ModulePath,
         index: usize,
-    ) -> Result<Vec<HirGenericParam>, ResolveError> {
+    ) -> Result<Vec<GenericParam>, ResolveError> {
         // A static-spec parameter contributes an anonymous bounded generic, so
         // a function's generic arity is only known after normalization.
-        if let HirItem::FunctionDefinition(f) = &self.modules.parsed(module_path).hir.items[index] {
+        let item = &self.modules.parsed(module_path).hir.items[index];
+        if let HirItem::FunctionDefinition(f) = item {
             let f = f.clone();
             return Ok(self.normalized_function(module_path, &f)?.generics);
         }
-        Ok(match &self.modules.parsed(module_path).hir.items[index] {
-            HirItem::Struct(s) => s.generics.clone(),
-            HirItem::Enum(e) => e.generics.clone(),
-            HirItem::Union(u) => u.generics.clone(),
-            HirItem::FunctionDefinition(f) => f.generics.clone(),
-            HirItem::ForeignFunction(f) => f.generics.clone(),
-            HirItem::Spec(sp) => sp.generics.clone(),
-            HirItem::Gap(_) => vec![],
-            HirItem::Declaration { .. }
+        let owner = omega_analyzer::analysis::item_site(item).id;
+        let written = match item {
+            HirItem::Struct(s) => &s.generics,
+            HirItem::Enum(e) => &e.generics,
+            HirItem::Union(u) => &u.generics,
+            HirItem::ForeignFunction(f) => &f.generics,
+            HirItem::Spec(sp) => &sp.generics,
+            HirItem::FunctionDefinition(_)
+            | HirItem::Gap(_)
+            | HirItem::Declaration { .. }
             | HirItem::DeclarationWithInit { .. }
             | HirItem::ForeignBinding(_)
-            | HirItem::Walrus { .. } => vec![],
+            | HirItem::Walrus { .. } => return Ok(Vec::new()),
             HirItem::Glue(_)
             | HirItem::Conform(_)
             | HirItem::Primitive(_)
@@ -1079,7 +1081,8 @@ impl Driver {
             | HirItem::Alias(_) => {
                 unreachable!("unnamed items are never indexed into a module's items")
             }
-        })
+        };
+        Ok(GenericParam::declared(owner, written))
     }
 
     pub(crate) fn is_generic_template(

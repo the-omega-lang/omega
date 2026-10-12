@@ -1,6 +1,7 @@
 use crate::checked::{NumberValue, Storage};
 use crate::error::ArrayLengthProblem;
 use crate::error::TypeResolutionError;
+use crate::generics::GenericParam;
 use crate::resolved_type::{
     CallingConvention, CompScalar, CompScalarType, ConstValue, ResolvedAnonymousEnum,
     ResolvedFunctionParam, ResolvedFunctionType, ResolvedGenericArg, ResolvedType,
@@ -12,7 +13,7 @@ use crate::resolver::{
 use crate::similarity::best_match;
 use crate::target::Target;
 use indexmap::IndexMap;
-use omega_hir::{HirGenericParam, HirId, ItemPath, ModulePath};
+use omega_hir::{HirId, ItemPath, ModulePath};
 use omega_parser::prelude::*;
 
 /// Whether an active `reveal` speaks for syntax carrying a given origin.
@@ -779,7 +780,7 @@ impl Context {
     pub(crate) fn resolve_generic_args(
         &self,
         args: &[GenericArg],
-        params: &[HirGenericParam],
+        params: &[GenericParam],
         resolver: &mut dyn ModuleResolver,
         module_path: &ModulePath,
         options: ResolveItemOptions,
@@ -803,7 +804,7 @@ impl Context {
     pub(crate) fn resolve_generic_arg(
         &self,
         arg: &GenericArg,
-        param: Option<&HirGenericParam>,
+        param: Option<&GenericParam>,
         resolver: &mut dyn ModuleResolver,
         module_path: &ModulePath,
         options: ResolveItemOptions,
@@ -823,7 +824,7 @@ impl Context {
                     }
                     GenericArg::Type(_) => {
                         return Err(TypeResolutionError::GenericArgKindMismatch {
-                            param: param.ident.clone(),
+                            param: param.label(),
                             expected_value: true,
                         });
                     }
@@ -831,15 +832,13 @@ impl Context {
                 CompScalar::normalize(&value, declared, self.target.pointer_bits())
                     .map(ResolvedGenericArg::Comp)
                     .ok_or_else(|| TypeResolutionError::CompArgNotRepresentable {
-                        param: param.ident.clone(),
+                        param: param.label(),
                         value: const_value_display(&value),
                         declared: declared.resolved(),
                     })
             }
             (None, GenericArg::Value(_)) => Err(TypeResolutionError::GenericArgKindMismatch {
-                param: param
-                    .map(|p| p.ident.clone())
-                    .unwrap_or_else(|| Ident("<argument>".to_string())),
+                param: param.map_or_else(|| "<argument>".to_string(), GenericParam::label),
                 expected_value: false,
             }),
             (None, GenericArg::Type(r#type)) => self
@@ -853,7 +852,7 @@ impl Context {
     /// of types a compile-time generic argument may currently have.
     fn comp_param_type(
         &self,
-        param: &HirGenericParam,
+        param: &GenericParam,
         resolver: &mut dyn ModuleResolver,
         module_path: &ModulePath,
         reveals: RevealAuthority<'_>,
@@ -871,7 +870,7 @@ impl Context {
         )?;
         CompScalarType::from_resolved(&resolved).ok_or(
             TypeResolutionError::UnsupportedCompParamType {
-                param: param.ident.clone(),
+                param: param.label(),
                 r#type: resolved,
             },
         )

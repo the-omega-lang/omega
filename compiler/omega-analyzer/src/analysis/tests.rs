@@ -31,7 +31,7 @@ impl ModuleResolver for NoResolver {
         _module_path: &ModulePath,
         _alias: &Ident,
     ) -> Result<Option<ImportTarget>, ResolveError> {
-        unreachable!("test never triggers import resolution")
+        Ok(None)
     }
 
     fn resolve_visible_alias(
@@ -77,7 +77,7 @@ impl ModuleResolver for NoResolver {
     fn item_generic_params(
         &mut self,
         _absolute_path: &ItemPath,
-    ) -> Result<Option<Vec<omega_hir::HirGenericParam>>, ResolveError> {
+    ) -> Result<Option<Vec<GenericParam>>, ResolveError> {
         Ok(None)
     }
 
@@ -92,7 +92,7 @@ impl ModuleResolver for NoResolver {
     fn generic_function_signature(
         &mut self,
         _absolute_path: &ItemPath,
-    ) -> Result<Option<GenericSignature>, ResolveError> {
+    ) -> Result<Option<OverloadTemplate>, ResolveError> {
         unreachable!("test never triggers generic resolution")
     }
 
