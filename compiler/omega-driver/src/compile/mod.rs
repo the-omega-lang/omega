@@ -7,7 +7,7 @@ use omega_analyzer::analysis::AnalysisSite;
 use omega_analyzer::annotations::{ManglingMode, SymbolPolicy};
 use omega_analyzer::checked::{
     CheckedForeignBinding, CheckedItem, CheckedModule, ExternFunctionKind, ExternFunctionRef,
-    Storage,
+    ExternGlobalRef, Storage,
 };
 use omega_analyzer::dead_code::{self, FieldUsage};
 use omega_analyzer::error::{
@@ -144,11 +144,13 @@ impl Driver {
         self.apply_source_suppressions(&mut warnings);
 
         let extern_functions = self.collect_extern_functions();
+        let extern_globals = self.collect_extern_globals();
         Ok(CompiledProgram {
             modules,
             entry: entry.to_vec(),
             warnings,
             extern_functions,
+            extern_globals,
             sources: self.roots.local_sources(),
         })
     }

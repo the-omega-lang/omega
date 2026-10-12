@@ -1,0 +1,20 @@
+import self::defs::seven;
+
+# A suffix names a builtin numeric primitive, never a declaration.
+alias u7 = u8;
+
+direct() => u8 {
+	10u7
+}
+
+# The same in a compile-time header value.
+enum Level(tag: u8) {
+	Low(1u7);
+}
+
+# Nor does a macro-authored suffix see the caller's declarations.
+through_macro() => u8 {
+	seven$()
+}
+
+main() => void {}

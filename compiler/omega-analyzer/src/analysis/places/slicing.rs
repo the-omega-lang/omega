@@ -11,6 +11,11 @@ impl<'r> Analyzer<'r> {
     ) -> Option<CheckedExprNode> {
         let (mut checked_base, base_type, place_mutable) =
             self.analyze_place(node_id, span, base, None)?;
+        // Slicing reads its root (its address, or the fat pointer it holds)
+        // even when the place has no projections.
+        if let CheckedPlaceRoot::Variable { decl_id, .. } = checked_base.root {
+            self.context.mark_used(decl_id);
+        }
         let base_type_snapshot = base_type.clone();
         let base_lacks_length = matches!(base_type_snapshot, ResolvedType::Array(_, _));
 
@@ -37,12 +42,19 @@ impl<'r> Analyzer<'r> {
                 return None;
             }
         };
-        if requested_mutable && !source_mutable {
-            if from_fat_pointer {
+        if requested_mutable {
+            if !from_fat_pointer {
+                self.require_mutable_place(
+                    node_id,
+                    span,
+                    &base.root,
+                    &checked_base,
+                    source_mutable,
+                )?;
+            } else if !source_mutable {
                 self.error(node_id, span, AnalysisErrorKind::ImmutableSliceSource);
                 return None;
             }
-            self.require_mutable_place(node_id, span, &base.root, &checked_base, source_mutable)?;
         }
 
         // A `comp`-bound `*[?]T` has no established promotion story: unlike

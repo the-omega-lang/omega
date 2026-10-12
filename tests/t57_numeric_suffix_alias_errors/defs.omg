@@ -1,0 +1,4 @@
+# The suffix is written here, where no `u7` exists in any form.
+exposed macro seven() => {
+	7u7
+}

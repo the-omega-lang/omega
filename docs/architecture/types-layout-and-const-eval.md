@@ -100,6 +100,14 @@ Codegen may map a `Leaf` to its native scalar type, but it must not invent diffe
 
 Every compiler-created address of a value must satisfy its type's effective alignment: locals and the local frame's base, globals, parameter homes, every spill or scratch slot, hidden result destinations, constant materializations, and slice backing data. Where a fixed floor already exists for stack slots (`stack_align_shift`), it is a floor, not a cap.
 
+### Why the packed default is safe on every target
+
+The layout default (`pack = 1`, and effective alignment `1` for anything that neither declares nor inherits `@layout(align)`) is identical on every target by design; nothing re-derives it per architecture.
+
+It is safe because codegen never claims more alignment than exists. Every load, store, stack slot, and global takes its alignment from `type_alignment` of the Omega type involved (`omega-codegen/src/llvm/place.rs`, `expr.rs`, `mod.rs`, `item.rs`), not from the native type LLVM would assume. On a strict-alignment target, LLVM lowers an access whose stated alignment is below the native one into an alignment-safe sequence, so an unaligned field is slower there, never faulting. The cost of the default is therefore performance, not correctness, and `@layout(align = n)` is the opt-in that removes it.
+
+Atomics and volatile accesses are the exceptions, and they keep their own natural-alignment contracts ([`atomics.md`](../language/atomics.md), [`volatile.md`](../language/volatile.md)): there the program, not the layout default, supplies the alignment.
+
 ## Abstract leaves
 
 A `Leaf` is a backend-neutral scalar storage component. Aggregate values are commonly represented as ordered leaf lists for registers/SSA transfer while memory access uses byte offsets from the same layout algorithm.

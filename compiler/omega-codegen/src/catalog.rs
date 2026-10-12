@@ -1,6 +1,6 @@
 use crate::symbol::SymbolRegistry;
 use omega_analyzer::annotations::SymbolVisibility;
-use omega_analyzer::checked::ExternFunctionRef;
+use omega_analyzer::checked::{ExternFunctionRef, ExternGlobalRef};
 use omega_analyzer::resolved_type::{ResolvedFunctionType, ResolvedType};
 use omega_hir::HirId;
 use omega_mir::{EmissionUnit, MirFunctionDef, MirItem};
@@ -44,6 +44,7 @@ impl Catalog {
     pub(crate) fn build(
         units: &[EmissionUnit],
         extern_functions: &[ExternFunctionRef],
+        extern_globals: &[ExternGlobalRef],
     ) -> Result<Self, String> {
         let mut catalog = Self {
             functions: Vec::new(),
@@ -62,6 +63,20 @@ impl Catalog {
                 symbol: omega_mir::mangle::extern_function_ref_symbol(extern_fn),
                 fn_type: extern_fn.fn_type.clone(),
                 visibility: extern_fn.symbol.visibility,
+            });
+        }
+        for extern_global in extern_globals {
+            let symbol = omega_mir::mangle::data_global_symbol(
+                &extern_global.symbol.mangling,
+                &extern_global.module_path,
+                &extern_global.name,
+            );
+            symbols.register(&symbol, extern_global.decl_id)?;
+            catalog.globals.push(GlobalDecl {
+                id: extern_global.decl_id,
+                symbol,
+                r#type: extern_global.r#type.clone(),
+                visibility: extern_global.symbol.visibility,
             });
         }
         Ok(catalog)

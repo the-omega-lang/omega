@@ -5,6 +5,7 @@ pub(super) struct Expander<'a, E> {
     module: &'a [Ident],
     source: Option<&'a SourceFile>,
     budget: u32,
+    depth: u32,
     state: &'a mut ExpansionState,
     configuration: &'a mut dyn ExpansionConfiguration<Error = E>,
 }
@@ -22,6 +23,7 @@ impl<'a, E> Expander<'a, E> {
             module,
             source,
             budget: MAX_EXPANSIONS,
+            depth: 0,
             state,
             configuration,
         }
@@ -170,7 +172,7 @@ impl<'a, E> Expander<'a, E> {
             .at_definition(&def.defining_module, def.span)
             .into());
         }
-        self.expand_item_list(nodes)
+        self.nested(&def, call_span, |this| this.expand_item_list(nodes))
     }
 
     fn expand_expr_invocation(
@@ -203,7 +205,7 @@ impl<'a, E> Expander<'a, E> {
                 .into());
             }
         };
-        self.expand_expr(node)
+        self.nested(&def, call_span, |this| this.expand_expr(node))
     }
 
     fn expand_statements_invocation(
@@ -242,7 +244,34 @@ impl<'a, E> Expander<'a, E> {
                 statement: Statement::Expression(*tail),
             });
         }
-        self.expand_statement_list(cb.statements)
+        self.nested(&def, call_span, |this| {
+            this.expand_statement_list(cb.statements)
+        })
+    }
+
+    /// Expanding an invocation's output recurses through the expander and
+    /// the parser, so nesting is bounded separately from the total budget:
+    /// a deep chain must report an error before it exhausts an ordinary
+    /// thread's stack.
+    fn nested<T>(
+        &mut self,
+        def: &MacroDefinitionStmt,
+        call_span: Span,
+        expand: impl FnOnce(&mut Self) -> Result<T, ExpansionFailure<E>>,
+    ) -> Result<T, ExpansionFailure<E>> {
+        if self.depth == MAX_EXPANSION_DEPTH {
+            return Err(MacroError::new(MacroErrorKind::ExpansionLimitExceeded {
+                macro_name: def.name.clone(),
+                limit: ExpansionLimit::Depth,
+            })
+            .at_invocation(call_span)
+            .at_definition(&def.defining_module, def.span)
+            .into());
+        }
+        self.depth += 1;
+        let result = expand(self);
+        self.depth -= 1;
+        result
     }
 
     fn substitute_invocation(
@@ -273,6 +302,7 @@ impl<'a, E> Expander<'a, E> {
         if self.budget == 0 {
             return Err(MacroError::new(MacroErrorKind::ExpansionLimitExceeded {
                 macro_name: def.name.clone(),
+                limit: ExpansionLimit::Total,
             })
             .at_invocation(call_span)
             .at_definition(&def.defining_module, def.span)

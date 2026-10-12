@@ -1,6 +1,6 @@
 use crate::{EmitKind, OptLevel};
 use omega_analyzer::Target;
-use omega_analyzer::checked::ExternFunctionRef;
+use omega_analyzer::checked::{ExternFunctionRef, ExternGlobalRef};
 use omega_mir::EmissionUnit;
 use omega_parser::prelude::Ident;
 use std::path::PathBuf;
@@ -28,4 +28,5 @@ pub struct CodegenRequest {
     /// native emission does not currently inspect this field.
     pub entry: Vec<Ident>,
     pub extern_functions: Vec<ExternFunctionRef>,
+    pub extern_globals: Vec<ExternGlobalRef>,
 }

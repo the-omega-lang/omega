@@ -40,7 +40,9 @@ use crate::{
         CheckedStructDef, CheckedStructLiteral, CheckedStructLiteralField, CheckedUnionConstruct,
         CheckedUnionDef, CheckedWhile, NumberValue, Storage,
     },
-    context::{Context, DeclarationPolicy, LexicalScope, RefinedPath, VarBinding},
+    context::{
+        Context, DeclarationPolicy, LexicalScope, RefinedPath, VarBinding, numeric_suffix_type,
+    },
     error::{
         AnalysisError, AnalysisErrorKind, AnalysisWarning, AnalysisWarningKind, AuthoredSite,
         TypeResolutionError,
@@ -94,6 +96,9 @@ pub struct Analyzer<'r> {
     loop_stack: Vec<HirId>,
     loops_with_break: HashSet<HirId>,
     in_defer_body: bool,
+    /// A `while` condition or C-style `for` condition/post: evaluated once
+    /// per iteration, so a `defer` there is a `defer` inside the loop.
+    in_repeated_loop_header: bool,
     in_naked_asm: bool,
     suppressed: Vec<Vec<Ident>>,
     reveals: visibility::RevealState,
@@ -499,6 +504,7 @@ impl<'r> Analyzer<'r> {
             loop_stack: vec![],
             loops_with_break: HashSet::new(),
             in_defer_body: false,
+            in_repeated_loop_header: false,
             in_naked_asm: false,
             suppressed: vec![],
             reveals: visibility::RevealState::default(),
@@ -723,6 +729,13 @@ impl<'r> Analyzer<'r> {
         self.suppressed
             .pop()
             .expect("suppression frame just pushed");
+        result
+    }
+
+    fn with_repeated_loop_header<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        let previous = std::mem::replace(&mut self.in_repeated_loop_header, true);
+        let result = f(self);
+        self.in_repeated_loop_header = previous;
         result
     }
 

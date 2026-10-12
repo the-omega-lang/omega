@@ -326,7 +326,7 @@ exposed macro print($args: expr...) => {
         mut sink := Stdout {};
         mut out := BufWriter<Stdout>::new(&mut sink, &mut buf[0..]);
         $...(){ Display::fmt($args, &mut out); }
-        out.flush();
+        <void>out.flush();
     }
 }
 
@@ -336,8 +336,8 @@ exposed macro println($args: expr...) => {
         mut sink := Stdout {};
         mut out := BufWriter<Stdout>::new(&mut sink, &mut buf[0..]);
         $...(){ Display::fmt($args, &mut out); }
-        Write::write(&mut out, b"\n");
-        out.flush();
+        <void>Write::write(&mut out, b"\n");
+        <void>out.flush();
     }
 }
 
@@ -347,7 +347,7 @@ exposed macro eprint($args: expr...) => {
         mut sink := Stderr {};
         mut out := BufWriter<Stderr>::new(&mut sink, &mut buf[0..]);
         $...(){ Display::fmt($args, &mut out); }
-        out.flush();
+        <void>out.flush();
     }
 }
 
@@ -357,7 +357,7 @@ exposed macro eprintln($args: expr...) => {
         mut sink := Stderr {};
         mut out := BufWriter<Stderr>::new(&mut sink, &mut buf[0..]);
         $...(){ Display::fmt($args, &mut out); }
-        Write::write(&mut out, b"\n");
-        out.flush();
+        <void>Write::write(&mut out, b"\n");
+        <void>out.flush();
     }
 }

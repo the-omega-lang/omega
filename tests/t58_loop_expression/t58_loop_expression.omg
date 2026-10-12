@@ -1,0 +1,33 @@
+import std::io::println;
+
+@suppress(unused_parameter)
+takes_nothing(nothing: void) => void {
+	println$("called after the loop");
+}
+
+# A `loop` with no `break` never completes, so it is a `never` tail.
+spin_forever() => never {
+	loop {}
+}
+
+pick(c: bool) => i32 {
+	# The `loop` branch never completes, so the `if` has the type of the other.
+	x: i32 = if c { 1 } else { spin_forever() };
+	y: i32 = if c { 2 } else { loop {} };
+	x + y
+}
+
+main() => void {
+	println$(pick(true));
+
+	mut n := 0;
+	# A `loop` that a `break` reaches completes with `void`.
+	takes_nothing(loop {
+		n += 1;
+		if n == 3 { break; }
+	});
+	println$("n = ", n);
+
+	done := loop { break; };
+	takes_nothing(done);
+}

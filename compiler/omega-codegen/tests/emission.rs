@@ -77,6 +77,7 @@ fn generate_at(
 ) -> Result<Vec<(String, String)>, String> {
     let program = TestPackage::new(files).compile();
     let extern_functions = program.extern_functions.clone();
+    let extern_globals = program.extern_globals.clone();
     let entry = program.entry.clone();
     let sources = program
         .sources
@@ -94,6 +95,7 @@ fn generate_at(
         units: omega_mir::plan_emission(modules, &sources),
         entry,
         extern_functions,
+        extern_globals,
     };
     Ok(omega_codegen::generate(request)?
         .into_iter()

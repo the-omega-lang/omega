@@ -576,7 +576,19 @@ impl<'r> Analyzer<'r> {
         ResolvedFunctionType,
         crate::annotations::ResolvedAnnotations,
     )> {
-        self.collect_signature(f, false)
+        self.collect_signature(f, false, crate::annotations::ItemKind::Function)
+    }
+
+    /// The resolved annotations keep the ordinary default symbol policy; the
+    /// caller replaces it with the gap's glued symbol.
+    pub fn collect_glue_function_signature(
+        &mut self,
+        f: &HirFunctionDef,
+    ) -> Option<(
+        ResolvedFunctionType,
+        crate::annotations::ResolvedAnnotations,
+    )> {
+        self.collect_signature(f, false, crate::annotations::ItemKind::GlueFunction)
     }
 
     /// A method of a generic owner is emitted once per owner instantiation, so
@@ -590,13 +602,14 @@ impl<'r> Analyzer<'r> {
         ResolvedFunctionType,
         crate::annotations::ResolvedAnnotations,
     )> {
-        self.collect_signature(f, owner_is_generic)
+        self.collect_signature(f, owner_is_generic, crate::annotations::ItemKind::Function)
     }
 
     fn collect_signature(
         &mut self,
         f: &HirFunctionDef,
         owner_is_generic: bool,
+        kind: crate::annotations::ItemKind,
     ) -> Option<(
         ResolvedFunctionType,
         crate::annotations::ResolvedAnnotations,
@@ -639,7 +652,7 @@ impl<'r> Analyzer<'r> {
             self,
             f.id,
             &f.annotations,
-            crate::annotations::ItemKind::Function,
+            kind,
             f.self_mode.is_some(),
             owner_is_generic || !f.generics.is_empty(),
             SymbolPolicy::ordinary(),

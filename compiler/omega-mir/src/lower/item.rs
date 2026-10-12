@@ -62,14 +62,7 @@ fn lower_declaration(declaration: CheckedDeclaration, path: &[Ident]) -> MirDecl
 /// whose type happens to be a function type still names its own storage, not
 /// the function it holds.
 fn global_symbol(declaration: &CheckedDeclaration, path: &[Ident]) -> String {
-    match &declaration.symbol.mangling {
-        ManglingMode::Enabled => mangle::global_symbol_string(path, &declaration.ident),
-        ManglingMode::Disabled => declaration.ident.as_ref().to_owned(),
-        ManglingMode::Forced(name) => name.clone(),
-        ManglingMode::Glued { .. } => {
-            unreachable!("only a gap declaration uses glued mangling")
-        }
-    }
+    mangle::data_global_symbol(&declaration.symbol.mangling, path, &declaration.ident)
 }
 
 fn lower_foreign_binding(declaration: CheckedForeignBinding, path: &[Ident]) -> MirForeignBinding {
@@ -90,8 +83,6 @@ fn lower_foreign_binding(declaration: CheckedForeignBinding, path: &[Ident]) -> 
 /// ordinary Omega function/global symbol from module identity and type.
 fn foreign_binding_symbol(declaration: &CheckedForeignBinding, path: &[Ident]) -> String {
     match (&declaration.symbol.mangling, &declaration.r#type) {
-        (ManglingMode::Disabled, _) => declaration.ident.as_ref().to_owned(),
-        (ManglingMode::Forced(name), _) => name.clone(),
         (
             ManglingMode::Glued {
                 spec_module_path,
@@ -100,13 +91,10 @@ fn foreign_binding_symbol(declaration: &CheckedForeignBinding, path: &[Ident]) -
             },
             ResolvedType::Function(fn_type),
         ) => mangle::glued_symbol(spec_module_path, spec_name, function_name, fn_type),
-        (ManglingMode::Glued { .. }, _) => {
-            unreachable!("only function-valued gap declarations use glued mangling")
-        }
         (ManglingMode::Enabled, ResolvedType::Function(fn_type)) => mangle::encode(
             &mangle::free_function_symbol(path, &declaration.ident, None, &[], fn_type),
         ),
-        (ManglingMode::Enabled, _) => mangle::global_symbol_string(path, &declaration.ident),
+        (mangling, _) => mangle::data_global_symbol(mangling, path, &declaration.ident),
     }
 }
 

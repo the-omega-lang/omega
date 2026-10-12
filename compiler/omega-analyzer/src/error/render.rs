@@ -129,6 +129,12 @@ impl AnalysisErrorKind {
             Self::AddressOfNotAPlace => d
                 .with_label(span, "cannot take the address of this expression")
                 .with_note("only values with a memory location (variables, fields, indexes, dereferences) have an address"),
+            Self::AddressOfFunctionDeclaration { name } => d
+                .with_label(span, format!("`{}` is a function, not a storage location", name.as_ref()))
+                .with_help(format!(
+                    "a function value is already its address: use `{0}` directly, or `<*void>{0}` for a raw data pointer",
+                    name.as_ref()
+                )),
             Self::InvalidBinaryOperand { op, r#type } => d
                 .with_label(span, format!("`{}` requires numeric operands, but this is `{}`", op.symbol(), r#type)),
             Self::CharArithmeticNotAllowed { op } => d
@@ -166,6 +172,9 @@ impl AnalysisErrorKind {
             Self::InvalidSliceBound { r#type } => {
                 d.with_label(span, format!("slice bounds must be `i32`, found `{}`", r#type))
             }
+            Self::InvalidIndexType { r#type } => d
+                .with_label(span, format!("this index has type `{}`", r#type))
+                .with_help("an index may have any signed or unsigned integer type; convert it explicitly, e.g. `<usize>index`"),
             Self::MissingSliceEnd => d
                 .with_label(span, "this range has no end bound")
                 .with_note("an unsized array (`*[]T`) has no length to default a missing end to -- unlike a sized array or an existing slice")
@@ -258,7 +267,7 @@ impl AnalysisErrorKind {
                     .with_help(format!("write them explicitly, e.g. `{type}<...>`"))
             }
             Self::DeferInsideLoopNotSupported => d
-                .with_label(span, "`defer` cannot appear inside a loop body")
+                .with_label(span, "`defer` cannot appear inside a loop body or a repeated loop header")
                 .with_help("move the `defer` outside the loop, or run the cleanup code directly"),
             Self::ReturnInsideDefer => d
                 .with_label(span, "cannot `return` from inside a `defer` body")

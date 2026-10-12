@@ -131,18 +131,10 @@ impl<'r> Analyzer<'r> {
         };
 
         if let Some(suffix) = &n.explicit_type {
-            let reveals = &self.reveals;
-            let suffixed = self.context.resolve_type(
-                Type::Named(suffix.clone().into()),
-                &mut *self.resolver,
-                &self.module_path,
-                ResolveItemOptions::INDIRECT,
-                &|origin| reveals.allows(origin),
-            );
-            match suffixed {
-                Ok(t) if t == *expected => {}
-                Ok(t) => return mismatch(self, format!("a `{t}` literal")),
-                Err(_) => {
+            match numeric_suffix_type(suffix.as_ref()) {
+                Some(t) if t == *expected => {}
+                Some(t) => return mismatch(self, format!("a `{t}` literal")),
+                None => {
                     self.error(
                         node_id,
                         span,

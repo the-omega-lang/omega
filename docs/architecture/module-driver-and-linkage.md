@@ -559,6 +559,7 @@ modules            checked modules this compilation will emit
 entry              declared entry-module path
 warnings           module-tagged analysis warnings
 extern_functions   extern-owned function references needed by codegen
+extern_globals     extern-owned data storage (globals and foreign data bindings) needed by codegen
 sources            physical local `.omg` files, sorted by relative path
 ```
 

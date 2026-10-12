@@ -506,3 +506,33 @@ fn a_hole_parses_as_a_spec_reference_for_semantic_rejection() {
     };
     assert_eq!(**inner, Type::SpecStatic(vec![Type::Infer]));
 }
+
+#[test]
+fn a_loop_in_expression_position_is_a_block_holding_the_loop_statement() {
+    let stmts = body_statements("f() => void { x := loop { break; }; }");
+    let Statement::Walrus(w) = &stmts[0] else {
+        panic!("expected a walrus statement")
+    };
+    let Expression::Codeblock(block) = &w.value.expression else {
+        panic!("expected the loop to desugar to a codeblock")
+    };
+    assert!(block.tail.is_none());
+    assert!(matches!(
+        block.statements.as_slice(),
+        [stmt] if matches!(stmt.statement, Statement::Loop(_))
+    ));
+}
+
+#[test]
+fn a_blocks_own_trailing_loop_stays_a_statement() {
+    let module = SourceModule::parse("f() => never { loop {} }").expect("source must parse");
+    let Item::FunctionDefinition(f) = &module.nodes[0].item else {
+        panic!("first item must be a function");
+    };
+    let body = f.codeblock.as_ref().unwrap();
+    assert!(body.tail.is_none());
+    assert!(matches!(
+        body.statements.as_slice(),
+        [stmt] if matches!(stmt.statement, Statement::Loop(_))
+    ));
+}

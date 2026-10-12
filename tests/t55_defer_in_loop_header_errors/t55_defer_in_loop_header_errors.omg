@@ -1,0 +1,15 @@
+# A `while` condition and a C-style `for` condition and post run once per
+# iteration, so a `defer` in any of them is a `defer` inside the loop.
+in_while_condition() => void {
+	while { defer {} false } {}
+}
+
+in_for_condition() => void {
+	for mut i := 0; { defer {} i < 3 }; ++i {}
+}
+
+in_for_post() => void {
+	for mut i := 0; i < 3; { defer {} ++i; } {}
+}
+
+main() => void {}

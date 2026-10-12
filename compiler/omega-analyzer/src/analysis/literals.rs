@@ -980,17 +980,10 @@ impl<'r> Analyzer<'r> {
             );
         };
 
-        let reveals = &self.reveals;
         let resolved_type = match &n.explicit_type {
-            Some(explicit_type) => match self.context.resolve_type(
-                Type::Named(explicit_type.clone().into()),
-                &mut *self.resolver,
-                &self.module_path,
-                ResolveItemOptions::INDIRECT,
-                &|origin| reveals.allows(origin),
-            ) {
-                Ok(r#type) if r#type.numeric_kind(self.target.pointer_bits()).is_some() => r#type,
-                _ => {
+            Some(explicit_type) => match numeric_suffix_type(explicit_type.as_ref()) {
+                Some(r#type) => r#type,
+                None => {
                     invalid_suffix(self, explicit_type);
                     return None;
                 }

@@ -67,6 +67,7 @@ fn ir_for_sources(sources: &[(&str, &str)], target: Target) -> String {
         Err(errors) => panic!("expected this to compile, got: {errors:#?}"),
     };
     let extern_functions = program.extern_functions.clone();
+    let extern_globals = program.extern_globals.clone();
     let entry = program.entry.clone();
     let sources = program
         .sources
@@ -84,6 +85,7 @@ fn ir_for_sources(sources: &[(&str, &str)], target: Target) -> String {
         units: omega_mir::plan_emission(modules, &sources),
         entry,
         extern_functions,
+        extern_globals,
     })
     .expect("codegen succeeds")
     .into_iter()

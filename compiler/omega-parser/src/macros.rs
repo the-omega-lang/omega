@@ -12,6 +12,17 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 const MAX_EXPANSIONS: u32 = 256;
+/// Sized for a debug build on a default 2 MiB thread, where a simple
+/// self-recursive expression macro overflows the stack after about 24 levels.
+const MAX_EXPANSION_DEPTH: u32 = 16;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExpansionLimit {
+    /// Expansions across the whole module.
+    Total,
+    /// Invocations nested inside other invocations' output.
+    Depth,
+}
 
 #[derive(Debug, Default)]
 pub struct ExpansionState {
@@ -265,6 +276,7 @@ pub enum MacroErrorKind {
     },
     ExpansionLimitExceeded {
         macro_name: Ident,
+        limit: ExpansionLimit,
     },
     MalformedBuiltinDeclaration {
         builtin: MacroBuiltin,
@@ -391,10 +403,22 @@ impl fmt::Display for MacroErrorKind {
                 "macro expansion produced definition '{}' -- macro definitions must appear in source",
                 macro_name.0
             ),
-            Self::ExpansionLimitExceeded { macro_name } => write!(
+            Self::ExpansionLimitExceeded {
+                macro_name,
+                limit: ExpansionLimit::Total,
+            } => write!(
                 f,
                 "macro expansion did not terminate (exceeded {MAX_EXPANSIONS} expansions) while \
                  expanding '{}' -- check for runaway recursive macro calls",
+                macro_name.0
+            ),
+            Self::ExpansionLimitExceeded {
+                macro_name,
+                limit: ExpansionLimit::Depth,
+            } => write!(
+                f,
+                "macro expansion nested too deeply (exceeded {MAX_EXPANSION_DEPTH} nested \
+                 expansions) while expanding '{}' -- check for runaway recursive macro calls",
                 macro_name.0
             ),
             Self::MalformedBuiltinDeclaration { builtin } => write!(

@@ -1,0 +1,8 @@
+import std::io::println;
+
+main() => void {
+	values: [4]i32 = [10, 20, 30, 40];
+	view := &values[0..];
+	println$(values[0u8], " ", values[1u64], " ", values[<usize>2], " ", values[3i64]);
+	println$(view[3u8], " ", view[<isize>0], " ", view[2u16]);
+}

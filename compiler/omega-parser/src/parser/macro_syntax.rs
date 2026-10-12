@@ -203,6 +203,8 @@ fn parse_repetition(p: &mut Parser) -> Option<MacroRepetition> {
             | TokenKind::RBracket
             | TokenKind::LBrace
             | TokenKind::RBrace
+            | TokenKind::Dollar
+            | TokenKind::Metavar(_)
     ) {
         p.error(ParseErrorKind::InvalidMacroSeparator);
         return None;

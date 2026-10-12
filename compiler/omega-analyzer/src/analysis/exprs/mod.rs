@@ -685,6 +685,23 @@ impl<'r> Analyzer<'r> {
         if let CheckedPlaceRoot::Variable { decl_id, .. } = checked_place.root {
             self.context.mark_used(decl_id);
         }
+        if let (
+            CheckedPlaceRoot::Variable {
+                storage: Storage::Function,
+                ..
+            },
+            HirPlaceRoot::Path(path),
+        ) = (&checked_place.root, &place.root)
+            && checked_place.projections.is_empty()
+        {
+            let name = path.path.tail.last().unwrap_or(&path.path.head).clone();
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::AddressOfFunctionDeclaration { name },
+            );
+            return None;
+        }
         if !mutable {
             if let CheckedPlaceRoot::Variable {
                 storage: Storage::Comp,

@@ -1,0 +1,25 @@
+error: invalid numeric type 'u7' for a number literal
+  --> tests/t57_numeric_suffix_alias_errors/t57_numeric_suffix_alias_errors.omg:12:9
+   |
+12 |     Low(1u7);
+   |         ^^^ not a numeric type
+   |
+   = note: valid numeric types are i8 i16 i32 i64 isize, u8 u16 u32 u64 usize, and f32 f64
+
+error: invalid numeric type 'u7' for a number literal
+ --> tests/t57_numeric_suffix_alias_errors/t57_numeric_suffix_alias_errors.omg:7:5
+  |
+7 |     10u7
+  |     ^^^^ not a numeric type
+  |
+  = note: valid numeric types are i8 i16 i32 i64 isize, u8 u16 u32 u64 usize, and f32 f64
+
+error: invalid numeric type 'u7' for a number literal
+  --> tests/t57_numeric_suffix_alias_errors/t57_numeric_suffix_alias_errors.omg:17:5
+   |
+17 |     seven$()
+   |     ^^^^^^^^ not a numeric type
+   |
+   = note: valid numeric types are i8 i16 i32 i64 isize, u8 u16 u32 u64 usize, and f32 f64
+
+error: could not compile the program due to 3 previous errors

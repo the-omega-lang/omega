@@ -143,6 +143,38 @@ impl Driver {
         functions
     }
 
+    pub(super) fn collect_extern_globals(&self) -> Vec<ExternGlobalRef> {
+        let mut globals = Vec::new();
+        for (key, item) in self.items.resolved_items() {
+            if key.is_instantiation() || !self.roots.is_extern(key.module()) {
+                continue;
+            }
+            let ResolvedItem::Value {
+                r#type,
+                storage: Storage::Global,
+                decl_id,
+                mutable: _,
+            } = item
+            else {
+                continue;
+            };
+            // A foreign data binding keeps its policy with the function
+            // annotations; an Omega global keeps it on its checked declaration.
+            let symbol = match self.items.function_annotations.get(decl_id) {
+                Some(annotations) => annotations.symbol.clone(),
+                None => self.items.expect_checked_global(*decl_id).symbol.clone(),
+            };
+            globals.push(ExternGlobalRef {
+                decl_id: *decl_id,
+                module_path: key.module().clone(),
+                name: key.name.clone(),
+                r#type: r#type.clone(),
+                symbol,
+            });
+        }
+        globals
+    }
+
     fn symbol_of(&self, decl_id: &HirId) -> SymbolPolicy {
         self.items
             .function_annotations

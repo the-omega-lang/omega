@@ -155,6 +155,8 @@ rest := &items[start..];
 prefix := &items[..<end];
 ```
 
+An index is an expression of any signed or unsigned integer type, including `isize` and `usize`; any other type is a compile-time error. A slice bound is an `i32` expression.
+
 A slice operation produces a fat pointer. Mutability of the produced slice follows the mutability of the source place/pointer.
 
 A `*[?]T` carries no length, so an omitted end cannot be inferred; slicing it requires an explicit end. A bare `*T` is a single-value pointer and is not directly indexable/sliceable as array storage.

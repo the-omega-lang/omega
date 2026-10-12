@@ -138,6 +138,27 @@ pub fn is_reserved_type_name(name: &str) -> bool {
     BUILTIN_TYPE_NAMES.contains(&name) || name == "str"
 }
 
+/// The numeric primitive a literal suffix spells. A suffix is lexical, so it
+/// never resolves through declarations: `alias u7 = u8;` does not make `10u7`
+/// valid.
+pub(crate) fn numeric_suffix_type(suffix: &str) -> Option<ResolvedType> {
+    Some(match suffix {
+        "i8" => ResolvedType::I8,
+        "i16" => ResolvedType::I16,
+        "i32" => ResolvedType::I32,
+        "i64" => ResolvedType::I64,
+        "isize" => ResolvedType::ISize,
+        "u8" => ResolvedType::U8,
+        "u16" => ResolvedType::U16,
+        "u32" => ResolvedType::U32,
+        "u64" => ResolvedType::U64,
+        "usize" => ResolvedType::USize,
+        "f32" => ResolvedType::F32,
+        "f64" => ResolvedType::F64,
+        _ => return None,
+    })
+}
+
 #[derive(Debug, Clone)]
 pub struct Context {
     scopes: Vec<LexicalScope>,

@@ -22,6 +22,9 @@ pub enum ItemKind {
     Enum,
     Union,
     Function,
+    /// A function inside a `glue` block. Its linker identity is the gap's
+    /// glued symbol, so it takes no `@symbol`.
+    GlueFunction,
     Import,
     Spec,
     ForeignFunction,
@@ -31,11 +34,12 @@ pub enum ItemKind {
 
 /// The item kinds `@suppress` scopes a warning over. A global binding has no
 /// body or members to scope one across, so it is deliberately absent.
-const SUPPRESS_TARGETS: [ItemKind; 8] = [
+const SUPPRESS_TARGETS: [ItemKind; 9] = [
     ItemKind::Struct,
     ItemKind::Enum,
     ItemKind::Union,
     ItemKind::Function,
+    ItemKind::GlueFunction,
     ItemKind::Import,
     ItemKind::Spec,
     ItemKind::ForeignFunction,
@@ -49,6 +53,7 @@ impl ItemKind {
             Self::Enum => "an enum",
             Self::Union => "a union",
             Self::Function => "a function",
+            Self::GlueFunction => "a glue function",
             Self::Import => "an import",
             Self::Spec => "a spec",
             Self::ForeignFunction => "a foreign function",
@@ -63,6 +68,7 @@ impl ItemKind {
             Self::Enum => "enums",
             Self::Union => "unions",
             Self::Function => "functions",
+            Self::GlueFunction => "glue functions",
             Self::Import => "imports",
             Self::Spec => "specs",
             Self::ForeignFunction => "foreign functions",
@@ -228,14 +234,14 @@ pub fn resolve(
                 result.layout = resolve_layout(analyzer, node_id, annotation);
             }
             INLINE => {
-                if kind != ItemKind::Function {
+                if !matches!(kind, ItemKind::Function | ItemKind::GlueFunction) {
                     analyzer.error(
                         node_id,
                         annotation.span,
                         AnalysisErrorKind::AnnotationNotApplicable {
                             name: annotation.name.clone(),
                             found: kind,
-                            allowed: vec![ItemKind::Function],
+                            allowed: vec![ItemKind::Function, ItemKind::GlueFunction],
                         },
                     );
                     continue;
@@ -256,14 +262,14 @@ pub fn resolve(
                 }
             }
             NAKED => {
-                if kind != ItemKind::Function {
+                if !matches!(kind, ItemKind::Function | ItemKind::GlueFunction) {
                     analyzer.error(
                         node_id,
                         annotation.span,
                         AnalysisErrorKind::AnnotationNotApplicable {
                             name: annotation.name.clone(),
                             found: kind,
-                            allowed: vec![ItemKind::Function],
+                            allowed: vec![ItemKind::Function, ItemKind::GlueFunction],
                         },
                     );
                     continue;

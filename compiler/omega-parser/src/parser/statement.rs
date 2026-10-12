@@ -245,7 +245,7 @@ fn parse_while(p: &mut Parser) -> Option<WhileStmt> {
     Some(WhileStmt { condition, body })
 }
 
-fn parse_loop(p: &mut Parser) -> Option<LoopStmt> {
+pub(crate) fn parse_loop(p: &mut Parser) -> Option<LoopStmt> {
     p.expect(&TokenKind::Loop, "'loop'");
     let body = parse_codeblock(p)?;
     Some(LoopStmt { body })

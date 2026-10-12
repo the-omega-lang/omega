@@ -251,7 +251,7 @@ fn negative_macro_cases_report_the_new_diagnostics() {
         ),
         (
             "macro m($a: expr...) => { $...((){ $a } }",
-            "separator must be a single non-bracket token",
+            "separator must be a single token other than a bracket",
         ),
         (
             "macro m() => { x := 1; } main() => i32 { return m$(); }",
@@ -467,4 +467,30 @@ fn macro_authored_struct_literal_fields_keep_their_expansion_origin() {
         Origin::default(),
         "a substituted field name keeps the caller's origin"
     );
+}
+
+/// The nesting limit must report before a self-recursive macro exhausts an
+/// ordinary thread's stack, in every position an invocation can expand in.
+#[test]
+fn self_recursive_macros_report_the_depth_limit_on_a_default_thread() {
+    for source in [
+        "macro r() => { r$() } main() => i32 { r$() }",
+        "macro r() => { r$(); } main() => void { r$(); }",
+        "macro r() => { r$(); } r$();",
+    ] {
+        let text = std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(move || {
+                macros::expand(SourceModule::parse(source).unwrap(), &HashMap::new())
+                    .unwrap_err()
+                    .to_string()
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(
+            text.contains("macro expansion nested too deeply") && text.contains("'r'"),
+            "{source}: {text}"
+        );
+    }
 }

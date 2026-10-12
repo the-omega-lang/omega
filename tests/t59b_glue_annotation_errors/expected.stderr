@@ -1,0 +1,17 @@
+error: '@symbol' cannot be applied to a glue function
+ --> tests/t59b_glue_annotation_errors/t59b_glue_annotation_errors.omg:5:5
+  |
+5 |     @symbol(name = "renamed_glue")
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ cannot be used on a glue function
+  |
+  = note: '@symbol' only applies to functions, foreign functions, foreign bindings, and global bindings
+
+error: '@symbol' cannot be applied to a glue function
+ --> tests/t59b_glue_annotation_errors/t59b_glue_annotation_errors.omg:8:5
+  |
+8 |     @symbol(mangle = disabled)
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^ cannot be used on a glue function
+  |
+  = note: '@symbol' only applies to functions, foreign functions, foreign bindings, and global bindings
+
+error: could not compile the program due to 2 previous errors

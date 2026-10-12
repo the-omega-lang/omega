@@ -1,0 +1,7 @@
+# The x86-64 MSVC code model references `_fltused` from every object that
+# touches floating point; the C runtime normally defines it. With no CRT in
+# the link, the platform defines it instead. Only its existence matters to
+# the linker. aarch64-windows code generation never references it.
+@cond(equals(target_arch, "x86_64"))
+@symbol(name = "_fltused")
+fltused : i32 = 0;

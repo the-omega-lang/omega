@@ -374,10 +374,11 @@ pub(crate) fn generate(request: CodegenRequest) -> Result<Vec<EmittedArtifact>, 
         units,
         entry: _,
         extern_functions,
+        extern_globals,
     } = request;
 
     let setup = TargetSetup::resolve(target, opt_level)?;
-    let catalog = Catalog::build(&units, &extern_functions)?;
+    let catalog = Catalog::build(&units, &extern_functions, &extern_globals)?;
 
     units
         .into_iter()

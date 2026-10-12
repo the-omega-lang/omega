@@ -300,7 +300,9 @@ impl<'r> Analyzer<'r> {
             }
             HirStmt::WalrusDeclaration(w) => self.analyze_walrus(w),
             HirStmt::While(w) => {
-                let checked_cond = self.analyze_expr(&w.condition, Expected::None)?;
+                let checked_cond = self.with_repeated_loop_header(|this| {
+                    this.analyze_expr(&w.condition, Expected::None)
+                })?;
                 if checked_cond.r#type != ResolvedType::Bool {
                     self.error(
                         w.id,
@@ -367,7 +369,7 @@ impl<'r> Analyzer<'r> {
                 }
             },
             HirStmt::Defer(d) => {
-                if !self.loop_stack.is_empty() {
+                if !self.loop_stack.is_empty() || self.in_repeated_loop_header {
                     self.error(d.id, d.span, AnalysisErrorKind::DeferInsideLoopNotSupported);
                     return None;
                 }
@@ -395,7 +397,9 @@ impl<'r> Analyzer<'r> {
             ok &= checked_init.is_some();
 
             let checked_condition = match &f.condition {
-                Some(condition) => match this.analyze_expr(condition, Expected::None) {
+                Some(condition) => match this
+                    .with_repeated_loop_header(|this| this.analyze_expr(condition, Expected::None))
+                {
                     Some(checked) if checked.r#type != ResolvedType::Bool => {
                         this.error(
                             f.id,
@@ -422,7 +426,8 @@ impl<'r> Analyzer<'r> {
 
             let checked_post = match &f.post {
                 Some(post) => {
-                    let checked = this.analyze_expr(post, Expected::None);
+                    let checked = this
+                        .with_repeated_loop_header(|this| this.analyze_expr(post, Expected::None));
                     ok &= checked.is_some();
                     checked
                 }

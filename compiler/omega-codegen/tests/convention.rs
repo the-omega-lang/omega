@@ -83,6 +83,7 @@ fn single_artifact_text(request: omega_codegen::CodegenRequest) -> String {
 fn ir_for(source: &str) -> String {
     let program = TestPackage::new(source).expect_ok();
     let extern_functions = program.extern_functions.clone();
+    let extern_globals = program.extern_globals.clone();
     let entry = program.entry.clone();
     let sources = emission_sources(&program);
     let modules = omega_mir::lower_program(program.modules, &entry);
@@ -93,6 +94,7 @@ fn ir_for(source: &str) -> String {
         units: omega_mir::plan_emission(modules, &sources),
         entry,
         extern_functions,
+        extern_globals,
     })
 }
 

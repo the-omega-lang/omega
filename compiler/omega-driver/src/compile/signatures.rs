@@ -97,14 +97,16 @@ impl Driver {
                             .functions
                             .iter()
                             .map(|function| {
-                                analyzer
-                                    .collect_function_signature(function)
-                                    .map(|(signature, _)| (function.clone(), signature))
+                                analyzer.collect_glue_function_signature(function).map(
+                                    |(signature, annotations)| {
+                                        (function.clone(), signature, annotations)
+                                    },
+                                )
                             })
                             .collect::<Option<Vec<_>>>()?;
                         let mut errors = Vec::new();
                         let mut seen = std::collections::HashMap::new();
-                        for (function, _) in &functions {
+                        for (function, _, _) in &functions {
                             if let Some(previous) =
                                 seen.insert(function.name.clone(), function.span)
                             {
@@ -121,7 +123,7 @@ impl Driver {
                         for (name, requirement) in &gap.functions {
                             match functions
                                 .iter()
-                                .find(|(function, _)| function.name == *name)
+                                .find(|(function, _, _)| function.name == *name)
                             {
                                 None => {
                                     errors.push(AnalysisError::new(
@@ -133,7 +135,7 @@ impl Driver {
                                         },
                                     ));
                                 }
-                                Some((function, actual))
+                                Some((function, actual, _))
                                     if !Self::same_glue_signature(&requirement.fn_type, actual) =>
                                 {
                                     errors.push(AnalysisError::new(
@@ -148,7 +150,7 @@ impl Driver {
                                 Some(_) => {}
                             }
                         }
-                        for (function, _) in &functions {
+                        for (function, _, _) in &functions {
                             if !gap.functions.iter().any(|(name, _)| *name == function.name) {
                                 errors.push(AnalysisError::new(
                                     function.id,

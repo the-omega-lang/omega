@@ -156,6 +156,7 @@ fn compile(args: Args) -> Result<(), AppError> {
         units,
         entry: program.entry.clone(),
         extern_functions: program.extern_functions,
+        extern_globals: program.extern_globals,
     };
     let artifacts = omega_codegen::generate(request)?;
 

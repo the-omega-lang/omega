@@ -40,9 +40,9 @@ Recognized annotations are `cond`, `layout`, `inline`, `naked`, `suppress`, and 
 |---|---|
 | `@cond` | every top-level declaration, and only a top-level one |
 | `@layout` | `struct`, `enum` |
-| `@inline` | functions/methods |
-| `@naked` | functions/methods, subject to restrictions below |
-| `@suppress` | `struct`, `enum`, `union`, function/method, `import`, `spec` |
+| `@inline` | functions/methods, glue functions |
+| `@naked` | functions/methods, glue functions, subject to restrictions below |
+| `@suppress` | `struct`, `enum`, `union`, function/method, glue function, `import`, `spec` |
 | `@symbol` | functions/methods, module-level storage bindings, `foreign` bindings/functions, subject to restrictions below |
 
 Other item kinds do not acquire an annotation meaning merely because the generic `@...` syntax exists.

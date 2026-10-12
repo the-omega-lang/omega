@@ -128,7 +128,11 @@ pub(crate) struct GlueSignature {
     pub module: ModulePath,
     pub span: Span,
     pub gap: Rc<omega_analyzer::resolved_type::ResolvedGap>,
-    pub functions: Vec<(HirFunctionDef, ResolvedFunctionType)>,
+    pub functions: Vec<(
+        HirFunctionDef,
+        ResolvedFunctionType,
+        omega_analyzer::annotations::ResolvedAnnotations,
+    )>,
 }
 
 impl CheckedBody {

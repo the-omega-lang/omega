@@ -1,0 +1,16 @@
+import std::io::println;
+import self::capability;
+
+# Annotations apply to a glue function as they do to an ordinary function.
+glue capability::Shapes {
+	@inline(always)
+	@suppress(inline_not_enforced)
+	area(width: i32, height: i32) => i32 { width * height }
+
+	@suppress(unused_parameter)
+	ignore(value: i32) => i32 { 0 }
+}
+
+main() => void {
+	println$(capability::Shapes::area(6, 7), " ", capability::Shapes::ignore(5));
+}

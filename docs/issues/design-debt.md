@@ -91,30 +91,6 @@ want the numeric tag for logging/serialization/FFI alongside a match),
 exhaustiveness checking gets categorically weaker with no warning that anything
 changed.
 
-### Packed-by-default layout has no per-target safety argument
-
-Struct and enum layout defaults to `pack = 1, align = 1`, and `type_alignment`
-(`compiler/omega-analyzer/src/layout.rs`) reports `1` for every type that neither
-declares `@layout(align)` nor contains something that does — primitives
-included. The escape hatch itself is sound: an explicit alignment now propagates
-outward through inline containment and is a real address guarantee. What is
-unjustified is the *default*. The justification it was originally written under
-("x86_64 tolerates
-unaligned loads/stores with no correctness issue, so packed is safe as a
-default") is no longer in the source, but nothing has replaced it, and `Arch`
-now names eight architectures rather than the one that argument was true of.
-AArch64 in particular gives no comparable blanket guarantee: several
-OS/embedded configurations enable strict alignment-fault checking globally, and
-SIMD load/store forms require natural alignment — forms this backend does not
-emit today but would.
-
-Atomics are no longer an instance of this: they require natural alignment by
-contract now ([`atomics.md`](../language/atomics.md)), settled per-feature
-rather than by the layout default. What stays open is the default itself —
-whether "packed unless annotated" is the right whole-language choice on targets
-where unaligned ordinary access is not free or not permitted — and that nothing
-re-derives or gates it per-target.
-
 ### A static-spec parameter's synthesized generic uses a fabricated impossible-source name instead of a real identity
 
 `normalize_static_spec_params` (`omega-analyzer/src/generics.rs`) rewrites

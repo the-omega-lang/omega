@@ -57,7 +57,11 @@ impl Driver {
     ) -> Vec<CheckedItem> {
         let signatures: Vec<(
             std::rc::Rc<omega_analyzer::resolved_type::ResolvedGap>,
-            Vec<(omega_hir::HirFunctionDef, ResolvedFunctionType)>,
+            Vec<(
+                omega_hir::HirFunctionDef,
+                ResolvedFunctionType,
+                omega_analyzer::annotations::ResolvedAnnotations,
+            )>,
         )> = self
             .items
             .glues
@@ -67,7 +71,7 @@ impl Driver {
             .collect();
         let mut items = Vec::new();
         for (gap, functions) in signatures {
-            for (function, fn_type) in functions {
+            for (function, fn_type, annotations) in functions {
                 // Already-checked invariants, not filters -- an unregistered
                 // glue never reaches here. Uses `same_glue_signature`, not
                 // `!=`: `ResolvedFunctionType`'s derived `PartialEq` also
@@ -89,7 +93,7 @@ impl Driver {
                         spec_name: gap.name.clone(),
                         function_name: function.name.clone(),
                     }),
-                    ..Default::default()
+                    ..annotations
                 };
                 let run = self.with_analyzer(
                     path,

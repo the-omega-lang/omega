@@ -1,0 +1,10 @@
+takes_int(n: i32) => i32 {
+	n
+}
+
+# A `loop` that a `break` reaches has the type `void`.
+broken() => i32 {
+	takes_int(loop { break; })
+}
+
+main() => void {}

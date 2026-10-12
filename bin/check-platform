@@ -549,6 +549,21 @@ KERNEL32 = %w[
     foreign.empty? ? nil : "unexpected imports: #{foreign.join(", ")}"
   end
 
+  # x86-64 MSVC objects that use floating point reference `_fltused`, which a
+  # CRT would define. aarch64 never references it, so it must not be defined.
+  check "the platform resolves _fltused exactly where the target references it" do
+    runtime = %w[core std plat].flat_map do |package|
+      objects(ARTIFACTS.join(target, package), extension: "obj")
+    end
+    defined = symbol_names(*runtime, only_defined: true).include?("_fltused")
+    referenced = symbols(*runtime).lines.any? { |line| line.match?(/^\s*U _fltused$/) }
+    if target == "x86_64-windows"
+      defined ? nil : "nothing defines _fltused#{referenced ? ", but core/std/plat reference it" : ""}"
+    elsif defined || referenced
+      "_fltused should not appear on #{target} (defined: #{defined}, referenced: #{referenced})"
+    end
+  end
+
   check "the entry point is this platform's own, not a CRT startup symbol" do
     entry = ARTIFACTS.join(target, "plat", "os", "entry.obj")
     defined = symbols(entry.to_s, only_defined: true)

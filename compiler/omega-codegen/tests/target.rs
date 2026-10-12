@@ -53,6 +53,7 @@ fn emit_for(source: &str, target: Target, emit: omega_codegen::EmitKind) -> Stri
         Err(errors) => panic!("expected this to compile, got: {errors:#?}"),
     };
     let extern_functions = program.extern_functions.clone();
+    let extern_globals = program.extern_globals.clone();
     let entry = program.entry.clone();
     let sources = emission_sources(&program);
     let modules = omega_mir::lower_program(program.modules, &entry);
@@ -63,6 +64,7 @@ fn emit_for(source: &str, target: Target, emit: omega_codegen::EmitKind) -> Stri
         units: omega_mir::plan_emission(modules, &sources),
         entry,
         extern_functions,
+        extern_globals,
     })
 }
 

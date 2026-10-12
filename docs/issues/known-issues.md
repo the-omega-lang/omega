@@ -4,24 +4,8 @@ Concrete current compiler/library bugs and unsupported cases. Resolved issues ar
 
 ## Codegen
 
-- **Taking a function declaration's address can crash codegen.**
-  `pointer: *() => never = &stop; (*pointer)();`, where `stop` is a function
-  declaration, reaches the `a function reference is never itself
-  further-projected` assertion. Binding the function value first
-  (`indirect: () => never = stop; pointer: *() => never = &indirect;`) and
-  calling `(*pointer)()` works. This is separate from the legality of a
-  function type returning `never`.
-
-- **`avr-none` object emission can fail at `-O0` on functions with several
-  live pointers.** LLVM 21.1's AVR backend runs the fast register allocator
-  at `-O0`, and AVR's tiny pointer-register file makes it give up with
-  `ran out of registers during register allocation` on shapes Omega emits
-  routinely -- a spec-object call, for example, holds a data pointer, a
-  vtable pointer and a loaded code pointer live at once. This is upstream
-  behaviour, not an Omega lowering defect: `llc -O0` fails identically on
-  the exact IR `omgc --emit=ir` produces, while `-O1` and above allocate it
-  successfully. It surfaces as a normal emission error, so build AVR
-  packages at `-O1` or higher until the backend's `-O0` path improves.
+- **`avr-none` object emission can fail at `-O0`.** See
+  [compiler-limitations.md](compiler-limitations.md#avr-object-emission-needs-an-optimized-build).
 
 - **A range-driven `for` loop no longer compiles to a bare three-clause
   loop, and will not until MIR-level optimization exists.** `for i in 0..<n`
@@ -41,11 +25,6 @@ Concrete current compiler/library bugs and unsupported cases. Resolved issues ar
   smaller compiler; it is the single strongest motivating case for
   starting the MIR optimizer.
 
-- **No real C-ABI aggregate-passing convention** — structs/enums pass as
-  flattened positional scalars, fine Omega-to-Omega, not safely callable
-  from hand-written C expecting real struct-passing rules.
-  [primitives.md](../language/types-and-primitives.md)
-
 - **A generic direct `foreign` function is rejected rather than
   monomorphized.** `foreign(cc) name<T>(...) => T;`/`{ ... }` parses and
   carries its generics through HIR, but `collect_foreign_function_signature`
@@ -57,60 +36,10 @@ Concrete current compiler/library bugs and unsupported cases. Resolved issues ar
   deliberately deferred rather than half-implemented.
   [foreign-function-interface.md](../language/foreign-function-interface.md)
 
-- **`defer` can currently slip into a repeatedly-evaluated loop condition or
-  C-style `for` post expression through a nested codeblock.** Analysis only
-  enters the loop scope while checking the loop *body*, so the existing
-  `DeferInsideLoopNotSupported` restriction does not cover those header
-  expressions. MIR intentionally gives each syntactic defer one flag/body pair,
-  which is only sound when that defer site can be activated at most once; a
-  repeated header evaluation violates that cardinality assumption. This should
-  be fixed in semantic analysis by checking repeated loop expressions under the
-  same defer-forbidden context as the body (or, as a larger language change, by
-  defining and implementing per-iteration defer instances). It is not patched
-  here because that policy belongs to analyzer/control-flow semantics rather
-  than MIR lowering.
-  [mir-and-codegen.md](../architecture/mir-and-codegen.md)
-
-- **Reading an extern package's data global crashes the compiler.** An
-  `import` that names a function in another package works, but naming a
-  `exposed`/`exposed mut` global and then reading or writing it panics in
-  LLVM lowering with `mir body guarantees HirId { .. } was declared as a
-  global before this use` (`llvm/place.rs`). The analyzer hands codegen an
-  `ExternFunctionRef` list, which -- as the name says -- covers functions
-  only; there is no corresponding channel for extern *globals*, so the
-  symbol is never declared in the consuming package's module and the place
-  lookup finds nothing. Compiling the defining package is fine; only the
-  consumer fails. This is not a per-source-object regression: the earlier
-  single-module backend built its `globals` map from exactly the same
-  inputs (local MIR items plus `extern_functions`) and fails identically.
-  Fixing it needs the analyzer to expose referenced extern globals the way
-  it already exposes extern functions, which is a resolver/interface
-  decision rather than a local backend patch. Until then, expose the datum
-  through an accessor function in the defining package.
-  The same failure affects imported foreign data bindings, with or without
-  `mut`: a provider declaring `exposed foreign mut counter : i32;` and a
-  consumer importing `provider::counter` cannot emit a read or write of
-  that symbol. Declaring and using the foreign binding within one package,
-  including across its modules, works.
-  [modules-and-imports.md](../language/modules-and-imports.md)
-
 ## Types
 
-- **Ordinary indexing does not validate the index expression type during semantic
-  analysis.** `project_index` analyzes `container[index]` with no expected type
-  and records the resulting expression directly in `CheckedProjection::Index`.
-  Codegen later assumes that expression is an integer scalar (LLVM converts it
-  with `into_int_value()`), so a non-integer index can survive checking and
-  fail inside codegen instead of producing a source diagnostic. The index
-  domain/coercion policy belongs in `omega-analyzer` and should be made
-  explicit there before MIR; this refactor intentionally does not add a
-  codegen-side type workaround.
-  [strings-casts-arrays-and-slices.md](../language/strings-casts-arrays-and-slices.md)
-
-- **`*str` is not actually guaranteed valid UTF-8** — casting between
-  `*str` and `*[]u8`/`*[]i8` is unsound in both directions, no validation.
-  Deliberately deferred pending a `core`-provided validating conversion.
-  [strings-casting-and-slices.md](../language/strings-casts-arrays-and-slices.md)
+- **`*str` is not actually guaranteed valid UTF-8.** See
+  [language-limitations.md](language-limitations.md#strings-casting--slices).
 
 - **`char`'s classifiers are ASCII-only, not Unicode.** `is_alphabetic`,
   `is_whitespace` and `to_ascii_*` cover the ASCII range and nothing beyond
@@ -220,44 +149,19 @@ Remaining known conformance/spec issues:
   intentionally. [gaps-and-glue.md](../language/gaps-and-glue.md)
 
 - **An unfilled gap warns on every compilation, reachable or not** — the
-  driver's gap sweep emits `unfilled_gap` once per gap that no `glue` in the
-  compilation implements, and the warning is deliberately non-suppressible.
-  `core::atomic`'s four `AtomicityN` gaps are unfilled on purpose, so every
-  program built against `core` now reports four warnings it cannot act on,
-  including programs that never mention an atomic. The warning's own help
-  already concedes that an unglued, uncalled gap links fine; restricting it to
-  gaps something actually calls, or letting a gap declaration opt out, needs a
-  compiler change. [gaps-and-glue.md](../language/gaps-and-glue.md)
-
-- **A `glue` function cannot carry an annotation** — the parser accepts only
-  bare function definitions inside a `glue` block, so `@suppress(...)`,
-  `@inline`, and the rest are rejected there with `expected '}', found '@'`.
-  A glue implementation that legitimately ignores a parameter (an
-  implementation of an atomic operation that needs no ordering work, for
-  example) therefore has no way to silence `unused_parameter`.
+  driver's gap sweep (`omega-driver/src/compile/signatures.rs::sweep_gaps`)
+  emits `unfilled_gap` once per gap that no `glue` in the compilation
+  implements, whether or not anything calls it, and the warning is
+  deliberately non-suppressible. Every shipped platform glues every `core`
+  gap it can honestly provide, so this is quiet for an ordinary build; it
+  surfaces for a package compiled without a platform, or against a platform
+  that leaves a gap unfilled on purpose (`avr-none`'s allocator and console).
+  The warning's own help already concedes that an unglued, uncalled gap links
+  fine; restricting it to gaps something actually calls, or letting a gap
+  declaration opt out, needs a compiler change.
   [gaps-and-glue.md](../language/gaps-and-glue.md)
 
 ## Macros
-
-- **`MAX_EXPANSIONS` does not actually prevent the stack overflow it
-  documents.** `macros/expander.rs`'s budget is spent one unit per invocation and
-  reports `ExpansionLimitExceeded` at 256, but each expansion costs roughly
-  twenty stack frames (the recursive-descent re-parse plus `expand_expr`'s
-  own very large frame), so `macro a() => { a$() }` aborts on a stack
-  overflow before the budget runs out on a 2 MiB thread stack — it only
-  reports cleanly with `RUST_MIN_STACK` raised. Pre-existing: reproduced
-  identically on the baseline commit with the old `a!()` syntax. Statement
-  position adds a second recursion path (`expand_statements_invocation`)
-  with the same shape. The fix is a *depth* limit rather than (or as well
-  as) a total-expansion budget. [macros.md](../language/macros.md)
-
-- **A repetition separator is not restricted to tokens that can survive
-  substitution.** `parse_repetition` only rejects brackets and multi-token
-  separators, so `$...($x){ ... }` or `$...($){ ... }` parses, emits the
-  `$name`/`$` token literally, and fails much later with a confusing
-  expansion-site parse error rather than at the definition. Low impact
-  (nobody writes it deliberately), but the diagnostic points at the wrong
-  place. [macros.md](../language/macros.md)
 
 - **Macro visibility is not transitive through imports.** A module's macro
   environment is built from its *own* import statements and each target's
@@ -280,38 +184,8 @@ Remaining known conformance/spec issues:
 
 ## Compiler internals
 
-- **Macro expansion still rebuilds the whole tree by value to recurse.**
-  Expansion is now isolated in `macros/expander.rs`, and lookup clones only
-  the requested macro definition instead of a whole environment, but the AST
-  traversal itself still reconstructs nodes field-by-field purely to descend
-  into children. `expand_struct_def`/`expand_union_def` also remain nearly
-  identical. A shared AST fold/walk abstraction could make new expression or
-  item variants harder to forget, but that would be a frontend-wide traversal
-  design rather than a safe local cleanup. Decide it deliberately instead of
-  growing a one-off visitor solely for macro expansion.
-  [parsing-and-hir.md](../architecture/parsing-and-hir.md)
-
-- **`HirBlock::span` is still carried without a downstream reader.**
-  The frontend refactor now consumes `FunctionDefinitionStmt::signature_span`
-  together with `CodeblockExpr::span` to give each lowered function its own
-  precise span, so those parser fields are no longer dead metadata. The
-  resulting `HirBlock::span`, however, is still copied through HIR and ignored
-  by semantic analysis. Keep it only if blocks are expected to become direct
-  diagnostic subjects; otherwise remove that field in a future HIR-shape
-  cleanup instead of carrying location data with no consumer.
-  [parsing-and-hir.md](../architecture/parsing-and-hir.md)
-
-- **`Display for ParseErrorKind` builds and discards a whole `Diagnostic`.**
-  Collapsing each parse error's definition to one site made
-  `ParseError::to_diagnostic` the only place that knows an error's text, and
-  `Display` now reads its headline back from there — which means formatting
-  an error clones the kind, allocates its labels and footers, and throws all
-  but `message` away. Correct, and only on the macro-expansion error path
-  where it is rare, but it is a real cost paid for a wording guarantee.
-  A `message_only` split inside `to_diagnostic` would remove it without
-  reintroducing a second definition site.
-  [parsing-and-hir.md](../architecture/parsing-and-hir.md)
-
+- **Macro expansion traverses the AST by hand.** See
+  [compiler-limitations.md](compiler-limitations.md#parsing-macro-expansion-and-the-hir).
 
 Shape problems in `omega-driver` and `omega-analyzer` that still need a deliberate design change — full writeups in [design-debt.md](design-debt.md).
 
@@ -411,14 +285,6 @@ Shape problems in `omega-driver` and `omega-analyzer` that still need a delibera
   shape is cheaper to decide early than late.
   [parsing-and-hir.md](../architecture/parsing-and-hir.md)
 
-- **A generic type prints without its arguments.** `ResolvedType`'s `Display`
-  writes only a struct/union/enum/spec declaration's name, so a mismatch
-  between two instantiations of one generic reads as `expected 'Result',
-  found 'Result'`. Every diagnostic that names such a type is affected;
-  `tests/t32b_try_operator_errors` shows the case. Printing the resolved
-  type arguments would fix it in one place.
-  [diagnostics.md](../architecture/diagnostics.md)
-
 - **Type-level capture remains possible in macro-generated declarations.**
   Generic parameters and `Self` intentionally ignore macro origin, because
   they are substitution-bound rather than lexical bindings. A generated type
@@ -427,18 +293,7 @@ Shape problems in `omega-driver` and `omega-analyzer` that still need a delibera
   break the `Self` uses in the primitive conformance macros.
   [macros.md](../language/macros.md)
 
-- **Macro-authored unused locals are not linted.** Expansion spans are anchored
-  at the invocation and carry no source-file identity, so reporting the lint
-  would misleadingly blame the caller. Locals introduced by a macro are
-  intentionally excluded from `unused variable`; caller-origin arguments are
-  still use-tracked normally.
-  [macros.md](../language/macros.md)
-
 ## Control flow
-
-- **`loop` expressions are not parsed.** `loop` is parsed only as a
-  statement, although the `never` chapter describes loop expressions.
-  [types-and-primitives.md](../language/types-and-primitives.md#never)
 
 - **`bool` now has two spellings for each connective, and both are
   supported.** `a & b` and `a && b` differ only in whether `b` is evaluated;
@@ -476,23 +331,6 @@ Shape problems in `omega-driver` and `omega-analyzer` that still need a delibera
   **Decision needed:** accept the asymmetry, promote these two words to real
   keywords, or give casts a spelling that does not start with `<`.
   [parsing-and-hir.md](../architecture/parsing-and-hir.md)
-
-- **A number literal's type suffix is resolved as a named type, so
-  user-declared names can be used as suffixes and macro-authored suffixes
-  are not hygienic.** The lexical chapter restricts a suffix to
-  `usize`, `isize`, and `u`/`i`/`f` followed by decimal digits, and says semantic analysis decides whether the result is
-  a supported *primitive*; the `invalid numeric type` diagnostic lists the
-  same closed set. But `analyze_number` and `const_number` instead call
-  `resolve_type(Type::Named(suffix))` and accept anything with a numeric
-  kind, so a shape-matching name that is not a primitive — `u7`, `i9`,
-  `f13`, `u1024` — resolves to a user declaration. `alias u7 = u8;` makes
-  `10u7` compile. Because the suffix is a bare `Ident` with no expansion
-  origin, it is also resolved in the *invocation* module: a macro body
-  writing `10u7` picks up the caller's `u7` if the caller has one, and
-  otherwise fails to find its own. The fix is to match the suffix against
-  the primitive table directly rather than resolving it as a type, which
-  also removes the module/`reveal`/origin question from both sites.
-  [lexical-structure.md](../language/lexical-structure.md)
 
 - **A `reveal` that type resolution actually needs is still reported as
   unnecessary.** `resolve_type_or_error_in` asks whether a `reveal`

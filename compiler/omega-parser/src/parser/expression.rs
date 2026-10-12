@@ -10,11 +10,14 @@ use crate::ast::expression::{
 use crate::ast::generics::{ExprGenericArg, Selector};
 use crate::ast::identifier::Origin;
 use crate::ast::range::{RangeEnd, RangeExpr};
+use crate::ast::statement::{Statement, StatementNode};
 use crate::ast::r#type::{GenericArg, Type};
 use crate::diagnostics::{ParseErrorKind, Span};
 use crate::lexer::TokenKind;
 use crate::parser::{
-    Mark, Parser, contextual, macro_syntax::parse_macro_invocation, statement::parse_statement,
+    Mark, Parser, contextual,
+    macro_syntax::parse_macro_invocation,
+    statement::{parse_loop, parse_statement},
 };
 
 pub fn parse_expression(p: &mut Parser) -> Option<ExpressionNode> {
@@ -463,6 +466,7 @@ fn expression_starts_at(p: &Parser, offset: usize) -> bool {
             | TokenKind::False
             | TokenKind::If
             | TokenKind::Match
+            | TokenKind::Loop
             | TokenKind::LParen
             | TokenKind::LBracket
             | TokenKind::Amp
@@ -546,6 +550,25 @@ fn parse_block_shaped_primary(p: &mut Parser, start: Span) -> Option<ExpressionN
                 origin,
             })
         }
+        // `loop` has no expression form of its own: a block holding just the
+        // loop statement already has the type `loop` needs, `never` unless a
+        // `break` reaches it and `void` otherwise.
+        TokenKind::Loop => {
+            let loop_stmt = parse_loop(p)?;
+            let span = start.to(p.last_span());
+            Some(ExpressionNode {
+                expression: Expression::Codeblock(CodeblockExpr {
+                    statements: vec![StatementNode {
+                        statement: Statement::Loop(loop_stmt),
+                        span,
+                    }],
+                    tail: None,
+                    span,
+                }),
+                span,
+                origin,
+            })
+        }
         _ => unreachable!("parse_block_shaped_primary called on a non-block-shaped token"),
     }
 }
@@ -574,7 +597,7 @@ fn parse_primary(p: &mut Parser) -> Option<ExpressionNode> {
             // re-wrapped a parenthesized expression's span either.
             Some(inner)
         }
-        TokenKind::LBrace | TokenKind::If | TokenKind::Match => {
+        TokenKind::LBrace | TokenKind::If | TokenKind::Match | TokenKind::Loop => {
             parse_block_shaped_primary(p, start)
         }
         TokenKind::LBracket => parse_array_literal(p),
@@ -1175,7 +1198,9 @@ pub fn parse_block_contents(p: &mut Parser) -> Option<CodeblockExpr> {
             break None;
         }
         let mark = p.mark();
-        if let Some(expr) = parse_statement_leading_expression(p)
+        // A block's own `loop` stays a statement rather than becoming its tail.
+        if !p.check(&TokenKind::Loop)
+            && let Some(expr) = parse_statement_leading_expression(p)
             && (p.check(&TokenKind::RBrace) || p.is_eof())
         {
             break Some(Box::new(expr));

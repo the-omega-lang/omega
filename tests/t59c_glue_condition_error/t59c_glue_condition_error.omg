@@ -1,0 +1,11 @@
+import self::capability;
+
+glue capability::Named {
+	renamed() => i32 { 1 }
+
+	# A glue fills its whole gap or nothing.
+	@cond(def::never_defined)
+	selected() => i32 { 2 }
+}
+
+main() => void {}

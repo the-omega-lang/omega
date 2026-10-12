@@ -1,0 +1,17 @@
+error: cannot take the address of function 'stop'
+ --> tests/t54_function_address_errors/t54_function_address_errors.omg:5:10
+  |
+5 |     p := &stop;
+  |          ^^^^^ `stop` is a function, not a storage location
+  |
+  = help: a function value is already its address: use `stop` directly, or `<*void>stop` for a raw data pointer
+
+error: cannot take the address of function 'stop'
+ --> tests/t54_function_address_errors/t54_function_address_errors.omg:9:10
+  |
+9 |     p := &mut stop;
+  |          ^^^^^^^^^ `stop` is a function, not a storage location
+  |
+  = help: a function value is already its address: use `stop` directly, or `<*void>stop` for a raw data pointer
+
+error: could not compile the program due to 2 previous errors

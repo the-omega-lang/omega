@@ -11,10 +11,22 @@ Implementation caveats migrated out of architecture chapters. These are non-norm
   structure, so an error deep inside a malformed nested expression can skip
   further than a human would.
 - **Macro expansion traverses the AST by hand.** `macros/expander.rs` reconstructs
-  expression/statement/item nodes field-by-field in order to recurse. Exhaustive
+  expression/statement/item nodes field-by-field, by value, in order to recurse,
+  and `expand_struct_def`/`expand_union_def` remain nearly identical. Exhaustive
   matching keeps the traversal honest, but the boilerplate grows with the AST; a
   future visitor/fold abstraction could centralize that traversal if it can do so
-  without hiding the expansion rules.
+  without hiding the expansion rules. That is a frontend-wide traversal design,
+  not a one-off visitor for macro expansion.
+- **Parsing and macro expansion are bounded by recursion limits, not by stack
+  size.** The parser's `MAX_NESTING_DEPTH` and the expander's nesting limit
+  (`MAX_EXPANSION_DEPTH`, 16) stop runaway nesting, but each nested expression
+  costs several large recursive-descent and `expand_expr` frames. An unoptimized
+  build on an ordinary 2 MiB thread overflows well inside both limits for dense
+  shapes: an expression nesting a call, a binary operator, an array literal, an
+  index, and a block per level overflows at six levels, with no macro involved.
+  `omgc` itself runs on a 256 MiB worker stack, so the CLI is unaffected; an
+  embedder calling the parser on a default thread is not. Fixing it means
+  smaller frames or an explicit work stack, not a lower limit.
 - **HIR still mirrors the AST closely.** That is the cost of the identity
   boundary described above, not an accident, but it does mean two node sets
   to keep in step.
@@ -76,6 +88,12 @@ functions whose unoptimized lowering keeps too many 32- and 64-bit values
 live at once (`i64::abs`, `std::fmt`'s byte writer). The same sources emit
 cleanly at `-O1` and above, so the repository's AVR matrix build compiles that
 target optimized while every other target still builds at the default `-O0`.
+Code an ordinary program writes hits it too: a spec-object call, for example,
+holds a data pointer, a vtable pointer, and a loaded code pointer live at once,
+which is already too many for AVR's pointer-register file under the fast `-O0`
+allocator. This is upstream LLVM 21.1 behaviour, not an Omega lowering defect:
+`llc -O0` fails identically on the exact IR `omgc --emit=ir` produces. It
+surfaces as a normal emission error, so build AVR packages at `-O1` or higher.
 
 This is a backend register-allocation limitation on a 32-register 8-bit
 machine, not an Omega semantic difference: nothing in the language says a
@@ -106,31 +124,3 @@ only the low half of the pair it was given, so `u16`/`i16` cannot be used as
 
 Until `reg` can express these, do not name a register for an AVR operand wider
 than a byte, and do not pass a `u16`/`i16` into an AVR body.
-
-## A libc-free `x86_64-windows` link cannot resolve `_fltused`
-
-LLVM emits an undefined reference to `_fltused` from any MSVC-target module
-that uses floating point; the definition normally comes from the C runtime,
-which this platform deliberately does not link. Three objects in a normal build
-carry the reference:
-
-```
-target/x86_64-windows/std/fmt.obj
-target/x86_64-windows/std/primitives.obj
-target/x86_64-windows/core/primitives/numerics.obj
-```
-
-Nothing in the repository defines the symbol, so the link command documented in
-[`../guide/platform-glue.md`](../guide/platform-glue.md) fails for any program
-reaching one of those objects — which `std::fmt` means is most of them, not
-only programs that use floats themselves. `aarch64-windows` is unaffected;
-`_fltused` is an x86 MSVC convention.
-
-A module-level storage binding now accepts `@symbol(name = "...")`, so the
-Windows platform can define the symbol in Omega source; that has not been done
-yet. The alternatives remain defining `_fltused` in the backend for MSVC x86
-targets the way the CRT would, or shipping a hand-written object in the Windows
-platform.
-
-`bin/check-platform` does not catch it because its Windows checks scan only
-`<target>/plat` objects, never `core` or `std`.

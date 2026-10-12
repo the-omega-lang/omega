@@ -237,6 +237,9 @@ in the same way, which requires that process to export its own symbols
   runtime would claim a contract this platform does not implement.
 - **Panic** — the shared hosted handler, then `ExitProcess(134)`, matching the
   Linux status.
+- **`_fltused`** — x86-64 MSVC code that touches floating point references
+  this symbol, which a C runtime would define. `os/fltused.omg` defines it on
+  `x86_64-windows` only; `aarch64-windows` code never references it.
 
 Linking a Windows executable is that toolchain's job — `omgc` only emits
 objects. The link needs the Kernel32 import library and must select this

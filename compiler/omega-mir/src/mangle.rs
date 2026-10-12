@@ -188,6 +188,20 @@ pub fn global_symbol_string(module: &[Ident], name: &Ident) -> String {
     encode(&global_symbol(module, name))
 }
 
+/// The linker symbol of module-level data storage, whether an Omega global
+/// defines it or a `foreign` binding names it. Lowering a definition and
+/// declaring another package's global both use this, so the two always agree.
+pub fn data_global_symbol(mangling: &ManglingMode, module: &[Ident], name: &Ident) -> String {
+    match mangling {
+        ManglingMode::Enabled => global_symbol_string(module, name),
+        ManglingMode::Disabled => name.as_ref().to_owned(),
+        ManglingMode::Forced(symbol) => symbol.clone(),
+        ManglingMode::Glued { .. } => {
+            unreachable!("only function-valued gap declarations use glued mangling")
+        }
+    }
+}
+
 pub fn extern_function_ref_symbol(extern_fn: &ExternFunctionRef) -> String {
     match (&extern_fn.symbol.mangling, &extern_fn.kind) {
         (ManglingMode::Forced(name), _) => name.clone(),

@@ -1,0 +1,12 @@
+# An index must have an integer type.
+float_index() => i32 {
+	values: [3]i32 = [1, 2, 3];
+	values[1.0f32]
+}
+
+bool_index() => i32 {
+	values: [3]i32 = [1, 2, 3];
+	values[true]
+}
+
+main() => void {}

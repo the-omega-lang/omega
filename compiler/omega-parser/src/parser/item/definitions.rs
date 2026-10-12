@@ -375,11 +375,16 @@ pub(super) fn parse_glue_def(p: &mut Parser) -> Option<GlueStmt> {
     reject_gap_glue_generics(p)?;
     p.expect(&TokenKind::LBrace, "'{'");
     let mut functions = Vec::new();
-    while matches!(p.peek(), TokenKind::Ident(_)) {
+    while matches!(p.peek(), TokenKind::Ident(_)) || p.check(&TokenKind::At) {
+        let annotations = parse_annotations(p);
+        if p.check(&TokenKind::RBrace) && !annotations.is_empty() {
+            p.error_at(annotations[0].span, ParseErrorKind::AnnotationWithoutItem);
+            break;
+        }
         // Per-member recovery, same rule as `parse_gap_def` above.
         let Some(function) = parse_function_definition(
             p,
-            Vec::new(),
+            annotations,
             Visibility::Hidden,
             None,
             BodyPolicy::Required,

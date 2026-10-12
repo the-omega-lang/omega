@@ -43,13 +43,9 @@ Normative chapter: [`../language/functions.md`](../language/functions.md)
 
 Normative chapter: [`../language/types-and-primitives.md`](../language/types-and-primitives.md)
 
-- **No real C-ABI aggregate-passing convention.** Structs/enums are passed
-  as flattened positional scalars, not per platform calling-convention
-  aggregate rules. This works fine for Omega-to-Omega calls (including
-  across separately-compiled `--import` object files, since both sides
-  agree by construction) but means an Omega function taking a struct
-  by value is not safely callable from, say, hand-written C expecting the
-  System V ABI's actual struct-passing rules.
+- **No real C-ABI aggregate-passing convention.** See "Omega's calling
+  convention is not the platform C ABI" in
+  [known-issues.md](known-issues.md#design-debt-worth-watching).
 - **`isize`/`usize` width is target-dependent by design** — nothing in
   `core` bakes in a `min_value`/`max_value` bound for them, since any
   literal bound would silently be wrong on a target this toolchain wasn't
@@ -122,11 +118,6 @@ Normative chapter: [`../language/visibility.md`](../language/visibility.md)
   every overload is always a candidate there, and call-site `reveal` still
   works normally, since there's no per-symbol "import reveal" granularity
   that could even apply to a whole-module import.
-- Build reproducibility (several `HashMap` iteration sites making object
-  files differ build-to-build for identical source) was discovered
-  incidentally while verifying a visibility change, but is unrelated to
-  visibility itself and has since been fixed — see
-  [modules & linkage](../language/modules-and-imports.md).
 
 Macros are ordinary visibility-bearing items: an unmodified macro is
 file-local, `shared macro` is package-visible, and `exposed macro` is
@@ -319,11 +310,10 @@ Guide: [`../guide/standard-library.md`](../guide/standard-library.md)
 
 - Forgetting an owning value's `.free()` leaks it; there is no RAII or leak
   detector.
-- `Result<T, E>` does not exist. The APIs use `Option<T>`, `bool`, or
-  out-parameters where appropriate.
 - The built-in formatter is allocation-free but float formatting is
-  fixed-precision rather than shortest-round-trip.
+  fixed-precision rather than shortest-round-trip; see
+  [known-issues.md](known-issues.md#types).
 
 ## `defer` is not allowed inside loops or another `defer`
 
-Current semantic analysis rejects a `defer` whose lexical context is inside any loop, and rejects a deferred body containing another `defer`. The language documentation describes the function-scoped FILO behavior of supported defers; lifting these restrictions requires explicit control-flow/lowering support rather than merely relaxing syntax.
+Current semantic analysis rejects a `defer` whose lexical context is inside any loop, including a `while` condition or a C-style `for` condition or post expression (evaluated once per iteration), and rejects a deferred body containing another `defer`. The language documentation describes the function-scoped FILO behavior of supported defers; lifting these restrictions requires explicit control-flow/lowering support rather than merely relaxing syntax.

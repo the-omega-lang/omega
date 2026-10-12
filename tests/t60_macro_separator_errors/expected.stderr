@@ -1,0 +1,13 @@
+error: a macro repetition separator must be a single token other than a bracket, `$`, or a metavariable, e.g. `$...(,){ ... }`
+ --> tests/t60_macro_separator_errors/t60_macro_separator_errors.omg:4:10
+  |
+4 |     $...($x){ $args }
+  |          ^^ a separator is exactly one token, and not a bracket, `$`, or a metavariable
+
+error: a macro repetition separator must be a single token other than a bracket, `$`, or a metavariable, e.g. `$...(,){ ... }`
+ --> tests/t60_macro_separator_errors/t60_macro_separator_errors.omg:8:10
+  |
+8 |     $...($){ $args }
+  |          ^ a separator is exactly one token, and not a bracket, `$`, or a metavariable
+
+error: could not compile the program due to 2 previous errors

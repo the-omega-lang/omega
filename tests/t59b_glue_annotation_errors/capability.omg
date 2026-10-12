@@ -1,0 +1,4 @@
+gap Named {
+	renamed() => i32;
+	selected() => i32;
+}

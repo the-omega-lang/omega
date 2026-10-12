@@ -337,6 +337,7 @@ fn codegen_ir(
     opt_level: omega_codegen::OptLevel,
 ) -> String {
     let extern_functions = program.extern_functions.clone();
+    let extern_globals = program.extern_globals.clone();
     let entry = program.entry.clone();
     let sources = emission_sources(&program);
     let modules = omega_mir::lower_program(program.modules, &entry);
@@ -347,6 +348,7 @@ fn codegen_ir(
         units: omega_mir::plan_emission(modules, &sources),
         entry,
         extern_functions,
+        extern_globals,
     })
 }
 
@@ -421,6 +423,7 @@ fn naked_function_x86_64_asm_has_no_compiler_generated_frame_setup() {
         )
         .expect_ok();
         let extern_functions = program.extern_functions.clone();
+        let extern_globals = program.extern_globals.clone();
         let entry = program.entry.clone();
         let sources = emission_sources(&program);
         let modules = omega_mir::lower_program(program.modules, &entry);
@@ -431,6 +434,7 @@ fn naked_function_x86_64_asm_has_no_compiler_generated_frame_setup() {
             units: omega_mir::plan_emission(modules, &sources),
             entry,
             extern_functions,
+            extern_globals,
         });
 
         // This package defines exactly one function, so a whole-module scan

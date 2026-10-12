@@ -492,6 +492,20 @@ impl<'r> Analyzer<'r> {
         mutable: &mut bool,
     ) -> Option<ResolvedType> {
         let checked_index = self.analyze_expr(index, Expected::None)?;
+        let is_integer = matches!(
+            checked_index.r#type.numeric_kind(self.pointer_bits()),
+            Some(NumericKind::Signed(_) | NumericKind::Unsigned(_))
+        );
+        if !is_integer && checked_index.r#type != ResolvedType::Never {
+            self.error(
+                index.id,
+                index.span,
+                AnalysisErrorKind::InvalidIndexType {
+                    r#type: checked_index.r#type,
+                },
+            );
+            return None;
+        }
         let current_type = Self::open_refined_anonymous(projections, &current_type, mutable)
             .unwrap_or(current_type);
         let item_type = match current_type {

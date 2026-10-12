@@ -31,6 +31,17 @@ pub struct ExternFunctionRef {
     pub symbol: crate::annotations::SymbolPolicy,
 }
 
+/// Module-level data storage another package owns: an Omega global it
+/// defines, or a `foreign` data binding it declares.
+#[derive(Debug, Clone)]
+pub struct ExternGlobalRef {
+    pub decl_id: HirId,
+    pub module_path: Vec<Ident>,
+    pub name: Ident,
+    pub r#type: ResolvedType,
+    pub symbol: crate::annotations::SymbolPolicy,
+}
+
 #[derive(Debug, Clone)]
 pub enum ExternFunctionKind {
     Free(Ident),

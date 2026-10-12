@@ -195,7 +195,7 @@ Pointer equality/comparison is address-based. Pointer subtraction is defined; po
 
 Fixed arrays store elements inline. Struct fields are laid out in declaration order. Unions place every field at offset zero and occupy enough bytes for the largest field. Enums use the layout defined in [`enums-and-pattern-matching.md`](enums-and-pattern-matching.md).
 
-Structs and enums are packed by default: the current default introduces no natural-alignment padding. `@layout(pack = n, align = n)` can request explicit packing/alignment behavior on supported declarations. This packed-default model has target-safety caveats tracked in [`../issues/design-debt.md`](../issues/design-debt.md).
+Structs and enums are packed by default: the current default introduces no natural-alignment padding. `@layout(pack = n, align = n)` can request explicit packing/alignment behavior on supported declarations.
 
 Explicit alignment is an address requirement rather than only a field-placement one, and it propagates outward through inline containment: a struct, union, enum, or fixed array that stores an aligned type inline acquires at least that alignment, and its own size rounds up to it so that an array element stride keeps every element aligned. Alignment never follows a pointer -- storing a `*T` imposes nothing from `T`. Every address the compiler creates for a value satisfies its type's alignment; a raw pointer cast does not realign memory. The full rules are in [`annotations-and-sizeof.md`](annotations-and-sizeof.md).
 

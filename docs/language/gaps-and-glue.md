@@ -92,6 +92,14 @@ The corresponding glue function is compiled with the exact same mangled
 symbol, so calls have the normal direct-function ABI and need no runtime
 registry, object, or dynamic dispatch.
 
+## Annotations on glue functions
+
+A glue function accepts `@inline`, `@naked`, and `@suppress` with the same
+meaning they have on an ordinary function. It rejects `@symbol`: its linker
+identity is the gap function's symbol. It rejects `@cond`: a glue fills its
+whole gap or nothing, so only the `glue` declaration itself can be
+conditional.
+
 `runtime/core/platform.omg` supplies the allocator and console gaps and
 `runtime/core/panic.omg` supplies `PanicHandler`. Each directory under
 `runtime/plat/target/` is an ordinary external package supplying the glue one

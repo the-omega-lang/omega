@@ -1,0 +1,17 @@
+error: mismatched types: index must be an integer, found 'f32'
+ --> tests/t56_index_type_errors/t56_index_type_errors.omg:4:12
+  |
+4 |     values[1.0f32]
+  |            ^^^^^^ this index has type `f32`
+  |
+  = help: an index may have any signed or unsigned integer type; convert it explicitly, e.g. `<usize>index`
+
+error: mismatched types: index must be an integer, found 'bool'
+ --> tests/t56_index_type_errors/t56_index_type_errors.omg:9:12
+  |
+9 |     values[true]
+  |            ^^^^ this index has type `bool`
+  |
+  = help: an index may have any signed or unsigned integer type; convert it explicitly, e.g. `<usize>index`
+
+error: could not compile the program due to 2 previous errors

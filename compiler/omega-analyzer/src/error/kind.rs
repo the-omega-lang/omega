@@ -65,6 +65,9 @@ pub enum AnalysisErrorKind {
         found: ResolvedType,
     },
     AddressOfNotAPlace,
+    AddressOfFunctionDeclaration {
+        name: Ident,
+    },
     InvalidBinaryOperand {
         op: BinaryOp,
         r#type: ResolvedType,
@@ -95,6 +98,9 @@ pub enum AnalysisErrorKind {
     SliceRequiresAddressOf,
     ImmutableSliceSource,
     InvalidSliceBound {
+        r#type: ResolvedType,
+    },
+    InvalidIndexType {
         r#type: ResolvedType,
     },
     MissingSliceEnd,
@@ -780,6 +786,9 @@ impl fmt::Display for AnalysisErrorKind {
             Self::AddressOfNotAPlace => {
                 write!(f, "cannot take the address of this expression")
             }
+            Self::AddressOfFunctionDeclaration { name } => {
+                write!(f, "cannot take the address of function '{}'", name.as_ref())
+            }
             Self::InvalidBinaryOperand { op, r#type } => write!(
                 f,
                 "cannot apply '{}' to a value of type '{}'",
@@ -822,6 +831,11 @@ impl fmt::Display for AnalysisErrorKind {
             Self::InvalidSliceBound { r#type } => write!(
                 f,
                 "mismatched types: slice bound must be 'i32', found '{}'",
+                r#type
+            ),
+            Self::InvalidIndexType { r#type } => write!(
+                f,
+                "mismatched types: index must be an integer, found '{}'",
                 r#type
             ),
             Self::MissingSliceEnd => {
@@ -911,7 +925,7 @@ impl fmt::Display for AnalysisErrorKind {
                 r#type.as_ref()
             ),
             Self::DeferInsideLoopNotSupported => {
-                write!(f, "'defer' is not supported inside a loop body")
+                write!(f, "'defer' is not supported inside a loop")
             }
             Self::ReturnInsideDefer => write!(f, "'return' is not supported inside a 'defer' body"),
             Self::TryInsideDefer => write!(f, "'?' is not supported inside a 'defer' body"),

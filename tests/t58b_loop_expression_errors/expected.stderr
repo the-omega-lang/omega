@@ -1,0 +1,9 @@
+error: mismatched types: expected 'i32' for this argument, found 'void'
+ --> tests/t58b_loop_expression_errors/t58b_loop_expression_errors.omg:7:15
+  |
+7 |     takes_int(loop { break; })
+  |               ^^^^^^^^^^^^^^^ expected `i32`, found `void`
+  |
+  = note: Omega has no implicit conversions; each argument must match its parameter's type exactly
+
+error: could not compile the program due to 1 previous error

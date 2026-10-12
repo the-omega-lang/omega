@@ -1,0 +1,14 @@
+import std::io::println;
+
+count() => void {
+	# The initializer runs once, so its `defer` registers once, for the function.
+	for mut i := { defer { println$("deferred"); } 0 }; i < 2; ++i {
+		println$("iteration ", i);
+	}
+	println$("loop done");
+}
+
+main() => void {
+	count();
+	println$("returned");
+}

@@ -66,7 +66,8 @@ main() => i32 {
 `$...(){ body }` expands `body` once for each variadic argument. A separator
 inside its parentheses is emitted only between adjacent expansions, so
 `$...(,){ $args }` builds a comma-separated argument list and an empty
-variadic argument list emits nothing. Repetitions cannot nest, and the
+variadic argument list emits nothing. A separator is exactly one token other
+than a bracket, `$`, or a metavariable. Repetitions cannot nest, and the
 variadic metavariable must appear inside the repetition that expands it.
 
 The `$` sigil has three distinct fixed forms:

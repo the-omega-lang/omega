@@ -1,0 +1,12 @@
+import self::capability;
+
+glue capability::Named {
+	# A glue function's linker identity is the gap's glued symbol.
+	@symbol(name = "renamed_glue")
+	renamed() => i32 { 1 }
+
+	@symbol(mangle = disabled)
+	selected() => i32 { 2 }
+}
+
+main() => void {}

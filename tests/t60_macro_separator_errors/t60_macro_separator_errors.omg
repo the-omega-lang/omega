@@ -1,0 +1,11 @@
+# A separator is emitted verbatim between expansions, so it cannot be a
+# metavariable or a bare `$`.
+macro metavariable_separator($x: expr, $args: expr...) => {
+	$...($x){ $args }
+}
+
+macro sigil_separator($args: expr...) => {
+	$...($){ $args }
+}
+
+main() => void {}

@@ -1,7 +1,7 @@
 use crate::ModulePath;
 use crate::roots::LocalSource;
 use omega_analyzer::annotation_eval::{ConditionError, ConditionErrorKind};
-use omega_analyzer::checked::{CheckedModule, ExternFunctionRef};
+use omega_analyzer::checked::{CheckedModule, ExternFunctionRef, ExternGlobalRef};
 use omega_analyzer::error::{AnalysisError, AnalysisWarning};
 use omega_analyzer::resolver::ResolveError;
 use omega_analyzer::source_annotations::{SourceAnnotationError, SourceAnnotationErrorKind};
@@ -216,6 +216,7 @@ pub struct CompiledProgram {
     pub entry: ModulePath,
     pub warnings: Vec<(ModulePath, AnalysisWarning)>,
     pub extern_functions: Vec<ExternFunctionRef>,
+    pub extern_globals: Vec<ExternGlobalRef>,
     /// Every physical source file of the local package, sorted by relative
     /// path. Each one owns exactly one emitted artifact.
     pub sources: Vec<LocalSource>,
