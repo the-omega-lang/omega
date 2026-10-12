@@ -39,8 +39,6 @@ rank<T>(value: T) => i32 { 33 }
 @suppress(unused_parameter)
 rank<T: SpecThree>(value: T) => i32 { 44 }
 
-mid<T = u16, U = u32>() => usize { sizeof<T> + sizeof<U> }
-
 # --- inferred spec slots ---------------------------------------------------
 exposed spec Make { make() => Self; }
 exposed spec Other { make() => Self; }
@@ -79,7 +77,6 @@ main() => void {
     both := <_ : _>::make();
     two_specs := <Twice : _>::make();
     inherent_only := <Twice : _>::inherent();
-    defaulted_hole := mid<_, u8>();
     applications := <Both : _>::f();
     in_spec : Pair<_, *spec Holds<_>> = 1;
     in_enum : Pair<_, enum i32 | [_]u8> = 1;

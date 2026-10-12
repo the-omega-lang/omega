@@ -17,7 +17,7 @@ mod visibility;
 mod tests;
 
 pub use specs::PendingSpecMethod;
-use specs::{FlattenedSpecFn, RequirementSignature};
+use specs::RequirementSignature;
 
 use crate::generics::pattern::{ArgumentPattern, TypePattern};
 use calls::{CalleeResolution, FunctionValue, Intercepted, Interceptor, ResolvedCallee};

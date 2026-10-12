@@ -55,106 +55,107 @@ error: '_' is not allowed here -- nothing is inferred in this position
    = note: `_` is accepted only where leaving the type or value out would infer it: generic arguments, bound selectors, and an initialized binding's annotation outside spec references and anonymous-enum members
 
 error: cannot use 't47b_inference_hole_errors::bad_default' because of its own error
-  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:68:18
+  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:66:18
    |
-68 |     defaulted := bad_default();
+66 |     defaulted := bad_default();
    |                  ^^^^^^^^^^^^^ cannot be used because of its own error
    |
    = note: `bad_default`'s own error is reported where it is defined
 
 error: cannot use 't47b_inference_hole_errors::bad_spec' because of its own error
-  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:69:5
+  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:67:5
    |
-69 |     bad_spec(1);
+67 |     bad_spec(1);
    |     ^^^^^^^^^^^ cannot be used because of its own error
    |
    = note: `bad_spec`'s own error is reported where it is defined
 
 error: '_' is not allowed here -- nothing is inferred in this position
-  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:70:5
+  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:68:5
    |
-70 |     no_init : _;
+68 |     no_init : _;
    |     ^^^^^^^^^^^ inference hole in a position that is never inferred
    |
    = note: `_` is accepted only where leaving the type or value out would infer it: generic arguments, bound selectors, and an initialized binding's annotation outside spec references and anonymous-enum members
 
 error: '_' is not allowed here -- nothing is inferred in this position
-  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:71:13
+  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:69:13
    |
-71 |     cast := <_>5;
+69 |     cast := <_>5;
    |             ^^^^ inference hole in a position that is never inferred
    |
    = note: `_` is accepted only where leaving the type or value out would infer it: generic arguments, bound selectors, and an initialized binding's annotation outside spec references and anonymous-enum members
 
-error: '_' is not allowed here -- nothing is inferred in this position
-  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:72:16
+error: cannot determine which type implements 'Holds' for 'held' -- there is no expected type here to take 'Self' from
+  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:70:16
    |
-72 |     applied := Holds<_>::held();
-   |                ^^^^^^^^^^^^^^^^ inference hole in a position that is never inferred
+70 |     applied := Holds<_>::held();
+   |                ^^^^^^^^^^^^^^^^ nothing at this call site names the implementing type
    |
-   = note: `_` is accepted only where leaving the type or value out would infer it: generic arguments, bound selectors, and an initialized binding's annotation outside spec references and anonymous-enum members
+   = note: 'Holds::held' is receiverless, so 'Self' can only come from the expected type
+   = help: write the type explicitly: `<Type : Holds>::held()`, or call it as `Type::held()` when unambiguous
 
 error: 'nothing' cannot be instantiated here: 'T' is not determined
-  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:73:21
+  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:71:21
    |
-73 |     undetermined := nothing<_>();
+71 |     undetermined := nothing<_>();
    |                     ^^^^^^^^^^^^ `T` is not determined here
    |
    = help: `_` leaves `T` to inference -- write it out, or give this call an argument or expected type that determines it
 
 error: cannot infer every '_' in 'Pair<_, u8>'
-  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:74:5
+  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:72:5
    |
-74 |     unsolved : Pair<_, u8> = 5;
+72 |     unsolved : Pair<_, u8> = 5;
    |     ^^^^^^^^^^^^^^^^^^^^^^ the initializer does not determine this annotation's `_`
    |
    = help: write the type or value out in place of the `_`
 
 error: mismatched types: cannot assign 'Pair<i32, i32>' to a target of type 'Pair<i32, u8>'
-  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:75:33
+  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:73:33
    |
-75 |     conflicting : Pair<_, u8> = Pair<i32, i32> { a = 1; b = 2; };
+73 |     conflicting : Pair<_, u8> = Pair<i32, i32> { a = 1; b = 2; };
    |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Pair<i32, u8>`, found `Pair<i32, i32>`
    |
    = note: Omega has no implicit conversions; the value must have exactly the target's type
 
 error: ambiguous reference to overloaded 'rank'
-  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:76:18
+  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:74:18
    |
-76 |     ambiguous := rank<i32 : _>(1);
+74 |     ambiguous := rank<i32 : _>(1);
    |                  ^^^^^^^^^^^^^^^^ reference to `rank` is ambiguous
    |
    = note: candidate: <T>(value: T) => i32
    = note: candidate: <T: SpecThree>(value: T) => i32
 
 error: 'spec SpecThree' is not a generic argument
-  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:77:17
+  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:75:17
    |
-77 |     migrated := rank<spec SpecThree>(1);
+75 |     migrated := rank<spec SpecThree>(1);
    |                 ^^^^^^^^^^^^^^^^^^^^^^^ `spec ...` is not a generic argument
    |
    = help: select on a bound set with `_ : SpecThree`
 
 error: '[]T' is not valid on its own
-  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:78:5
+  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:76:5
    |
-78 |     unsized : []i32 = [1, 2];
+76 |     unsized : []i32 = [1, 2];
    |     ^^^^^^^^^^^^^^^ unsized array type used on its own
    |
    = help: write `*[]T` (a slice), or `[_]T` in an initialized binding's annotation to infer the array's length
 
 error: '_' is not allowed here -- nothing is inferred in this position
-  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:79:13
+  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:77:13
    |
-79 |     both := <_ : _>::make();
+77 |     both := <_ : _>::make();
    |             ^^^^^^^^^^^^^^^ inference hole in a position that is never inferred
    |
    = note: `_` is accepted only where leaving the type or value out would infer it: generic arguments, bound selectors, and an initialized binding's annotation outside spec references and anonymous-enum members
 
 error: more than one spec 'Twice' conforms to declares 'make'
-  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:80:18
+  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:78:18
    |
-80 |     two_specs := <Twice : _>::make();
+78 |     two_specs := <Twice : _>::make();
    |                  ^^^^^^^^^^^^^^^^^^^ `_` could name more than one spec here
    |
    = note: candidate: `<Twice : Make>::make`
@@ -162,25 +163,17 @@ error: more than one spec 'Twice' conforms to declares 'make'
    = help: name the spec you mean
 
 error: no spec 'Twice' conforms to declares 'inherent'
-  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:81:22
+  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:79:22
    |
-81 |     inherent_only := <Twice : _>::inherent();
+79 |     inherent_only := <Twice : _>::inherent();
    |                      ^^^^^^^^^^^^^^^^^^^^^^^ `_` cannot name a spec here
    |
    = note: `<Twice : _>::inherent` names the conformed spec that declares it; inherent functions are not candidates
 
-error: 'mid' cannot be instantiated here: 'T' is not determined
-  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:82:23
-   |
-82 |     defaulted_hole := mid<_, u8>();
-   |                       ^^^^^^^^^^^^ `T` is not determined here
-   |
-   = help: `_` leaves `T` to inference -- write it out, or give this call an argument or expected type that determines it
-
 error: more than one spec 'Both' conforms to declares 'f'
-  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:83:21
+  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:80:21
    |
-83 |     applications := <Both : _>::f();
+80 |     applications := <Both : _>::f();
    |                     ^^^^^^^^^^^^^^^ `_` could name more than one spec here
    |
    = note: candidate: `<Both : P<u16>>::f`
@@ -188,49 +181,49 @@ error: more than one spec 'Both' conforms to declares 'f'
    = help: name the spec you mean
 
 error: '_' is not allowed here -- nothing is inferred in this position
-  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:84:5
+  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:81:5
    |
-84 |     in_spec : Pair<_, *spec Holds<_>> = 1;
+81 |     in_spec : Pair<_, *spec Holds<_>> = 1;
    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ inference hole in a position that is never inferred
    |
    = note: `_` is accepted only where leaving the type or value out would infer it: generic arguments, bound selectors, and an initialized binding's annotation outside spec references and anonymous-enum members
 
 error: '_' is not allowed here -- nothing is inferred in this position
-  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:85:5
+  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:82:5
    |
-85 |     in_enum : Pair<_, enum i32 | [_]u8> = 1;
+82 |     in_enum : Pair<_, enum i32 | [_]u8> = 1;
    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ inference hole in a position that is never inferred
    |
    = note: `_` is accepted only where leaving the type or value out would infer it: generic arguments, bound selectors, and an initialized binding's annotation outside spec references and anonymous-enum members
 
 error: '_' is not allowed here -- nothing is inferred in this position
-  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:86:5
+  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:83:5
    |
-86 |     for r : enum _ | i32 in 0..<2 {}
+83 |     for r : enum _ | i32 in 0..<2 {}
    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ inference hole in a position that is never inferred
    |
    = note: `_` is accepted only where leaving the type or value out would infer it: generic arguments, bound selectors, and an initialized binding's annotation outside spec references and anonymous-enum members
 
 error: generic parameter 'U' is a type parameter, so it takes a type, not a value
-  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:87:5
+  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:84:5
    |
-87 |     value_slot : Pair<_, 5> = Pair { a = 1; b = 2; };
+84 |     value_slot : Pair<_, 5> = Pair { a = 1; b = 2; };
    |     ^^^^^^^^^^^^^^^^^^^^^^^ expected a type, found a compile-time value
 
 error: mismatched types: cannot assign 'Pair<i32, [2]i32>' to a target of type 'Pair<i32, [2]u8>'
-  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:88:39
+  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:85:39
    |
-88 |     known_conflict : Pair<_, [2]u8> = Pair<i32, [2]i32> { a = 1; b = [2, 3]; };
+85 |     known_conflict : Pair<_, [2]u8> = Pair<i32, [2]i32> { a = 1; b = [2, 3]; };
    |                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Pair<i32, [2]u8>`, found `Pair<i32, [2]i32>`
    |
    = note: Omega has no implicit conversions; the value must have exactly the target's type
 
 error: 'if' and 'else' branches have incompatible types
-  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:89:37
+  --> tests/t47b_inference_hole_errors/t47b_inference_hole_errors.omg:86:37
    |
-89 |     branch_conflict : Pair<_, u8> = if true { hole_make(1, 2) } else { Pair<i32, i32> { a = 3; b = 4; } };
+86 |     branch_conflict : Pair<_, u8> = if true { hole_make(1, 2) } else { Pair<i32, i32> { a = 3; b = 4; } };
    |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this branch produces `Pair<i32, i32>`, but earlier branches produce `Pair<i32, u8>`
    |
    = note: every branch of an `if` used as an expression must produce the same type
 
-error: could not compile the program due to 29 previous errors
+error: could not compile the program due to 28 previous errors

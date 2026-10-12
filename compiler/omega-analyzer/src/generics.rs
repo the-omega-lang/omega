@@ -330,31 +330,23 @@ fn comp_type_of(value: &CompScalar) -> CompScalarType {
     }
 }
 
-/// The argument list an inference pass produced, in declaration order.
-/// Trailing parameters that stayed unbound are left off so the instantiation
-/// site fills them from their own defaults; an unbound parameter without a
-/// default is reported by name. So is an unbound defaulted parameter followed
-/// by a bound one: only a trailing run of defaults can be left to the
-/// instantiation site (see `docs/issues/language-limitations.md`).
+/// The argument list an inference pass produced, in declaration order. An
+/// unbound parameter with a default is a gap (`None`) at any position, which
+/// the instantiation site fills from that default; an unbound parameter
+/// without one is reported by name.
 pub fn resolve_inferred_generic_args(
     generics: &GenericParams<'_>,
     subst: &GenericSubstitution,
-) -> Result<Vec<ResolvedGenericArg>, Ident> {
-    let mut args = Vec::with_capacity(generics.params.len());
-    let mut first_defaulted = None;
-    for param in generics.params {
-        match subst.get(&param.ident) {
-            Some(_) if first_defaulted.is_some() => {
-                return Err(first_defaulted.expect("checked by the guard"));
-            }
-            Some(arg) => args.push(arg.widened()),
-            None if param.default.is_some() => {
-                first_defaulted.get_or_insert_with(|| param.ident.clone());
-            }
-            None => return Err(param.ident.clone()),
-        }
-    }
-    Ok(args)
+) -> Result<Vec<Option<ResolvedGenericArg>>, Ident> {
+    generics
+        .params
+        .iter()
+        .map(|param| match subst.get(&param.ident) {
+            Some(arg) => Ok(Some(arg.widened())),
+            None if param.default.is_some() => Ok(None),
+            None => Err(param.ident.clone()),
+        })
+        .collect()
 }
 
 /// Whether `param`'s default is written as the kind its declaration binds.

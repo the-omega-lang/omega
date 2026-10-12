@@ -261,8 +261,7 @@ fn parse_cast(p: &mut Parser, start: Span) -> Option<ExpressionNode> {
                     tail: Vec::new(),
                     origin,
                 },
-                generic_args: Vec::new(),
-                args_at: 0,
+                generic_args: Default::default(),
                 qualified_spec: Some(crate::ast::identifier::QualifiedSpecPath { target, spec }),
             }),
             span,
@@ -736,17 +735,13 @@ fn parse_expr_path(p: &mut Parser) -> Option<crate::ast::identifier::ExprPath> {
         tail: Vec::new(),
         origin,
     };
-    let mut generic_args = Vec::new();
-    let mut args_at = 0;
+    let mut generic_args = crate::ast::identifier::PathGenericArgs::default();
 
     loop {
-        let segment = path.tail.len();
-        if generic_args.is_empty()
-            && p.check(&TokenKind::Lt)
+        if p.check(&TokenKind::Lt)
             && let Some(args) = try_parse_generic_args(p)
         {
-            generic_args = args;
-            args_at = segment;
+            generic_args.push(path.tail.len(), args);
         }
         if !p.check(&TokenKind::ColonColon) {
             break;
@@ -758,7 +753,6 @@ fn parse_expr_path(p: &mut Parser) -> Option<crate::ast::identifier::ExprPath> {
     Some(ExprPath {
         path,
         generic_args,
-        args_at,
         qualified_spec: None,
     })
 }

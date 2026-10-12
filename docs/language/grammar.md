@@ -103,7 +103,7 @@ navigation; elsewhere (including the final segment of an unanchored path)
 they remain ordinary identifiers. Anchor meaning is specified in
 [`modules-and-imports.md`](modules-and-imports.md).
 
-Expression-path generic arguments are committed purely syntactically, by what follows the closing `>`: a path continuation (`Type<T>::member`), a generic struct-literal brace (`Type<T> { ... }`), a call suffix (`f<T>(...)`), or an expression boundary (`;`, `,`, `)`, `]`, `}`, end of input), as in `&foo<T>;` or `[foo<T>, bar<T>]`. Anything else after `>` starts a fresh operand, so the attempt is rolled back and `a < b > c` stays a chained comparison. Commitment never depends on name or type resolution: `a<b>(c)` is a generic call whose failure is a generic/name/callee error, never a re-reading as comparisons. Omega has no turbofish spelling; `::<...>` is not syntax.
+Expression-path generic arguments are committed purely syntactically, by what follows the closing `>`: a path continuation (`Type<T>::member`), a generic struct-literal brace (`Type<T> { ... }`), a call suffix (`f<T>(...)`), or an expression boundary (`;`, `,`, `)`, `]`, `}`, end of input), as in `&foo<T>;` or `[foo<T>, bar<T>]`. Anything else after `>` starts a fresh operand, so the attempt is rolled back and `a < b > c` stays a chained comparison. Commitment never depends on name or type resolution: `a<b>(c)` is a generic call whose failure is a generic/name/callee error, never a re-reading as comparisons. Omega has no turbofish spelling; `::<...>` is not syntax. Syntactically a list may follow any segment of the path; which segments take one is the semantic rule in [`generics.md`](generics.md#generic-member-and-static-functions).
 
 ## Imports
 

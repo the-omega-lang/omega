@@ -1,0 +1,46 @@
+# A qualifying spec whose holes no conformance fills, holes more than one
+# conformance fills equally well -- named by their conformances, qualified
+# where they would otherwise read the same -- and holes on both halves of
+# `<_ : P<_>>`.
+import self::a;
+import self::b;
+
+spec Make<T> {
+	make() => Self;
+}
+
+struct None0 {
+	exposed tag: i32;
+}
+
+struct Both {
+	exposed tag: i32;
+}
+
+meet Make<i32> for Both {
+	make() => Self { Both { tag = 1; } }
+}
+
+meet Make<u8> for Both {
+	make() => Self { Both { tag = 2; } }
+}
+
+struct Twin {
+	exposed tag: i32;
+}
+
+meet Make<a::X> for Twin {
+	make() => Self { Twin { tag = 1; } }
+}
+
+meet Make<b::X> for Twin {
+	make() => Self { Twin { tag = 2; } }
+}
+
+main() => void {
+	missing : None0 = Make::make();
+	wrong : Both = Make<u16>::make();
+	ambiguous : Both = Make<_>::make();
+	both_halves : Both = <_ : Make<_>>::make();
+	twin : Twin = Make::make();
+}

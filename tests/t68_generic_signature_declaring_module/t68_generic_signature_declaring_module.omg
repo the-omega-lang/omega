@@ -1,0 +1,18 @@
+# A generic declaration's signature and defaults keep meaning what they mean
+# where the declaration is written, even while a call in another module is
+# still inferring its arguments -- including when the caller binds the same
+# names to something else.
+import std::io::println;
+import self::m;
+
+alias Num = u8;
+
+main() => void {
+	println$(m::by_default(5));
+	println$(m::by_parameter(300, 1u8));
+	println$(m::private_default<_, u32>(1));
+	h := m::Holder { value = 7; };
+	println$(h.size());
+	local : Num = 1;
+	println$(local);
+}

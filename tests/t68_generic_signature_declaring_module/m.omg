@@ -1,0 +1,29 @@
+@[suppress(unused_parameter, unused_field)]
+
+alias Num = i64;
+
+struct Hidden {
+	exposed a: u8;
+	exposed b: u8;
+	exposed c: u8;
+}
+
+exposed by_default<T = Num>(value: T) => usize {
+	sizeof<T>
+}
+
+exposed by_parameter<T>(value: Num, other: T) => i64 {
+	value
+}
+
+exposed private_default<T = Hidden, U = u8>(value: U) => usize {
+	sizeof<T> + sizeof<U>
+}
+
+exposed struct Holder<T = Num> {
+	exposed value: T;
+
+	exposed size(*self) => usize {
+		sizeof<T>
+	}
+}

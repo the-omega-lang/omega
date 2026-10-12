@@ -141,8 +141,7 @@ generic default, or a function-pointer value is an error, and a `comp`
 position never accepts one because a `comp` parameter declares no bounds.
 `spec A` written as a function generic argument is an error: it is not a type,
 and the selector is spelled `_ : A`. A nested type such as `*spec A` is an
-ordinary type argument. The existing restriction of one written generic
-argument list per path is unchanged.
+ordinary type argument.
 
 ## Inference holes
 
@@ -160,13 +159,17 @@ A hole is accepted only where leaving the thing out is already inferred:
   it counts toward arity, it restricts overload selection to generic
   declarations, and it contributes nothing to the unbounded-position
   preference. It is solved in the [priority order](#defaults-and-function-call-inference)
-  of an omitted argument, so a declared default applies to it. Selector forms
+  of an omitted argument, so a declared default applies to it at any position:
+  for `mid<T = u16, U = u32>`, `mid<_, u8>()` is `mid<u16, u8>()`. Selector forms
   are described under [Bound selectors](#bound-selectors).
 - **An aggregate constructor or owner path.** `Pair<_, u8> { a = 1; b = 2; }`,
   `Pair<_, u8>::new(1, 2)`, and `Option<_>::None` bind what they write and
   solve each hole as [generic aggregate inference](#generic-aggregate-inference)
   solves an omitted argument.
 - **A fully qualified spec call.** `<_ : P>::f(...)` and `<S : _>::f(...)`; see
+  [`specs-and-conformance.md`](specs-and-conformance.md#calling-conforming-functions).
+- **A spec application's arguments in a qualified spec call.** `P<_, u8>::f(...)`
+  and `<S : P<_>>::f(...)` leave the holes to the target's conformances; see
   [`specs-and-conformance.md`](specs-and-conformance.md#calling-conforming-functions).
 - **An initialized binding's annotation**, anywhere in its type:
   `x : _ = e`, `p : *_ = &v`, `q : Pair<_, u8> = ...`, `a : [_]u8 = [1, 2, 3]`,
@@ -184,9 +187,8 @@ A hole is accepted only where leaving the thing out is already inferred:
 Everywhere else `_` is rejected with a dedicated error, because nothing there
 is inferred: parameter, return, and field types; generic defaults and alias
 right-hand sides; bounds and spec bodies; casts; `spec _` and `*spec _`; a
-declaration without an initializer (`x : _;`); a spec application's arguments
-(`Spec<_>::f`); a spec reference or anonymous-enum member inside an
-annotation; and an array length outside an initialized binding's annotation.
+declaration without an initializer (`x : _;`); a spec reference or
+anonymous-enum member inside an annotation; and an array length outside an initialized binding's annotation.
 
 An anonymous enum that already exists is an ordinary type here. Given `alias Errors = enum ParseError | IoError;` and a value `e: Errors`, calling `identity<T>(x: T) => T` with `e` infers `T = Errors`, and substituting `T = Errors` into `enum T | C` flattens to `enum ParseError | IoError | C`. What inference may **not** do is construct an anonymous enum that no written type established: two arguments of unrelated types `A` and `B` never unify a parameter `T` to `enum A | B`, and the members of an expected anonymous enum are never tried one at a time as inference candidates. See [`enums-and-pattern-matching.md`](enums-and-pattern-matching.md).
 
@@ -235,7 +237,7 @@ Generic struct/union/enum construction can infer owner generic arguments from:
 
 1. the surrounding expected type, when it names the same declaration;
 2. aggregate/variant field initializer types;
-3. for a static function called through an owner with omitted generic arguments, the static function's arguments when they constrain the owner parameters.
+3. for a static function called through an owner with omitted generic arguments, the static function's arguments when they constrain the owner parameters. Every spelling that names the owner type -- a plain name, an import, an alias, an anchored or module-qualified path -- selects it here exactly as in a type position, so `m::Pair::new(7, 8)` infers as `Pair::new(7, 8)` does.
 
 Examples:
 
@@ -260,7 +262,7 @@ struct Pair<A, B = A> { ... }
 struct Block<comp N: usize = 4, comp M: usize = N> { ... }
 ```
 
-A default is written as the kind its parameter binds: a type for a type parameter, a compile-time value for a `comp` parameter. Defaults may refer to earlier parameters in the same list. Once a parameter has a default, every parameter after it must also have a default; defaults form a trailing suffix.
+A default is written as the kind its parameter binds: a type for a type parameter, a compile-time value for a `comp` parameter. Defaults may refer to earlier parameters in the same list. A default is resolved in the module that declares it, never at the use site, so it may name what only that module sees. Once a parameter has a default, every parameter after it must also have a default; defaults form a trailing suffix.
 
 Omitted trailing arguments are filled from defaults after earlier arguments have become concrete. If every parameter has a default, the declaration may be referenced without `<...>` where otherwise unambiguous.
 
@@ -349,7 +351,7 @@ A declaration's own parameters are in scope for its signature and body alongside
 
 Instantiation identity includes both lists: the owner's generic arguments and the declaration's own. `Pair<i32>::self::with<u8>` and `Pair<u8>::self::with<u8>` are distinct monomorphizations with distinct symbols, and two calls that resolve to the same pair of argument lists share one instantiation.
 
-Arguments are inferred from the call's written arguments and the expected result type exactly as for a top-level generic function. The receiver of `value.name(...)` is supplied by the instance syntax, so it is not one of the arguments inference reads; `Owner::self::name(receiver, ...)` writes it out as an ordinary argument instead. A call may fix a left-to-right prefix explicitly, on the member (`value.name<T>(...)`) or on the function segment of a type-qualified path (`Owner::name<T>(...)`, `Owner::self::name<T>(...)`). One path carries at most one written argument list, so an owner and its function cannot both be written explicitly in one call.
+Arguments are inferred from the call's written arguments and the expected result type exactly as for a top-level generic function. The receiver of `value.name(...)` is supplied by the instance syntax, so it is not one of the arguments inference reads; `Owner::self::name(receiver, ...)` writes it out as an ordinary argument instead. A call may fix a left-to-right prefix explicitly, on the member (`value.name<T>(...)`) or on the function segment of a type-qualified path (`Owner::name<T>(...)`, `Owner::self::name<T>(...)`). A type-qualified path may write the owner's list and the function's together -- `Owner<A>::name<B>(...)`, `m::Owner<A>::self::name<B>(...)` -- as a call or as a [function value](functions.md#selecting-a-function-value). These are the only two lists one path carries: an expression path writes at most one list per segment, and a list on any other segment -- a module, the `self` namespace segment, or a variant -- is an error.
 
 The `spec S` parameter sugar applies here as it does to a top-level function: `f(x: spec S)` is a declaration with an anonymous bounded generic parameter, and is therefore instantiated per argument type.
 

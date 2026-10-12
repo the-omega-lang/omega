@@ -494,3 +494,56 @@ fn self_recursive_macros_report_the_depth_limit_on_a_default_thread() {
         );
     }
 }
+
+#[test]
+fn arguments_are_delimited_by_their_fragment_grammar() {
+    let module = expand(
+        r#"
+        macro one($e: expr) => { $e }
+        macro two($a: expr, $b: expr) => { $a; $b; }
+        macro typed($t: type, $e: expr) => { v: $t = $e; }
+        mid<T, U>() => i32 { 3 }
+        main() => void {
+            one$(mid<u16, u8>());
+            two$(a < b, c > d);
+            typed$(Map<K, V>, one$(mid<i32, Pair<u8, u8>>()));
+        }
+    "#,
+    );
+    let Item::FunctionDefinition(main) = &module.nodes[1].item else {
+        panic!("expected main")
+    };
+    let statements = &main.codeblock.as_ref().unwrap().statements;
+    assert_eq!(statements.len(), 4);
+    let Statement::Expression(first) = &statements[0].statement else {
+        panic!("expected the generic call expression")
+    };
+    assert!(matches!(first.expression, Expression::FunctionCall(_)));
+    for comparison in &statements[1..3] {
+        let Statement::Expression(node) = &comparison.statement else {
+            panic!("expected a comparison statement")
+        };
+        let Expression::BinaryOp(op) = &node.expression else {
+            panic!("expected a comparison, found {:?}", node.expression)
+        };
+        assert!(matches!(
+            op.op,
+            omega_parser::prelude::BinaryOp::Lt | omega_parser::prelude::BinaryOp::Gt
+        ));
+    }
+}
+
+#[test]
+fn surplus_arguments_are_counted_after_the_last_parameter() {
+    let module = SourceModule::parse(
+        r#"
+        macro one($e: expr) => { $e }
+        main() => void { one$(1, f<i32, u8>(), [1, 2]); }
+    "#,
+    )
+    .unwrap();
+    let text = macros::expand(module, &HashMap::new())
+        .unwrap_err()
+        .to_string();
+    assert!(text.contains("expects 1 argument(s), found 3"), "{text}");
+}

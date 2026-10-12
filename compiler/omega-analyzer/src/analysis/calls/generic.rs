@@ -140,18 +140,13 @@ impl<'r> Analyzer<'r> {
                 return None;
             }
         };
-        self.check_written_selectors(
-            node_id,
-            span,
+        let target = crate::resolver::GenericCallTarget::Method {
+            owner,
             name,
-            crate::resolver::GenericCallTarget::Method {
-                owner,
-                name,
-                namespace,
-            },
-            explicit,
-            &generic_args,
-        )?;
+            namespace,
+        };
+        let generic_args = self.complete_call_generic_args(node_id, span, target, generic_args)?;
+        self.check_written_selectors(node_id, span, name, target, explicit, &generic_args)?;
 
         match self
             .resolver
@@ -221,28 +216,12 @@ impl<'r> Analyzer<'r> {
             [.., member] => (FunctionNamespace::Static, member, 1),
             [] => return Intercepted::Declined,
         };
-        // A path carries at most one written generic argument list: it
-        // belongs either to the owner or to the function, and anything else
-        // is not a call this resolves. Segment indices count the head as 0,
-        // so the owner's last segment is the one the member segments follow.
-        let owner_generics_written = !expr_path.generic_args.is_empty()
-            && expr_path.args_at + member_segments == path.tail.len();
-        let function_generics_written =
-            !expr_path.generic_args.is_empty() && expr_path.args_at == path.tail.len();
-        if !expr_path.generic_args.is_empty()
-            && !owner_generics_written
-            && !function_generics_written
-        {
+        let Some(lists) = Self::member_generics(expr_path, member_segments) else {
             return Intercepted::Declined;
-        }
-
-        let Some(owner) = self.callee_owner_type(
-            node_id,
-            span,
-            expr_path,
-            member_segments,
-            owner_generics_written,
-        ) else {
+        };
+        let Some(owner) =
+            self.callee_owner_type(node_id, span, expr_path, member_segments, lists.owner)
+        else {
             return Intercepted::Declined;
         };
         let template = match self.generic_method_template(node_id, span, &owner, member, namespace)
@@ -252,12 +231,12 @@ impl<'r> Analyzer<'r> {
             MethodTemplate::Found(template) => template,
         };
 
-        let explicit = if function_generics_written {
+        let explicit = if let Some(function_generics) = lists.function {
             let declared = Self::owner_item_path(&owner, member);
             match self.resolve_written_generics(
                 node_id,
                 span,
-                &expr_path.generic_args,
+                function_generics,
                 &declared,
                 &template.generics,
             ) {
@@ -290,23 +269,74 @@ impl<'r> Analyzer<'r> {
         span: Span,
         expr_path: &ExprPath,
         member_segments: usize,
-        owner_generics_written: bool,
+        owner_generics: Option<&[ExprGenericArg]>,
     ) -> Option<ResolvedType> {
+        // A selector is not owner syntax, so this is not the owner-qualified
+        // reading; the ordinary path reading reports it.
+        let owner_generics = match owner_generics {
+            Some(written) => Some(Self::plain_generic_args(written)?),
+            None => None,
+        };
+        let written = Self::owner_type_syntax(expr_path, member_segments, owner_generics);
+        self.without_diagnostics(|this| this.resolve_type_or_error(node_id, span, &written, true))
+    }
+
+    fn owner_type_syntax(
+        expr_path: &ExprPath,
+        member_segments: usize,
+        owner_generics: Option<Vec<GenericArg>>,
+    ) -> Type {
         let mut owner_path = expr_path.path.clone();
         owner_path
             .tail
             .truncate(expr_path.path.tail.len() - member_segments);
-        let written = if owner_generics_written {
-            // A selector is not owner syntax, so this is not the owner-
-            // qualified reading; the ordinary path reading reports it.
-            Type::Generic(
-                owner_path,
-                Self::plain_generic_args(&expr_path.generic_args)?,
-            )
-        } else {
-            Type::Named(owner_path)
-        };
-        self.without_diagnostics(|this| this.resolve_type_or_error(node_id, span, &written, true))
+        match owner_generics {
+            Some(owner_generics) => Type::Generic(owner_path, owner_generics),
+            None => Type::Named(owner_path),
+        }
+    }
+
+    /// The owner of `Owner<A>::name<B>`, reported when it does not resolve.
+    /// Both lists are written, so the owner list must be complete: a `_` in
+    /// it would need joint owner-and-member inference, which is not yet
+    /// supported (`docs/issues/language-limitations.md`).
+    pub(crate) fn owner_type_with_generics(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        expr_path: &ExprPath,
+        member_segments: usize,
+        lists: &MemberGenerics<'_>,
+    ) -> Option<ResolvedType> {
+        let written = lists.owner.unwrap_or_default();
+        let owner_generics = self.ordinary_generic_args(node_id, span, written, "a type")?;
+        if let Some(hole) = owner_generics
+            .iter()
+            .position(|arg| *arg == GenericArg::Infer)
+        {
+            let path = &expr_path.path;
+            let segments = path.segments();
+            let prefix = &segments[..=path.tail.len() - member_segments];
+            let access = self.generic_prefix_absolute(node_id, span, path, prefix)?;
+            let params = self.item_generic_params_for(&self.path_module(path), prefix, &access);
+            if let Some(param) = params.get(hole) {
+                let name = prefix
+                    .last()
+                    .expect("a prefix has its owner segment")
+                    .clone();
+                self.error(
+                    node_id,
+                    span,
+                    AnalysisErrorKind::UndeterminedInferenceHole {
+                        name,
+                        parameter: param.ident.clone(),
+                    },
+                );
+                return None;
+            }
+        }
+        let written = Self::owner_type_syntax(expr_path, member_segments, Some(owner_generics));
+        self.resolve_type_or_error(node_id, span, &written, true)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -365,6 +395,48 @@ impl<'r> Analyzer<'r> {
         ))
     }
 
+    /// A generic call's inferred arguments with every gap filled from the
+    /// declaration's own defaults.
+    fn complete_call_generic_args(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        target: crate::resolver::GenericCallTarget<'_>,
+        inferred: Vec<Option<ResolvedGenericArg>>,
+    ) -> Option<Vec<ResolvedGenericArg>> {
+        if inferred.iter().all(Option::is_some) {
+            return Some(inferred.into_iter().flatten().collect());
+        }
+        match self.resolver.prepare_generic_call(target, &inferred) {
+            Ok(Some(prepared)) => Some(prepared.arguments),
+            Ok(None) => Some(inferred.into_iter().map_while(|arg| arg).collect()),
+            Err(error) => {
+                self.error(node_id, span, AnalysisErrorKind::ModuleResolution(error));
+                None
+            }
+        }
+    }
+
+    /// The same for a generic item's arguments.
+    pub(crate) fn complete_item_generic_args(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        absolute: &[Ident],
+        inferred: Vec<Option<ResolvedGenericArg>>,
+    ) -> Option<Vec<ResolvedGenericArg>> {
+        if inferred.iter().all(Option::is_some) {
+            return Some(inferred.into_iter().flatten().collect());
+        }
+        match self.resolver.complete_generic_args(absolute, &inferred) {
+            Ok(arguments) => Some(arguments),
+            Err(error) => {
+                self.error(node_id, span, AnalysisErrorKind::ModuleResolution(error));
+                None
+            }
+        }
+    }
+
     /// How a diagnostic names the declaration a generic call reached: the
     /// owner's own path with the function appended.
     pub(crate) fn owner_item_path(owner: &ResolvedType, member: &Ident) -> Vec<Ident> {
@@ -393,64 +465,56 @@ impl<'r> Analyzer<'r> {
         let Some(expr_path) = Self::callee_expr_path(call) else {
             return Intercepted::Declined;
         };
-        let written = if expr_path.generic_args.is_empty() {
-            Vec::new()
-        } else {
-            match Self::plain_generic_args(&expr_path.generic_args) {
-                Some(written)
-                    if expr_path.args_at == 0
-                        && expr_path.qualified_spec.is_none()
-                        && written.contains(&GenericArg::Infer) =>
-                {
-                    written
-                }
-                _ => return Intercepted::Declined,
-            }
-        };
+        if expr_path.qualified_spec.is_some() {
+            return Intercepted::Declined;
+        }
         let path = &expr_path.path;
-        let (namespace, member) = match path.tail.as_slice() {
-            [member] => (FunctionNamespace::Static, member),
-            [segment, member] if segment.as_ref() == FunctionNamespace::MEMBER_SEGMENT => {
-                (FunctionNamespace::Member, member)
+        let (namespace, member, member_segments) = match path.tail.as_slice() {
+            [.., segment, member] if segment.as_ref() == FunctionNamespace::MEMBER_SEGMENT => {
+                (FunctionNamespace::Member, member, 2)
             }
+            [.., member] => (FunctionNamespace::Static, member, 1),
+            [] => return Intercepted::Declined,
+        };
+        let written = match Self::member_generics(expr_path, member_segments) {
+            Some(MemberGenerics {
+                owner: None,
+                function: None,
+            }) => Vec::new(),
+            Some(MemberGenerics {
+                owner: Some(owner),
+                function: None,
+            }) => match Self::plain_generic_args(owner) {
+                Some(written) if written.contains(&GenericArg::Infer) => written,
+                _ => return Intercepted::Declined,
+            },
             _ => return Intercepted::Declined,
         };
-        if self.context.find_defined_type(&path.head).is_some() {
+        let mut owner_path = path.clone();
+        owner_path.tail.truncate(path.tail.len() - member_segments);
+        if owner_path.is_unqualified()
+            && owner_path.anchor.is_none()
+            && self.context.find_defined_type(&path.head).is_some()
+        {
             return Intercepted::Declined;
         }
 
+        // Every spelling of the owner -- an import, an alias, a module path,
+        // an anchor -- reaches the same absolute item path a type position
+        // would.
         let accessor = self.path_module(path);
-        // The owner is `path.head` alone; an explicit anchor names it
-        // directly, so it is never looked up as an import binding.
-        let access =
-            match self.anchored_prefix(node_id, span, path, std::slice::from_ref(&path.head)) {
-                AnchoredPath::Failed => return Intercepted::Claimed(None),
-                AnchoredPath::Absolute(absolute) => ItemAccess::gated(absolute),
-                AnchoredPath::Unanchored => {
-                    let alias = self
-                        .resolver
-                        .resolve_import_alias(&accessor, &path.head)
-                        .ok()
-                        .flatten();
-                    match alias {
-                        Some(ImportTarget::Item(absolute, _)) => ItemAccess::gated(absolute),
-                        Some(ImportTarget::ItemPath(access)) => access,
-                        Some(ImportTarget::Module(_)) => return Intercepted::Declined,
-                        None => ItemAccess::gated(
-                            accessor
-                                .iter()
-                                .cloned()
-                                .chain(std::iter::once(path.head.clone()))
-                                .collect(),
-                        ),
-                    }
-                }
-            };
+        let Ok(access) =
+            self.context
+                .resolve_absolute_item_path(&mut *self.resolver, &owner_path, &accessor)
+        else {
+            return Intercepted::Declined;
+        };
         let absolute = access.absolute.clone();
+        let owner_segments = owner_path.segments();
 
         let Some((real_absolute, sig)) = self.generic_owner_function_signature_with_ambient(
             &accessor,
-            std::slice::from_ref(&path.head),
+            &owner_segments,
             &absolute,
             member,
             namespace,
@@ -473,7 +537,7 @@ impl<'r> Analyzer<'r> {
             span,
             call,
             &accessor,
-            std::slice::from_ref(&path.head),
+            &owner_segments,
             &owner,
             member,
             namespace,
@@ -642,6 +706,8 @@ impl<'r> Analyzer<'r> {
             }
         };
 
+        let generic_args =
+            self.complete_item_generic_args(node_id, span, &owner.absolute, generic_args)?;
         let owner_type =
             match self.resolve_item_with_ambient_from(accessor, prefix, owner, &generic_args) {
                 Ok(ResolvedItem::Type(t)) => t,
@@ -711,9 +777,9 @@ impl<'r> Analyzer<'r> {
         let path = &expr_path.path;
         // Generic arguments written on an earlier segment name a generic
         // owner, not this function; that stays with generic-place resolution.
-        if !expr_path.generic_args.is_empty() && expr_path.args_at != path.tail.len() {
+        let Some(written) = Self::trailing_generic_args(expr_path) else {
             return Intercepted::Declined;
-        }
+        };
 
         if path.is_unqualified()
             && self
@@ -759,7 +825,7 @@ impl<'r> Analyzer<'r> {
         let explicit = match self.resolve_written_generics(
             node_id,
             span,
-            &expr_path.generic_args,
+            written,
             &access.absolute,
             &sig.generics,
         ) {
@@ -833,14 +899,9 @@ impl<'r> Analyzer<'r> {
             .last()
             .expect("an item path always ends in the item's own name")
             .clone();
-        self.check_written_selectors(
-            node_id,
-            span,
-            &name,
-            crate::resolver::GenericCallTarget::Function(&access.absolute),
-            explicit,
-            &generic_args,
-        )?;
+        let target = crate::resolver::GenericCallTarget::Function(&access.absolute);
+        let generic_args = self.complete_call_generic_args(node_id, span, target, generic_args)?;
+        self.check_written_selectors(node_id, span, &name, target, explicit, &generic_args)?;
 
         let (fn_type, storage, decl_id) = match self.resolver.resolve_item(
             accessor,

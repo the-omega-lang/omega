@@ -359,8 +359,12 @@ impl<'r> Analyzer<'r> {
         expr_path: &ExprPath,
         expected: Option<&ResolvedType>,
     ) -> Option<(CheckedPlaceRoot, ResolvedType)> {
+        if expr_path.generic_args.len() > 1 {
+            return self.resolve_owner_and_function_value(node_id, span, expr_path, expected);
+        }
         let segments = expr_path.path.segments();
-        let rest = &segments[expr_path.args_at + 1..];
+        let (args_at, written) = self.single_generic_list(node_id, span, expr_path)?;
+        let rest = &segments[args_at + 1..];
         // One member segment, or the two that select the member namespace.
         let too_deep = match rest {
             [] | [_] => false,
@@ -372,7 +376,7 @@ impl<'r> Analyzer<'r> {
                 node_id,
                 span,
                 AnalysisErrorKind::GenericPathTooDeep {
-                    r#type: segments[expr_path.args_at].clone(),
+                    r#type: segments[args_at].clone(),
                 },
             );
             return None;
@@ -380,14 +384,21 @@ impl<'r> Analyzer<'r> {
 
         // With nothing after them, the written arguments belong to the last
         // segment, which may be a function rather than an item prefix.
-        if rest.is_empty()
-            && let Some(selected) =
-                self.resolve_explicit_function_value(node_id, span, expr_path, expected)
-        {
-            return selected;
+        if rest.is_empty() {
+            if let Some(selected) =
+                self.resolve_explicit_function_value(node_id, span, expr_path, written, expected)
+            {
+                return selected;
+            }
+            // No generic function takes the list, so after an item it is on
+            // a member -- a variant or a non-generic function.
+            if args_at > 0 && self.prefix_names_item(node_id, span, &expr_path.path, args_at - 1) {
+                self.report_misplaced_generic_args(node_id, span, &segments, args_at);
+                return None;
+            }
         }
 
-        let prefix = &segments[..=expr_path.args_at];
+        let prefix = &segments[..=args_at];
         let access = self.generic_prefix_absolute(node_id, span, &expr_path.path, prefix)?;
         let absolute = access.absolute.clone();
         let accessor = self.path_module(&expr_path.path);
@@ -395,7 +406,7 @@ impl<'r> Analyzer<'r> {
         let written = self.ordinary_generic_args(
             node_id,
             span,
-            &expr_path.generic_args,
+            written,
             "a path that does not name a generic function",
         )?;
         let hole_literal = match rest {
@@ -454,7 +465,7 @@ impl<'r> Analyzer<'r> {
                     node_id,
                     span,
                     AnalysisErrorKind::NotAModule {
-                        name: segments[expr_path.args_at].clone(),
+                        name: segments[args_at].clone(),
                     },
                 );
                 None
@@ -484,10 +495,10 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         expr_path: &ExprPath,
+        explicit: &[ExprGenericArg],
         expected: Option<&ResolvedType>,
     ) -> Option<Option<(CheckedPlaceRoot, ResolvedType)>> {
         let path = &expr_path.path;
-        let explicit = expr_path.generic_args.as_slice();
         // The `self` segment belongs to the owner-to-function path, not to
         // the owner itself, exactly as it does at a call.
         let member = match path.tail.as_slice() {
@@ -499,20 +510,25 @@ impl<'r> Analyzer<'r> {
         };
         if let Some((namespace, member, member_segments)) = member
             && let Some(owner) =
-                self.callee_owner_type(node_id, span, expr_path, member_segments, false)
+                self.callee_owner_type(node_id, span, expr_path, member_segments, None)
         {
-            let templates = match self
+            let templates = self
                 .resolver
                 .generic_method_candidates(&owner, member, namespace)
-            {
-                Ok(templates) => templates,
+                .and_then(|inherent| {
+                    if !inherent.is_empty() {
+                        return Ok(inherent);
+                    }
+                    self.resolver
+                        .conformance_generic_method_candidates(&owner, member, namespace)
+                });
+            match templates {
+                Ok(templates) if templates.is_empty() => return None,
+                Ok(_) => {}
                 Err(error) => {
                     self.error(node_id, span, AnalysisErrorKind::ModuleResolution(error));
                     return Some(None);
                 }
-            };
-            if templates.is_empty() {
-                return None;
             }
             let rest = &path.tail[path.tail.len() - member_segments..];
             return Some(self.resolve_type_member(
@@ -526,10 +542,10 @@ impl<'r> Analyzer<'r> {
             ));
         }
 
-        let prefix = &expr_path.path.segments()[..=expr_path.args_at];
+        let segments = path.segments();
         let accessor = self.path_module(path);
         let access = self.without_diagnostics(|this| {
-            this.generic_prefix_absolute(node_id, span, path, prefix)
+            this.generic_prefix_absolute(node_id, span, path, &segments)
         })?;
         let set = self
             .function_value_set(&accessor, &access, path.origin)
@@ -567,6 +583,144 @@ impl<'r> Analyzer<'r> {
                 FunctionValue::Failed => None,
                 FunctionValue::Undetermined => return None,
             },
+        )
+    }
+
+    /// The one generic list a path writes, and the segment it follows. Only a
+    /// type-qualified function path takes two, so a second list, or a list
+    /// on a `self` namespace segment, is reported as misplaced here.
+    pub(super) fn single_generic_list<'p>(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        expr_path: &'p ExprPath,
+    ) -> Option<(usize, &'p [ExprGenericArg])> {
+        let segments = expr_path.path.segments();
+        let mut lists = expr_path.generic_args.iter();
+        let (at, written) = lists.next()?;
+        let misplaced = match lists.next() {
+            Some((second, _)) => Some(second),
+            None => (segments[at].as_ref() == FunctionNamespace::MEMBER_SEGMENT
+                || self.prefix_names_module(&expr_path.path, at))
+            .then_some(at),
+        };
+        if let Some(misplaced) = misplaced {
+            self.report_misplaced_generic_args(node_id, span, &segments, misplaced);
+            return None;
+        }
+        Some((at, written))
+    }
+
+    /// Whether `path` up to and including segment `at` names a module, which
+    /// never takes generic arguments. Silent: any other reading reports its
+    /// own errors.
+    fn prefix_names_module(&mut self, path: &Path, at: usize) -> bool {
+        let mut prefix = path.clone();
+        prefix.tail.truncate(at);
+        let accessor = self.path_module(path);
+        let absolute = match self.resolver.resolve_explicit_anchor(&accessor, &prefix) {
+            Some(Ok(absolute)) => absolute,
+            Some(Err(_)) => return false,
+            None => match self.resolver.resolve_import_alias(&accessor, &prefix.head) {
+                Ok(Some(ImportTarget::Module(target))) => {
+                    target.into_iter().chain(prefix.tail).collect()
+                }
+                _ => return false,
+            },
+        };
+        matches!(
+            self.resolver.resolve_module_path(&accessor, &absolute),
+            Ok(Some(_))
+        )
+    }
+
+    /// Whether `path` up to and including segment `at` names an item. Silent,
+    /// like [`Self::prefix_names_module`].
+    fn prefix_names_item(&mut self, node_id: HirId, span: Span, path: &Path, at: usize) -> bool {
+        let segments = path.segments();
+        let prefix = &segments[..=at];
+        let Some(access) = self
+            .without_diagnostics(|this| this.generic_prefix_absolute(node_id, span, path, prefix))
+        else {
+            return false;
+        };
+        if matches!(
+            self.resolver.item_generic_params(&access.absolute),
+            Ok(Some(_))
+        ) {
+            return true;
+        }
+        let [single] = prefix else { return false };
+        let accessor = self.path_module(path);
+        matches!(
+            self.resolver.ambient_core_candidates(&accessor, single),
+            Ok(Some(_))
+        )
+    }
+
+    fn report_misplaced_generic_args(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        segments: &[Ident],
+        at: usize,
+    ) {
+        self.error(
+            node_id,
+            span,
+            AnalysisErrorKind::MisplacedGenericArgs {
+                segment: segments[at].clone(),
+            },
+        );
+    }
+
+    /// `Owner<A>::name<B>` and `Owner<A>::self::name<B>` as values: the only
+    /// paths that write two lists, one on the owner and one on its function.
+    fn resolve_owner_and_function_value(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        expr_path: &ExprPath,
+        expected: Option<&ResolvedType>,
+    ) -> Option<(CheckedPlaceRoot, ResolvedType)> {
+        let path = &expr_path.path;
+        let segments = path.segments();
+        let member_segments = match path.tail.as_slice() {
+            [.., segment, _] if segment.as_ref() == FunctionNamespace::MEMBER_SEGMENT => 2,
+            _ => 1,
+        };
+        let function_at = path.tail.len();
+        let owner_at = function_at.saturating_sub(member_segments);
+        let lists = match Self::member_generics(expr_path, member_segments) {
+            Some(lists)
+                if lists.owner.is_some()
+                    && lists.function.is_some()
+                    && !self.prefix_names_module(path, owner_at) =>
+            {
+                lists
+            }
+            _ => {
+                let misplaced = expr_path
+                    .generic_args
+                    .iter()
+                    .map(|(at, _)| at)
+                    .find(|at| *at != owner_at && *at != function_at)
+                    .unwrap_or(owner_at);
+                self.report_misplaced_generic_args(node_id, span, &segments, misplaced);
+                return None;
+            }
+        };
+        let owner =
+            self.owner_type_with_generics(node_id, span, expr_path, member_segments, &lists)?;
+        let rest = &path.tail[path.tail.len() - member_segments..];
+        self.resolve_type_member(
+            node_id,
+            span,
+            &owner,
+            rest,
+            lists.function.unwrap_or_default(),
+            expected,
+            path.origin,
         )
     }
 
@@ -972,12 +1126,26 @@ impl<'r> Analyzer<'r> {
 
         let owner = self.owner_functions(node_id, span, r#type)?;
         let mut candidates = namespace.select(&owner.functions, member);
+        // A generic declaration is never among an owner's resolved functions,
+        // so it has to be collected separately before "no such function" can
+        // be concluded -- and it is an ordinary selection candidate here.
+        let mut templates = match self
+            .resolver
+            .generic_method_candidates(r#type, member, namespace)
+        {
+            Ok(templates) => templates,
+            Err(err) => {
+                self.error(node_id, span, AnalysisErrorKind::ModuleResolution(err));
+                return None;
+            }
+        };
 
-        // An inherent declaration wins over a conforming one, but only
-        // inside the selected namespace: an inherent static must not hide a
-        // conforming member from `Type::self::name`, or the reverse.
+        // An inherent declaration, concrete or generic, wins over a
+        // conforming one, but only inside the selected namespace: an inherent
+        // static must not hide a conforming member from `Type::self::name`,
+        // or the reverse.
         let mut conformances = Vec::new();
-        if candidates.is_empty() {
+        if candidates.is_empty() && templates.is_empty() {
             conformances = match self.resolver.conformances_for_type(r#type) {
                 Ok(conformances) => conformances,
                 Err(err) => {
@@ -1013,21 +1181,17 @@ impl<'r> Analyzer<'r> {
             if let Some((_, method)) = providers.into_iter().next() {
                 candidates = vec![method];
             }
+            templates = match self
+                .resolver
+                .conformance_generic_method_candidates(r#type, member, namespace)
+            {
+                Ok(templates) => templates,
+                Err(err) => {
+                    self.error(node_id, span, AnalysisErrorKind::ModuleResolution(err));
+                    return None;
+                }
+            };
         }
-
-        // A generic declaration is never among an owner's resolved functions,
-        // so it has to be collected separately before "no such function" can
-        // be concluded -- and it is an ordinary selection candidate here.
-        let templates = match self
-            .resolver
-            .generic_method_candidates(r#type, member, namespace)
-        {
-            Ok(templates) => templates,
-            Err(err) => {
-                self.error(node_id, span, AnalysisErrorKind::ModuleResolution(err));
-                return None;
-            }
-        };
 
         if candidates.is_empty() && templates.is_empty() {
             let sibling = namespace.other();

@@ -280,25 +280,7 @@ impl<'a, E> Expander<'a, E> {
         inv: &MacroInvocationExpr,
         call_span: Span,
     ) -> Result<Vec<Token>, ExpansionFailure<E>> {
-        let args = &inv.args;
-        let fixed_len = def.signature.fixed.len();
-        let expected = if def.signature.variadic.is_some() {
-            Arity::AtLeast(fixed_len)
-        } else {
-            Arity::Exact(fixed_len)
-        };
-        if (def.signature.variadic.is_some() && args.len() < fixed_len)
-            || (def.signature.variadic.is_none() && args.len() != fixed_len)
-        {
-            return Err(MacroError::new(MacroErrorKind::ArgCountMismatch {
-                macro_name: def.name.clone(),
-                expected,
-                found: args.len(),
-            })
-            .at_invocation(call_span)
-            .at_definition(&def.defining_module, def.span)
-            .into());
-        }
+        let args = split_arguments(def, &inv.args, call_span)?;
         if self.budget == 0 {
             return Err(MacroError::new(MacroErrorKind::ExpansionLimitExceeded {
                 macro_name: def.name.clone(),
@@ -310,15 +292,12 @@ impl<'a, E> Expander<'a, E> {
         }
         self.budget -= 1;
 
+        let fixed_len = def.signature.fixed.len();
         let mut bindings = Bindings::default();
-        for (param, arg) in def.signature.fixed.iter().zip(args.iter()) {
-            validate_fragment(def, param, arg)?;
+        for (param, arg) in def.signature.fixed.iter().zip(&args) {
             bindings.0.insert(param.name.clone(), Binding::One(arg));
         }
         if let Some(param) = &def.signature.variadic {
-            for arg in &args[fixed_len..] {
-                validate_fragment(def, param, arg)?;
-            }
             bindings
                 .0
                 .insert(param.name.clone(), Binding::Many(&args[fixed_len..]));
@@ -329,7 +308,7 @@ impl<'a, E> Expander<'a, E> {
             .fresh_origin(def, self.module, call_span, inv.origin);
         match def.builtin {
             Some(MacroBuiltin::Config) => {
-                self.config_tokens(&args[0], call_span, origin, &mut out)?
+                self.config_tokens(args[0], call_span, origin, &mut out)?
             }
             Some(builtin) => out.push(self.builtin_token(builtin, call_span, origin)?),
             None => render(

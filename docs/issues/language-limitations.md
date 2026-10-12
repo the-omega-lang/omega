@@ -7,36 +7,24 @@ These notes were migrated out of normative language chapters. They describe curr
 
 Normative chapter: [`../language/functions.md`](../language/functions.md)
 
-- **Generic function values can lose inherent-method precedence.** If a type
-  declares an inherent `pick<T>` and implements a spec supplying a concrete
-  `pick(i32)`, an expected `(i32) => ...` value reference to `Type::pick` can
-  select the conformance method. `resolve_type_member` falls back to concrete
-  conformance methods before collecting inherent templates, then ranks both
-  together. Writing `Type::pick<i32>` changes the selected declaration, though
-  the inherent namespace should take precedence in both cases. Candidate
-  discovery must establish that precedence before value selection.
-- A deeper `module::Type::function(...)` static-call path (through more
-  than one level of module qualification) resolves without overload
-  disambiguation at all — a documented, narrow gap distinct from the
-  ordinary locally-visible-type overload path described above.
-- **A generic declaration in a `meet` or `primitive` block is still
-  rejected.** Those blocks collect every declaration's signature eagerly,
-  so a declaration with its own generic parameters (including the
-  `spec S` parameter sugar) reports an unresolved type parameter rather than
-  becoming a template. Inherent declarations on structs, unions, and enums
-  are unaffected.
-- **An owner and its function cannot both be written explicitly in one
-  path.** A path carries at most one generic argument list
-  (`Owner<A>::name(...)` or `Owner::name<B>(...)`), and writing both
-  (`Owner<A>::name<B>(...)`) is rejected as a chained comparison rather than
-  with a message about generic arguments.
-- **A generic method call cannot infer its owner's generic arguments.**
-  `Owner::name(...)` infers the owner's arguments from the call only when
-  the declaration is not itself generic; for a generic declaration the owner
-  must already be concrete (an explicit `Owner<A>::name(...)`, or the
-  receiver of `value.name(...)`). Solving both argument lists from one call
-  is a single inference problem the current split between owner
-  instantiation and method instantiation does not express.
+- **`spec S` parameter sugar on a conformance method that satisfies a
+  generic requirement leaks its synthesized name.** Explicit generic
+  parameters in a `meet` block work, but writing the requirement's
+  parameter as `spec S` reports `cannot find type '$Param1'` instead of
+  matching the requirement. The sugar's synthesized parameter has no real
+  identity; see the [`$ParamN` design-debt entry](design-debt.md#a-static-spec-parameters-synthesized-generic-uses-a-fabricated-impossible-source-name-instead-of-a-real-identity).
+- **A generic member cannot be called with its owner's arguments left to
+  inference.** `Owner::name(...)` infers the owner's arguments from the call
+  only when `name` is not itself generic; for a generic `name` the owner must
+  already be concrete (`Owner<A>::name(...)`, `Owner<A>::name<B>(...)`, or
+  the receiver of `value.name(...)`), and an owner list holding `_` next to
+  the function's list (`Owner<_>::name<B>(...)`) reports the hole as not
+  determined. Solving both lists from one call is a single inference
+  problem, and its prerequisite is real generic-parameter identity: owner
+  instantiation rewrites `Self` as `Owner<T...>` keyed by parameter *names*,
+  so a member parameter that shadows an owner parameter would silently
+  capture it (the `GenericParamId` work in
+  [`design-debt.md`](design-debt.md#a-static-spec-parameters-synthesized-generic-uses-a-fabricated-impossible-source-name-instead-of-a-real-identity)).
 
 
 ## Primitives & representation
@@ -124,37 +112,9 @@ file-local, `shared macro` is package-visible, and `exposed macro` is
 visible to importers and the ambient `core` prelude.
 
 
-## Generics
-
-Normative chapter: [`../language/generics.md`](../language/generics.md)
-
-- **A defaulted `_` followed by a written argument is not resolved.** The
-  specification lets a `_` position take its declared default, but only a
-  trailing run of unbound defaulted parameters can currently be left to the
-  instantiation site. For `mid<T = u16, U = u32>`, `mid<_, u8>()` is reported
-  as "`T` is not determined" (the same applies to aggregate and owner paths).
-  Resolving the default at the call needs the declaration's own module, which
-  sits behind the resolver interface (the driver's
-  `complete_overload_arguments`). Before this was made an error, such a list
-  was silently truncated and the later written argument was dropped; this also
-  affected `_ : A` selectors (formerly `spec A`) at a defaulted position.
-
 ## Specs
 
 Normative chapter: [`../language/specs-and-conformance.md`](../language/specs-and-conformance.md)
-
-- **Qualified diagnostics still shorten spec-object and anonymous-enum members.**
-  `ResolvedType::write` does not propagate its `qualified` flag into those
-  shapes. For example, if `S` conforms to both `P<*spec a::X>` and
-  `P<*spec b::X>`, `<S : _>::f()` correctly reports ambiguity but prints
-  two identical `P<*spec X>` candidates, even after qualifying `P` itself.
-  The shared qualified renderer needs to retain member module paths, with
-  a multi-module diagnostic regression; candidate identity is unaffected.
-
-- **Holes are not inferred inside a spec application.** `Spec<_>::f(...)` and
-  `<S : Spec<_>>::f(...)` are rejected with the ordinary "nothing is inferred
-  here" error, even where the call's arguments would determine the spec's
-  arguments. Write the spec's arguments out.
 
 - **A vtable's real cache/dedup key is its own resolved slot list
   (`Analyzer::type_implements_spec`'s output, one concrete method's

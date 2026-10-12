@@ -1,0 +1,11 @@
+exposed struct Box<T> {
+	exposed value: T;
+
+	exposed make(value: T) => Box<T> {
+		Box<T> { value = value; }
+	}
+
+	exposed get(*self) => T {
+		self.value
+	}
+}

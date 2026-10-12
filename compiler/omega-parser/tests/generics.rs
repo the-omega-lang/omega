@@ -339,10 +339,10 @@ fn a_bound_selector_survives_a_nested_closing_angle() {
     let omega_parser::prelude::Expression::Path(path) = &call.callee.expression else {
         panic!("expected a path callee");
     };
-    let [ExprGenericArg::Bounded { .. }] = path.generic_args.as_slice() else {
+    let Some((0, [arg @ ExprGenericArg::Bounded { .. }])) = path.generic_args.single() else {
         panic!("expected one bounded selector");
     };
-    let bounds = path.generic_args[0].selector_bounds().unwrap();
+    let bounds = arg.selector_bounds().unwrap();
     assert!(matches!(bounds, [Type::Generic(_, args)] if args.len() == 1));
 }
 

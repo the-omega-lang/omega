@@ -1,0 +1,38 @@
+# A macro argument ends where its fragment's grammar ends, so a `,` inside a
+# generic argument list belongs to the argument rather than splitting it.
+import std::io::println;
+
+struct Pair<A, B> {
+	exposed a: A;
+	exposed b: B;
+}
+
+mid<T, U>() => i32 {
+	<i32>sizeof<T> + <i32>sizeof<U>
+}
+
+macro both($left: expr, $right: expr) => {
+	println$($left, " ", $right)
+}
+
+macro first_of($t: type, $value: expr) => {
+	{
+		pair: $t = $t { a = $value; b = 0u8; };
+		pair.a
+	}
+}
+
+macro twice($value: expr) => {
+	($value) * 2
+}
+
+main() => void {
+	println$(mid<u16, u8>());
+	println$(first_of$(Pair<i32, u8>, 41));
+	a := 1;
+	b := 2;
+	c := 3;
+	d := 4;
+	both$(a < b, c > d);
+	println$(twice$(mid<u32, Pair<u8, u16>>()));
+}

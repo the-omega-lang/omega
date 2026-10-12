@@ -159,8 +159,19 @@ declaring spec together with its generic arguments: conforming to `P<u8>` and
 refinement count once. Inherent functions of `S` are
 not candidates, because the slot names a spec. No candidate is an error, and
 more than one is ambiguous. `<_ : _>::f(...)` is rejected: no shorter spelling
-infers both halves, so neither does this one. A hole inside either half
-(`<S : P<_>>`, `<*_ : P>`) is not inferred.
+infers both halves, so neither does this one.
+
+The spec's own generic arguments may likewise be left open, by omitting its
+list or writing `_` in it: `P::f(...)`, `P<_, u8>::f(...)`, `<S : P>::f(...)`,
+`<S : P<_>>::f(...)`. The target is determined as above -- written, or taken
+from the receiver or the expected type -- and every conformance of the target
+to `P` whose arguments agree with the written ones is a candidate. Their `f`
+declarations are then selected between under the ordinary
+[overloading rules](functions.md#overloading), so a type conforming to both
+`P<i32>` and `P<u8>` is resolved by the call's arguments. No candidate means
+the target does not conform, and more than one surviving selection is
+ambiguous. Nothing infers a target together with holes in the spec's written
+arguments, so `<_ : P<_>>::f(...)` is rejected, as is `<*_ : P>::f(...)`.
 
 Conforming instance calls adapt their receiver according to the declared receiver form just like ordinary methods. A value may be referenced for `*self` when legal; a mutable receiver requires a mutable source. Pointer-shaped built-in values such as strings/slices do not gain an extra pointer layer merely because a spec receiver is written `*self`.
 

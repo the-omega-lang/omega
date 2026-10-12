@@ -43,8 +43,13 @@ fn generic_args_commit_on_path_continuation() {
     };
     assert_eq!(lit.path.path.head.as_ref(), "Optional");
     assert_eq!(lit.path.path.tail[0].as_ref(), "Some");
-    assert_eq!(lit.path.generic_args.len(), 1);
-    assert_eq!(lit.path.args_at, 0);
+    assert_eq!(
+        lit.path
+            .generic_args
+            .single()
+            .map(|(at, args)| (at, args.len())),
+        Some((0, 1))
+    );
 }
 
 #[test]
@@ -76,8 +81,12 @@ fn generic_args_commit_before_a_call_suffix() {
         panic!("expected a path callee")
     };
     assert_eq!(path.path.head.as_ref(), "g");
-    assert_eq!(path.generic_args.len(), 1);
-    assert_eq!(path.args_at, 0);
+    assert_eq!(
+        path.generic_args
+            .single()
+            .map(|(at, args)| (at, args.len())),
+        Some((0, 1))
+    );
     assert!(call.args.is_empty());
 }
 
@@ -95,8 +104,12 @@ fn generic_args_commit_on_a_module_qualified_call() {
     };
     assert_eq!(path.path.head.as_ref(), "mem");
     assert_eq!(path.path.tail[0].as_ref(), "ptr_cast");
-    assert_eq!(path.generic_args.len(), 1);
-    assert_eq!(path.args_at, 1);
+    assert_eq!(
+        path.generic_args
+            .single()
+            .map(|(at, args)| (at, args.len())),
+        Some((1, 1))
+    );
     assert_eq!(call.args.len(), 1);
 }
 
@@ -112,7 +125,10 @@ fn nested_generic_args_close_a_call_application() {
     let Expression::Path(path) = &call.callee.expression else {
         panic!("expected a path callee")
     };
-    assert_eq!(path.generic_args.len(), 1);
+    assert_eq!(
+        path.generic_args.single().map(|(_, args)| args.len()),
+        Some(1)
+    );
 }
 
 #[test]
@@ -128,7 +144,10 @@ fn generic_args_commit_at_an_expression_boundary() {
         panic!("expected a path operand")
     };
     assert_eq!(path.path.head.as_ref(), "foo");
-    assert_eq!(path.generic_args.len(), 1);
+    assert_eq!(
+        path.generic_args.single().map(|(_, args)| args.len()),
+        Some(1)
+    );
 
     let Statement::Walrus(w) = &stmts[1] else {
         panic!("expected a walrus statement")
@@ -141,7 +160,10 @@ fn generic_args_commit_at_an_expression_boundary() {
         let Expression::Path(path) = &element.expression else {
             panic!("expected a path element")
         };
-        assert_eq!(path.generic_args.len(), 1);
+        assert_eq!(
+            path.generic_args.single().map(|(_, args)| args.len()),
+            Some(1)
+        );
     }
 }
 
@@ -158,7 +180,10 @@ fn a_generic_call_commits_before_any_semantic_lookup() {
         panic!("expected a path callee")
     };
     assert_eq!(path.path.head.as_ref(), "a");
-    assert_eq!(path.generic_args.len(), 1);
+    assert_eq!(
+        path.generic_args.single().map(|(_, args)| args.len()),
+        Some(1)
+    );
 }
 
 #[test]
@@ -327,7 +352,7 @@ fn call_generic_args(source: &str) -> Vec<crate::ast::generics::ExprGenericArg> 
         panic!("expected a call")
     };
     match &call.callee.expression {
-        Expression::Path(path) => path.generic_args.clone(),
+        Expression::Path(path) => path.generic_args.single().unwrap().1.to_vec(),
         Expression::FieldAccess(access) => access.generic_args.clone(),
         _ => panic!("expected a path or member callee"),
     }
@@ -535,4 +560,31 @@ fn a_blocks_own_trailing_loop_stays_a_statement() {
         body.statements.as_slice(),
         [stmt] if matches!(stmt.statement, Statement::Loop(_))
     ));
+}
+
+#[test]
+fn an_owner_and_its_function_each_carry_a_generic_list() {
+    for (source, owner, function) in [
+        ("f() => void { Owner<i32>::name<u8>(1, 2); }", 0, 1),
+        (
+            "f() => void { m::Owner<i32>::self::name<u8>(&o, 2); }",
+            1,
+            3,
+        ),
+    ] {
+        let stmts = body_statements(source);
+        let Statement::Expression(expr) = &stmts[0] else {
+            panic!("expected an expression statement")
+        };
+        let Expression::FunctionCall(call) = &expr.expression else {
+            panic!("expected a call, not a comparison: {source}")
+        };
+        let Expression::Path(path) = &call.callee.expression else {
+            panic!("expected a path callee")
+        };
+        assert_eq!(path.generic_args.len(), 2);
+        assert_eq!(path.generic_args.args_on(owner).map(<[_]>::len), Some(1));
+        assert_eq!(path.generic_args.args_on(function).map(<[_]>::len), Some(1));
+        assert_eq!(call.args.len(), 2);
+    }
 }

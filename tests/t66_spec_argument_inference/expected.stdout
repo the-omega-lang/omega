@@ -1,0 +1,18 @@
+Make<i32>
+3
+Make<i32>
+4
+Make<i32>
+5
+Make<i32>
+6
+Describe<u8>
+4
+Describe<u8>
+5
+Both: Make<i32>
+7
+Both: Make<u8>
+8
+Both: Make<u8>
+9

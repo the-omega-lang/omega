@@ -1,0 +1,21 @@
+struct Hidden {
+	exposed a: u8;
+	exposed b: u8;
+	exposed c: u8;
+	exposed d: u8;
+	exposed e: u8;
+}
+
+# The defaults name a type private to this module: they are evaluated where
+# the declaration is written, never at the use site.
+exposed width<T = Hidden, U = u8>(value: U) => usize {
+	sizeof<T> + sizeof<U> + <usize>value
+}
+
+exposed struct Cell<T = Hidden, U = u8> {
+	exposed value: U;
+
+	exposed size(*self) => usize {
+		sizeof<T> + sizeof<U>
+	}
+}

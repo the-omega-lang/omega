@@ -1,0 +1,47 @@
+# An inherent declaration of a name, generic or concrete, hides every
+# conforming declaration of it, as a value and as a call alike.
+@[suppress(unused_parameter, unused_field)]
+
+import std::io::println;
+
+spec Picker {
+	pick(value: i32) => *str;
+}
+
+spec Chooser {
+	choose<U>(value: U) => *str;
+}
+
+struct T {
+	exposed tag: i32;
+
+	exposed pick<U>(value: U) => *str {
+		"inherent"
+	}
+
+	exposed choose(value: i32) => *str {
+		"inherent"
+	}
+}
+
+meet Picker for T {
+	pick(value: i32) => *str {
+		"conformance"
+	}
+}
+
+meet Chooser for T {
+	choose<U>(value: U) => *str {
+		"conformance"
+	}
+}
+
+@suppress(unused_parameter)
+main() => void {
+	f : (i32) => *str = T::pick;
+	println$(f(1));
+	println$(T::pick(1));
+	g : (i32) => *str = T::choose;
+	println$(g(1));
+	println$(T::choose(1));
+}

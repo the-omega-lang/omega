@@ -1,0 +1,11 @@
+exposed struct Owner<T> {
+	exposed value: T;
+
+	exposed name<U>(value: T, extra: U) => i64 {
+		<i64>value + <i64>extra + <i64>sizeof<U>
+	}
+
+	exposed scaled<U>(*self, factor: U) => i64 {
+		<i64>self.value * <i64>factor
+	}
+}

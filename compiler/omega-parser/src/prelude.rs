@@ -13,7 +13,7 @@ pub use crate::ast::expression::{
 };
 pub use crate::ast::generics::{ExprGenericArg, GenericParam, GenericParamKind, Selector};
 pub use crate::ast::identifier::{
-    ExpansionId, ExprPath, Ident, Origin, Path, PathAnchor, QualifiedSpecPath,
+    ExpansionId, ExprPath, Ident, Origin, Path, PathAnchor, PathGenericArgs, QualifiedSpecPath,
 };
 pub use crate::ast::item::{
     AliasItem, AliasTarget, ConformStmt, EnumHeaderField, EnumStmt, EnumVariantStmt,

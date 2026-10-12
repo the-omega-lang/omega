@@ -1,3 +1,4 @@
+use crate::anchoring::{anchor_generics, anchor_type};
 use crate::{Driver, ModulePath};
 use omega_analyzer::analysis::item_visibility;
 use omega_analyzer::checked::{CheckedFunctionDef, CheckedItem};
@@ -850,6 +851,51 @@ impl ModuleResolver for Driver {
         }
     }
 
+    fn complete_generic_args(
+        &mut self,
+        absolute_path: &[Ident],
+        arguments: &[Option<ResolvedGenericArg>],
+    ) -> Result<Vec<ResolvedGenericArg>, ResolveError> {
+        let Some((name, module_path)) = absolute_path.split_last() else {
+            return Err(ResolveError::UnknownModule(absolute_path.to_vec()));
+        };
+        match self.declared_alias(module_path, name)? {
+            Some(ResolvedAlias::Type { generics, .. }) => {
+                let index = self
+                    .alias_index(module_path, name)?
+                    .expect("the alias was just resolved from this module");
+                let owner = omega_analyzer::analysis::item_site(
+                    &self.modules.parsed(module_path).hir.items[index],
+                );
+                return self.complete_item_generic_args(
+                    module_path,
+                    name,
+                    owner,
+                    &generics,
+                    arguments,
+                );
+            }
+            Some(
+                ResolvedAlias::Item(target)
+                | ResolvedAlias::Overloads {
+                    absolute: target, ..
+                },
+            ) => return self.complete_generic_args(&target, arguments),
+            Some(ResolvedAlias::Module(path)) => {
+                return Err(ResolveError::UnknownItem {
+                    module: path,
+                    item: name.clone(),
+                });
+            }
+            None => {}
+        }
+        let index = self.local_item_index(module_path, name)?;
+        let generic_params = self.item_generics_at(module_path, index)?;
+        let owner =
+            omega_analyzer::analysis::item_site(&self.modules.hir(module_path).items[index]);
+        self.complete_item_generic_args(module_path, name, owner, &generic_params, arguments)
+    }
+
     fn is_item_visible(&mut self, accessor_module_path: &[Ident], absolute_path: &[Ident]) -> bool {
         let Some((_, module_path)) = absolute_path.split_last() else {
             return false;
@@ -885,10 +931,15 @@ impl ModuleResolver for Driver {
         if f.generics.is_empty() {
             return Ok(None);
         }
+        let origin = self.modules.definition_origin(module_path);
         Ok(Some(GenericSignature {
-            generics: f.generics.clone(),
-            params: f.params.iter().map(|p| p.r#type.clone()).collect(),
-            return_type: f.return_type.clone(),
+            generics: anchor_generics(&f.generics, origin),
+            params: f
+                .params
+                .iter()
+                .map(|p| anchor_type(&p.r#type, origin))
+                .collect(),
+            return_type: anchor_type(&f.return_type, origin),
         }))
     }
 
@@ -924,7 +975,7 @@ impl ModuleResolver for Driver {
                 let Some(v) = e.variants.iter().find(|v| &v.name == variant_name) else {
                     return Ok(None);
                 };
-                let fields = e
+                let fields: Vec<(Ident, Type)> = e
                     .dynamic_fields
                     .iter()
                     .chain(v.fields.iter())
@@ -937,9 +988,14 @@ impl ModuleResolver for Driver {
         if generics.is_empty() {
             return Ok(None);
         }
+        let generics = generics.clone();
+        let origin = self.modules.definition_origin(module_path);
         Ok(Some(GenericLiteralSignature {
-            generics: generics.clone(),
-            fields,
+            generics: anchor_generics(&generics, origin),
+            fields: fields
+                .into_iter()
+                .map(|(name, r#type)| (name, anchor_type(&r#type, origin)))
+                .collect(),
         }))
     }
 
@@ -981,18 +1037,22 @@ impl ModuleResolver for Driver {
         };
         let owner_generics = owner_generics.to_vec();
         let generics: Vec<Ident> = owner_generics.iter().map(|g| g.ident.clone()).collect();
+        let function_generics = f.generics.iter().map(|g| g.ident.clone()).collect();
+        // A member's synthetic receiver is written in terms of `Self`, which
+        // inference cannot solve; the owner applied to its own generic
+        // parameters is the same type and is solvable.
+        let params: Vec<Type> = f
+            .params
+            .iter()
+            .map(|p| rewrite_self(&p.r#type, name, &generics))
+            .collect();
+        let return_type = rewrite_self(&f.return_type, name, &generics);
+        let origin = self.modules.definition_origin(module_path);
         Ok(Some(GenericOwnerFunctionSignature {
-            function_generics: f.generics.iter().map(|g| g.ident.clone()).collect(),
-            // A member's synthetic receiver is written in terms of `Self`,
-            // which inference cannot solve; the owner applied to its own
-            // generic parameters is the same type and is solvable.
-            params: f
-                .params
-                .iter()
-                .map(|p| rewrite_self(&p.r#type, name, &generics))
-                .collect(),
-            return_type: rewrite_self(&f.return_type, name, &generics),
-            owner_generics,
+            function_generics,
+            params: params.iter().map(|p| anchor_type(p, origin)).collect(),
+            return_type: anchor_type(&return_type, origin),
+            owner_generics: anchor_generics(&owner_generics, origin),
         }))
     }
 
@@ -1033,6 +1093,15 @@ impl ModuleResolver for Driver {
         namespace: FunctionNamespace,
     ) -> Result<OverloadCandidates, ResolveError> {
         self.collect_method_value_templates(owner, name, namespace)
+    }
+
+    fn conformance_generic_method_candidates(
+        &mut self,
+        owner: &ResolvedType,
+        name: &Ident,
+        namespace: FunctionNamespace,
+    ) -> Result<OverloadCandidates, ResolveError> {
+        self.collect_conformance_value_templates(owner, name, namespace)
     }
 
     fn prepare_generic_call(

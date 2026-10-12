@@ -17,24 +17,28 @@ pub fn parse_macro_invocation(p: &mut Parser) -> Option<MacroInvocationExpr> {
     Some(MacroInvocationExpr { name, args, origin })
 }
 
-fn parse_macro_args(p: &mut Parser) -> Option<Vec<Vec<Token>>> {
+/// Captures the whole balanced argument run. Arguments are delimited later,
+/// by each parameter's fragment grammar; only a `,` that can never belong to
+/// a fragment (leading, doubled, or trailing) is rejected here.
+fn parse_macro_args(p: &mut Parser) -> Option<Vec<Token>> {
     let mut args = Vec::new();
     if p.check(&TokenKind::RParen) {
         return Some(args);
     }
     loop {
-        let arg = capture_token_run(p, |k| matches!(k, TokenKind::Comma | TokenKind::RParen));
-        if arg.is_empty() {
+        let piece = capture_token_run(p, |k| matches!(k, TokenKind::Comma | TokenKind::RParen));
+        if piece.is_empty() {
             p.error(ParseErrorKind::Expected {
                 expected: "a macro argument",
                 found: p.peek().describe(),
             });
             return None;
         }
-        args.push(arg);
-        if !p.eat(&TokenKind::Comma) {
+        args.extend(piece);
+        if !p.check(&TokenKind::Comma) {
             break;
         }
+        args.push(p.advance());
         if p.check(&TokenKind::RParen) {
             p.error(ParseErrorKind::Expected {
                 expected: "a macro argument",

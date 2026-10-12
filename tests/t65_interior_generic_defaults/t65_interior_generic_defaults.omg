@@ -1,0 +1,46 @@
+# An unbound defaulted generic parameter may precede a bound one: the gap is
+# filled from its declared default, evaluated in the declaring module.
+import std::io::println;
+import self::m;
+
+mid<T = u16, U = u32>() => usize {
+	sizeof<T> + sizeof<U>
+}
+
+struct Pair<A = i32, B = i64> {
+	exposed a: A;
+	exposed b: B;
+
+	exposed size(*self) => usize {
+		sizeof<A> + sizeof<B>
+	}
+
+	exposed make(b: B) => Pair<A, B> {
+		Pair<A, B> { a = 0; b = b; }
+	}
+}
+
+struct Wrap<T = u32, U = T, V = u8> {
+	exposed t: T;
+	exposed u: U;
+	exposed v: V;
+
+	exposed size(*self) => usize {
+		sizeof<T> + sizeof<U> + sizeof<V>
+	}
+}
+
+main() => void {
+	println$(mid<_, u8>());
+	p := Pair<_, u8> { a = 1; b = 2; };
+	println$(p.size());
+	q : Pair<_, u8> = p;
+	println$(q.a + <i32>q.b);
+	r := Pair<_, u16>::make(4);
+	println$(r.size());
+	w := Wrap<u16, _, u32> { t = 1; u = 2; v = 3; };
+	println$(w.size());
+	println$(m::width<_, u32>(1));
+	c := m::Cell<_, u16> { value = 3; };
+	println$(c.size());
+}

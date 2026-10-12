@@ -61,15 +61,10 @@ impl<'r> Analyzer<'r> {
             [.., member] => (FunctionNamespace::Static, member, 1),
             [] => return Intercepted::Declined,
         };
-        let owner_generics =
-            !expr_path.generic_args.is_empty() && expr_path.args_at + segments == path.tail.len();
-        let function_generics =
-            !expr_path.generic_args.is_empty() && expr_path.args_at == path.tail.len();
-        if !expr_path.generic_args.is_empty() && !owner_generics && !function_generics {
+        let Some(lists) = Self::member_generics(expr_path, segments) else {
             return Intercepted::Declined;
-        }
-        let Some(owner) =
-            self.callee_owner_type(node_id, span, expr_path, segments, owner_generics)
+        };
+        let Some(owner) = self.callee_owner_type(node_id, span, expr_path, segments, lists.owner)
         else {
             return Intercepted::Declined;
         };
@@ -86,11 +81,7 @@ impl<'r> Analyzer<'r> {
         if candidates.len() < 2 {
             return Intercepted::Declined;
         }
-        let explicit = if function_generics {
-            expr_path.generic_args.as_slice()
-        } else {
-            &[]
-        };
+        let explicit = lists.function.unwrap_or_default();
         let Some((winner, instantiated, args)) = self.resolve_overload_candidates(
             node_id,
             span,
@@ -225,9 +216,9 @@ impl<'r> Analyzer<'r> {
         };
 
         let path = &expr_path.path;
-        if !expr_path.generic_args.is_empty() && expr_path.args_at != path.tail.len() {
+        let Some(explicit) = Self::trailing_generic_args(expr_path) else {
             return Intercepted::Declined;
-        }
+        };
         if path.is_unqualified()
             && self
                 .context
@@ -279,7 +270,7 @@ impl<'r> Analyzer<'r> {
             &candidates,
             &call.args,
             _expected,
-            &expr_path.generic_args,
+            explicit,
             0,
         ) else {
             return Intercepted::Claimed(None);
@@ -308,6 +299,7 @@ impl<'r> Analyzer<'r> {
         span: Span,
         name: &Ident,
         candidates: &[(HirId, ResolvedFunctionType)],
+        labels: &[String],
         args: &[HirExprNode],
     ) -> Option<(usize, Vec<CheckedExprNode>)> {
         let candidates: Vec<_> = candidates
@@ -319,11 +311,12 @@ impl<'r> Analyzer<'r> {
                 declaring_module: Vec::new(),
             })
             .collect();
-        let (winner, _, args) = self.resolve_overload_candidates(
+        let (winner, _, args) = self.select_overload(
             node_id,
             span,
             name,
             &candidates,
+            labels,
             args,
             Expected::None,
             &[],
@@ -339,6 +332,35 @@ impl<'r> Analyzer<'r> {
         span: Span,
         name: &Ident,
         candidates: &[OverloadCandidate],
+        args: &[HirExprNode],
+        expected: Expected<'_>,
+        explicit: &[ExprGenericArg],
+        implicit: usize,
+    ) -> Option<(usize, Option<ResolvedMethod>, Vec<CheckedExprNode>)> {
+        self.select_overload(
+            node_id,
+            span,
+            name,
+            candidates,
+            &[],
+            args,
+            expected,
+            explicit,
+            implicit,
+        )
+    }
+
+    /// `labels`, when given, name each candidate in diagnostics in place of
+    /// its bare signature -- for candidates whose signatures alone do not
+    /// tell them apart, such as the same function of two conformances.
+    #[allow(clippy::too_many_arguments)]
+    fn select_overload(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        name: &Ident,
+        candidates: &[OverloadCandidate],
+        labels: &[String],
         args: &[HirExprNode],
         expected: Expected<'_>,
         explicit: &[ExprGenericArg],
@@ -480,7 +502,7 @@ impl<'r> Analyzer<'r> {
             }
         }
         let Some(minimum) = viable.iter().map(|entry| entry.score).min() else {
-            self.report_no_match(node_id, span, name, candidates, explicit, &rejected);
+            self.report_no_match(node_id, span, name, candidates, labels, explicit, &rejected);
             return None;
         };
         viable.retain(|entry| entry.score == minimum);
@@ -504,7 +526,12 @@ impl<'r> Analyzer<'r> {
                     name: name.clone(),
                     candidates: winners
                         .iter()
-                        .map(|entry| Self::describe_candidate(&candidates[entry.index]))
+                        .map(|entry| {
+                            Self::describe_candidate(
+                                &candidates[entry.index],
+                                labels.get(entry.index),
+                            )
+                        })
                         .collect(),
                 },
             );
@@ -646,6 +673,7 @@ impl<'r> Analyzer<'r> {
         span: Span,
         name: &Ident,
         candidates: &[OverloadCandidate],
+        labels: &[String],
         explicit: &[ExprGenericArg],
         rejected: &[(usize, Rejection)],
     ) {
@@ -678,7 +706,13 @@ impl<'r> Analyzer<'r> {
                         .map(crate::error::raw_type_display)
                         .collect::<Vec<_>>()
                         .join(" + "),
-                    candidates: candidates.iter().map(Self::describe_candidate).collect(),
+                    candidates: candidates
+                        .iter()
+                        .enumerate()
+                        .map(|(index, candidate)| {
+                            Self::describe_candidate(candidate, labels.get(index))
+                        })
+                        .collect(),
                 },
             );
             return;
@@ -687,7 +721,7 @@ impl<'r> Analyzer<'r> {
             .iter()
             .enumerate()
             .map(|(index, candidate)| {
-                let description = Self::describe_candidate(candidate);
+                let description = Self::describe_candidate(candidate, labels.get(index));
                 match rejected.iter().find(|(rejected, _)| *rejected == index) {
                     Some((_, reason)) => format!("{description}{}", reason.explain()),
                     None => description,
@@ -704,13 +738,17 @@ impl<'r> Analyzer<'r> {
         );
     }
 
-    fn describe_candidate(candidate: &OverloadCandidate) -> String {
-        candidate
+    fn describe_candidate(candidate: &OverloadCandidate, label: Option<&String>) -> String {
+        let signature = candidate
             .template()
             .map(|t| t.description.clone())
             .unwrap_or_else(|| {
                 ResolvedType::Function(candidate.fn_type().cloned().unwrap()).to_string()
-            })
+            });
+        match label {
+            Some(label) => format!("{label}: {signature}"),
+            None => signature,
+        }
     }
 
     /// Rewrites every inferred `comp` binding into its declared parameter

@@ -11,6 +11,12 @@ use generic::MethodTemplate;
 pub(crate) use selector::{ValidatedGenerics, WrittenGenerics};
 pub(crate) use value::FunctionValue;
 
+#[derive(Clone, Copy)]
+pub(crate) struct MemberGenerics<'p> {
+    pub(crate) owner: Option<&'p [ExprGenericArg]>,
+    pub(crate) function: Option<&'p [ExprGenericArg]>,
+}
+
 pub(crate) enum Intercepted {
     Declined,
     Claimed(Option<CheckedExprNode>),
@@ -67,6 +73,34 @@ impl<'r> Analyzer<'r> {
         absolute
             .split_last()
             .map(|(name, module)| (name.clone(), module.to_vec()))
+    }
+
+    /// The arguments a path writes on its last segment -- the function or
+    /// item it names. `None` when a list is written on any earlier segment.
+    fn trailing_generic_args(expr_path: &ExprPath) -> Option<&[ExprGenericArg]> {
+        let last = expr_path.path.tail.len();
+        expr_path
+            .generic_args
+            .only_on(&[last])
+            .then(|| expr_path.generic_args.args_on(last).unwrap_or_default())
+    }
+
+    /// The lists a type-qualified function path writes on its owner and on
+    /// its function, the owner being the segment the `member_segments` follow.
+    /// `None` when a list is written on any other segment.
+    pub(crate) fn member_generics(
+        expr_path: &ExprPath,
+        member_segments: usize,
+    ) -> Option<MemberGenerics<'_>> {
+        let function_at = expr_path.path.tail.len();
+        let owner_at = function_at.checked_sub(member_segments)?;
+        let lists = &expr_path.generic_args;
+        lists
+            .only_on(&[owner_at, function_at])
+            .then(|| MemberGenerics {
+                owner: lists.args_on(owner_at),
+                function: lists.args_on(function_at),
+            })
     }
 
     fn callee_expr_path(call: &HirFunctionCall) -> Option<&ExprPath> {
@@ -538,7 +572,7 @@ impl<'r> Analyzer<'r> {
             })
             .collect();
         let (winner, checked) =
-            self.resolve_overload(callee.id, callee.span, field, &candidates, args)?;
+            self.resolve_overload(callee.id, callee.span, field, &candidates, &[], args)?;
         Some((members[winner].clone(), Some(checked)))
     }
 

@@ -508,6 +508,18 @@ pub trait ModuleResolver {
         absolute_path: &[Ident],
     ) -> Result<Option<Vec<HirGenericParam>>, ResolveError>;
 
+    /// Completes positional generic arguments for `absolute_path`, filling
+    /// each gap from its parameter's declared default, evaluated in the
+    /// declaring module. A gap may precede a bound position.
+    fn complete_generic_args(
+        &mut self,
+        absolute_path: &[Ident],
+        arguments: &[Option<ResolvedGenericArg>],
+    ) -> Result<Vec<ResolvedGenericArg>, ResolveError> {
+        let _ = absolute_path;
+        Ok(arguments.iter().map_while(Clone::clone).collect())
+    }
+
     fn is_item_visible(&mut self, accessor_module_path: &[Ident], absolute_path: &[Ident]) -> bool;
 
     fn generic_function_signature(
@@ -591,6 +603,19 @@ pub trait ModuleResolver {
     /// candidates. Concrete declarations are not repeated here: they already
     /// reach the caller through the owner's resolved functions.
     fn generic_method_candidates(
+        &mut self,
+        owner: &ResolvedType,
+        name: &Ident,
+        namespace: crate::resolved_type::FunctionNamespace,
+    ) -> Result<OverloadCandidates, ResolveError> {
+        let _ = (owner, name, namespace);
+        Ok(Vec::new())
+    }
+
+    /// The generic declarations `owner`'s conformances provide under `name`,
+    /// as value-selection candidates. Separate from the owner's own, because
+    /// an inherent declaration of the name hides every conforming one.
+    fn conformance_generic_method_candidates(
         &mut self,
         owner: &ResolvedType,
         name: &Ident,

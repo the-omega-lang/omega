@@ -1,0 +1,22 @@
+# Generic argument lists go on an item, or on a type and its function. A list
+# after a module segment or the `self` namespace segment is misplaced.
+import self::m;
+
+enum Opt<T> {
+	None,
+	Some {
+		exposed value: T;
+	};
+}
+
+main() => void {
+	o := m::Owner<i32> { value = 5; };
+	a := m<i32>::Owner::name<u8>(1, 2);
+	b := m::Owner<i32>::self<u8>::scaled(&o, 2);
+	c := m<u8>::Owner<i32>::name<u8>(1, 2);
+	d := m::Owner<_>::name<u8>(1, 2);
+	e := m<i32>::Owner::name(1, 2);
+	f := m<i32>::Owner::name<u8>;
+	g := Opt::None<i32>;
+	h := Opt<i32>::Some<u8> { value = 1; };
+}

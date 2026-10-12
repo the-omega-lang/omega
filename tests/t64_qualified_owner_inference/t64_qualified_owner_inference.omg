@@ -1,0 +1,21 @@
+# A generic owner's arguments are inferred from the call whatever spelling
+# names the owner: a module-qualified path, an import, an alias, an anchor.
+import std::io::println;
+import self::m;
+import self::m::Box as Crate;
+
+alias Shortcut = m::Box;
+
+main() => void {
+	a := m::Box::make(5i64);
+	println$(a.value);
+	b := Crate::make(6u8);
+	println$(b.value);
+	c := root::m::Box::make(7i32);
+	println$(c.value);
+	d := Shortcut::make(8u16);
+	println$(d.value);
+	println$(m::Box::self::get(&a));
+	e : m::Box<i16> = m::Box::make(9);
+	println$(e.value);
+}

@@ -82,6 +82,10 @@ impl<'a> Parser<'a> {
         self.errors
     }
 
+    pub fn errors(&self) -> &[ParseError] {
+        &self.errors
+    }
+
     pub fn peek(&self) -> &TokenKind {
         self.cursor.peek()
     }

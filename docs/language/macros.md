@@ -41,6 +41,13 @@ identifiers -- so it captures a qualified name as one argument without
 splitting it into identifiers or widening it to `expr`/`type`. Its captured
 tokens keep the caller's origin like any other fragment.
 
+Arguments are delimited by each parameter's fragment grammar, in order, exactly
+where an ordinary call's arguments would be: an argument ends where its
+fragment does, and must be followed by `,` or the closing `)`. A comma inside a
+generic argument list therefore belongs to the argument, so
+`println$(mid<u16, u8>())` passes one argument, while `m$(a < b, c > d)` still
+passes the two comparisons, as it would to a call.
+
 Macro parameter names are unique within a signature. A fixed parameter and the trailing variadic parameter may not use the same name.
 
 One trailing parameter may be variadic. It captures zero or more arguments:

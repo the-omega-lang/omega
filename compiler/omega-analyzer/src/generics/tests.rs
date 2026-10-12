@@ -282,3 +282,63 @@ fn mismatched_argument_kinds_bind_nothing() {
     );
     assert_eq!(seed(&callee, &expected, vec![None, None]), vec![None, None]);
 }
+
+fn inferred_args(
+    params: &[HirGenericParam],
+    bound: &[(&str, ResolvedType)],
+) -> Result<Vec<Option<ResolvedGenericArg>>, Ident> {
+    let comp_types = vec![None; params.len()];
+    let generics = GenericParams {
+        params,
+        comp_types: &comp_types,
+        pointer_bits: 64,
+    };
+    let mut subst = GenericSubstitution::new();
+    for (name, r#type) in bound {
+        subst.push(
+            Ident((*name).into()),
+            ResolvedGenericArg::Type(r#type.clone()),
+        );
+    }
+    resolve_inferred_generic_args(&generics, &subst)
+}
+
+#[test]
+fn an_unbound_defaulted_parameter_is_a_gap_at_any_position() {
+    let params = [
+        HirGenericParam::r#type(
+            Ident("T".into()),
+            vec![],
+            Some(GenericArg::Type(named("u16"))),
+        ),
+        HirGenericParam::r#type(
+            Ident("U".into()),
+            vec![],
+            Some(GenericArg::Type(named("u32"))),
+        ),
+        HirGenericParam::r#type(
+            Ident("V".into()),
+            vec![],
+            Some(GenericArg::Type(named("u64"))),
+        ),
+    ];
+    let args = inferred_args(&params, &[("U", ResolvedType::U8)]).unwrap();
+    assert!(matches!(
+        args.as_slice(),
+        [None, Some(ResolvedGenericArg::Type(ResolvedType::U8)), None]
+    ));
+}
+
+#[test]
+fn an_unbound_parameter_without_a_default_is_reported_by_name() {
+    let params = [
+        HirGenericParam::r#type(Ident("T".into()), vec![], None),
+        HirGenericParam::r#type(
+            Ident("U".into()),
+            vec![],
+            Some(GenericArg::Type(named("u32"))),
+        ),
+    ];
+    let missing = inferred_args(&params, &[("U", ResolvedType::U8)]).unwrap_err();
+    assert_eq!(missing.as_ref(), "T");
+}

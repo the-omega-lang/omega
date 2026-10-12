@@ -259,6 +259,15 @@ counterpart, so without the rewrite such a target would validate and then fail
 at every use with `ModuleNotImported`. Both declaration validation and this
 rewrite go through one operation, `alias_target_site`.
 
+Generic signatures cross the resolver interface the same way. The
+generic-function, owner-function, method-template, and literal signature queries
+hand the call site written syntax -- parameter and return types, fields, and
+each generic parameter's bounds and default -- because the call still has to
+infer the arguments it instantiates with. `anchoring.rs` stamps every path in
+that syntax with the declaring module's definition `Origin` (a macro-authored
+path keeps its own), so inference hints and defaults resolve where the
+declaration is written rather than in the calling module.
+
 `Driver::validate_alias_target` symbolically validates a structural target --
 including every generic bound and default -- at declaration time, even if the
 alias is never used. An alias-owned generic parameter is a legal opaque

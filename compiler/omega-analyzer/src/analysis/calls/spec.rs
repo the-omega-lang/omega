@@ -1,5 +1,40 @@
 use super::*;
 
+/// A spec with its arguments by position; `None` is a hole the target's
+/// conformances determine.
+type OpenSpecApplication = (
+    Rc<RefCell<ResolvedSpecType>>,
+    Vec<Option<ResolvedGenericArg>>,
+);
+
+/// Each function a conformance provides, with the spec application that
+/// provides it, as diagnostics name it.
+type ConformingMethods = Vec<(Ident, ResolvedMethod, String)>;
+
+fn conforming_methods(
+    conformances: Vec<crate::resolved_type::ResolvedConformance>,
+) -> ConformingMethods {
+    let applications: Vec<_> = conformances
+        .iter()
+        .map(|conform| {
+            crate::resolved_type::ResolvedSpecApplication::new(
+                conform.spec.clone(),
+                conform.spec_args.clone(),
+            )
+        })
+        .collect();
+    conformances
+        .into_iter()
+        .zip(spec_displays(&applications))
+        .flat_map(|(conform, provider)| {
+            conform
+                .methods
+                .into_iter()
+                .map(move |(name, method)| (name, method, provider.clone()))
+        })
+        .collect()
+}
+
 impl<'r> Analyzer<'r> {
     pub(crate) fn resolve_spec_qualified_call(
         &mut self,
@@ -30,7 +65,8 @@ impl<'r> Analyzer<'r> {
         if spec_segments.is_empty() {
             return Intercepted::Declined;
         }
-        if !expr_path.generic_args.is_empty() && expr_path.args_at + 1 != spec_segments.len() {
+        let spec_at = spec_segments.len() - 1;
+        if !expr_path.generic_args.only_on(&[spec_at]) {
             return Intercepted::Declined;
         }
         let spec_path = Path {
@@ -39,58 +75,115 @@ impl<'r> Analyzer<'r> {
             tail: spec_segments[1..].to_vec(),
             origin: path.origin,
         };
-        let absolute = match self.context.resolve_absolute_item_path(
-            &mut *self.resolver,
-            &spec_path,
-            &self.module_path,
-        ) {
-            Ok(access) => access.absolute,
-            Err(_) => return Intercepted::Declined,
+        let Some(spec) = self.spec_declaration_for_path(&spec_path) else {
+            return Intercepted::Declined;
         };
-        let spec = match self.resolver.spec_declaration(&absolute) {
-            Ok(Some(spec)) => spec,
-            _ if spec_path.is_unqualified() => {
-                let ambient = match self
-                    .resolver
-                    .ambient_core_candidates(&self.module_path, &spec_path.head)
-                {
-                    Ok(Some(ambient)) => ambient,
-                    _ => return Intercepted::Declined,
+        let spec_args = match expr_path.generic_args.args_on(spec_at) {
+            Some(written) => {
+                let Some(written) = self.ordinary_generic_args(node_id, span, written, "a spec")
+                else {
+                    return Intercepted::Claimed(None);
                 };
-                match self.resolver.spec_declaration(&ambient) {
-                    Ok(Some(spec)) => spec,
-                    _ => return Intercepted::Declined,
+                match self.written_spec_args(node_id, span, &spec, &written) {
+                    Some(spec_args) => spec_args,
+                    None => return Intercepted::Claimed(None),
                 }
             }
-            _ => return Intercepted::Declined,
+            None => vec![None; spec.borrow().generics.len()],
         };
-        let spec_args = if expr_path.generic_args.is_empty() {
-            Vec::new()
-        } else {
-            let (params, owner) = {
-                let cell = spec.borrow();
-                let mut owner = cell.module_path.clone();
-                owner.push(cell.name.clone());
-                (cell.generics.clone(), owner)
-            };
-            let Some(written) =
-                self.ordinary_generic_args(node_id, span, &expr_path.generic_args, "a spec")
-            else {
-                return Intercepted::Claimed(None);
-            };
-            let Some(args) =
-                self.resolve_generic_arg_list(node_id, span, &written, &owner, &params)
-            else {
-                return Intercepted::Claimed(None);
-            };
-            args
+        self.resolve_spec_call(
+            node_id,
+            span,
+            call,
+            &spec,
+            &spec_args,
+            method_name,
+            None,
+            expected,
+            path.origin,
+        )
+    }
+
+    /// The spec a qualifying path names, if it names one. Silent: a path
+    /// that is not a spec is some other call shape.
+    fn spec_declaration_for_path(
+        &mut self,
+        spec_path: &Path,
+    ) -> Option<Rc<RefCell<ResolvedSpecType>>> {
+        let absolute = self
+            .context
+            .resolve_absolute_item_path(&mut *self.resolver, spec_path, &self.module_path)
+            .ok()?
+            .absolute;
+        match self.resolver.spec_declaration(&absolute) {
+            Ok(Some(spec)) => Some(spec),
+            _ if spec_path.is_unqualified() => {
+                let ambient = self
+                    .resolver
+                    .ambient_core_candidates(&self.module_path, &spec_path.head)
+                    .ok()
+                    .flatten()?;
+                self.resolver.spec_declaration(&ambient).ok().flatten()
+            }
+            _ => None,
+        }
+    }
+
+    /// A written spec argument list, positionally: a `_` is a hole the
+    /// target's conformances determine.
+    fn written_spec_args(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        spec: &Rc<RefCell<ResolvedSpecType>>,
+        written: &[GenericArg],
+    ) -> Option<Vec<Option<ResolvedGenericArg>>> {
+        let (params, owner) = {
+            let cell = spec.borrow();
+            let mut owner = cell.module_path.clone();
+            owner.push(cell.name.clone());
+            (cell.generics.clone(), owner)
         };
-        let Some(flattened) =
-            self.flatten_spec(node_id, span, &spec, &spec_args, &ResolvedType::Void)
-        else {
-            return Intercepted::Claimed(None);
-        };
-        let Some(declared) = flattened.iter().find(|f| &f.name == method_name) else {
+        self.check_generic_arity(node_id, span, &owner, &params, written.len())?;
+        let mut args = Vec::with_capacity(written.len());
+        let mut ok = true;
+        for (index, arg) in written.iter().enumerate() {
+            if *arg == GenericArg::Infer {
+                args.push(None);
+                continue;
+            }
+            match self.resolve_generic_arg_or_error(node_id, span, arg, params.get(index)) {
+                Some(resolved) => args.push(Some(resolved)),
+                None => ok = false,
+            }
+        }
+        ok.then_some(args)
+    }
+
+    /// `P::f(...)`, `P<A, _>::f(...)`, `<S : P>::f(...)`: the requirement's
+    /// shape comes from the spec's own declaration, and the target -- the
+    /// written one, the receiver, or the expected type -- supplies the
+    /// conformance whose function is called.
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_spec_call(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        call: &HirFunctionCall,
+        spec: &Rc<RefCell<ResolvedSpecType>>,
+        spec_args: &[Option<ResolvedGenericArg>],
+        method_name: &Ident,
+        target: Option<&ResolvedType>,
+        expected: Expected<'_>,
+        origin: Origin,
+    ) -> Intercepted {
+        let requirement = spec
+            .borrow()
+            .functions
+            .iter()
+            .find(|(name, _)| name == method_name)
+            .map(|(_, raw)| raw.clone());
+        let Some(requirement) = requirement else {
             self.error(
                 node_id,
                 span,
@@ -101,10 +194,10 @@ impl<'r> Analyzer<'r> {
             );
             return Intercepted::Claimed(None);
         };
-        if !self.require_requirement_visible(node_id, span, declared, path.origin) {
+        if !self.require_requirement_visible(node_id, span, spec, &requirement, origin) {
             return Intercepted::Claimed(None);
         }
-        let RequirementSignature::Concrete { fn_type, .. } = &declared.signature else {
+        if !requirement.generics.is_empty() {
             self.error(
                 node_id,
                 span,
@@ -115,168 +208,20 @@ impl<'r> Analyzer<'r> {
                 },
             );
             return Intercepted::Claimed(None);
-        };
-        if fn_type.self_mode.is_none() {
+        }
+        if requirement.self_mode.is_none() {
             return self.resolve_static_spec_call(
                 node_id,
                 span,
                 call,
-                &spec,
-                &spec_args,
+                spec,
+                spec_args,
                 method_name,
-                declared,
-                expected.exact(),
+                &requirement.return_type,
+                target.or(expected.exact()),
             );
         }
-        let Some(first) = call.args.first() else {
-            self.error(
-                node_id,
-                span,
-                AnalysisErrorKind::WrongArgumentCount {
-                    expected: 1,
-                    found: 0,
-                },
-            );
-            return Intercepted::Claimed(None);
-        };
-        let Some(receiver) = self.analyze_receiver_operand(first) else {
-            return Intercepted::Claimed(None);
-        };
-        let target = receiver.r#type.autoderef().clone();
-        let conformance_methods = match self.resolver.conformance_for(&target, &spec, &spec_args) {
-            Ok(Some(conform)) => conform.methods,
-            Ok(None)
-                if self
-                    .type_implements_spec(node_id, span, &target, &spec, &spec_args, false)
-                    .is_ok() =>
-            {
-                match self.resolver.conformances_for_type(&target) {
-                    Ok(conformances) => conformances
-                        .into_iter()
-                        .flat_map(|conform| conform.methods)
-                        .collect(),
-                    Err(err) => {
-                        self.error(node_id, span, AnalysisErrorKind::ModuleResolution(err));
-                        return Intercepted::Claimed(None);
-                    }
-                }
-            }
-            Ok(None) => {
-                let missing = spec
-                    .borrow()
-                    .functions
-                    .iter()
-                    .map(|(name, _)| name.clone())
-                    .collect();
-                self.error(
-                    node_id,
-                    span,
-                    AnalysisErrorKind::ModuleResolution(ResolveError::SpecNotImplemented {
-                        type_name: target.to_string(),
-                        spec: spec.borrow().name.clone(),
-                        missing,
-                    }),
-                );
-                return Intercepted::Claimed(None);
-            }
-            Err(err) => {
-                self.error(node_id, span, AnalysisErrorKind::ModuleResolution(err));
-                return Intercepted::Claimed(None);
-            }
-        };
-        let candidates: Vec<_> = conformance_methods
-            .into_iter()
-            .filter(|(name, method)| name == method_name && method.fn_type.self_mode.is_some())
-            .map(|(_, method)| method)
-            .collect();
-        if candidates.is_empty() {
-            self.error(
-                node_id,
-                span,
-                AnalysisErrorKind::NoSuchSpecFunction {
-                    spec: spec.borrow().name.clone(),
-                    function: method_name.clone(),
-                },
-            );
-            return Intercepted::Claimed(None);
-        }
-        let signatures: Vec<_> = candidates
-            .iter()
-            .map(|method| (method.decl_id, method.fn_type.clone()))
-            .collect();
-        let (winner, checked_args) = if candidates.len() == 1 {
-            let method = &candidates[0];
-            if call.args.len() != method.fn_type.params.len() {
-                self.error(
-                    node_id,
-                    span,
-                    AnalysisErrorKind::WrongArgumentCount {
-                        expected: method.fn_type.params.len(),
-                        found: call.args.len(),
-                    },
-                );
-                return Intercepted::Claimed(None);
-            }
-            let mut checked_args = Vec::with_capacity(call.args.len());
-            let mut ok = true;
-            let adapted_first = match self.adapt_self_argument(
-                &call.callee,
-                receiver.clone(),
-                method.fn_type.self_mode.expect("filtered above"),
-            ) {
-                Some(adapted) => adapted,
-                None => return Intercepted::Claimed(None),
-            };
-            for (index, (arg, expected)) in call
-                .args
-                .iter()
-                .zip(method.fn_type.param_types())
-                .enumerate()
-            {
-                let checked = if index == 0 {
-                    adapted_first.clone()
-                } else if let Some(checked) = self.analyze_expr(arg, Expected::Exact(expected)) {
-                    checked
-                } else {
-                    ok = false;
-                    continue;
-                };
-                let checked = self.coerce_to_expected(Some(expected), checked);
-                if !Self::value_type_compatible(expected, &checked.r#type) {
-                    self.error(
-                        arg.id,
-                        arg.span,
-                        AnalysisErrorKind::ArgumentTypeMismatch {
-                            expected: expected.clone(),
-                            found: checked.r#type.clone(),
-                        },
-                    );
-                    ok = false;
-                }
-                checked_args.push(checked);
-            }
-            if !ok {
-                return Intercepted::Claimed(None);
-            }
-            (0, checked_args)
-        } else {
-            let Some((winner, checked_args)) =
-                self.resolve_overload(node_id, span, method_name, &signatures, &call.args)
-            else {
-                return Intercepted::Claimed(None);
-            };
-            (winner, checked_args)
-        };
-        let method = candidates[winner].clone();
-        Intercepted::Claimed(Some(self.checked_call(
-            node_id,
-            span,
-            &call.callee,
-            method.decl_id,
-            Storage::Function,
-            method.fn_type,
-            checked_args,
-        )))
+        self.resolve_instance_spec_call(node_id, span, call, spec, spec_args, method_name, target)
     }
 
     fn resolve_fully_qualified_spec_call(
@@ -307,14 +252,28 @@ impl<'r> Analyzer<'r> {
                 let Some(target) = self.resolve_type_or_error(node_id, span, target, true) else {
                     return Intercepted::Claimed(None);
                 };
-                let Some(spec) = self.infer_qualified_spec(node_id, span, &target, &method_name)
+                let Some((spec, spec_args)) =
+                    self.infer_qualified_spec(node_id, span, &target, &method_name)
                 else {
                     return Intercepted::Claimed(None);
                 };
-                (Some(target), spec)
+                (
+                    Some(target),
+                    (spec, spec_args.into_iter().map(Some).collect()),
+                )
+            }
+            // Nothing infers the target and the spec's written arguments
+            // together.
+            (Type::Infer, Type::Generic(_, written)) if written.contains(&GenericArg::Infer) => {
+                self.error(
+                    node_id,
+                    span,
+                    AnalysisErrorKind::UnresolvedType(TypeResolutionError::InferenceHoleNotAllowed),
+                );
+                return Intercepted::Claimed(None);
             }
             (target, spec) => {
-                let Some(spec) = self.resolve_spec_reference(node_id, span, spec) else {
+                let Some(spec) = self.qualifying_spec_application(node_id, span, spec) else {
                     return Intercepted::Claimed(None);
                 };
                 let target = match target {
@@ -328,50 +287,7 @@ impl<'r> Analyzer<'r> {
             }
         };
 
-        let Some(flattened) =
-            self.flatten_spec(node_id, span, &spec, &spec_args, &ResolvedType::Void)
-        else {
-            return Intercepted::Claimed(None);
-        };
-        let Some(declared) = flattened.iter().find(|f| &f.name == &method_name) else {
-            self.error(
-                node_id,
-                span,
-                AnalysisErrorKind::NoSuchSpecFunction {
-                    spec: spec.borrow().name.clone(),
-                    function: method_name.clone(),
-                },
-            );
-            return Intercepted::Claimed(None);
-        };
-        if !self.require_requirement_visible(node_id, span, declared, expr_path.path.origin) {
-            return Intercepted::Claimed(None);
-        }
-        let RequirementSignature::Concrete { fn_type, .. } = &declared.signature else {
-            self.error(
-                node_id,
-                span,
-                AnalysisErrorKind::GenericFunctionNotInstantiated {
-                    owner: spec.borrow().name.clone(),
-                    function: method_name.clone(),
-                    namespace: FunctionNamespace::Member,
-                },
-            );
-            return Intercepted::Claimed(None);
-        };
-        if fn_type.self_mode.is_none() {
-            return self.resolve_static_spec_call(
-                node_id,
-                span,
-                call,
-                &spec,
-                &spec_args,
-                &method_name,
-                declared,
-                target.as_ref().or(expected.exact()),
-            );
-        }
-        self.resolve_instance_spec_call(
+        self.resolve_spec_call(
             node_id,
             span,
             call,
@@ -379,7 +295,39 @@ impl<'r> Analyzer<'r> {
             &spec_args,
             &method_name,
             target.as_ref(),
+            expected,
+            expr_path.path.origin,
         )
+    }
+
+    /// The spec half of `<S : P<...>>`. An omitted list, or a `_` among its
+    /// arguments, leaves holes the target's conformances determine; anything
+    /// else is an ordinary spec reference.
+    fn qualifying_spec_application(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        spec: &Type,
+    ) -> Option<OpenSpecApplication> {
+        let holes = match spec {
+            Type::Named(path) => Some((path, &[][..])),
+            Type::Generic(path, written) if written.contains(&GenericArg::Infer) => {
+                Some((path, written.as_slice()))
+            }
+            _ => None,
+        };
+        if let Some((path, written)) = holes
+            && let Some(declaration) = self.spec_declaration_for_path(path)
+        {
+            if written.is_empty() {
+                let holes = vec![None; declaration.borrow().generics.len()];
+                return Some((declaration, holes));
+            }
+            let args = self.written_spec_args(node_id, span, &declaration, written)?;
+            return Some((declaration, args));
+        }
+        let (spec, args) = self.resolve_spec_reference(node_id, span, spec)?;
+        Some((spec, args.into_iter().map(Some).collect()))
     }
 
     /// The spec `<target : _>::function` names: the one spec application
@@ -457,22 +405,77 @@ impl<'r> Analyzer<'r> {
         &mut self,
         node_id: HirId,
         span: Span,
-        declared: &FlattenedSpecFn,
+        spec: &Rc<RefCell<ResolvedSpecType>>,
+        requirement: &RawSpecFunctionSig,
         origin: Origin,
     ) -> bool {
-        let declaring_module = declared.spec.borrow().module_path.clone();
-        if self.check_visibility(declared.visibility, &declaring_module, origin) {
+        let declaring_module = spec.borrow().module_path.clone();
+        if self.check_visibility(requirement.visibility, &declaring_module, origin) {
             return true;
         }
         self.error(
             node_id,
             span,
             AnalysisErrorKind::MethodNotVisible {
-                method: declared.name.clone(),
-                base: ResolvedType::Spec(declared.spec.clone()),
+                method: requirement.name.clone(),
+                base: ResolvedType::Spec(spec.clone()),
             },
         );
         false
+    }
+
+    /// The functions every conformance of `target` to `spec` provides whose
+    /// arguments agree with `spec_args`, where a hole agrees with anything.
+    fn spec_call_methods(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        target: &ResolvedType,
+        spec: &Rc<RefCell<ResolvedSpecType>>,
+        spec_args: &[Option<ResolvedGenericArg>],
+    ) -> Option<ConformingMethods> {
+        if let Some(exact) = spec_args.iter().cloned().collect::<Option<Vec<_>>>() {
+            return self.spec_call_conformance_methods(node_id, span, target, spec, &exact);
+        }
+        let conformances = match self.resolver.conformances_for_type(target) {
+            Ok(conformances) => conformances,
+            Err(err) => {
+                self.error(node_id, span, AnalysisErrorKind::ModuleResolution(err));
+                return None;
+            }
+        };
+        let spec_id = spec.borrow().id;
+        let matching: Vec<_> = conformances
+            .into_iter()
+            .filter(|conform| {
+                conform.spec.borrow().id == spec_id
+                    && conform.spec_args.len() == spec_args.len()
+                    && conform
+                        .spec_args
+                        .iter()
+                        .zip(spec_args)
+                        .all(|(actual, written)| written.as_ref().is_none_or(|w| w == actual))
+            })
+            .collect();
+        if matching.is_empty() {
+            let missing = spec
+                .borrow()
+                .functions
+                .iter()
+                .map(|(name, _)| name.clone())
+                .collect();
+            self.error(
+                node_id,
+                span,
+                AnalysisErrorKind::ModuleResolution(ResolveError::SpecNotImplemented {
+                    type_name: target.to_string(),
+                    spec: spec.borrow().name.clone(),
+                    missing,
+                }),
+            );
+            return None;
+        }
+        Some(conforming_methods(matching))
     }
 
     fn spec_call_conformance_methods(
@@ -482,21 +485,16 @@ impl<'r> Analyzer<'r> {
         target: &ResolvedType,
         spec: &Rc<RefCell<ResolvedSpecType>>,
         spec_args: &[ResolvedGenericArg],
-    ) -> Option<Vec<(Ident, ResolvedMethod)>> {
+    ) -> Option<ConformingMethods> {
         match self.resolver.conformance_for(target, spec, spec_args) {
-            Ok(Some(conform)) => Some(conform.methods),
+            Ok(Some(conform)) => Some(conforming_methods(vec![conform])),
             Ok(None)
                 if self
                     .type_implements_spec(node_id, span, target, spec, spec_args, false)
                     .is_ok() =>
             {
                 match self.resolver.conformances_for_type(target) {
-                    Ok(conformances) => Some(
-                        conformances
-                            .into_iter()
-                            .flat_map(|conform| conform.methods)
-                            .collect(),
-                    ),
+                    Ok(conformances) => Some(conforming_methods(conformances)),
                     Err(err) => {
                         self.error(node_id, span, AnalysisErrorKind::ModuleResolution(err));
                         None
@@ -528,15 +526,26 @@ impl<'r> Analyzer<'r> {
         }
     }
 
+    fn provider_labels(
+        target: &ResolvedType,
+        providers: &[String],
+        method_name: &Ident,
+    ) -> Vec<String> {
+        providers
+            .iter()
+            .map(|provider| format!("<{target} : {provider}>::{}", method_name.as_ref()))
+            .collect()
+    }
+
     fn resolve_static_spec_call(
         &mut self,
         node_id: HirId,
         span: Span,
         call: &HirFunctionCall,
         spec: &Rc<RefCell<ResolvedSpecType>>,
-        spec_args: &[ResolvedGenericArg],
+        spec_args: &[Option<ResolvedGenericArg>],
         method_name: &Ident,
-        declared: &FlattenedSpecFn,
+        return_type: &Type,
         target: Option<&ResolvedType>,
     ) -> Intercepted {
         let Some(target) = target else {
@@ -551,7 +560,7 @@ impl<'r> Analyzer<'r> {
             return Intercepted::Claimed(None);
         };
         let returns_self = matches!(
-            &declared.raw.return_type,
+            return_type,
             Type::Named(path) if path.is_unqualified() && path.head.as_ref() == "Self"
         );
         if !returns_self {
@@ -561,21 +570,21 @@ impl<'r> Analyzer<'r> {
                 AnalysisErrorKind::SpecStaticReturnNotSelf {
                     spec: spec.borrow().name.clone(),
                     function: method_name.clone(),
-                    return_type: crate::error::raw_type_display(&declared.raw.return_type),
+                    return_type: crate::error::raw_type_display(return_type),
                 },
             );
             return Intercepted::Claimed(None);
         }
         let Some(conformance_methods) =
-            self.spec_call_conformance_methods(node_id, span, target, spec, spec_args)
+            self.spec_call_methods(node_id, span, target, spec, spec_args)
         else {
             return Intercepted::Claimed(None);
         };
-        let candidates: Vec<_> = conformance_methods
+        let (candidates, providers): (Vec<_>, Vec<_>) = conformance_methods
             .into_iter()
-            .filter(|(name, method)| name == method_name && method.fn_type.self_mode.is_none())
-            .map(|(_, method)| method)
-            .collect();
+            .filter(|(name, method, _)| name == method_name && method.fn_type.self_mode.is_none())
+            .map(|(_, method, provider)| (method, provider))
+            .unzip();
         if candidates.is_empty() {
             self.error(
                 node_id,
@@ -630,9 +639,14 @@ impl<'r> Analyzer<'r> {
             }
             (0, checked_args)
         } else {
-            let Some((winner, checked_args)) =
-                self.resolve_overload(node_id, span, method_name, &signatures, &call.args)
-            else {
+            let Some((winner, checked_args)) = self.resolve_overload(
+                node_id,
+                span,
+                method_name,
+                &signatures,
+                &Self::provider_labels(target, &providers, method_name),
+                &call.args,
+            ) else {
                 return Intercepted::Claimed(None);
             };
             (winner, checked_args)
@@ -655,7 +669,7 @@ impl<'r> Analyzer<'r> {
         span: Span,
         call: &HirFunctionCall,
         spec: &Rc<RefCell<ResolvedSpecType>>,
-        spec_args: &[ResolvedGenericArg],
+        spec_args: &[Option<ResolvedGenericArg>],
         method_name: &Ident,
         target_override: Option<&ResolvedType>,
     ) -> Intercepted {
@@ -678,15 +692,15 @@ impl<'r> Analyzer<'r> {
             None => receiver.r#type.autoderef().clone(),
         };
         let Some(conformance_methods) =
-            self.spec_call_conformance_methods(node_id, span, &target, spec, spec_args)
+            self.spec_call_methods(node_id, span, &target, spec, spec_args)
         else {
             return Intercepted::Claimed(None);
         };
-        let candidates: Vec<_> = conformance_methods
+        let (candidates, providers): (Vec<_>, Vec<_>) = conformance_methods
             .into_iter()
-            .filter(|(name, method)| name == method_name && method.fn_type.self_mode.is_some())
-            .map(|(_, method)| method)
-            .collect();
+            .filter(|(name, method, _)| name == method_name && method.fn_type.self_mode.is_some())
+            .map(|(_, method, provider)| (method, provider))
+            .unzip();
         if candidates.is_empty() {
             self.error(
                 node_id,
@@ -758,9 +772,14 @@ impl<'r> Analyzer<'r> {
             }
             (0, checked_args)
         } else {
-            let Some((winner, checked_args)) =
-                self.resolve_overload(node_id, span, method_name, &signatures, &call.args)
-            else {
+            let Some((winner, checked_args)) = self.resolve_overload(
+                node_id,
+                span,
+                method_name,
+                &signatures,
+                &Self::provider_labels(&target, &providers, method_name),
+                &call.args,
+            ) else {
                 return Intercepted::Claimed(None);
             };
             (winner, checked_args)
@@ -783,8 +802,16 @@ impl<'r> Analyzer<'r> {
 fn distinct_spec_displays(
     applications: &[crate::resolved_type::ResolvedSpecApplication],
 ) -> Vec<String> {
+    let mut displays = spec_displays(applications);
+    displays.sort();
+    displays
+}
+
+/// Each application as written in source, module-qualified when two would
+/// otherwise read the same, in the order given.
+fn spec_displays(applications: &[crate::resolved_type::ResolvedSpecApplication]) -> Vec<String> {
     let plain: Vec<String> = applications.iter().map(ToString::to_string).collect();
-    let mut displays: Vec<String> = applications
+    applications
         .iter()
         .zip(&plain)
         .map(|(application, display)| {
@@ -816,9 +843,7 @@ fn distinct_spec_displays(
                 display.clone()
             }
         })
-        .collect();
-    displays.sort();
-    displays
+        .collect()
 }
 
 #[cfg(test)]

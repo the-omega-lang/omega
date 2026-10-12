@@ -1,4 +1,5 @@
 use super::*;
+use crate::anchoring::{anchor_generics, anchor_type};
 use omega_analyzer::checked::{CheckedMethodOwner, ConformanceOwner};
 use omega_analyzer::generics::GenericSubstitution;
 use omega_analyzer::resolved_type::{FunctionNamespace, ResolvedBound, ResolvedGenericArg};
@@ -36,7 +37,7 @@ impl Driver {
                 declaring_module: method.declaring_module,
             })
             .collect();
-        let templates = self.find_generic_methods(owner, name, namespace)?;
+        let templates = self.selectable_generic_methods(owner, name, namespace)?;
         if candidates.len() + templates.len() < 2 {
             return Ok(candidates);
         }
@@ -53,7 +54,18 @@ impl Driver {
         name: &Ident,
         namespace: FunctionNamespace,
     ) -> Result<OverloadCandidates, ResolveError> {
-        let templates = self.find_generic_methods(owner, name, namespace)?;
+        let templates = self.find_inherent_generic_methods(owner, name, namespace)?;
+        self.template_candidates(templates)
+    }
+
+    /// The same for the generic declarations the owner's conformances provide.
+    pub(crate) fn collect_conformance_value_templates(
+        &mut self,
+        owner: &ResolvedType,
+        name: &Ident,
+        namespace: FunctionNamespace,
+    ) -> Result<OverloadCandidates, ResolveError> {
+        let templates = self.find_generic_conformance_methods(owner, name, namespace)?;
         self.template_candidates(templates)
     }
 
@@ -95,15 +107,16 @@ impl Driver {
         let Some(template) = self.find_generic_method(owner, name, namespace)? else {
             return Ok(None);
         };
+        let origin = self.modules.definition_origin(template.key.module());
         Ok(Some(GenericMethodTemplate {
             params: template
                 .function
                 .params
                 .iter()
-                .map(|p| p.r#type.clone())
+                .map(|p| anchor_type(&p.r#type, origin))
                 .collect(),
-            return_type: template.function.return_type.clone(),
-            generics: template.function.generics.clone(),
+            return_type: anchor_type(&template.function.return_type, origin),
+            generics: anchor_generics(&template.function.generics, origin),
             owner_substitution: template.owner_substitution,
         }))
     }
@@ -375,7 +388,7 @@ impl Driver {
         namespace: FunctionNamespace,
     ) -> Result<Option<MethodTemplate>, ResolveError> {
         Ok(self
-            .find_generic_methods(owner, name, namespace)?
+            .selectable_generic_methods(owner, name, namespace)?
             .into_iter()
             .next())
     }
@@ -386,8 +399,40 @@ impl Driver {
         name: &Ident,
         namespace: FunctionNamespace,
     ) -> Result<Vec<MethodTemplate>, ResolveError> {
-        let Some((key, self_type)) = self.owner_item_key(owner) else {
+        let inherent = self.find_inherent_generic_methods(owner, name, namespace)?;
+        if inherent.is_empty() {
             return self.find_generic_conformance_methods(owner, name, namespace);
+        }
+        Ok(inherent)
+    }
+
+    /// The generic declarations a selection under `name` considers. An
+    /// inherent declaration of the name, concrete or generic, hides every
+    /// conforming one in its namespace.
+    fn selectable_generic_methods(
+        &mut self,
+        owner: &ResolvedType,
+        name: &Ident,
+        namespace: FunctionNamespace,
+    ) -> Result<Vec<MethodTemplate>, ResolveError> {
+        let inherent = self.find_inherent_generic_methods(owner, name, namespace)?;
+        let has_concrete = owner
+            .candidates_in(namespace, name)
+            .is_some_and(|candidates| !candidates.is_empty());
+        if inherent.is_empty() && !has_concrete {
+            return self.find_generic_conformance_methods(owner, name, namespace);
+        }
+        Ok(inherent)
+    }
+
+    fn find_inherent_generic_methods(
+        &mut self,
+        owner: &ResolvedType,
+        name: &Ident,
+        namespace: FunctionNamespace,
+    ) -> Result<Vec<MethodTemplate>, ResolveError> {
+        let Some((key, self_type)) = self.owner_item_key(owner) else {
+            return Ok(Vec::new());
         };
         let index = match self.local_item_index(key.module(), &key.name) {
             Ok(index) => index,
@@ -402,7 +447,7 @@ impl Driver {
             HirItem::Struct(s) => (&s.generics, &s.functions),
             HirItem::Union(u) => (&u.generics, &u.functions),
             HirItem::Enum(e) => (&e.generics, &e.functions),
-            _ => return self.find_generic_conformance_methods(owner, name, namespace),
+            _ => return Ok(Vec::new()),
         };
         let generics = generics.clone();
         let candidates: Vec<(usize, HirFunctionDef)> = functions
@@ -431,9 +476,6 @@ impl Driver {
                 continue;
             }
             matches.push((*index, normalized));
-        }
-        if matches.is_empty() {
-            return self.find_generic_conformance_methods(owner, name, namespace);
         }
         let mut templates = Vec::new();
         for (index, function) in matches {

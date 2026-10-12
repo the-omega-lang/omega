@@ -451,6 +451,9 @@ impl AnalysisErrorKind {
             }
             Self::GenericPathTooDeep { r#type } => d
                 .with_label(span, format!("nothing nests deeper than `{}`'s own members", r#type.as_ref())),
+            Self::MisplacedGenericArgs { segment } => d
+                .with_label(span, format!("`{}` takes no generic argument list in this path", segment.as_ref()))
+                .with_note("a path writes generic arguments on the item it names, or on a type and its function (`Owner<A>::name<B>`)"),
             Self::EnumFieldImmutable { field } => d
                 .with_label(span, format!("`{}` is fixed by the value's variant", field.as_ref()))
                 .with_note("the tag and header fields are per-variant constants; only a variant's own body fields and shared dynamic fields can be assigned"),

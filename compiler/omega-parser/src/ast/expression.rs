@@ -377,6 +377,8 @@ pub struct TryExpr {
 #[derive(Debug, Clone)]
 pub struct MacroInvocationExpr {
     pub name: Ident,
-    pub args: Vec<Vec<Token>>,
+    /// The raw argument run between the parentheses; expansion delimits it by
+    /// the invoked macro's parameter fragments.
+    pub args: Vec<Token>,
     pub origin: Origin,
 }

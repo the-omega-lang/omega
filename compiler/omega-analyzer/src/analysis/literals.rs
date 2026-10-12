@@ -394,28 +394,25 @@ impl<'r> Analyzer<'r> {
     ) -> Option<AggregateTarget> {
         if path.plain().is_none() {
             let segments = path.path.segments();
-            let rest = segments[path.args_at + 1..].to_vec();
+            let (args_at, written) = self.single_generic_list(node_id, span, path)?;
+            let rest = segments[args_at + 1..].to_vec();
             if rest.len() > 1 {
                 self.error(
                     node_id,
                     span,
                     AnalysisErrorKind::GenericPathTooDeep {
-                        r#type: segments[path.args_at].clone(),
+                        r#type: segments[args_at].clone(),
                     },
                 );
                 return None;
             }
-            let prefix = &segments[..=path.args_at];
+            let prefix = &segments[..=args_at];
             let access = self.generic_prefix_absolute(node_id, span, &path.path, prefix)?;
             let absolute = access.absolute.clone();
             let accessor = self.path_module(&path.path);
             let params = self.item_generic_params_for(&accessor, prefix, &access);
-            let written = self.ordinary_generic_args(
-                node_id,
-                span,
-                &path.generic_args,
-                "an aggregate constructor",
-            )?;
+            let written =
+                self.ordinary_generic_args(node_id, span, written, "an aggregate constructor")?;
             let generic_args = if written.contains(&GenericArg::Infer) {
                 self.check_generic_arity(node_id, span, &access.absolute, &params, written.len())?;
                 let Some((real_absolute, sig)) =
@@ -791,7 +788,9 @@ impl<'r> Analyzer<'r> {
         let generics = self.generic_params(&sig.generics, &comp_types);
         let subst = self.probe_literal_generic_args(sig, &generics, lit_fields, seed)?;
         match resolve_inferred_generic_args(&generics, &subst) {
-            Ok(generic_args) => Some(generic_args),
+            Ok(generic_args) => {
+                self.complete_item_generic_args(node_id, span, absolute, generic_args)
+            }
             Err(_) => {
                 let missing: Vec<Ident> = sig
                     .generics

@@ -2,6 +2,11 @@ use super::*;
 use omega_analyzer::generics::GenericSubstitution;
 use omega_analyzer::resolved_type::ResolvedGenericArg;
 
+enum DefaultFailure {
+    Missing,
+    Failed,
+}
+
 impl Driver {
     pub(crate) fn visibility_allows(
         visibility: Visibility,
@@ -161,34 +166,12 @@ impl Driver {
         inferred: &[Option<ResolvedGenericArg>],
     ) -> Result<Vec<ResolvedGenericArg>, ResolveError> {
         let site = AnalysisSite::new(function.id, function.span);
-        let mut result = Vec::with_capacity(function.generics.len());
-        for (param, inferred) in function.generics.iter().zip(inferred) {
-            if let Some(value) = inferred {
-                result.push(value.clone());
-                continue;
-            }
-            let Some(default) = &param.default else {
-                return Err(key.failed());
-            };
-            let mut substitution =
-                GenericSubstitution::zip(function.generics.iter().map(|g| &g.ident), &result);
-            for (name, value) in enclosing.iter() {
-                substitution.push(name.clone(), value.clone());
-            }
-            let run = self.with_analyzer(key.module(), enclosing, site, |analyzer| {
-                analyzer.resolve_default_generic_arg(
-                    site.id,
-                    site.span,
-                    param,
-                    default,
-                    &substitution,
-                )
-            });
-            result.push(run.result.ok_or_else(|| key.failed())?);
-        }
-        Ok(result)
+        self.fill_generic_defaults(key.module(), site, enclosing, &function.generics, inferred)
+            .map_err(|_| key.failed())
     }
 
+    /// Completes a prefix of an item's generic arguments from the declared
+    /// defaults of the parameters it leaves off.
     pub(crate) fn pad_generic_defaults(
         &mut self,
         module_path: &[Ident],
@@ -197,57 +180,90 @@ impl Driver {
         generic_params: &[HirGenericParam],
         generic_args: &[ResolvedGenericArg],
     ) -> Result<Vec<ResolvedGenericArg>, ResolveError> {
-        if generic_args.len() >= generic_params.len() {
-            if generic_args.len() > generic_params.len() {
-                return Err(ResolveError::GenericArgCountMismatch {
-                    module: module_path.to_vec(),
-                    item: name.clone(),
-                    expected: generic_params.len(),
-                    found: generic_args.len(),
-                });
-            }
-            return Ok(generic_args.to_vec());
-        }
+        let arguments: Vec<_> = generic_args.iter().cloned().map(Some).collect();
+        self.complete_item_generic_args(module_path, name, owner, generic_params, &arguments)
+    }
 
-        let mut padded = generic_args.to_vec();
-        for param in &generic_params[generic_args.len()..] {
+    /// Completes an item's positional generic arguments, filling every gap
+    /// from its parameter's declared default.
+    pub(crate) fn complete_item_generic_args(
+        &mut self,
+        module_path: &[Ident],
+        name: &Ident,
+        owner: AnalysisSite,
+        generic_params: &[HirGenericParam],
+        arguments: &[Option<ResolvedGenericArg>],
+    ) -> Result<Vec<ResolvedGenericArg>, ResolveError> {
+        if arguments.len() > generic_params.len() {
+            return Err(ResolveError::GenericArgCountMismatch {
+                module: module_path.to_vec(),
+                item: name.clone(),
+                expected: generic_params.len(),
+                found: arguments.len(),
+            });
+        }
+        self.fill_generic_defaults(
+            module_path,
+            owner,
+            &GenericSubstitution::new(),
+            generic_params,
+            arguments,
+        )
+        .map_err(|failure| match failure {
+            DefaultFailure::Missing => ResolveError::GenericArgCountMismatch {
+                module: module_path.to_vec(),
+                item: name.clone(),
+                expected: generic_params.len(),
+                found: arguments.len(),
+            },
+            DefaultFailure::Failed => ResolveError::ItemFailed {
+                module: module_path.to_vec(),
+                item: name.clone(),
+            },
+        })
+    }
+
+    /// Fills every unbound position -- a gap, or one past the end of
+    /// `arguments` -- from its parameter's declared default, in declaration
+    /// order. A default is evaluated in `module`, the declaring module, never
+    /// at the use site, with the arguments before it and `enclosing` bound.
+    fn fill_generic_defaults(
+        &mut self,
+        module: &[Ident],
+        site: AnalysisSite,
+        enclosing: &GenericSubstitution,
+        params: &[HirGenericParam],
+        arguments: &[Option<ResolvedGenericArg>],
+    ) -> Result<Vec<ResolvedGenericArg>, DefaultFailure> {
+        let mut result = Vec::with_capacity(params.len());
+        for (index, param) in params.iter().enumerate() {
+            if let Some(Some(value)) = arguments.get(index) {
+                result.push(value.clone());
+                continue;
+            }
             let Some(default) = &param.default else {
-                return Err(ResolveError::GenericArgCountMismatch {
-                    module: module_path.to_vec(),
-                    item: name.clone(),
-                    expected: generic_params.len(),
-                    found: generic_args.len(),
-                });
+                return Err(DefaultFailure::Missing);
             };
-            let substitution =
-                GenericSubstitution::zip(generic_params.iter().map(|g| &g.ident), &padded);
-            let default = default.clone();
-            let param = param.clone();
-            let run = self.with_analyzer(
-                module_path,
-                &GenericSubstitution::new(),
-                owner,
-                |analyzer| {
-                    analyzer.resolve_default_generic_arg(
-                        owner.id,
-                        owner.span,
-                        &param,
-                        &default,
-                        &substitution,
-                    )
-                },
-            );
+            let mut substitution =
+                GenericSubstitution::zip(params.iter().map(|g| &g.ident), &result);
+            for (name, value) in enclosing.iter() {
+                substitution.push(name.clone(), value.clone());
+            }
+            let run = self.with_analyzer(module, enclosing, site, |analyzer| {
+                analyzer.resolve_default_generic_arg(
+                    site.id,
+                    site.span,
+                    param,
+                    default,
+                    &substitution,
+                )
+            });
             match (run.failed, run.result) {
-                (false, Some(resolved)) => padded.push(resolved),
-                _ => {
-                    return Err(ResolveError::ItemFailed {
-                        module: module_path.to_vec(),
-                        item: name.clone(),
-                    });
-                }
+                (false, Some(resolved)) => result.push(resolved),
+                _ => return Err(DefaultFailure::Failed),
             }
         }
-        Ok(padded)
+        Ok(result)
     }
 
     pub(crate) fn check_generic_bounds(

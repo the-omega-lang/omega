@@ -1,0 +1,43 @@
+error: 'None0' does not implement spec 'Make' (missing: make)
+  --> tests/t66b_spec_argument_inference_errors/t66b_spec_argument_inference_errors.omg:41:23
+   |
+41 |     missing : None0 = Make::make();
+   |                       ^^^^^^^^^^^^ does not implement this spec
+   |
+   = note: missing: make
+
+error: 'Both' does not implement spec 'Make' (missing: make)
+  --> tests/t66b_spec_argument_inference_errors/t66b_spec_argument_inference_errors.omg:42:20
+   |
+42 |     wrong : Both = Make<u16>::make();
+   |                    ^^^^^^^^^^^^^^^^^ does not implement this spec
+   |
+   = note: missing: make
+
+error: ambiguous reference to overloaded 'make'
+  --> tests/t66b_spec_argument_inference_errors/t66b_spec_argument_inference_errors.omg:43:24
+   |
+43 |     ambiguous : Both = Make<_>::make();
+   |                        ^^^^^^^^^^^^^^^ reference to `make` is ambiguous
+   |
+   = note: candidate: <Both : Make<i32>>::make: () => Both
+   = note: candidate: <Both : Make<u8>>::make: () => Both
+
+error: '_' is not allowed here -- nothing is inferred in this position
+  --> tests/t66b_spec_argument_inference_errors/t66b_spec_argument_inference_errors.omg:44:26
+   |
+44 |     both_halves : Both = <_ : Make<_>>::make();
+   |                          ^^^^^^^^^^^^^^^^^^^^^ inference hole in a position that is never inferred
+   |
+   = note: `_` is accepted only where leaving the type or value out would infer it: generic arguments, bound selectors, and an initialized binding's annotation outside spec references and anonymous-enum members
+
+error: ambiguous reference to overloaded 'make'
+  --> tests/t66b_spec_argument_inference_errors/t66b_spec_argument_inference_errors.omg:45:19
+   |
+45 |     twin : Twin = Make::make();
+   |                   ^^^^^^^^^^^^ reference to `make` is ambiguous
+   |
+   = note: candidate: <Twin : t66b_spec_argument_inference_errors::Make<t66b_spec_argument_inference_errors::a::X>>::make: () => Twin
+   = note: candidate: <Twin : t66b_spec_argument_inference_errors::Make<t66b_spec_argument_inference_errors::b::X>>::make: () => Twin
+
+error: could not compile the program due to 5 previous errors

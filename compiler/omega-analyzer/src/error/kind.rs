@@ -315,6 +315,9 @@ pub enum AnalysisErrorKind {
     GenericPathTooDeep {
         r#type: Ident,
     },
+    MisplacedGenericArgs {
+        segment: Ident,
+    },
     EnumFieldImmutable {
         field: Ident,
     },
@@ -1165,6 +1168,13 @@ impl fmt::Display for AnalysisErrorKind {
             }
             Self::GenericPathTooDeep { r#type } => {
                 write!(f, "path continues too far past '{}'", r#type.as_ref())
+            }
+            Self::MisplacedGenericArgs { segment } => {
+                write!(
+                    f,
+                    "generic arguments cannot follow '{}' here",
+                    segment.as_ref()
+                )
             }
             Self::EnumFieldImmutable { field } => {
                 write!(f, "cannot assign to '{}' of an enum value", field.as_ref())

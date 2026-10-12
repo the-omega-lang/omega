@@ -1,0 +1,65 @@
+error: generic arguments cannot follow 'm' here
+  --> tests/t63b_misplaced_generic_arguments/t63b_misplaced_generic_arguments.omg:14:10
+   |
+14 |     a := m<i32>::Owner::name<u8>(1, 2);
+   |          ^^^^^^^^^^^^^^^^^^^^^^^ `m` takes no generic argument list in this path
+   |
+   = note: a path writes generic arguments on the item it names, or on a type and its function (`Owner<A>::name<B>`)
+
+error: generic arguments cannot follow 'self' here
+  --> tests/t63b_misplaced_generic_arguments/t63b_misplaced_generic_arguments.omg:15:10
+   |
+15 |     b := m::Owner<i32>::self<u8>::scaled(&o, 2);
+   |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `self` takes no generic argument list in this path
+   |
+   = note: a path writes generic arguments on the item it names, or on a type and its function (`Owner<A>::name<B>`)
+
+error: generic arguments cannot follow 'm' here
+  --> tests/t63b_misplaced_generic_arguments/t63b_misplaced_generic_arguments.omg:16:10
+   |
+16 |     c := m<u8>::Owner<i32>::name<u8>(1, 2);
+   |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^ `m` takes no generic argument list in this path
+   |
+   = note: a path writes generic arguments on the item it names, or on a type and its function (`Owner<A>::name<B>`)
+
+error: 'Owner' cannot be instantiated here: 'T' is not determined
+  --> tests/t63b_misplaced_generic_arguments/t63b_misplaced_generic_arguments.omg:17:10
+   |
+17 |     d := m::Owner<_>::name<u8>(1, 2);
+   |          ^^^^^^^^^^^^^^^^^^^^^ `T` is not determined here
+   |
+   = help: `_` leaves `T` to inference -- write it out, or give this call an argument or expected type that determines it
+
+error: generic arguments cannot follow 'm' here
+  --> tests/t63b_misplaced_generic_arguments/t63b_misplaced_generic_arguments.omg:18:10
+   |
+18 |     e := m<i32>::Owner::name(1, 2);
+   |          ^^^^^^^^^^^^^^^^^^^ `m` takes no generic argument list in this path
+   |
+   = note: a path writes generic arguments on the item it names, or on a type and its function (`Owner<A>::name<B>`)
+
+error: generic arguments cannot follow 'm' here
+  --> tests/t63b_misplaced_generic_arguments/t63b_misplaced_generic_arguments.omg:19:10
+   |
+19 |     f := m<i32>::Owner::name<u8>;
+   |          ^^^^^^^^^^^^^^^^^^^^^^^ `m` takes no generic argument list in this path
+   |
+   = note: a path writes generic arguments on the item it names, or on a type and its function (`Owner<A>::name<B>`)
+
+error: generic arguments cannot follow 'None' here
+  --> tests/t63b_misplaced_generic_arguments/t63b_misplaced_generic_arguments.omg:20:10
+   |
+20 |     g := Opt::None<i32>;
+   |          ^^^^^^^^^^^^^^ `None` takes no generic argument list in this path
+   |
+   = note: a path writes generic arguments on the item it names, or on a type and its function (`Owner<A>::name<B>`)
+
+error: generic arguments cannot follow 'Some' here
+  --> tests/t63b_misplaced_generic_arguments/t63b_misplaced_generic_arguments.omg:21:10
+   |
+21 |     h := Opt<i32>::Some<u8> { value = 1; };
+   |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Some` takes no generic argument list in this path
+   |
+   = note: a path writes generic arguments on the item it names, or on a type and its function (`Owner<A>::name<B>`)
+
+error: could not compile the program due to 8 previous errors

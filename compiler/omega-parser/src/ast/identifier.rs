@@ -84,9 +84,57 @@ impl Path {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExprPath {
     pub path: Path,
-    pub generic_args: Vec<crate::ast::generics::ExprGenericArg>,
-    pub args_at: usize,
+    pub generic_args: PathGenericArgs,
     pub qualified_spec: Option<QualifiedSpecPath>,
+}
+
+/// The generic argument lists written on an expression path, each keyed by
+/// the index of the segment it follows (the head is segment 0), in strictly
+/// increasing segment order.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PathGenericArgs(Vec<(usize, Vec<crate::ast::generics::ExprGenericArg>)>);
+
+impl PathGenericArgs {
+    pub fn on(segment: usize, args: Vec<crate::ast::generics::ExprGenericArg>) -> Self {
+        Self(vec![(segment, args)])
+    }
+
+    pub fn push(&mut self, segment: usize, args: Vec<crate::ast::generics::ExprGenericArg>) {
+        debug_assert!(self.0.last().is_none_or(|(last, _)| *last < segment));
+        self.0.push((segment, args));
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn args_on(&self, segment: usize) -> Option<&[crate::ast::generics::ExprGenericArg]> {
+        self.0
+            .iter()
+            .find(|(at, _)| *at == segment)
+            .map(|(_, args)| args.as_slice())
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (usize, &[crate::ast::generics::ExprGenericArg])> {
+        self.0.iter().map(|(at, args)| (*at, args.as_slice()))
+    }
+
+    /// The one written list, when exactly one is written.
+    pub fn single(&self) -> Option<(usize, &[crate::ast::generics::ExprGenericArg])> {
+        match self.0.as_slice() {
+            [(at, args)] => Some((*at, args.as_slice())),
+            _ => None,
+        }
+    }
+
+    /// Whether every written list is on one of `segments`.
+    pub fn only_on(&self, segments: &[usize]) -> bool {
+        self.0.iter().all(|(at, _)| segments.contains(at))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,8 +147,7 @@ impl From<Path> for ExprPath {
     fn from(path: Path) -> Self {
         Self {
             path,
-            generic_args: vec![],
-            args_at: 0,
+            generic_args: PathGenericArgs::default(),
             qualified_spec: None,
         }
     }

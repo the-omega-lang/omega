@@ -1,0 +1,66 @@
+# Omitted or `_` arguments of a qualifying spec are determined by the target's
+# conformances to it, and overload resolution chooses among what survives.
+import std::io::println;
+
+spec Make<T> {
+	make(value: T) => Self;
+}
+
+spec Describe<T> {
+	describe(*self, extra: T) => i32;
+}
+
+struct W {
+	exposed tag: i32;
+}
+
+meet Make<i32> for W {
+	make(value: i32) => Self {
+		println$("Make<i32>");
+		W { tag = value; }
+	}
+}
+
+meet Describe<u8> for W {
+	describe(*self, extra: u8) => i32 {
+		println$("Describe<u8>");
+		self.tag + <i32>extra
+	}
+}
+
+struct Both {
+	exposed tag: i32;
+}
+
+meet Make<i32> for Both {
+	make(value: i32) => Self {
+		println$("Both: Make<i32>");
+		Both { tag = value; }
+	}
+}
+
+meet Make<u8> for Both {
+	make(value: u8) => Self {
+		println$("Both: Make<u8>");
+		Both { tag = <i32>value; }
+	}
+}
+
+main() => void {
+	x : W = Make::make(3);
+	println$(x.tag);
+	y := <W : Make>::make(4);
+	println$(y.tag);
+	z := <W : Make<_>>::make(5);
+	println$(z.tag);
+	w : W = Make<_>::make(6);
+	println$(w.tag);
+	println$(Describe::describe(&x, 1));
+	println$(<W : Describe<_>>::describe(&x, 2));
+	a : Both = Make::make(7i32);
+	println$(a.tag);
+	b : Both = Make::make(8u8);
+	println$(b.tag);
+	c := <Both : Make<u8>>::make(9);
+	println$(c.tag);
+}

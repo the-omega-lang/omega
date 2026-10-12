@@ -695,28 +695,58 @@ fn validate_definition(def: &MacroDefinitionStmt) -> Result<(), MacroError> {
     }
     walk(def, &def.body, false).map(|_| ())
 }
-fn validate_fragment(
+/// Delimits an invocation's arguments the way an ordinary call's are: each
+/// parameter's fragment is parsed in order and must be followed by `,` or the
+/// end, so a `,` inside a fragment (a generic argument list) belongs to it.
+fn split_arguments<'t>(
+    def: &MacroDefinitionStmt,
+    run: &'t [Token],
+    call_span: Span,
+) -> Result<Vec<&'t [Token]>, MacroError> {
+    let padded = with_eof(run);
+    let mut p = Parser::new(&padded);
+    let mut args = Vec::new();
+    let mut params = def
+        .signature
+        .fixed
+        .iter()
+        .chain(std::iter::from_fn(|| def.signature.variadic.as_ref()));
+    while !p.is_eof() {
+        let Some(param) = params.next() else {
+            let found = args.len() + count_extra_arguments(&mut p);
+            return Err(arity_mismatch(def, found, call_span));
+        };
+        let start = p.position();
+        parse_fragment(def, param, &mut p)?;
+        args.push(&run[start..p.position()]);
+        p.eat(&TokenKind::Comma);
+    }
+    if args.len() < def.signature.fixed.len() {
+        return Err(arity_mismatch(def, args.len(), call_span));
+    }
+    Ok(args)
+}
+
+fn parse_fragment(
     def: &MacroDefinitionStmt,
     param: &MacroParam,
-    arg: &[Token],
+    p: &mut Parser,
 ) -> Result<(), MacroError> {
-    let padded = with_eof(arg);
-    let mut p = Parser::new(&padded);
+    let mark = p.mark();
     let result = match param.kind {
-        FragmentKind::Expr => crate::parser::expression::parse_expression(&mut p).map(|_| ()),
-        FragmentKind::Type => crate::parser::r#type::parse_type(&mut p).map(|_| ()),
+        FragmentKind::Expr => crate::parser::expression::parse_expression(p).map(|_| ()),
+        FragmentKind::Type => crate::parser::r#type::parse_type(p).map(|_| ()),
         FragmentKind::Ident => p.expect_ident().map(|_| ()),
-        FragmentKind::Path => crate::parser::parse_path(&mut p).map(|_| ()),
+        FragmentKind::Path => crate::parser::parse_path(p).map(|_| ()),
     };
-    let fully_consumed = p.is_eof();
-    let errors = p.into_errors();
-    if result.is_some() && fully_consumed && errors.is_empty() {
+    let delimited = matches!(p.peek(), TokenKind::Comma | TokenKind::Eof);
+    if result.is_some() && delimited && !p.errors_since(&mark) {
         return Ok(());
     }
-    let message = if errors.is_empty() {
-        "unexpected trailing tokens".to_string()
+    let message = if p.errors_since(&mark) {
+        join_errors(p.errors())
     } else {
-        join_errors(&errors)
+        "unexpected trailing tokens".to_string()
     };
     Err(MacroError::new(MacroErrorKind::FragmentMismatch {
         macro_name: def.name.clone(),
@@ -727,10 +757,55 @@ fn validate_fragment(
     .at_definition(&def.defining_module, def.span))
 }
 
+/// Counts the arguments past the last parameter for the arity diagnostic.
+/// They have no fragment kind, so each is read as an expression, falling back
+/// to the next bracket-balanced `,` when it is not one.
+fn count_extra_arguments(p: &mut Parser) -> usize {
+    let mut count = 0;
+    while !p.is_eof() {
+        count += 1;
+        let mark = p.mark();
+        let parsed = crate::parser::expression::parse_expression(p).is_some()
+            && !p.errors_since(&mark)
+            && matches!(p.peek(), TokenKind::Comma | TokenKind::Eof);
+        if !parsed {
+            p.reset(mark);
+            let mut depth = 0usize;
+            while !p.is_eof() && (depth != 0 || !p.check(&TokenKind::Comma)) {
+                match p.advance().kind {
+                    TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => depth += 1,
+                    TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace => {
+                        depth = depth.saturating_sub(1)
+                    }
+                    _ => {}
+                }
+            }
+        }
+        p.eat(&TokenKind::Comma);
+    }
+    count
+}
+
+fn arity_mismatch(def: &MacroDefinitionStmt, found: usize, call_span: Span) -> MacroError {
+    let fixed = def.signature.fixed.len();
+    let expected = if def.signature.variadic.is_some() {
+        Arity::AtLeast(fixed)
+    } else {
+        Arity::Exact(fixed)
+    };
+    MacroError::new(MacroErrorKind::ArgCountMismatch {
+        macro_name: def.name.clone(),
+        expected,
+        found,
+    })
+    .at_invocation(call_span)
+    .at_definition(&def.defining_module, def.span)
+}
+
 #[derive(Clone, Copy)]
 enum Binding<'a> {
     One(&'a [Token]),
-    Many(&'a [Vec<Token>]),
+    Many(&'a [&'a [Token]]),
 }
 
 #[derive(Default, Clone)]

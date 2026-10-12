@@ -57,7 +57,7 @@ The `self` segment is contextual, not a reserved identifier. It opens the member
 
 The rule applies to every concrete implementation owner — structs, unions, named enums, markers, primitive blocks, and conformance implementations reached through a concrete type. An alias resolves to its type first, so it selects namespaces identically. Anonymous enums own no declarations and are unaffected.
 
-Precedence between an inherent and a conforming declaration is unchanged, but applies **inside the selected namespace only**: an inherent static `foo` does not hide a conforming member `foo` from `Type::self::foo`, and an inherent member `foo` does not hide a conforming static `foo` from `Type::foo`.
+An inherent declaration of a name, concrete or generic, hides every conforming declaration of it, in a call and in a [function value](#selecting-a-function-value) alike; conforming declarations are candidates only when the owner declares nothing under that name. This precedence applies **inside the selected namespace only**: an inherent static `foo` does not hide a conforming member `foo` from `Type::self::foo`, and an inherent member `foo` does not hide a conforming static `foo` from `Type::foo`.
 
 Visibility is checked on the declaration the namespace selected, exactly as before. `Type::self::name` is not a visibility bypass.
 

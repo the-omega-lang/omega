@@ -1,0 +1,23 @@
+# One path may write a generic argument list on its owner and another on its
+# function: `Owner<A>::name<B>(...)` and `m::Owner<A>::self::name<B>(...)`.
+import std::io::println;
+import self::m;
+
+struct Local<T> {
+	exposed value: T;
+
+	exposed name<U>(value: T, extra: U) => i64 {
+		<i64>value - <i64>extra
+	}
+}
+
+main() => void {
+	println$(Local<i32>::name<u8>(1, 2));
+	o := m::Owner<i32> { value = 5; };
+	println$(m::Owner<i32>::self::scaled<u8>(&o, 2));
+	println$(m::Owner<i16>::name<u16>(3, 4));
+	f := Local<i64>::name<i8>;
+	println$(f(10, 3));
+	g := m::Owner<i32>::self::scaled<i64>;
+	println$(g(&o, 7));
+}

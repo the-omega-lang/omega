@@ -1,4 +1,5 @@
 mod aliases;
+mod anchoring;
 mod bodies;
 pub(crate) mod compile;
 mod conformances;
