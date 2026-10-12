@@ -1,0 +1,3 @@
+exposed spec P {
+	f(*self) => i32;
+}

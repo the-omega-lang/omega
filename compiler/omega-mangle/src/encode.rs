@@ -116,6 +116,18 @@ impl Encoder {
                 self.push_tag(TAG_TYPE_PATH);
                 self.encode_type(ty);
             }
+            ManglePath::Conformance(target, specs) => {
+                debug_assert!(
+                    !specs.is_empty(),
+                    "a conformance path names at least one spec"
+                );
+                self.push_tag(TAG_CONFORMANCE);
+                self.encode_type(target);
+                for spec in specs {
+                    self.encode_path(spec);
+                }
+                self.push_tag(TAG_LIST_END);
+            }
         }
         self.path_subs.insert(path.clone(), start);
     }

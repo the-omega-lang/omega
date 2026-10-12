@@ -12,6 +12,11 @@ pub const TAG_BACKREF: u8 = b'B';
 /// identity, encoded between the path that names it and its concrete
 /// generic application.
 pub const TAG_TEMPLATE: u8 = b'w';
+/// A conformance path: `m <target type> <spec path>+ E`. Every letter is
+/// taken somewhere; `m` is otherwise only the `u32` letter, which never
+/// appears where a path is parsed, and a conformance path never appears
+/// where a type is parsed.
+pub const TAG_CONFORMANCE: u8 = b'm';
 pub const TAG_LIST_END: u8 = b'E';
 
 pub const TAG_NAMESPACE_TYPE: u8 = b't';

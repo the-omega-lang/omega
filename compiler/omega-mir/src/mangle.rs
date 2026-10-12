@@ -2,7 +2,9 @@ mod semantic;
 
 use omega_analyzer::annotations::ManglingMode;
 use omega_analyzer::checked::{ExternFunctionKind, ExternFunctionRef};
-use omega_analyzer::resolved_type::{ResolvedFunctionType, ResolvedGenericArg, ResolvedType};
+use omega_analyzer::resolved_type::{
+    ResolvedFunctionType, ResolvedGenericArg, ResolvedSpecShape, ResolvedType,
+};
 use omega_analyzer::template::TemplateDescriptor;
 use omega_mangle::{ManglePath, Namespace, Symbol};
 use omega_parser::prelude::Ident;
@@ -119,9 +121,13 @@ pub fn primitive_method_symbol(
     )
 }
 
+/// A method of the conformance of `target` to one spec, named under
+/// `<target as spec>` so two same-named specs from different modules never
+/// share a symbol.
 #[allow(clippy::too_many_arguments)]
 pub fn conformance_method_symbol(
     target: &ResolvedType,
+    spec_module_path: &[Ident],
     spec_name: &Ident,
     spec_args: &[ResolvedGenericArg],
     method_name: &Ident,
@@ -129,39 +135,33 @@ pub fn conformance_method_symbol(
     generic_args: &[ResolvedGenericArg],
     fn_type: &ResolvedFunctionType,
 ) -> Symbol {
-    // NOTE: the current checked extern/conformance model does not carry the spec module path
-    // through every call site. That can collide for same-named specs in different modules; the
-    // ABI-changing fix is tracked in docs/issues/known-issues.md rather than hidden in a refactor.
-    let spec = type_path(owner_path(target), spec_name);
-    let spec = generic_path(spec, spec_args);
-    let path = associated_function_path(spec, method_name, fn_type);
+    let conformance = conformance_path(
+        target,
+        vec![nominal_path(spec_module_path, spec_name, spec_args)],
+    );
+    let path = associated_function_path(conformance, method_name, fn_type);
     function_symbol(
         generic_path(template_path(path, template), generic_args),
         fn_type,
     )
 }
 
-/// `shape_members` must already be in the object's canonical shape order (see
-/// `ResolvedSpecShape`), so `A + B` and `B + A` always produce this symbol
-/// identically. A single member nests exactly like the pre-conjunction
-/// singleton encoding, since the loop below runs once in that case.
-pub fn vtable_symbol(
-    concrete: &ResolvedType,
-    shape_members: &[(Ident, Vec<ResolvedGenericArg>)],
-) -> Symbol {
-    let omega_mangle::MangleType::Named(concrete_path, _) = semantic::mangle_type(concrete) else {
-        unreachable!(
-            "a spec-object coercion's concrete pointee is always a nominal aggregate type"
-        );
-    };
+/// `shape.members` is already in canonical shape order, so `A + B` and
+/// `B + A` produce one symbol; nothing here re-sorts.
+pub fn vtable_symbol(concrete: &ResolvedType, shape: &ResolvedSpecShape) -> Symbol {
+    let specs = shape
+        .members
+        .iter()
+        .map(|member| {
+            let spec = member.spec.borrow();
+            nominal_path(&spec.module_path, &spec.name, &member.spec_args)
+        })
+        .collect();
+    data_item_symbol(value_path_name(conformance_path(concrete, specs), "vtable"))
+}
 
-    // See conformance_method_symbol: spec module identity is intentionally not changed here in a
-    // refactor because linker-name changes are an ABI/separate-compilation migration.
-    let mut path = concrete_path;
-    for (spec_name, spec_args) in shape_members {
-        path = generic_path(type_path(path, spec_name), spec_args);
-    }
-    data_item_symbol(value_path_name(path, "vtable"))
+fn conformance_path(target: &ResolvedType, specs: Vec<ManglePath>) -> ManglePath {
+    ManglePath::Conformance(Box::new(semantic::mangle_type(target)), specs)
 }
 
 /// The `core::reflection::TypeInfo` table of `described`, which must not be
@@ -268,12 +268,14 @@ pub fn extern_function_ref_symbol(extern_fn: &ExternFunctionRef) -> String {
             ManglingMode::Enabled,
             ExternFunctionKind::Conform {
                 target,
+                spec_module_path,
                 spec_name,
                 spec_args,
                 method_name,
             },
         ) => encode(&conformance_method_symbol(
             target,
+            spec_module_path,
             spec_name,
             spec_args,
             method_name,
@@ -300,10 +302,6 @@ fn data_item_symbol(path: ManglePath) -> Symbol {
     }
 }
 
-fn type_path(parent: ManglePath, name: &Ident) -> ManglePath {
-    nested_path(parent, Namespace::Type, name.as_ref())
-}
-
 fn value_path(parent: ManglePath, name: &Ident) -> ManglePath {
     value_path_name(parent, name.as_ref())
 }
@@ -320,7 +318,7 @@ fn nested_path(parent: ManglePath, namespace: Namespace, name: &str) -> ManglePa
 mod tests {
     use super::*;
     use omega_analyzer::annotations::SymbolPolicy;
-    use omega_analyzer::resolved_type::ResolvedFunctionParam;
+    use omega_analyzer::resolved_type::{ResolvedFunctionParam, ResolvedSpecApplication};
     use omega_analyzer::template::{TemplateBound, TemplateParam, TemplateType};
 
     fn ident(name: &str) -> Ident {
@@ -566,6 +564,7 @@ mod tests {
 
         let conform_member = conformance_method_symbol(
             &ResolvedType::I32,
+            &[ident("pkg")],
             &ident("Show"),
             &[],
             &ident("show"),
@@ -575,6 +574,7 @@ mod tests {
         );
         let conform_static = conformance_method_symbol(
             &ResolvedType::I32,
+            &[ident("pkg")],
             &ident("Show"),
             &[],
             &ident("show"),
@@ -700,11 +700,76 @@ mod tests {
         );
     }
 
+    fn spec_application(id: u32, module: &str, name: &str) -> ResolvedSpecApplication {
+        use omega_analyzer::resolved_type::ResolvedSpecType;
+        use omega_hir::{HirId, ModuleId};
+        use omega_parser::prelude::Visibility;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let spec = ResolvedSpecType {
+            id: HirId {
+                module: ModuleId(0),
+                local: id,
+            },
+            name: ident(name),
+            visibility: Visibility::Exposed,
+            generics: vec![],
+            module_path: vec![ident("pkg"), ident(module)],
+            generic_args: vec![],
+            is_object_safe: true,
+            functions: vec![],
+            suppress: vec![],
+        };
+        ResolvedSpecApplication::new(Rc::new(RefCell::new(spec)), vec![])
+    }
+
+    fn shape(members: Vec<ResolvedSpecApplication>) -> ResolvedSpecShape {
+        ResolvedSpecShape::canonicalize(members)
+    }
+
     #[test]
-    fn vtable_symbol_single_member_matches_singleton_shape() {
-        let concrete = concrete_struct("Foo");
-        let single = vtable_symbol(&concrete, &[(ident("A"), vec![])]);
-        let shape = vtable_symbol(&concrete, &[(ident("A"), vec![])]);
-        assert_eq!(encode(&single), encode(&shape));
+    fn same_named_specs_in_two_modules_give_two_conformance_methods() {
+        let target = concrete_struct("Thing");
+        let member = member_fn_type(target.clone(), vec![], ResolvedType::I32);
+        let symbol_in = |module: &str| {
+            conformance_method_symbol(
+                &target,
+                &[ident("pkg"), ident(module)],
+                &ident("P"),
+                &[],
+                &ident("f"),
+                None,
+                &[],
+                &member,
+            )
+        };
+        assert_ne!(encode(&symbol_in("a")), encode(&symbol_in("b")));
+        assert_adapter_round_trip(symbol_in("a"));
+    }
+
+    #[test]
+    fn shapes_differing_only_in_a_member_module_give_two_vtables() {
+        let concrete = concrete_struct("Thing");
+        let a = vtable_symbol(&concrete, &shape(vec![spec_application(1, "a", "P")]));
+        let b = vtable_symbol(&concrete, &shape(vec![spec_application(2, "b", "P")]));
+        assert_ne!(encode(&a), encode(&b));
+        assert_adapter_round_trip(a);
+    }
+
+    #[test]
+    fn a_conjunction_vtable_names_every_member() {
+        let concrete = concrete_struct("Thing");
+        let both = vtable_symbol(
+            &concrete,
+            &shape(vec![
+                spec_application(1, "a", "P"),
+                spec_application(2, "b", "P"),
+            ]),
+        );
+        assert_eq!(
+            omega_mangle::demangle(&encode(&both)).unwrap(),
+            "<mymod::Thing as pkg::a::P + pkg::b::P>::vtable"
+        );
+        assert_adapter_round_trip(both);
     }
 }

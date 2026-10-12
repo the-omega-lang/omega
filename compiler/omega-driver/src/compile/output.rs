@@ -130,6 +130,7 @@ impl Driver {
                     module_path: entry.module.clone(),
                     kind: ExternFunctionKind::Conform {
                         target: entry.target.clone(),
+                        spec_module_path: entry.spec.borrow().module_path.clone(),
                         spec_name: entry.spec.borrow().name.clone(),
                         spec_args: entry.spec_args.clone(),
                         method_name: method_name.clone(),

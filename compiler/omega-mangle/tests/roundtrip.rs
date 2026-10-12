@@ -264,20 +264,17 @@ fn vendor_suffix_round_trips() {
 
 #[test]
 fn vtable_symbol_shape_stays_alphanumeric() {
-    // Vtables use ordinary nested path identity rather than a vendor suffix.
-    let owner = nested(root("mymod"), Namespace::Type, "Dog");
-    let sym = Symbol {
-        path: nested(owner, Namespace::Value, "vtable"),
-        signature: None,
-        vendor_suffix: None,
-    };
-    let mangled = assert_round_trips(&sym);
+    let dog = named(nested(root("mymod"), Namespace::Type, "Dog"));
+    let mangled = assert_round_trips(&vtable(dog, vec![spec("m", "Animal")]));
     assert!(
         mangled
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'_')
     );
-    assert_eq!(demangle(&mangled).unwrap(), "mymod::Dog::vtable");
+    assert_eq!(
+        demangle(&mangled).unwrap(),
+        "<mymod::Dog as pkg::m::Animal>::vtable"
+    );
 }
 
 #[test]
@@ -807,4 +804,99 @@ fn a_non_template_symbol_still_decodes_unchanged() {
             ManglePath::Template(..)
         ));
     }
+}
+
+fn conformance(target: MangleType, specs: Vec<ManglePath>) -> ManglePath {
+    ManglePath::Conformance(Box::new(target), specs)
+}
+
+fn conformance_method(target: MangleType, spec: ManglePath) -> Symbol {
+    let self_param = MangleType::Pointer(Box::new(target.clone()), false);
+    Symbol {
+        path: nested(
+            nested(conformance(target, vec![spec]), Namespace::Value, "self"),
+            Namespace::Value,
+            "f",
+        ),
+        signature: Some(sig(vec![self_param], MangleType::I32)),
+        vendor_suffix: None,
+    }
+}
+
+fn vtable(target: MangleType, specs: Vec<ManglePath>) -> Symbol {
+    Symbol {
+        path: nested(conformance(target, specs), Namespace::Value, "vtable"),
+        signature: None,
+        vendor_suffix: None,
+    }
+}
+
+#[test]
+fn conformance_paths_round_trip_for_every_target_shape() {
+    let dog = named(nested(root("pkg"), Namespace::Type, "Dog"));
+    let boxed = named(generic(
+        nested(root("pkg"), Namespace::Type, "Box"),
+        vec![MangleType::I32],
+    ));
+    let generic_spec = generic(spec("m", "Into"), vec![MangleType::U32, dog.clone()]);
+    for target in [MangleType::I32, MangleType::Str(false), dog, boxed] {
+        assert_round_trips(&conformance_method(target.clone(), spec("m", "P")));
+        assert_round_trips(&conformance_method(target, generic_spec.clone()));
+    }
+}
+
+#[test]
+fn a_conformance_method_demangles_with_its_full_spec_identity() {
+    let dog = named(nested(root("pkg"), Namespace::Type, "Dog"));
+    let spec = generic(spec("m", "Into"), vec![MangleType::U32]);
+    let mangled = assert_round_trips(&conformance_method(dog, spec));
+    assert_eq!(
+        demangle(&mangled).unwrap(),
+        "<pkg::Dog as pkg::m::Into<u32>>::self::f(*pkg::Dog) -> i32"
+    );
+}
+
+#[test]
+fn the_same_spec_name_in_two_modules_is_two_conformances() {
+    let dog = named(nested(root("pkg"), Namespace::Type, "Dog"));
+    let a = assert_round_trips(&conformance_method(dog.clone(), spec("a", "P")));
+    let b = assert_round_trips(&conformance_method(dog.clone(), spec("b", "P")));
+    assert_ne!(a, b);
+    let a = assert_round_trips(&vtable(dog.clone(), vec![spec("a", "P")]));
+    let b = assert_round_trips(&vtable(dog, vec![spec("b", "P")]));
+    assert_ne!(a, b);
+}
+
+#[test]
+fn a_multi_spec_vtable_shape_round_trips_and_keeps_member_order() {
+    let dog = named(nested(root("pkg"), Namespace::Type, "Dog"));
+    let ab = vtable(dog.clone(), vec![spec("a", "P"), spec("b", "P")]);
+    let ba = vtable(dog, vec![spec("b", "P"), spec("a", "P")]);
+    let ab_mangled = assert_round_trips(&ab);
+    assert_ne!(ab_mangled, assert_round_trips(&ba));
+    assert_eq!(
+        demangle(&ab_mangled).unwrap(),
+        "<pkg::Dog as pkg::a::P + pkg::b::P>::vtable"
+    );
+}
+
+#[test]
+fn repeated_targets_and_specs_inside_a_conformance_use_backreferences() {
+    let dog = named(nested(root("pkg"), Namespace::Type, "Dog"));
+    let into_dog = generic(spec("m", "Into"), vec![dog.clone()]);
+    let from_dog = generic(spec("m", "From"), vec![dog.clone()]);
+    // Each spec argument repeats the target and the second member repeats
+    // the first's module; all of them must be backreferences.
+    let mangled = assert_round_trips(&vtable(dog.clone(), vec![into_dog.clone(), from_dog]));
+    assert_eq!(mangled.matches("3Dog").count(), 1, "{mangled}");
+    assert_eq!(mangled.matches("3pkg").count(), 1, "{mangled}");
+    assert_eq!(mangled.matches("1m").count(), 1, "{mangled}");
+
+    let mangled = assert_round_trips(&conformance_method(dog, into_dog));
+    assert_eq!(mangled.matches("3Dog").count(), 1, "{mangled}");
+}
+
+#[test]
+fn an_empty_conformance_spec_list_is_rejected() {
+    assert!(decode("_omg_mlE").is_none());
 }

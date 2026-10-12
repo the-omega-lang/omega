@@ -55,6 +55,7 @@ pub enum ExternFunctionKind {
     },
     Conform {
         target: ResolvedType,
+        spec_module_path: Vec<Ident>,
         spec_name: Ident,
         spec_args: Vec<ResolvedGenericArg>,
         method_name: Ident,

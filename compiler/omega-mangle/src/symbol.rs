@@ -33,6 +33,10 @@ pub enum ManglePath {
     /// [`MangleTemplate`].
     Template(Box<ManglePath>, Box<MangleTemplate>),
     Type(Box<MangleType>),
+    /// `<Target as Spec₁ + … + Specₙ>`: the full identity of a conformance
+    /// (one spec) or of a vtable shape (its members). Each spec is its full
+    /// nominal path; the list is non-empty and kept in the caller's order.
+    Conformance(Box<MangleType>, Vec<ManglePath>),
 }
 
 impl ManglePath {

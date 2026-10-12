@@ -1,0 +1,44 @@
+# Two specs that share a name and a method signature but live in different
+# modules are different items: conforming to both must neither collide nor
+# dispatch through the other's method or dispatch table.
+import std::io::println;
+import self::a;
+import self::b;
+
+struct S {
+	exposed tag: i32;
+}
+
+meet a::P for S {
+	f(*self) => i32 { 1 }
+}
+
+meet b::P for S {
+	f(*self) => i32 { 2 }
+}
+
+through_a(object: *spec a::P) => i32 {
+	object.f()
+}
+
+through_b(object: *spec b::P) => i32 {
+	object.f()
+}
+
+bounded_a<T: a::P>(value: *T) => i32 {
+	a::P::f(value)
+}
+
+main() => void {
+	s := S { tag = 0; };
+	println$("static a: ", <S : a::P>::f(&s));
+	println$("static b: ", <S : b::P>::f(&s));
+	println$("spec a: ", a::P::f(&s));
+	println$("spec b: ", b::P::f(&s));
+	println$("bounded a: ", bounded_a(&s));
+	println$("object a: ", through_a(&s));
+	println$("object b: ", through_b(&s));
+	both := <*spec a::P + b::P>&s;
+	println$("narrowed a: ", (<*spec a::P>both).f());
+	println$("narrowed b: ", (<*spec b::P>both).f());
+}

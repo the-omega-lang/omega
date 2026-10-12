@@ -57,7 +57,8 @@ optional vendor suffix
 - generic application;
 - template-qualified function path (a generic function's declaration identity, see
   [Declaration identity](#declaration-identity));
-- structural-type owner (needed for conform methods on unnamed targets such as primitives/slices).
+- structural-type owner (needed for methods on unnamed targets such as primitives/slices);
+- conformance path `<Target as Spec₁ + … + Specₙ>`: a target `MangleType` plus a non-empty list of full spec paths, kept in the caller's order (see [Conformance method identity](#conformance-method-identity) and [Vtables](#vtables)). Its tag reuses `m`, otherwise only the `u32` type letter; that is unambiguous because a conformance path is only ever parsed where a path is, never where a type is.
 
 `MangleType` mirrors externally identity-relevant semantic type shapes without depending on `ResolvedType` directly.
 
@@ -69,7 +70,7 @@ Structural types have no path, so they encode their shape instead: a dynamic spe
 
 Unlike Rust v0 mangling, Omega's function signature is load-bearing because Omega supports function overloading. Parameter + return type identity participates in the symbol so overloads with the same source path remain distinct.
 
-A receiver-bearing function's path carries an extra nested `self` **value** segment before the function name, mirroring the `Owner::self::name` source spelling that selects it: an inherent method is `Owner::self::name`, a primitive method `<target>::self::name`, and a conformance method places `self` beneath the existing target/spec owner path. This is an ordinary nested value segment, so `omega-mangle` needs no grammar tag for it, and `omega-mir::mangle` builds definitions and `ExternFunctionRef` references through the same helper so separately compiled sides agree.
+A receiver-bearing function's path carries an extra nested `self` **value** segment before the function name, mirroring the `Owner::self::name` source spelling that selects it: an inherent method is `Owner::self::name`, a primitive method `<target>::self::name`, and a conformance method places `self` beneath its conformance path. This is an ordinary nested value segment, so `omega-mangle` needs no grammar tag for it, and `omega-mir::mangle` builds definitions and `ExternFunctionRef` references through the same helper so separately compiled sides agree.
 
 The signature still carries the real ABI parameter types, receiver included. The path segment is *in addition to* that, not a replacement: it is what keeps a static and a member of the same owner, name, and ABI signature separately linkable, which the leading receiver type alone cannot do when a static declares that same pointer explicitly.
 
@@ -179,16 +180,11 @@ An argument list is either all types or mixed. An all-type list keeps the origin
 
 ## Conformance method identity
 
-A conformance method's identity must include enough information to distinguish:
+A conformance method nests beneath a one-spec conformance path, `<Target as pkg::m::Spec<Args>>::self::name` for a receiver-bearing method. The target is encoded as a `MangleType`, so named and unnamed targets take the same form, and the spec is its full nominal path (module path, name, and generic arguments) exactly as a spec-object member encodes it. Two same-named specs in different modules are therefore two symbols, both within one compilation and across separately compiled packages. Template and generic-argument segments, and the signature, follow as for any other function.
 
-- target type;
-- spec identity;
-- spec generic arguments;
-- method/function signature.
+`conformance_method_symbol` is the single helper for definitions (`ConformanceOwner`), extern references (`ExternFunctionKind::Conform`), generic/blanket instantiations, and spec-default bodies instantiated for a conformance, so the two sides of a separate-compilation link cannot disagree.
 
-Unnamed target types cannot be represented as normal type paths, so `ManglePath::Type(MangleType)` provides a structural owner path.
-
-The current implementation still omits the spec's *module path* in conformance-method and vtable identity; that ABI bug is tracked explicitly in [`../issues/known-issues.md`](../issues/known-issues.md) and must be migrated as one cross-package mangling change.
+Introducing the conformance path renamed every normally mangled conformance method and vtable -- an ABI/separate-compilation migration with no compatibility alias. Every other symbol kept its bytes.
 
 ## Gap/glue identity
 
@@ -249,9 +245,9 @@ A concrete instantiation of a generic template declared in an extern package is 
 
 ## Vtables
 
-Dynamic spec coercion produces a resolved ordered method-slot list. Codegen may deduplicate vtable data by the resolved slot list within one compilation unit.
+Dynamic spec coercion produces a resolved ordered method-slot list. Codegen deduplicates vtable data within one compilation unit by the vtable's symbol.
 
-External symbol identity for a vtable cannot rely on local `HirId`s, because IDs have no cross-process meaning. `mangle::vtable_symbol` derives a deterministic symbol from semantic type/spec identity instead.
+External symbol identity for a vtable cannot rely on local `HirId`s, because IDs have no cross-process meaning. `mangle::vtable_symbol` names the `vtable` value beneath a conformance path that lists the object shape's members as full spec paths, in the shape's canonical order: `<Target as pkg::a::P + pkg::b::Q>::vtable`. The shape arrives canonical from the analyzer and nothing in mangling re-sorts it, so `*spec A + B` and `*spec B + A` share one vtable symbol.
 
 ## Anonymous data symbols
 

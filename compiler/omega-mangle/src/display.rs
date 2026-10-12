@@ -59,6 +59,15 @@ fn render_path(path: &ManglePath) -> String {
             format!("{}{{{}}}", render_path(parent), render_template(template))
         }
         ManglePath::Type(ty) => render_type(ty),
+        ManglePath::Conformance(target, specs) => format!(
+            "<{} as {}>",
+            render_type(target),
+            specs
+                .iter()
+                .map(render_path)
+                .collect::<Vec<_>>()
+                .join(" + ")
+        ),
     }
 }
 

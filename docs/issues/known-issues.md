@@ -104,20 +104,6 @@ Concrete current compiler/library bugs and unsupported cases. Resolved issues ar
 
 Remaining known conformance/spec issues:
 
-- **Conformance-method and vtable linker identity currently omits the spec's
-  module path.** `ConformanceOwner` retains `spec_module_path`, but
-  `omega-mir::mangle::conformance_method_symbol` and `vtable_symbol` currently
-  receive only the spec name + concrete spec arguments. `ExternFunctionKind::
-  Conform` also drops the module path before external references reach MIR. Two
-  distinct specs with the same name in different modules can therefore produce
-  the same conformance-method/vtable identity for the same target and signature.
-  This is deliberately not patched as a local refactor: adding the missing path
-  changes emitted linker names and is therefore an ABI/separate-compilation
-  migration. The fix must thread full spec identity through checked extern
-  references, conformance definitions, vtable construction, codegen, and
-  cross-package separate-compilation linkage tests in one change.
-  [symbol-mangling.md](../architecture/symbol-mangling.md)
-
 - **Blanket conform bodies are checked lazily**, and a blanket emits a body
   for every type it is *materialized* against, not every type that calls it.
   Goal-directed proving has reduced the materialization set — a type is only

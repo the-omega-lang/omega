@@ -131,6 +131,18 @@ impl Decoder<'_> {
                 self.pos += 1;
                 ManglePath::Type(Box::new(self.parse_type()?))
             }
+            TAG_CONFORMANCE => {
+                self.pos += 1;
+                let target = self.parse_type()?;
+                let mut specs = Vec::new();
+                while !self.consume_if(TAG_LIST_END) {
+                    specs.push(self.parse_path()?);
+                }
+                if specs.is_empty() {
+                    return None;
+                }
+                ManglePath::Conformance(Box::new(target), specs)
+            }
             _ => return None,
         };
 

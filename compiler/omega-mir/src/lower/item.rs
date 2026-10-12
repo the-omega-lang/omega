@@ -327,6 +327,7 @@ fn free_function_symbol(function: &CheckedFunctionDef, path: &[Ident], entry: &[
         (ManglingMode::Enabled, Some(owner), _) => {
             mangle::encode(&mangle::conformance_method_symbol(
                 &owner.target,
+                &owner.spec_module_path,
                 &owner.spec_name,
                 &owner.spec_args,
                 &function.name,
