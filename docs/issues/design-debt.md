@@ -135,24 +135,6 @@ target-specific semantic/query state. That second design is also the cleaner pat
 toward incremental compilation. This is a public driver/API change and should be
 done deliberately rather than hidden in a refactor.
 
-### `reveal` still has no backstop for the "every position must remember" invariant
-
-Reveal activation is now centralized substantially more than it used to be:
-`RevealState` owns nested frame bookkeeping and common operand positions go
-through `with_reveal_operand` / `with_reveal_bypass`. A hidden/shared access
-marks every active frame used, so a nested reveal chain no longer produces the
-old guaranteed false warning.
-
-The remaining weakness is architectural: the place resolver itself does not
-own reveal activation. Call/assignment/address-of paths still have to enter the
-shared helper before they ask place resolution to inspect a revealed operand.
-A new syntactic position can therefore bypass the helper and silently lose the
-visibility bypass. The structural end state is to make a revealed operand/place
-an explicit input shape (or have place resolution activate it itself), so this
-cannot be forgotten by a new caller. That change cuts across analysis entry
-points and should be designed deliberately rather than hidden in a local
-refactor.
-
 ### Nested statement fields lose their own source site
 
 A few AST nodes discard a more specific source site that later phases could use. Nested

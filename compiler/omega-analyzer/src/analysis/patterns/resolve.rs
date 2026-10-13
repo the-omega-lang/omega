@@ -313,7 +313,7 @@ impl<'r> Analyzer<'r> {
         pattern: &HirPattern,
     ) -> Option<(usize, bool)> {
         if let Some(HirPatternValue::Value(expr)) = &pattern.value {
-            return self.with_reveal_operand(expr, |this, _| {
+            return self.within_reveals(Self::place_reveals(expr), |this| {
                 this.resolve_anonymous_member_header(node_id, shape, parent, pattern)
             });
         }
@@ -395,10 +395,11 @@ impl<'r> Analyzer<'r> {
     }
 
     fn variant_shaped_path(expr: &HirExprNode) -> Option<&ExprPath> {
-        match &Self::strip_reveal(expr).1.expr {
+        match &expr.expr {
             HirExpr::Place(HirPlace {
                 root: HirPlaceRoot::Path(path),
                 projections,
+                ..
             }) if projections.is_empty() && !path.path.tail.is_empty() => Some(path),
             _ => None,
         }
@@ -697,7 +698,7 @@ impl<'r> Analyzer<'r> {
         nominal: &NominalRef,
         expr: &HirExprNode,
     ) -> Option<usize> {
-        self.with_reveal_operand(expr, |this, expr| {
+        self.within_reveals(Self::place_reveals(expr), |this| {
             let Some(path) = Self::variant_shaped_path(expr) else {
                 this.error(
                     expr.id,

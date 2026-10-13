@@ -838,14 +838,13 @@ impl<'r> Analyzer<'r> {
         arg: &GenericArg,
         param: Option<&GenericParam>,
     ) -> Option<ResolvedGenericArg> {
-        let reveals = &self.reveals;
         match self.context.resolve_generic_arg(
             arg,
             param,
             &mut *self.resolver,
             &self.module_path,
             ResolveItemOptions::INDIRECT,
-            &|origin| reveals.allows(origin),
+            &mut self.reveals,
         ) {
             Ok(resolved) => Some(resolved),
             Err(err) => {

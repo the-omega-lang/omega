@@ -1,0 +1,3 @@
+cast-target: 42
+sizeof-operand: 4
+generic-argument: 4

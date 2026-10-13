@@ -175,8 +175,6 @@ Remaining known conformance/spec issues:
 
 Shape problems in `omega-driver` and `omega-analyzer` that still need a deliberate design change — full writeups in [design-debt.md](design-debt.md).
 
-- **`reveal` activation is centralized but not structurally enforced by place resolution.** `RevealState` and the shared operand helpers remove the old raw-frame duplication and nested-reveal warning bug, but a future syntactic position can still forget to enter the helper before resolving a revealed place.
-
 - **`Driver::compile(&mut self)` looks reusable even though its semantic/query state is one-shot.** The CLI only compiles once per driver today, but a second call can retain failed queries, registrations, diagnostics, and materialized bodies. The future API should either consume the driver or split reusable workspace/module state from a fresh `CompilationSession`.
 
 ## Design debt worth watching
@@ -311,22 +309,3 @@ Shape problems in `omega-driver` and `omega-analyzer` that still need a delibera
   **Decision needed:** accept the asymmetry, promote these two words to real
   keywords, or give casts a spelling that does not start with `<`.
   [parsing-and-hir.md](../architecture/parsing-and-hir.md)
-
-- **A `reveal` that type resolution actually needs is still reported as
-  unnecessary.** `resolve_type_or_error_in` asks whether a `reveal`
-  authorizes the written name and passes the answer into `resolve_type` as
-  a visibility bypass, but never marks the reveal frame used. The two
-  other bypass routes do: `resolve_item_checked` marks it post hoc when
-  the resolved item turns out not to be visible, and member checks reach
-  it through `revealed()`. So a `reveal` in *type* position -- a cast
-  target, an annotation, any type spelling naming something not visible at
-  the use site -- compiles correctly and then warns `unnecessary 'reveal'
-  -- this 'reveal' never suppresses anything`. Removing it as the warning
-  advises fails to compile; the same `reveal` over a member access warns
-  correctly. Fixing it means the authority passed into type resolution has
-  to be able to mark frames, which conflicts with the `&mut dyn
-  ModuleResolver` borrow held across the same call. This is a concrete
-  instance of the architectural gap recorded under "`reveal` still has no
-  backstop for the 'every position must remember' invariant" in
-  [design-debt.md](design-debt.md).
-  [visibility.md](../language/visibility.md)

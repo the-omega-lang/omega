@@ -1,5 +1,5 @@
 use super::lower_module;
-use crate::hir::{HirAsmDescriptorKind, HirItem, HirStmt};
+use crate::hir::{HirAsmDescriptorKind, HirExpr, HirItem, HirStmt};
 use crate::ids::ModuleId;
 use omega_parser::SourceModule;
 use omega_parser::prelude::Type;
@@ -182,4 +182,34 @@ fn each_import_leaf_gets_its_own_hir_id() {
 
     assert_eq!(ids.len(), 2);
     assert_ne!(ids[0], ids[1]);
+}
+
+#[test]
+fn reveal_prefixes_fold_into_the_place_they_wrap() {
+    let source = "f() => void { a := reveal reveal v.secret; b := reveal g(); }";
+    let hir = lower(source);
+    let HirItem::FunctionDefinition(f) = &hir.items[0] else {
+        panic!("expected a function");
+    };
+    let stmts = &f.body.as_ref().unwrap().stmts;
+    let text = |span: omega_parser::prelude::Span| &source[span.start..span.end];
+
+    let HirStmt::WalrusDeclaration(revealed_place) = &stmts[0] else {
+        panic!("expected a declaration");
+    };
+    let HirExpr::Place(place) = &revealed_place.value.expr else {
+        panic!("a revealed place lowers to the place itself");
+    };
+    assert_eq!(text(revealed_place.value.span), "v.secret");
+    let spans: Vec<&str> = place
+        .reveals
+        .iter()
+        .map(|reveal| text(reveal.span))
+        .collect();
+    assert_eq!(spans, ["reveal reveal v.secret", "reveal v.secret"]);
+
+    let HirStmt::WalrusDeclaration(revealed_call) = &stmts[1] else {
+        panic!("expected a declaration");
+    };
+    assert!(matches!(revealed_call.value.expr, HirExpr::Reveal(_)));
 }

@@ -1,0 +1,5 @@
+# `Secret` is hidden, so naming it from another module needs `reveal`.
+@suppress(unused_field)
+struct Secret {
+	value: i32;
+}

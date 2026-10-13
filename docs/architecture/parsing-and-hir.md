@@ -184,7 +184,7 @@ HIR lowering owns four important source-shape normalizations:
 
 1. **Synthetic `self` insertion.** Member functions receive the parameter shape implied by `SelfMode`.
 2. **By-value `mut self` shadowing.** It becomes an implicit mutable local shadow at the beginning of the body, avoiding a separate downstream “mutable parameter” concept.
-3. **Place-chain flattening.** Nested field/index/deref AST expressions that form an assignable/addressable place become `HirPlace { root, projections }`.
+3. **Place-chain flattening.** Nested field/index/deref AST expressions that form an assignable/addressable place become `HirPlace { root, projections }`. `reveal` prefixes written directly around a place-shaped operand fold into `HirPlace::reveals` (outermost first), each keeping the id and span of the `reveal` expression it was; the place node keeps its own id, span and origin. A `reveal` around anything else stays `HirExpr::Reveal`.
 4. **Import-tree flattening.** One `ImportStmt` becomes one `HirImport` per terminal binding.
 
 Static-spec parameter normalization (`f(x: spec A + B)` becoming one fresh bounded generic) is deliberately **not** here. It has to run after alias expansion, so that `f(x: AB)` and the literal spelling normalize identically, and expanding an alias needs cross-module resolution HIR does not have. It now lives at the analyzer/driver seam -- see [`semantic-analysis.md`](semantic-analysis.md).

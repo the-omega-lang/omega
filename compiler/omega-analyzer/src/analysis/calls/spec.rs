@@ -40,7 +40,7 @@ impl<'r> Analyzer<'r> {
         call: &HirFunctionCall,
         expected: Expected<'_>,
     ) -> Intercepted {
-        let HirExpr::Place(callee_place) = &Self::strip_reveal(&call.callee).1.expr else {
+        let HirExpr::Place(callee_place) = &call.callee.expr else {
             return Intercepted::Declined;
         };
         if !callee_place.projections.is_empty() {

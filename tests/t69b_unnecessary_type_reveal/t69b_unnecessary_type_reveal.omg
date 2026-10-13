@@ -1,0 +1,8 @@
+import std::io::println;
+import self::vault;
+
+# `Public` is exposed, so this `reveal` suppresses nothing and still warns.
+main() => void {
+	size := reveal sizeof<vault::Public>;
+	println$("sizeof-operand: ", size);
+}

@@ -369,6 +369,7 @@ impl Lowerer {
                 expr: HirExpr::Place(HirPlace {
                     root: HirPlaceRoot::Path(Path::from(self_ident).into()),
                     projections: vec![],
+                    reveals: vec![],
                 }),
             },
             mutable: true,

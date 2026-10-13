@@ -6,16 +6,24 @@ pub(super) struct RevealState {
 }
 
 struct RevealFrame {
+    id: HirId,
     origin: Origin,
     used: bool,
 }
 
 impl RevealState {
-    pub fn begin(&mut self, origin: Origin) {
+    pub fn begin(&mut self, id: HirId, origin: Origin) {
         self.frames.push(RevealFrame {
+            id,
             origin,
             used: false,
         });
+    }
+
+    /// Whether the `reveal` written as `id` is already active, because the
+    /// position consuming its place activated it before resolving the place.
+    fn is_active(&self, id: HirId) -> bool {
+        self.frames.iter().any(|frame| frame.id == id)
     }
 
     /// Whether an active `reveal` authorizes syntax carrying `origin`. A
@@ -38,6 +46,16 @@ impl RevealState {
             .pop()
             .expect("finishing reveal analysis requires an active reveal")
             .used
+    }
+}
+
+impl crate::context::RevealAuthority for RevealState {
+    fn allows(&self, origin: Origin) -> bool {
+        RevealState::allows(self, origin)
+    }
+
+    fn mark_used(&mut self) {
+        RevealState::mark_used(self)
     }
 }
 
@@ -85,56 +103,56 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// The origins of the `reveal` prefixes wrapping `expr`, outermost
-    /// first, and the expression underneath all of them.
-    pub(super) fn strip_reveal(expr: &HirExprNode) -> (Vec<Origin>, &HirExprNode) {
+    /// The `reveal` prefixes folded into `expr` when it is a place.
+    pub(super) fn place_reveals(expr: &HirExprNode) -> &[HirPlaceReveal] {
         match &expr.expr {
-            HirExpr::Reveal(reveal) => {
-                let (mut origins, inner) = Self::strip_reveal(&reveal.base);
-                origins.insert(0, reveal.origin);
-                (origins, inner)
-            }
-            _ => (Vec::new(), expr),
+            HirExpr::Place(place) => &place.reveals,
+            _ => &[],
         }
     }
 
-    pub(super) fn with_reveal_bypass<T>(
+    /// Runs `f` with `reveals` active, warning for each one nothing used. A
+    /// prefix the consuming position already activated is left to it, so a
+    /// place reached twice reports its `reveal` once.
+    pub(super) fn within_reveals<T>(
         &mut self,
-        reveal_origins: &[Origin],
-        node_id: HirId,
-        span: Span,
-        f: impl FnOnce(&mut Self) -> Option<T>,
-    ) -> Option<T> {
-        for origin in reveal_origins {
-            self.reveals.begin(*origin);
+        reveals: &[HirPlaceReveal],
+        f: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let entered: Vec<HirPlaceReveal> = reveals
+            .iter()
+            .filter(|reveal| !self.reveals.is_active(reveal.id))
+            .copied()
+            .collect();
+        for reveal in &entered {
+            self.reveals.begin(reveal.id, reveal.origin);
         }
         let result = f(self);
-        let mut used = true;
-        for _ in reveal_origins {
-            used &= self.reveals.finish();
-        }
-        if !reveal_origins.is_empty() && !used {
-            self.warn(node_id, span, AnalysisWarningKind::UnnecessaryReveal);
+        for reveal in entered.iter().rev() {
+            if !self.reveals.finish() {
+                self.warn(
+                    reveal.id,
+                    reveal.span,
+                    AnalysisWarningKind::UnnecessaryReveal,
+                );
+            }
         }
         result
-    }
-
-    pub(super) fn with_reveal_operand<T>(
-        &mut self,
-        operand: &HirExprNode,
-        f: impl FnOnce(&mut Self, &HirExprNode) -> Option<T>,
-    ) -> Option<T> {
-        let (reveal_origins, inner) = Self::strip_reveal(operand);
-        self.with_reveal_bypass(&reveal_origins, operand.id, operand.span, |this| {
-            f(this, inner)
-        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::RevealState;
+    use omega_hir::{HirId, ModuleId};
     use omega_parser::prelude::{ExpansionId, Origin};
+
+    fn id(local: u32) -> HirId {
+        HirId {
+            module: ModuleId(0),
+            local,
+        }
+    }
 
     fn origin(id: u32) -> Origin {
         Origin(Some(ExpansionId(id)))
@@ -143,8 +161,8 @@ mod tests {
     #[test]
     fn using_a_nested_reveal_marks_the_whole_chain_used() {
         let mut reveals = RevealState::default();
-        reveals.begin(Origin::default());
-        reveals.begin(Origin::default());
+        reveals.begin(id(1), Origin::default());
+        reveals.begin(id(2), Origin::default());
         reveals.mark_used();
 
         assert!(reveals.finish());
@@ -154,8 +172,8 @@ mod tests {
     #[test]
     fn only_the_exact_expansion_origin_of_an_active_frame_matches() {
         let mut reveals = RevealState::default();
-        reveals.begin(origin(1));
-        reveals.begin(origin(2));
+        reveals.begin(id(1), origin(1));
+        reveals.begin(id(2), origin(2));
 
         assert!(reveals.allows(origin(1)));
         assert!(reveals.allows(origin(2)));
@@ -169,7 +187,7 @@ mod tests {
     #[test]
     fn a_source_written_reveal_authorizes_source_syntax_only() {
         let mut reveals = RevealState::default();
-        reveals.begin(Origin::default());
+        reveals.begin(id(1), Origin::default());
 
         assert!(reveals.allows(Origin::default()));
         assert!(!reveals.allows(origin(1)));

@@ -1,0 +1,19 @@
+import std::io::println;
+import self::vault;
+
+size_of<T>() => usize { sizeof<T> }
+
+# A `reveal` around a type spelling that names a hidden type is what makes
+# the spelling resolve, so none of these warns.
+main() => void {
+	word: i32 = 41;
+	secret := reveal <*vault::Secret>&word;
+	back := <*i32>secret;
+	println$("cast-target: ", *back + 1);
+
+	size := reveal sizeof<vault::Secret>;
+	println$("sizeof-operand: ", size);
+
+	generic := reveal size_of<vault::Secret>();
+	println$("generic-argument: ", generic);
+}

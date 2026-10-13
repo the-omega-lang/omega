@@ -1,0 +1,9 @@
+warning: unnecessary 'reveal'
+ --> tests/t69b_unnecessary_type_reveal/t69b_unnecessary_type_reveal.omg:6:13
+  |
+6 |     size := reveal sizeof<vault::Public>;
+  |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this 'reveal' never suppresses anything
+  |
+  = help: remove 'reveal' -- every check inside it would already pass without it
+  = note: suppress this with '@suppress(unnecessary_reveal)'
+

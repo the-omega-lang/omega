@@ -686,6 +686,20 @@ impl HirPattern {
 pub struct HirPlace {
     pub root: HirPlaceRoot,
     pub projections: Vec<HirProjection>,
+    /// The `reveal` prefixes written around this place, outermost first.
+    /// They are part of the place so that every position consuming it
+    /// carries the bypass, rather than each having to look for a wrapper.
+    pub reveals: Vec<HirPlaceReveal>,
+}
+
+/// One `reveal` prefix folded into a place. It keeps the identity and span of
+/// the `reveal` expression it was written as, which is where an unnecessary
+/// `reveal` is reported.
+#[derive(Debug, Clone, Copy)]
+pub struct HirPlaceReveal {
+    pub id: HirId,
+    pub span: Span,
+    pub origin: Origin,
 }
 
 #[derive(Debug, Clone)]
@@ -723,6 +737,8 @@ pub struct HirAddressOf {
     pub mutable: bool,
 }
 
+/// A `reveal` around an operand that is not place-shaped; one around a place
+/// is folded into [`HirPlace::reveals`].
 #[derive(Debug, Clone)]
 pub struct HirReveal {
     pub base: Box<HirExprNode>,

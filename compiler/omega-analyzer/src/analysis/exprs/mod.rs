@@ -309,12 +309,12 @@ impl<'r> Analyzer<'r> {
         reveal: &HirReveal,
         expected: Expected<'_>,
     ) -> Option<CheckedExprNode> {
-        self.reveals.begin(reveal.origin);
-        let result = self.analyze_expr(&reveal.base, expected);
-        if !self.reveals.finish() {
-            self.warn(id, span, AnalysisWarningKind::UnnecessaryReveal);
-        }
-        result
+        let prefix = HirPlaceReveal {
+            id,
+            span,
+            origin: reveal.origin,
+        };
+        self.within_reveals(&[prefix], |this| this.analyze_expr(&reveal.base, expected))
     }
 
     fn analyze_comp(
@@ -485,16 +485,11 @@ impl<'r> Analyzer<'r> {
         call: &HirFunctionCall,
         expected: Expected<'_>,
     ) -> Option<CheckedExprNode> {
-        let (reveal_origins, _) = Self::strip_reveal(&call.callee);
-        if !reveal_origins.is_empty() {
-            return self.with_reveal_bypass(
-                &reveal_origins,
-                call.callee.id,
-                call.callee.span,
-                |this| this.analyze_call_core(node_id, span, call, expected),
-            );
-        }
-        self.analyze_call_core(node_id, span, call, expected)
+        // Call resolution reads the callee's path and member names before it
+        // ever analyzes the callee as a place, so its reveals cover the call.
+        self.within_reveals(Self::place_reveals(&call.callee), |this| {
+            this.analyze_call_core(node_id, span, call, expected)
+        })
     }
 
     fn analyze_call_core(
@@ -594,15 +589,13 @@ impl<'r> Analyzer<'r> {
         error_span: Span,
         not_a_place: AnalysisErrorKind,
     ) -> Option<(HirPlace, CheckedPlace, ResolvedType, bool)> {
-        self.with_reveal_operand(operand, |this, inner| {
-            let HirExpr::Place(place) = &inner.expr else {
-                this.error(error_id, error_span, not_a_place);
-                return None;
-            };
-            let (checked, r#type, mutable) =
-                this.analyze_place(inner.id, inner.span, place, expected)?;
-            Some((place.clone(), checked, r#type, mutable))
-        })
+        let HirExpr::Place(place) = &operand.expr else {
+            self.error(error_id, error_span, not_a_place);
+            return None;
+        };
+        let (checked, r#type, mutable) =
+            self.analyze_place(operand.id, operand.span, place, expected)?;
+        Some((place.clone(), checked, r#type, mutable))
     }
 
     fn analyze_assignment(
@@ -661,19 +654,16 @@ impl<'r> Analyzer<'r> {
         mutable: bool,
         expected: Expected<'_>,
     ) -> Option<CheckedExprNode> {
-        self.with_reveal_operand(base, |this, base| {
-            this.analyze_address_of_inner(node_id, span, base, mutable, expected)
-        })
-    }
-
-    fn analyze_address_of_inner(
-        &mut self,
-        node_id: HirId,
-        span: Span,
-        base: &HirExprNode,
-        mutable: bool,
-        expected: Expected<'_>,
-    ) -> Option<CheckedExprNode> {
+        if let HirExpr::Reveal(reveal) = &base.expr {
+            let prefix = HirPlaceReveal {
+                id: base.id,
+                span: base.span,
+                origin: reveal.origin,
+            };
+            return self.within_reveals(&[prefix], |this| {
+                this.analyze_address_of(node_id, span, &reveal.base, mutable, expected)
+            });
+        }
         if let HirExpr::Slice(HirSlice {
             base: slice_base,
             range,

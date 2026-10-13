@@ -172,7 +172,7 @@ impl<'r> Analyzer<'r> {
         &self,
         scrutinee: &HirExprNode,
     ) -> Option<(Ident, Origin, HirId, Storage, bool)> {
-        let HirExpr::Place(place) = &Self::strip_reveal(scrutinee).1.expr else {
+        let HirExpr::Place(place) = &scrutinee.expr else {
             return None;
         };
         self.narrowable_place(place)

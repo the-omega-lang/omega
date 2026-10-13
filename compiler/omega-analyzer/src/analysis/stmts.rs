@@ -906,6 +906,7 @@ impl<'r> Analyzer<'r> {
                     Origin::default(),
                     Vec::new(),
                 )],
+                reveals: Vec::new(),
             }),
         };
         let call = HirExprNode {

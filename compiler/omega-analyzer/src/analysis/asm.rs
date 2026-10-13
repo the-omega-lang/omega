@@ -147,6 +147,7 @@ impl<'r> Analyzer<'r> {
                             qualified_spec: None,
                         }),
                         projections: Vec::new(),
+                        reveals: Vec::new(),
                     }),
                 };
                 let checked = self.analyze_expr(&synthetic, Expected::None)?;
@@ -208,7 +209,9 @@ impl<'r> Analyzer<'r> {
             HirExpr::Place(HirPlace {
                 root: HirPlaceRoot::Path(path),
                 projections,
+                reveals,
             }) if projections.is_empty()
+                && reveals.is_empty()
                 && path.path.tail.is_empty()
                 && path.generic_args.is_empty()
                 && path.qualified_spec.is_none() =>

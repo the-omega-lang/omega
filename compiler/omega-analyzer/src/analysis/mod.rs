@@ -68,10 +68,10 @@ use omega_hir::{
     BinaryOp, HirAddressOf, HirAsmDescriptor, HirAsmDescriptorKind, HirBlock, HirCast,
     HirCompoundAssign, HirDeclaration, HirEnumDef, HirExpr, HirExprNode, HirField, HirFor,
     HirForIn, HirFunctionCall, HirFunctionDef, HirGenericParam, HirId, HirIf, HirInlineAsm,
-    HirItem, HirMatch, HirMatchArm, HirParam, HirPattern, HirPatternValue, HirPlace, HirPlaceRoot,
-    HirProjection, HirRange, HirRangeEnd, HirReveal, HirSlice, HirSpecDef, HirStmt, HirStructDef,
-    HirStructLiteral, HirStructLiteralField, HirUnionDef, HirWalrusDeclaration, ItemPath,
-    LogicalOp, ModulePath,
+    HirItem, HirMatch, HirMatchArm, HirParam, HirPattern, HirPatternValue, HirPlace,
+    HirPlaceReveal, HirPlaceRoot, HirProjection, HirRange, HirRangeEnd, HirReveal, HirSlice,
+    HirSpecDef, HirStmt, HirStructDef, HirStructLiteral, HirStructLiteralField, HirUnionDef,
+    HirWalrusDeclaration, ItemPath, LogicalOp, ModulePath,
 };
 use omega_parser::prelude::{
     ArrayLength, ExprGenericArg, ExprPath, GenericArg, Ident, NumberBase, NumberExpr, Origin, Path,
@@ -1443,14 +1443,13 @@ impl<'r> Analyzer<'r> {
         param: Option<&GenericParam>,
         module: &ModulePath,
     ) -> Option<ResolvedGenericArg> {
-        let reveals = &self.reveals;
         match self.context.resolve_generic_arg(
             arg,
             param,
             &mut *self.resolver,
             module,
             ResolveItemOptions::INDIRECT,
-            &|origin| reveals.allows(origin),
+            &mut self.reveals,
         ) {
             Ok(resolved) => Some(resolved),
             Err(err) => {
@@ -1472,13 +1471,12 @@ impl<'r> Analyzer<'r> {
         // applies is still a usable type here; the caller that owns the
         // obligation is the one that has to stop.
         self.check_alias_generic_bounds(id, span, typ, module);
-        let reveals = &self.reveals;
         match self.context.resolve_type(
             typ.to_owned(),
             &mut *self.resolver,
             module,
             ResolveItemOptions::with_indirection(indirect),
-            &|origin| reveals.allows(origin),
+            &mut self.reveals,
         ) {
             Ok(resolved) => Some(resolved),
             Err(err) => {
@@ -1542,14 +1540,13 @@ impl<'r> Analyzer<'r> {
                 .map(ResolvedGenericArg::Type);
         }
         self.with_substitution(subst, |this| {
-            let reveals = &this.reveals;
             match this.context.resolve_generic_arg(
                 default,
                 Some(param),
                 &mut *this.resolver,
                 &this.module_path,
                 ResolveItemOptions::INDIRECT,
-                &|origin| reveals.allows(origin),
+                &mut this.reveals,
             ) {
                 Ok(resolved) => Some(resolved),
                 Err(err) => {

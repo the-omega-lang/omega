@@ -185,6 +185,7 @@ impl<'r> Analyzer<'r> {
         let root = HirPlace {
             root: place.root.clone(),
             projections: Vec::new(),
+            reveals: Vec::new(),
         };
         let (_, _, decl_id, ..) = self.narrowable_place(&root)?;
         let path = place
@@ -314,6 +315,18 @@ impl<'r> Analyzer<'r> {
     }
 
     pub(super) fn analyze_place(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        place: &HirPlace,
+        expected: Option<&ResolvedType>,
+    ) -> Option<(CheckedPlace, ResolvedType, bool)> {
+        self.within_reveals(&place.reveals, |this| {
+            this.analyze_revealed_place(node_id, span, place, expected)
+        })
+    }
+
+    fn analyze_revealed_place(
         &mut self,
         node_id: HirId,
         span: Span,

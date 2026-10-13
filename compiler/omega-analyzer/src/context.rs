@@ -16,13 +16,38 @@ use indexmap::IndexMap;
 use omega_hir::{HirId, ItemPath, ModulePath};
 use omega_parser::prelude::*;
 
-/// Whether an active `reveal` speaks for syntax carrying a given origin.
+/// The active `reveal` prefixes, as type resolution sees them.
 ///
-/// Type resolution asks this per written name rather than once per spelling:
+/// Type resolution asks per written name rather than once per spelling:
 /// `enum A | B`, a function type, and `spec A + B` can each mix names a macro
 /// body authored with names its caller substituted, and a `reveal` only ever
 /// authorizes the environment it was written in.
-pub type RevealAuthority<'a> = &'a dyn Fn(Origin) -> bool;
+pub trait RevealAuthority {
+    /// Whether an active `reveal` speaks for syntax carrying `origin`.
+    fn allows(&self, origin: Origin) -> bool;
+
+    /// Records that an active `reveal` authorized a reference that would
+    /// otherwise not have been visible, so it is not reported unnecessary.
+    fn mark_used(&mut self);
+}
+
+/// Resolves an item a type spelling names, marking the active `reveal` used
+/// when it is what made the item reachable.
+fn resolve_revealed_item<R: Names + Items + ?Sized>(
+    resolver: &mut R,
+    accessor: &ModulePath,
+    absolute: &ItemPath,
+    generic_args: &[ResolvedGenericArg],
+    options: ResolveItemOptions,
+    revealed: bool,
+    reveals: &mut dyn RevealAuthority,
+) -> Result<ResolvedItem, ResolveError> {
+    let result = resolver.resolve_item(accessor, absolute, generic_args, options);
+    if revealed && result.is_ok() && !resolver.is_item_visible(accessor, absolute) {
+        reveals.mark_used();
+    }
+    result
+}
 
 #[derive(Debug, Clone)]
 pub struct VarBinding {
@@ -349,7 +374,7 @@ impl Context {
         resolver: &mut R,
         module_path: &ModulePath,
         options: ResolveItemOptions,
-        reveals: RevealAuthority<'_>,
+        reveals: &mut dyn RevealAuthority,
     ) -> Result<ResolvedFunctionType, TypeResolutionError> {
         let params = fntype
             .params
@@ -470,7 +495,7 @@ impl Context {
         resolver: &mut R,
         module_path: &ModulePath,
         options: ResolveItemOptions,
-        reveals: RevealAuthority<'_>,
+        reveals: &mut dyn RevealAuthority,
     ) -> Result<ResolvedType, TypeResolutionError> {
         // Type-form aliases expand before any contextual rule below sees the
         // type, so an aliased spelling and a literal one are indistinguishable
@@ -547,7 +572,7 @@ impl Context {
         resolver: &mut R,
         module_path: &ModulePath,
         options: ResolveItemOptions,
-        reveals: RevealAuthority<'_>,
+        reveals: &mut dyn RevealAuthority,
     ) -> Result<ResolvedType, TypeResolutionError> {
         let mut resolved = Vec::with_capacity(members.len());
         for member in members {
@@ -579,13 +604,13 @@ impl Context {
         resolver: &mut R,
         module_path: &ModulePath,
         options: ResolveItemOptions,
-        reveals: RevealAuthority<'_>,
+        reveals: &mut dyn RevealAuthority,
     ) -> Result<ResolvedType, TypeResolutionError> {
         let resolution_module = resolver
             .macro_origin_module(path.origin)
             .unwrap_or_else(|| module_path.clone());
-        let options =
-            options.bypassing_visibility(options.bypasses_visibility() || reveals(path.origin));
+        let revealed = reveals.allows(path.origin);
+        let options = options.bypassing_visibility(options.bypasses_visibility() || revealed);
         let resolved = {
             if let Some(resolved) =
                 self.try_resolve_enum_variant_type(&path, resolver, module_path, options, reveals)?
@@ -622,7 +647,15 @@ impl Context {
                     };
                     let options = access.options(options);
                     let absolute = access.absolute;
-                    match resolver.resolve_item(&resolution_module, &absolute, &[], options) {
+                    match resolve_revealed_item(
+                        resolver,
+                        &resolution_module,
+                        &absolute,
+                        &[],
+                        options,
+                        revealed,
+                        reveals,
+                    ) {
                         Ok(ResolvedItem::Type(t)) => t,
                         Ok(ResolvedItem::Value { .. }) | Ok(ResolvedItem::Gap(_)) => {
                             return Err(TypeResolutionError::NotAType(absolute.to_segments()));
@@ -636,11 +669,14 @@ impl Context {
                         Err(ResolveError::UnknownItem { .. }) => {
                             match resolver.ambient_core_candidates(&resolution_module, &path.head) {
                                 Ok(Some(ambient_absolute)) => {
-                                    match resolver.resolve_item(
+                                    match resolve_revealed_item(
+                                        resolver,
                                         &resolution_module,
                                         &ambient_absolute,
                                         &[],
                                         options,
+                                        revealed,
+                                        reveals,
                                     ) {
                                         Ok(ResolvedItem::Type(t)) => t,
                                         Ok(ResolvedItem::Value { .. })
@@ -687,9 +723,16 @@ impl Context {
                 let access = self.resolve_absolute_item_path(resolver, &path, module_path)?;
                 let options = access.options(options);
                 let absolute = access.absolute;
-                match resolver
-                    .resolve_item(&resolution_module, &absolute, &[], options)
-                    .map_err(TypeResolutionError::ModuleResolution)?
+                match resolve_revealed_item(
+                    resolver,
+                    &resolution_module,
+                    &absolute,
+                    &[],
+                    options,
+                    revealed,
+                    reveals,
+                )
+                .map_err(TypeResolutionError::ModuleResolution)?
                 {
                     ResolvedItem::Type(t) => t,
                     ResolvedItem::Value { .. } | ResolvedItem::Gap(_) => {
@@ -708,13 +751,13 @@ impl Context {
         resolver: &mut R,
         module_path: &ModulePath,
         options: ResolveItemOptions,
-        reveals: RevealAuthority<'_>,
+        reveals: &mut dyn RevealAuthority,
     ) -> Result<ResolvedType, TypeResolutionError> {
         let resolution_module = resolver
             .macro_origin_module(path.origin)
             .unwrap_or_else(|| module_path.clone());
-        let inner_options =
-            options.bypassing_visibility(options.bypasses_visibility() || reveals(path.origin));
+        let revealed = reveals.allows(path.origin);
+        let inner_options = options.bypassing_visibility(options.bypasses_visibility() || revealed);
         let access = self.resolve_absolute_item_path(resolver, &path, module_path)?;
         let options = access.options(inner_options);
         let absolute = access.absolute;
@@ -763,9 +806,16 @@ impl Context {
             reveals,
         )?;
 
-        match resolver
-            .resolve_item(&resolution_module, &absolute, &resolved_args, options)
-            .map_err(TypeResolutionError::ModuleResolution)?
+        match resolve_revealed_item(
+            resolver,
+            &resolution_module,
+            &absolute,
+            &resolved_args,
+            options,
+            revealed,
+            reveals,
+        )
+        .map_err(TypeResolutionError::ModuleResolution)?
         {
             ResolvedItem::Type(t) => Ok(t),
             ResolvedItem::Value { .. } | ResolvedItem::Gap(_) => {
@@ -784,7 +834,7 @@ impl Context {
         resolver: &mut R,
         module_path: &ModulePath,
         options: ResolveItemOptions,
-        reveals: RevealAuthority<'_>,
+        reveals: &mut dyn RevealAuthority,
     ) -> Result<Vec<ResolvedGenericArg>, TypeResolutionError> {
         args.iter()
             .enumerate()
@@ -808,7 +858,7 @@ impl Context {
         resolver: &mut R,
         module_path: &ModulePath,
         options: ResolveItemOptions,
-        reveals: RevealAuthority<'_>,
+        reveals: &mut dyn RevealAuthority,
     ) -> Result<ResolvedGenericArg, TypeResolutionError> {
         let comp_param = param.filter(|param| param.is_comp());
         match (comp_param, arg) {
@@ -855,7 +905,7 @@ impl Context {
         param: &GenericParam,
         resolver: &mut R,
         module_path: &ModulePath,
-        reveals: RevealAuthority<'_>,
+        reveals: &mut dyn RevealAuthority,
     ) -> Result<CompScalarType, TypeResolutionError> {
         let written = param
             .comp_type()
@@ -886,7 +936,7 @@ impl Context {
         resolver: &mut R,
         module_path: &ModulePath,
         options: ResolveItemOptions,
-        reveals: RevealAuthority<'_>,
+        reveals: &mut dyn RevealAuthority,
     ) -> Result<u32, TypeResolutionError> {
         let value = match length {
             ArrayLength::Literal(literal) => literal_const_value(literal)?,
@@ -934,7 +984,7 @@ impl Context {
         resolver: &mut R,
         module_path: &ModulePath,
         options: ResolveItemOptions,
-        reveals: RevealAuthority<'_>,
+        reveals: &mut dyn RevealAuthority,
     ) -> Result<ConstValue, TypeResolutionError> {
         if path.is_unqualified()
             && let Some(binding) = self.find_variable(&path.head, path.origin)
@@ -961,8 +1011,8 @@ impl Context {
         let resolution_module = resolver
             .macro_origin_module(path.origin)
             .unwrap_or_else(|| module_path.clone());
-        let options =
-            options.bypassing_visibility(options.bypasses_visibility() || reveals(path.origin));
+        let revealed = reveals.allows(path.origin);
+        let options = options.bypassing_visibility(options.bypasses_visibility() || revealed);
         let access = self.resolve_absolute_item_path(resolver, path, module_path)?;
         let options = access.options(options);
         let name = path
@@ -970,9 +1020,16 @@ impl Context {
             .last()
             .cloned()
             .expect("a path always has a last segment");
-        match resolver
-            .resolve_item(&resolution_module, &access.absolute, &[], options)
-            .map_err(TypeResolutionError::ModuleResolution)?
+        match resolve_revealed_item(
+            resolver,
+            &resolution_module,
+            &access.absolute,
+            &[],
+            options,
+            revealed,
+            reveals,
+        )
+        .map_err(TypeResolutionError::ModuleResolution)?
         {
             ResolvedItem::Value {
                 storage: Storage::Comp,
@@ -994,7 +1051,7 @@ impl Context {
         resolver: &mut R,
         module_path: &ModulePath,
         options: ResolveItemOptions,
-        reveals: RevealAuthority<'_>,
+        reveals: &mut dyn RevealAuthority,
     ) -> Result<ResolvedType, TypeResolutionError> {
         // The pointee decides between a pointer and a dynamic spec object, so
         // it must be expanded here rather than on the recursive call below.
@@ -1086,7 +1143,7 @@ impl Context {
         resolver: &mut R,
         module_path: &ModulePath,
         options: ResolveItemOptions,
-        reveals: RevealAuthority<'_>,
+        reveals: &mut dyn RevealAuthority,
     ) -> Result<ResolvedType, TypeResolutionError> {
         let mut applications = Vec::with_capacity(members.len());
         for member in members {
@@ -1139,7 +1196,7 @@ impl Context {
         resolver: &mut R,
         module_path: &ModulePath,
         options: ResolveItemOptions,
-        reveals: RevealAuthority<'_>,
+        reveals: &mut dyn RevealAuthority,
     ) -> Result<Option<ResolvedType>, TypeResolutionError> {
         let Some((variant_name, prefix_tail)) = path.tail.split_last() else {
             return Ok(None);

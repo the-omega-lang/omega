@@ -1,0 +1,4 @@
+@suppress(unused_field)
+exposed struct Public {
+	exposed value: i32;
+}

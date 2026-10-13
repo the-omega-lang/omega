@@ -2,8 +2,9 @@ use super::Lowerer;
 use crate::hir::{
     HirAddressOf, HirAssignment, HirBinaryOp, HirCast, HirCompoundAssign, HirExpr, HirExprNode,
     HirFieldSubpattern, HirFieldsPattern, HirFunctionCall, HirIf, HirLogical, HirMatch,
-    HirMatchArm, HirPattern, HirPatternValue, HirPlace, HirPlaceRoot, HirProjection, HirRange,
-    HirRangeEnd, HirReveal, HirSlice, HirStructLiteral, HirStructLiteralField, HirTry,
+    HirMatchArm, HirPattern, HirPatternValue, HirPlace, HirPlaceReveal, HirPlaceRoot,
+    HirProjection, HirRange, HirRangeEnd, HirReveal, HirSlice, HirStructLiteral,
+    HirStructLiteralField, HirTry,
 };
 use omega_parser::prelude::{
     Expression, ExpressionNode, Origin, Pattern, PatternValue, RangeEnd, RangeExpr, Span,
@@ -32,6 +33,9 @@ impl Lowerer {
     /// The written construct's own provenance travels with the node it
     /// lowers to; nested expressions stamp their own as they are lowered.
     pub(super) fn lower_expr(&mut self, node: &ExpressionNode) -> HirExprNode {
+        if let Some(place) = self.lower_revealed_place(node) {
+            return place;
+        }
         let mut lowered = self.lower_expr_kind(node);
         lowered.origin = node.origin;
         lowered
@@ -284,11 +288,54 @@ impl Lowerer {
         }
     }
 
+    /// Folds a chain of `reveal` prefixes around a place-shaped operand into
+    /// the place itself. The place keeps its own node, so diagnostics about
+    /// it are unaffected by the prefixes around it.
+    fn lower_revealed_place(&mut self, node: &ExpressionNode) -> Option<HirExprNode> {
+        let mut prefixes = Vec::new();
+        let mut operand = node;
+        while let Expression::Reveal(reveal) = &operand.expression {
+            prefixes.push((operand.span, reveal.origin));
+            operand = &reveal.base;
+        }
+        if prefixes.is_empty() || !Self::is_place_shaped(operand) {
+            return None;
+        }
+        let mut lowered = self.lower_expr(operand);
+        let HirExpr::Place(place) = &mut lowered.expr else {
+            unreachable!("a place-shaped operand lowers to a place");
+        };
+        // Allocated innermost first, as the unfolded `reveal` nodes were.
+        let mut reveals: Vec<HirPlaceReveal> = prefixes
+            .into_iter()
+            .rev()
+            .map(|(span, origin)| HirPlaceReveal {
+                id: self.ids.next(),
+                span,
+                origin,
+            })
+            .collect();
+        reveals.reverse();
+        place.reveals = reveals;
+        Some(lowered)
+    }
+
+    fn is_place_shaped(node: &ExpressionNode) -> bool {
+        matches!(
+            node.expression,
+            Expression::Path(_)
+                | Expression::FieldAccess(_)
+                | Expression::Index(_)
+                | Expression::Deref(_)
+        )
+    }
+
     fn lower_place_chain(&mut self, expr: &ExpressionNode) -> HirPlace {
         match &expr.expression {
             Expression::Path(path) => HirPlace {
                 root: HirPlaceRoot::Path(path.clone()),
                 projections: vec![],
+                reveals: vec![],
             },
             Expression::FieldAccess(access) => {
                 let mut place = self.lower_place_chain(&access.base);
@@ -315,6 +362,7 @@ impl Lowerer {
             _ => HirPlace {
                 root: HirPlaceRoot::Expr(Box::new(self.lower_expr(expr))),
                 projections: vec![],
+                reveals: vec![],
             },
         }
     }

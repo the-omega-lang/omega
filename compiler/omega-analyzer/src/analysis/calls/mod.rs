@@ -51,25 +51,24 @@ pub(super) enum CalleeResolution {
 
 impl<'r> Analyzer<'r> {
     fn analyze_receiver_operand(&mut self, operand: &HirExprNode) -> Option<Receiver> {
-        self.with_reveal_operand(operand, |this, inner| {
-            let place = match &inner.expr {
-                HirExpr::Place(place) => place.clone(),
-                _ => HirPlace {
-                    root: HirPlaceRoot::Expr(Box::new(inner.clone())),
-                    projections: vec![],
-                },
-            };
-            let (checked, r#type, mutable) =
-                this.analyze_place(inner.id, inner.span, &place, None)?;
-            if let CheckedPlaceRoot::Variable { decl_id, .. } = checked.root {
-                this.context.mark_used(decl_id);
-            }
-            Some(Receiver {
-                place,
-                checked,
-                r#type,
-                mutable,
-            })
+        let place = match &operand.expr {
+            HirExpr::Place(place) => place.clone(),
+            _ => HirPlace {
+                root: HirPlaceRoot::Expr(Box::new(operand.clone())),
+                projections: vec![],
+                reveals: vec![],
+            },
+        };
+        let (checked, r#type, mutable) =
+            self.analyze_place(operand.id, operand.span, &place, None)?;
+        if let CheckedPlaceRoot::Variable { decl_id, .. } = checked.root {
+            self.context.mark_used(decl_id);
+        }
+        Some(Receiver {
+            place,
+            checked,
+            r#type,
+            mutable,
         })
     }
 
@@ -102,7 +101,7 @@ impl<'r> Analyzer<'r> {
     }
 
     fn callee_expr_path(call: &HirFunctionCall) -> Option<&ExprPath> {
-        let HirExpr::Place(place) = &Self::strip_reveal(&call.callee).1.expr else {
+        let HirExpr::Place(place) = &call.callee.expr else {
             return None;
         };
         if !place.projections.is_empty() {
@@ -157,10 +156,6 @@ impl<'r> Analyzer<'r> {
         args: &[HirExprNode],
         expected: Expected<'_>,
     ) -> Option<CalleeResolution> {
-        // The call analyzer owns the reveal bypass for the whole callee
-        // resolution. This function only needs the transparent inner shape.
-        let (_, callee) = Self::strip_reveal(callee);
-
         let member = match &callee.expr {
             HirExpr::Place(place) => match place.projections.last() {
                 Some(HirProjection::FieldAccess(field, origin, generic_args)) => {
@@ -184,6 +179,7 @@ impl<'r> Analyzer<'r> {
         let base_place = HirPlace {
             root: place.root.clone(),
             projections: place.projections[..place.projections.len() - 1].to_vec(),
+            reveals: place.reveals.clone(),
         };
         let (mut checked, mut r#type, mut mutable) =
             self.analyze_place(callee.id, callee.span, &base_place, None)?;
