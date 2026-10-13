@@ -43,6 +43,7 @@ impl Package {
     fn compile(&self) -> Result<CompiledProgram, Vec<CompileError>> {
         self.driver(vec![])
             .compile(&omega_hir::ModulePath::new([Ident("main".into())]))
+            .result
     }
     fn errors(&self) -> Vec<CompileError> {
         self.compile().err().expect("must fail")
@@ -157,12 +158,13 @@ fn extern_trees_use_the_same_selection_and_core_pruning_does_not_panic() {
     let package = Package::new("import core::thing::child::value;");
     let external = Package::new("@[cond(false)]");
     tree(&external, "true", "invalid @@@");
-    let mut driver = package.driver(vec![ExternRoot {
+    let driver = package.driver(vec![ExternRoot {
         name: Ident("core".into()),
         dir: external.0.clone(),
     }]);
     let errors = driver
         .compile(&omega_hir::ModulePath::new([Ident("main".into())]))
+        .result
         .err()
         .unwrap();
     unknown_module(&errors, &["core", "thing", "child"]);

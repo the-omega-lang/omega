@@ -48,6 +48,7 @@ impl TestPackage {
         Driver::new(self.0.clone(), None, Vec::new(), Target::DEFAULT)
             .expect("construct driver")
             .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]))
+            .result
     }
 }
 
@@ -689,7 +690,7 @@ fn primitive_blocks_are_core_only() {
 fn external_non_generic_primitive_is_imported_not_redefined() {
     let core = TestPackage::new("primitive i32 { exposed identity(*self) => i32 { *self } }");
     let local = TestPackage::new("entry_fn() => i32 { 7i32.identity() }");
-    let mut driver = Driver::new(
+    let driver = Driver::new(
         local.0.clone(),
         None,
         vec![ExternRoot {
@@ -701,6 +702,7 @@ fn external_non_generic_primitive_is_imported_not_redefined() {
     .expect("construct driver with core extern");
     let program = driver
         .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]))
+        .result
         .expect("external primitive use should compile");
 
     let definitions = program
@@ -742,6 +744,7 @@ fn extern_generic_instantiation_keeps_its_declaring_module() {
     )
     .expect("construct driver with generic library extern")
     .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]))
+    .result
     .expect("using an extern-owned generic should compile");
 
     let library_path = omega_hir::ModulePath::new([Ident("lib".to_string())]);
@@ -789,6 +792,7 @@ fn extern_owned_concrete_conform_is_imported_not_reemitted() {
     )
     .expect("construct driver with library extern")
     .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]))
+    .result
     .expect("calling an extern-owned concrete conformance should compile");
 
     let definitions = program
@@ -826,7 +830,8 @@ fn blanket_conforms_require_a_package_local_spec() {
         Target::DEFAULT,
     )
     .expect("construct consumer")
-    .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]));
+    .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]))
+    .result;
     let errors = match result {
         Ok(_) => panic!("a blanket conforming a foreign spec must be rejected"),
         Err(errors) => errors,
@@ -864,7 +869,7 @@ fn externally_owned_stdout_cannot_conform_to_externally_owned_write() {
         entry_fn() => i32 { 0 }
         "#,
     );
-    let mut driver = Driver::new(
+    let driver = Driver::new(
         consumer.0.clone(),
         None,
         vec![
@@ -880,7 +885,10 @@ fn externally_owned_stdout_cannot_conform_to_externally_owned_write() {
         Target::DEFAULT,
     )
     .expect("construct driver with I/O library extern");
-    let errors = match driver.compile(&omega_hir::ModulePath::new([Ident("main".to_string())])) {
+    let errors = match driver
+        .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]))
+        .result
+    {
         Ok(_) => panic!("a consumer must not conform two foreign I/O items"),
         Err(errors) => errors,
     };
@@ -905,7 +913,7 @@ fn old_boolean_console_glue_signature_is_rejected() {
         entry_fn() => i32 { 0 }
         "#,
     );
-    let mut driver = Driver::new(
+    let driver = Driver::new(
         package.0.clone(),
         None,
         vec![ExternRoot {
@@ -915,7 +923,10 @@ fn old_boolean_console_glue_signature_is_rejected() {
         Target::DEFAULT,
     )
     .expect("construct driver with Option core extern");
-    let errors = match driver.compile(&omega_hir::ModulePath::new([Ident("main".to_string())])) {
+    let errors = match driver
+        .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]))
+        .result
+    {
         Ok(_) => panic!("an old console glue signature must fail"),
         Err(errors) => errors,
     };
@@ -949,7 +960,7 @@ fn print_macro_requires_an_explicit_import() {
 fn formatting_is_not_available_from_core() {
     let core = TestPackage::new("marker CoreOnly {}");
     let consumer = TestPackage::new("entry_fn() => i32 { core::fmt::missing() }");
-    let mut driver = Driver::new(
+    let driver = Driver::new(
         consumer.0.clone(),
         None,
         vec![ExternRoot {
@@ -959,7 +970,10 @@ fn formatting_is_not_available_from_core() {
         Target::DEFAULT,
     )
     .expect("construct driver with core extern");
-    let errors = match driver.compile(&omega_hir::ModulePath::new([Ident("main".to_string())])) {
+    let errors = match driver
+        .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]))
+        .result
+    {
         Ok(_) => panic!("core must not provide a formatting module"),
         Err(errors) => errors,
     };
@@ -1776,6 +1790,7 @@ fn a_mismatched_for_loop_element_annotation_reports_what_is_available() {
     )
     .expect("construct driver with core extern")
     .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]))
+    .result
     {
         Ok(_) => panic!("a mismatched element annotation must be rejected"),
         Err(errors) => errors,
@@ -1802,7 +1817,8 @@ fn primitive_method_symbols_stay_within_the_mangling_charset() {
         Target::DEFAULT,
     )
     .expect("construct driver")
-    .compile(&omega_hir::ModulePath::new([Ident("core".to_string())]));
+    .compile(&omega_hir::ModulePath::new([Ident("core".to_string())]))
+    .result;
     let program = match program {
         Ok(program) => program,
         Err(errors) => panic!("core-shaped primitive package must compile: {errors:?}"),
@@ -1834,7 +1850,8 @@ fn a_package_root_with_no_modules_is_a_reportable_error() {
 
     let result = Driver::new(root.clone(), None, Vec::new(), Target::DEFAULT)
         .expect("construct driver")
-        .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]));
+        .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]))
+        .result;
     let _ = fs::remove_dir_all(&root);
 
     let errors = result
@@ -1861,7 +1878,8 @@ fn compile_as_core(core_source: &str) -> Result<omega_driver::CompiledProgram, V
         Target::DEFAULT,
     )
     .expect("construct driver with core extern")
-    .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]));
+    .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]))
+    .result;
     drop(core);
     result
 }
@@ -2272,6 +2290,7 @@ fn a_32_bit_target_sizes_usize_at_four_bytes() {
     let program = Driver::new(package.0.clone(), None, Vec::new(), target)
         .expect("construct driver")
         .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]))
+        .result
         .expect("compiles for riscv32-none");
     let width_of = |name: &str| -> Option<ConstValue> {
         program
@@ -2314,6 +2333,7 @@ fn a_usize_literal_above_u32_max_is_rejected_on_a_32_bit_target() {
     let errors32 = match Driver::new(package32.0.clone(), None, Vec::new(), target32)
         .expect("construct driver")
         .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]))
+        .result
     {
         Ok(_) => panic!("the out-of-range usize literal must be rejected on a 32-bit target"),
         Err(errors) => errors,
@@ -2343,6 +2363,7 @@ fn lowered_mir_carries_symbols_and_linkage() {
     let program = Driver::new(package.0.clone(), None, Vec::new(), Target::DEFAULT)
         .expect("construct driver")
         .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]))
+        .result
         .expect("compiles");
     let mir = omega_mir::lower_program(program.modules, &program.entry, &program.types);
     let functions: Vec<&omega_mir::MirFunctionDef> = mir

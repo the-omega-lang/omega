@@ -37,6 +37,7 @@ impl TestPackage {
         Driver::new(self.0.clone(), None, vec![], Target::DEFAULT)
             .expect("construct driver")
             .compile(&omega_hir::ModulePath::new([Ident("main".into())]))
+            .result
             .expect("package should compile")
     }
 
@@ -44,6 +45,7 @@ impl TestPackage {
         match Driver::new(self.0.clone(), None, vec![], Target::DEFAULT)
             .expect("construct driver")
             .compile(&omega_hir::ModulePath::new([Ident("main".into())]))
+            .result
         {
             Ok(_) => panic!("{expectation}"),
             Err(errors) => errors,

@@ -42,6 +42,7 @@ impl TestPackage {
         )
         .expect("construct driver")
         .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]))
+        .result
         .expect("package should compile")
         .warnings
         .into_iter()

@@ -24,7 +24,8 @@ fn warnings(body: &str) -> Vec<AnalysisWarning> {
     .expect("write root module");
     let result = Driver::new(root, None, Vec::<ExternRoot>::new(), Target::DEFAULT)
         .expect("construct driver")
-        .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]));
+        .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]))
+        .result;
     let _ = fs::remove_dir_all(&parent);
     result
         .expect("package should compile")

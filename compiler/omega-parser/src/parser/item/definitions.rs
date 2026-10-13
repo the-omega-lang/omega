@@ -279,7 +279,7 @@ fn parse_spec_function(p: &mut Parser, policy: SpecMemberVisibility) -> Option<S
     let name_span = p.last_span();
     let generics = parse_optional_generics(p)?;
     p.expect(&TokenKind::LParen, "'('");
-    let (self_mode, params) = crate::parser::parse_param_list(p);
+    let (self_param, params) = crate::parser::parse_param_list(p);
     let is_variadic = if p.eat(&TokenKind::Comma) {
         p.expect(&TokenKind::DotDotDot, "'...'");
         true
@@ -311,7 +311,7 @@ fn parse_spec_function(p: &mut Parser, policy: SpecMemberVisibility) -> Option<S
         visibility,
         explicit_hidden_span,
         generics,
-        self_mode,
+        self_param,
         params,
         is_variadic,
         return_type,
@@ -344,7 +344,7 @@ pub(super) fn parse_gap_def(p: &mut Parser) -> Option<GapStmt> {
             recovery::synchronize_to_statement_boundary(p);
             continue;
         };
-        if function.self_mode.is_some() {
+        if function.self_param.is_some() {
             p.error_at(
                 function.name_span,
                 ParseErrorKind::GapFunctionSelf {
@@ -392,7 +392,7 @@ pub(super) fn parse_glue_def(p: &mut Parser) -> Option<GlueStmt> {
             recovery::synchronize_to_statement_boundary(p);
             continue;
         };
-        if !function.generics.is_empty() || function.self_mode.is_some() {
+        if !function.generics.is_empty() || function.self_param.is_some() {
             p.error_at(
                 function.name_span,
                 ParseErrorKind::GlueFunctionShape {

@@ -393,7 +393,8 @@ impl<'r> Analyzer<'r> {
         let (result, scope) = self.with_scope(|this| {
             let mut ok = true;
 
-            let checked_init = this.analyze_stmts(&f.init);
+            let checked_init =
+                this.analyze_stmts(f.init.as_deref().map_or(&[], std::slice::from_ref));
             ok &= checked_init.is_some();
 
             let checked_condition = match &f.condition {
@@ -810,7 +811,7 @@ impl<'r> Analyzer<'r> {
             let binding_id = this.resolver.fresh_synthetic_id();
             this.declare_binding(
                 binding_id,
-                f.span,
+                f.binding_span,
                 &f.binding,
                 Origin::default(),
                 value_type.clone(),
@@ -820,7 +821,7 @@ impl<'r> Analyzer<'r> {
             );
             let (binding_decl, binding_assign) = this.synthetic_declaration(
                 binding_id,
-                f.span,
+                f.binding_span,
                 f.binding.as_ref(),
                 value_type,
                 value_read,

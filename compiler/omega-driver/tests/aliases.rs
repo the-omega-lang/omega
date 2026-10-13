@@ -45,6 +45,7 @@ impl TestPackage {
         )
         .expect("construct driver with the real core extern")
         .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]))
+        .result
     }
 
     fn expect_ok(&self) -> omega_driver::CompiledProgram {

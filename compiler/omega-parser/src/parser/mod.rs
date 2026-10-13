@@ -397,24 +397,24 @@ fn parse_param_decl(p: &mut Parser) -> Option<crate::ast::r#type::Param> {
 pub fn parse_param_list(
     p: &mut Parser,
 ) -> (
-    Option<crate::ast::self_mode::SelfMode>,
+    Option<crate::ast::self_mode::SelfParam>,
     Vec<crate::ast::r#type::Param>,
 ) {
-    match parse_self_mode(p) {
-        Some(mode) => {
+    match parse_self_param(p) {
+        Some(receiver) => {
             let rest = if p.eat(&TokenKind::Comma) {
                 parse_param_decls(p)
             } else {
                 Vec::new()
             };
-            (Some(mode), rest)
+            (Some(receiver), rest)
         }
         None => (None, parse_param_decls(p)),
     }
 }
 
-pub fn parse_self_mode(p: &mut Parser) -> Option<crate::ast::self_mode::SelfMode> {
-    use crate::ast::self_mode::SelfMode;
+pub fn parse_self_param(p: &mut Parser) -> Option<crate::ast::self_mode::SelfParam> {
+    use crate::ast::self_mode::{SelfMode, SelfParam};
     use crate::parser::contextual::{MUT, SELF};
 
     // Leading `*` uniquely commits to pointer-`self`; reject any other continuation precisely.
@@ -427,11 +427,15 @@ pub fn parse_self_mode(p: &mut Parser) -> Option<crate::ast::self_mode::SelfMode
         false
     };
     if p.eat_contextual(SELF) {
-        return Some(match (by_pointer, mutable) {
+        let mode = match (by_pointer, mutable) {
             (false, false) => SelfMode::Value,
             (false, true) => SelfMode::MutValue,
             (true, false) => SelfMode::Pointer,
             (true, true) => SelfMode::MutPointer,
+        };
+        return Some(SelfParam {
+            mode,
+            span: p.last_span(),
         });
     }
     if by_pointer {

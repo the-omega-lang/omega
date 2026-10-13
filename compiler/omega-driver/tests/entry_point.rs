@@ -37,6 +37,7 @@ impl TestPackage {
         )
         .expect("construct driver")
         .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]))
+        .result
     }
 
     /// The same compilation with the real `core` registered, for a case whose
@@ -57,6 +58,7 @@ impl TestPackage {
         )
         .expect("construct driver with the real core extern")
         .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]))
+        .result
     }
 }
 

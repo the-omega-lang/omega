@@ -314,7 +314,7 @@ The macro body is not independently type-checked or semantically validated. Expa
 
 Real-source `HirId`s are minted only during post-expansion HIR lowering from a per-module counter. Downstream phases must not invent ordinary source IDs. Semantic artifacts without source HIR nodes use the driver's reserved synthetic module identity, keeping synthetic IDs disjoint from real module IDs.
 
-Synthetic nodes may have no independently retained source site. For example, the parser records `SelfMode` but not the span of the `self` token, so the implicit HIR `self` parameter currently falls back to the enclosing function span. The loss of that precise site is tracked as frontend design debt rather than hidden behind a manufactured byte offset.
+Synthetic nodes take the source site of the construct that implies them: the implicit `self` parameter and the `mut self` shadow take the `self` token's span, and a bare `return`'s synthetic unit block takes the `return` statement's. Nested statements (a classic `for` initializer, a `defer` body) are `StatementNode`s in the AST, so they keep their own spans rather than borrowing the enclosing statement's.
 
 ### HIR structural lowering
 

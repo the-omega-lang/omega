@@ -40,6 +40,7 @@ impl TestPackage {
         )
         .expect("construct driver with the real core extern")
         .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]))
+        .result
     }
 
     /// Reports failures through each finding's own message: a resolved type

@@ -251,7 +251,7 @@ EmittedArtifact
 generate(...)
 ```
 
-`CodegenRequest` contains the compilation-wide configuration -- target, optimization level, requested output kind, entry path, extern-function references, and the program's frozen `TypeStore` for layout and reflection -- plus the ordered list of emission units. `generate` returns one `EmittedArtifact` per unit, each tagged with the relative source path that owns it, so the caller reproduces the source tree by replacing the `.omg` extension. Entry-point identity is consumed while lowering checked modules to MIR; the field remains in the public request shape for compatibility but is not interpreted by LLVM emission.
+`CodegenRequest` contains the compilation-wide configuration -- target, optimization level, requested output kind, extern-function references, and the program's frozen `TypeStore` for layout and reflection -- plus the ordered list of emission units. `generate` returns one `EmittedArtifact` per unit, each tagged with the relative source path that owns it, so the caller reproduces the source tree by replacing the `.omg` extension. Entry-point identity is consumed while lowering checked modules to MIR, so the request does not carry it.
 
 ### Declaration catalog
 

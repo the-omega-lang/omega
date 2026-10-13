@@ -40,6 +40,7 @@ impl TestPackage {
         )
         .expect("construct driver")
         .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]))
+        .result
     }
 
     fn expect_ok(&self) -> omega_driver::CompiledProgram {
@@ -92,7 +93,6 @@ fn ir_for(source: &str) -> String {
         opt_level: omega_codegen::OptLevel::O0,
         emit: omega_codegen::EmitKind::Ir,
         units: omega_mir::plan_emission(modules, &sources),
-        entry: entry.segments().to_vec(),
         extern_functions,
         extern_globals,
         types: program.types,

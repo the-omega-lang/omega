@@ -1,6 +1,6 @@
 use crate::Driver;
 use crate::conformances::ConformanceOrigin;
-use crate::error::{CompileError, CompiledProgram};
+use crate::error::{Compilation, CompileError, CompiledProgram};
 use crate::items::{CheckedBody, GlueSignature, ItemKey};
 use indexmap::IndexMap;
 use omega_analyzer::analysis::AnalysisSite;
@@ -64,7 +64,24 @@ mod runtime_checks;
 mod signatures;
 
 impl Driver {
-    pub fn compile(&mut self, entry: &ModulePath) -> Result<CompiledProgram, Vec<CompileError>> {
+    /// Compiles the package once. The driver's caches and registrations are
+    /// populated for this one compilation and never reset, so it is consumed.
+    ///
+    /// ```compile_fail,E0382
+    /// fn compile_twice(driver: omega_driver::Driver, entry: &omega_hir::ModulePath) {
+    ///     let _ = driver.compile(entry);
+    ///     let _ = driver.compile(entry);
+    /// }
+    /// ```
+    pub fn compile(mut self, entry: &ModulePath) -> Compilation {
+        let result = self.check_program(entry);
+        Compilation {
+            sources: self.modules.into_sources(),
+            result,
+        }
+    }
+
+    fn check_program(&mut self, entry: &ModulePath) -> Result<CompiledProgram, Vec<CompileError>> {
         self.select_modules()?;
         let Some(local) = self.local_module_paths() else {
             // Reject an empty package before semantic sweeps so the user gets

@@ -104,6 +104,28 @@ fn foreign_block_convention_applies_only_to_direct_function_entries() {
 }
 
 #[test]
+fn receiver_and_its_mut_shadow_point_at_the_self_token() {
+    let source = "struct S { f(*mut self) => void {} g(mut self) => void {} }";
+    let hir = lower(source);
+    let HirItem::Struct(def) = &hir.items[0] else {
+        panic!("expected struct");
+    };
+    for function in &def.functions {
+        let receiver = &function.params[0];
+        assert_eq!(
+            &source[receiver.name_span.start..receiver.name_span.end],
+            "self"
+        );
+        assert_eq!(&source[receiver.span.start..receiver.span.end], "self");
+    }
+    let shadow = &def.functions[1].body.as_ref().expect("body").stmts[0];
+    let HirStmt::WalrusDeclaration(shadow) = shadow else {
+        panic!("expected the `mut self` shadow");
+    };
+    assert_eq!(&source[shadow.span.start..shadow.span.end], "self");
+}
+
+#[test]
 fn foreign_binding_mut_span_survives_lowering() {
     let source = "foreign mut counter : i32; foreign(c) { mut other : i32; }";
     let hir = lower(source);

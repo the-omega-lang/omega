@@ -173,10 +173,6 @@ Remaining known conformance/spec issues:
 - **Macro expansion traverses the AST by hand.** See
   [compiler-limitations.md](compiler-limitations.md#parsing-macro-expansion-and-the-hir).
 
-Shape problems in `omega-driver` and `omega-analyzer` that still need a deliberate design change — full writeups in [design-debt.md](design-debt.md).
-
-- **`Driver::compile(&mut self)` looks reusable even though its semantic/query state is one-shot.** The CLI only compiles once per driver today, but a second call can retain failed queries, registrations, diagnostics, and materialized bodies. The future API should either consume the driver or split reusable workspace/module state from a fresh `CompilationSession`.
-
 ## Design debt worth watching
 
 - **The contextual-keyword set grows with every feature, with no promotion

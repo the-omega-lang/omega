@@ -611,7 +611,7 @@ impl<'a, E> Expander<'a, E> {
             Statement::For(f) => {
                 let f = *f;
                 Statement::For(Box::new(ForStmt {
-                    init: f.init.map(|s| self.expand_statement(s)).transpose()?,
+                    init: f.init.map(|s| self.expand_stmt_node(s)).transpose()?,
                     condition: f.condition.map(|c| self.expand_expr(c)).transpose()?,
                     post: f.post.map(|p| self.expand_expr(p)).transpose()?,
                     body: self.expand_codeblock(f.body)?,
@@ -626,7 +626,7 @@ impl<'a, E> Expander<'a, E> {
                 }))
             }
             Statement::Defer(d) => Statement::Defer(DeferStmt {
-                body: Box::new(self.expand_statement(*d.body)?),
+                body: Box::new(self.expand_stmt_node(*d.body)?),
             }),
             Statement::InlineAsm(asm) => Statement::InlineAsm(InlineAsmStmt {
                 descriptors: asm

@@ -63,6 +63,7 @@ impl TestPackage {
     fn compile(&self, options: &[&str]) -> CompiledProgram {
         self.driver(options)
             .compile(&omega_hir::ModulePath::new([Ident("main".into())]))
+            .result
             .unwrap_or_else(|errors| {
                 panic!(
                     "package should compile with {options:?}: {}",
@@ -75,6 +76,7 @@ impl TestPackage {
         match self
             .driver(options)
             .compile(&omega_hir::ModulePath::new([Ident("main".into())]))
+            .result
         {
             Ok(_) => panic!("the package should not have compiled with {options:?}"),
             Err(errors) => errors,
@@ -355,11 +357,10 @@ fn malformed_generated_conditions_report_the_annotation_author() {
             "helper",
             &format!("exposed macro gate($flag: expr) => {{ {annotation} exposed x : i32 = 1; }}"),
         );
-        let mut driver = package.driver(&[]);
-        let errors = driver
-            .compile(&omega_hir::ModulePath::new([Ident("main".into())]))
-            .err()
-            .expect("invalid condition");
+        let compilation = package
+            .driver(&[])
+            .compile(&omega_hir::ModulePath::new([Ident("main".into())]));
+        let errors = compilation.result.err().expect("invalid condition");
         let failure = errors
             .iter()
             .find(|error| matches!(error, CompileError::Condition { .. }))
@@ -381,7 +382,8 @@ fn malformed_generated_conditions_report_the_annotation_author() {
         let definition = definition.expect("the annotation must retain its macro author");
         assert_eq!(
             definition.source,
-            driver
+            compilation
+                .sources
                 .source_id(&omega_hir::ModulePath::new([
                     Ident("main".into()),
                     Ident("helper".into()),
@@ -423,6 +425,7 @@ fn an_ambient_core_macro_is_selected_under_the_same_configuration() {
                 }],
             )
             .compile(&omega_hir::ModulePath::new([Ident("main".into())]))
+            .result
             .unwrap_or_else(|errors| panic!("{}", render(&errors)));
         assert_eq!(names(&program), [selected]);
     }

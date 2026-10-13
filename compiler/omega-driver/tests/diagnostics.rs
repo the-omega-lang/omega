@@ -6,7 +6,7 @@ use omega_analyzer::Target;
 use omega_analyzer::error::{
     AnalysisError, AnalysisErrorKind, AnalysisWarning, AnalysisWarningKind,
 };
-use omega_driver::{CompileError, CompiledProgram, Driver};
+use omega_driver::{CompileError, CompiledProgram, Driver, ExternRoot};
 use omega_parser::prelude::Ident;
 use std::fs;
 use std::path::PathBuf;
@@ -36,9 +36,14 @@ impl TestPackage {
     }
 
     fn result(&self) -> Result<CompiledProgram, Vec<CompileError>> {
-        Driver::new(self.0.clone(), None, vec![], Target::DEFAULT)
+        self.result_with(vec![])
+    }
+
+    fn result_with(&self, externs: Vec<ExternRoot>) -> Result<CompiledProgram, Vec<CompileError>> {
+        Driver::new(self.0.clone(), None, externs, Target::DEFAULT)
             .expect("construct driver")
             .compile(&omega_hir::ModulePath::new([Ident("main".into())]))
+            .result
     }
 
     fn expect_errors(&self) -> Vec<CompileError> {
@@ -543,4 +548,43 @@ fn mutable_function_typed_foreign_bindings_are_rejected() {
         let span = errors[0].span;
         assert_eq!(&source[span.start..span.end], "mut");
     }
+}
+
+#[test]
+fn nested_statements_keep_their_own_source_site() {
+    let source = "helper() => void {
+    for unused_init := 1; false; { }
+    defer unused_deferred := 2;
+    for unused_item in 0..<3 { }
+}
+main() => void { helper(); }";
+    let core = ExternRoot {
+        name: Ident("core".to_string()),
+        dir: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../runtime/core")
+            .canonicalize()
+            .expect("runtime/core exists"),
+    };
+    let program = TestPackage::new(source)
+        .result_with(vec![core])
+        .unwrap_or_else(|errors| panic!("expected this package to compile, got: {errors:#?}"));
+    let sites: Vec<(String, &str)> = program
+        .warnings
+        .iter()
+        .filter_map(|(_, warning)| match &warning.kind {
+            AnalysisWarningKind::UnusedVariable { name } => Some((
+                name.as_ref().to_string(),
+                &source[warning.span.start..warning.span.end],
+            )),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        sites,
+        [
+            ("unused_init".to_string(), "unused_init := 1"),
+            ("unused_deferred".to_string(), "unused_deferred := 2"),
+            ("unused_item".to_string(), "unused_item"),
+        ]
+    );
 }

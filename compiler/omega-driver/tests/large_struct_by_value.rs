@@ -33,6 +33,7 @@ impl TestPackage {
         match Driver::new(self.0.clone(), None, Vec::<ExternRoot>::new(), target)
             .expect("construct driver")
             .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]))
+            .result
         {
             Ok(program) => program,
             Err(errors) => panic!("expected this to compile, got:\n{}", describe(&errors)),

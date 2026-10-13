@@ -103,14 +103,19 @@ fn parse_statement_content(p: &mut Parser) -> Option<(Statement, bool)> {
         TokenKind::For => Some((parse_for(p)?, true)),
         TokenKind::Defer => {
             p.advance(); // 'defer'
+            let start = p.peek_span();
             let (inner, block_shaped) = parse_statement_content(p)?;
             if matches!(inner, Statement::MacroInvocation(_)) {
                 p.error(ParseErrorKind::MacroInvocationNotAllowedAfterDefer);
                 return None;
             }
+            let body = StatementNode {
+                statement: inner,
+                span: start.to(p.last_span()),
+            };
             Some((
                 Statement::Defer(DeferStmt {
-                    body: Box::new(inner),
+                    body: Box::new(body),
                 }),
                 block_shaped,
             ))
@@ -321,6 +326,7 @@ fn parse_for_in(p: &mut Parser) -> Option<ForInStmt> {
     let TokenKind::Ident(binding) = p.peek().clone() else {
         unreachable!("is_for_in_lookahead already confirmed this token is an identifier");
     };
+    let binding_span = p.peek_span();
     p.advance(); // binding
     let binding = Ident(binding);
     let binding_type = if p.eat(&TokenKind::Colon) {
@@ -338,21 +344,27 @@ fn parse_for_in(p: &mut Parser) -> Option<ForInStmt> {
     Some(ForInStmt {
         mutable,
         binding,
+        binding_span,
         binding_type,
         iterator,
         body,
     })
 }
 
-fn parse_for_init(p: &mut Parser) -> Option<Statement> {
+fn parse_for_init(p: &mut Parser) -> Option<StatementNode> {
     if p.check(&TokenKind::Semi) {
         return None;
     }
-    if let Some(prefix) = crate::parser::parse_binding_modifiers(p) {
-        return parse_walrus_or_declaration(p, prefix.mutable, prefix.comp)
-            .map(|(statement, _)| statement);
-    }
-    parse_expression(p).map(Statement::Expression)
+    let start = p.peek_span();
+    let statement = match crate::parser::parse_binding_modifiers(p) {
+        Some(prefix) => parse_walrus_or_declaration(p, prefix.mutable, prefix.comp)
+            .map(|(statement, _)| statement)?,
+        None => parse_expression(p).map(Statement::Expression)?,
+    };
+    Some(StatementNode {
+        statement,
+        span: start.to(p.last_span()),
+    })
 }
 
 /// Confirms the committed `asm(...) => {` shape by structurally matching the

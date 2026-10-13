@@ -22,10 +22,13 @@ This document also explains where package identity and emission ownership feed l
 It then calls:
 
 ```text
-Driver::compile(entry_module) -> CompiledProgram
+Driver::compile(self, entry_module) -> Compilation { sources, result }
 ```
 
-`Driver::compile` is the main semantic-compilation entry point.
+`Driver::compile` is the main semantic-compilation entry point. It consumes
+the driver: nothing below is reset between compilations, so a driver serves
+exactly one. The read source texts outlive it in `Compilation::sources`, which
+is what errors and warnings are rendered against.
 
 The configuration is frozen at construction (`Driver::new` for an empty one,
 `Driver::new_with_definitions` for a supplied one) and there is no setter for

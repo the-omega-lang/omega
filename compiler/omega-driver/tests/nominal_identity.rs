@@ -29,10 +29,11 @@ impl TestPackage {
     }
 
     fn compile(&self) -> Result<CompiledProgram, String> {
-        let mut driver =
+        let driver =
             Driver::new(self.0.clone(), None, vec![], Target::DEFAULT).expect("construct driver");
         driver
             .compile(&omega_hir::ModulePath::new([Ident("main".into())]))
+            .result
             .map_err(|errors| {
                 errors
                     .iter()

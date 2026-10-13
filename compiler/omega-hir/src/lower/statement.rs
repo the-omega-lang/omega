@@ -3,17 +3,12 @@ use crate::hir::{
     HirAsmDescriptor, HirAsmDescriptorKind, HirBlock, HirBreak, HirContinue, HirDefer, HirExpr,
     HirExprNode, HirFor, HirForIn, HirInlineAsm, HirLoop, HirStmt, HirWalrusDeclaration, HirWhile,
 };
-use omega_parser::prelude::{
-    AsmDescriptorKind, CodeblockExpr, Span, Statement, StatementNode, Type,
-};
+use omega_parser::prelude::{AsmDescriptorKind, CodeblockExpr, Statement, StatementNode, Type};
 
 impl Lowerer {
     fn lower_stmt(&mut self, node: &StatementNode) -> HirStmt {
-        self.lower_statement(&node.statement, node.span)
-    }
-
-    fn lower_statement(&mut self, statement: &Statement, span: Span) -> HirStmt {
-        match statement {
+        let span = node.span;
+        match &node.statement {
             Statement::Declaration(decl) => HirStmt::Declaration(self.lower_declaration(decl)),
             Statement::DeclarationWithInit(decl, value) if decl.r#type == Type::Infer => {
                 HirStmt::WalrusDeclaration(self.lower_inferred_declaration(decl, value, span))
@@ -71,8 +66,7 @@ impl Lowerer {
                 let init = f
                     .init
                     .as_ref()
-                    .map(|statement| vec![self.lower_statement(statement, span)])
-                    .unwrap_or_default();
+                    .map(|statement| Box::new(self.lower_stmt(statement)));
                 HirStmt::For(HirFor {
                     id: self.ids.next(),
                     span,
@@ -87,6 +81,7 @@ impl Lowerer {
                 span,
                 mutable: f.mutable,
                 binding: f.binding.clone(),
+                binding_span: f.binding_span,
                 binding_type: f
                     .binding_type
                     .clone()
@@ -98,9 +93,9 @@ impl Lowerer {
                 id: self.ids.next(),
                 span,
                 body: HirBlock {
-                    stmts: vec![self.lower_statement(&d.body, span)],
+                    stmts: vec![self.lower_stmt(&d.body)],
                     tail: None,
-                    span,
+                    span: d.body.span,
                 },
             }),
             Statement::InlineAsm(asm) => HirStmt::InlineAsm(HirInlineAsm {

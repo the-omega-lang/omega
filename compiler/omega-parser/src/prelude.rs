@@ -23,7 +23,7 @@ pub use crate::ast::item::{
     SpecFunctionStmt, SpecStmt, StructStmt, UnionStmt,
 };
 pub use crate::ast::range::{RangeEnd, RangeExpr};
-pub use crate::ast::self_mode::SelfMode;
+pub use crate::ast::self_mode::{SelfMode, SelfParam};
 pub use crate::ast::statement::{
     AsmDescriptorKind, AsmDescriptorNode, DeclarationStmt, DeferStmt, ForInStmt, ForStmt,
     FunctionDefinitionStmt, InlineAsmStmt, LoopStmt, ReturnStmt, Statement, StatementNode,

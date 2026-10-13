@@ -66,6 +66,7 @@ impl TestPackages {
         )
         .expect("construct driver")
         .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]))
+        .result
     }
 
     fn expect_ok(&self) {

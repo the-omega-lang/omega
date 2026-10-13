@@ -2,7 +2,7 @@ use crate::ast::annotation::AnnotationNode;
 use crate::ast::expression::{CodeblockExpr, ExpressionNode, MacroInvocationExpr};
 use crate::ast::generics::GenericParam;
 use crate::ast::identifier::{Ident, Origin};
-use crate::ast::self_mode::SelfMode;
+use crate::ast::self_mode::SelfParam;
 use crate::ast::r#type::{FunctionType, Param, Type};
 use crate::ast::visibility::Visibility;
 use crate::diagnostics::Span;
@@ -71,7 +71,7 @@ pub struct LoopStmt {
 
 #[derive(Debug, Clone)]
 pub struct ForStmt {
-    pub init: Option<Statement>,
+    pub init: Option<StatementNode>,
     pub condition: Option<ExpressionNode>,
     pub post: Option<ExpressionNode>,
     pub body: CodeblockExpr,
@@ -81,6 +81,7 @@ pub struct ForStmt {
 pub struct ForInStmt {
     pub mutable: bool,
     pub binding: Ident,
+    pub binding_span: Span,
     pub binding_type: Option<Type>,
     pub iterator: ExpressionNode,
     pub body: CodeblockExpr,
@@ -88,7 +89,7 @@ pub struct ForInStmt {
 
 #[derive(Debug, Clone)]
 pub struct DeferStmt {
-    pub body: Box<Statement>,
+    pub body: Box<StatementNode>,
 }
 
 #[derive(Debug, Clone)]
@@ -129,7 +130,7 @@ pub struct FunctionDefinitionStmt {
     pub signature_span: Span,
     pub return_type_span: Span,
     pub generics: Vec<GenericParam>,
-    pub self_mode: Option<SelfMode>,
+    pub self_param: Option<SelfParam>,
     pub params: Vec<Param>,
     pub return_type: Type,
     /// `None` for a `;`-terminated declaration (item-level free functions only).
@@ -146,7 +147,7 @@ impl FunctionDefinitionStmt {
                 .collect(),
             return_type: Box::new(self.return_type.clone()),
             is_variadic: false,
-            self_mode: self.self_mode,
+            self_mode: self.self_param.map(|receiver| receiver.mode),
             convention: None,
         }
     }

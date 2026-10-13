@@ -164,7 +164,7 @@ An `omega_analyzer::analysis::Analyzer` is intentionally short-lived: one top-le
 
 ## The semantic compilation boundary
 
-`Driver::compile` returns `CompiledProgram`, containing:
+`Driver::compile` consumes the driver, whose caches and registrations serve exactly one compilation. It returns a `Compilation`: the source texts every diagnostic is rendered against, and either the errors or a `CompiledProgram` containing:
 
 - local checked modules (plus concrete instantiations that this compilation must emit);
 - the package entry module path;

@@ -3,7 +3,6 @@ use omega_analyzer::Target;
 use omega_analyzer::checked::{ExternFunctionRef, ExternGlobalRef};
 use omega_analyzer::type_store::TypeStore;
 use omega_mir::EmissionUnit;
-use omega_parser::prelude::Ident;
 use std::path::PathBuf;
 
 pub enum EmitOutput {
@@ -25,9 +24,6 @@ pub struct CodegenRequest {
     pub emit: EmitKind,
     /// One unit per physical source file, in emission order.
     pub units: Vec<EmissionUnit>,
-    /// Retained for public API compatibility. MIR lowering consumes entry identity;
-    /// native emission does not currently inspect this field.
-    pub entry: Vec<Ident>,
     pub extern_functions: Vec<ExternFunctionRef>,
     pub extern_globals: Vec<ExternGlobalRef>,
     /// The frozen facts of every nominal type the units name.

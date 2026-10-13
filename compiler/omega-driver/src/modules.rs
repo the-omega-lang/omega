@@ -81,6 +81,29 @@ pub(crate) enum LoadFailure {
     Compile(CompileError),
 }
 
+/// Every source text the compilation read, with the module each one declares.
+/// It outlives the driver so diagnostics can still be rendered against it.
+#[derive(Default)]
+pub struct ModuleSources {
+    registry: SourceRegistry,
+    ids: HashMap<ModulePath, SourceId>,
+}
+
+impl ModuleSources {
+    fn add(&mut self, module: ModulePath, file: SourceFile) {
+        let id = self.registry.add(file);
+        self.ids.insert(module, id);
+    }
+
+    pub fn source_id(&self, module: &ModulePath) -> Option<SourceId> {
+        self.ids.get(module).copied()
+    }
+
+    pub fn registry(&self) -> &SourceRegistry {
+        &self.registry
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct ModuleStore {
     modules: HashMap<ModulePath, ParsedModule>,
@@ -95,8 +118,7 @@ pub(crate) struct ModuleStore {
     /// so the macro namespace stays separate from the ordinary one.
     macro_alias_names: HashMap<ModulePath, Rc<HashSet<Ident>>>,
     macro_expansions: omega_parser::macros::ExpansionState,
-    sources: SourceRegistry,
-    source_ids: HashMap<ModulePath, SourceId>,
+    sources: ModuleSources,
     failures: HashMap<ModulePath, LoadFailure>,
     definition_origins: HashMap<ModulePath, omega_parser::prelude::Origin>,
     next_id: u32,
@@ -189,15 +211,20 @@ impl ModuleStore {
     }
 
     pub fn source_id(&self, path: &ModulePath) -> Option<SourceId> {
-        self.source_ids.get(path).copied()
+        self.sources.source_id(path)
     }
 
-    pub fn sources(&self) -> &SourceRegistry {
+    pub fn sources(&self) -> &ModuleSources {
         &self.sources
     }
 
+    pub fn into_sources(self) -> ModuleSources {
+        self.sources
+    }
+
     fn source_text(&self, path: &ModulePath) -> Option<Rc<SourceFile>> {
-        self.source_id(path).and_then(|id| self.sources.shared(id))
+        self.source_id(path)
+            .and_then(|id| self.sources.registry.shared(id))
     }
 
     pub fn take_failure(&mut self, path: &ModulePath) -> Option<LoadFailure> {
@@ -230,11 +257,10 @@ impl Driver {
                 message: e.to_string(),
             }
         })?;
-        let id = self
-            .modules
-            .sources
-            .add(SourceFile::new(file.display().to_string(), source.as_str()));
-        self.modules.source_ids.insert(path.clone(), id);
+        self.modules.sources.add(
+            path.clone(),
+            SourceFile::new(file.display().to_string(), source.as_str()),
+        );
         let ast = SourceModule::parse(&source).map_err(|errors| {
             self.modules
                 .raw_failures
@@ -762,14 +788,6 @@ impl Driver {
             &ModulePath::from(authorship.defining_module.as_slice()),
             authorship.definition,
         )
-    }
-
-    pub fn source_id(&self, module: &ModulePath) -> Option<SourceId> {
-        self.modules.source_id(module)
-    }
-
-    pub fn sources(&self) -> &SourceRegistry {
-        self.modules.sources()
     }
 
     /// A span paired with the module whose source it indexes. `None` when that

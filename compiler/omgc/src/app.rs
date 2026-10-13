@@ -2,7 +2,7 @@ use crate::cli::{self, Args, Command};
 use omega_analyzer::Target;
 use omega_codegen::{CodegenRequest, EmitKind, EmitOutput, EmittedArtifact};
 use omega_diagnostics::{Diagnostic, GREEN, Renderer, SourceRegistry, paint};
-use omega_driver::{Driver, basename};
+use omega_driver::{Compilation, Driver, ModuleSources, basename};
 use omega_hir::ModulePath;
 use omega_mir::EmissionSource;
 use omega_parser::highlight::OmegaHighlighter;
@@ -95,26 +95,25 @@ fn compile(args: Args) -> Result<(), AppError> {
 
     let definitions = cli::resolve_definitions(target, &definitions)?;
 
-    let mut driver =
+    let driver =
         Driver::new_with_definitions(entry_dir, name, externs, definitions).map_err(|errors| {
             render_driver_errors(&renderer, &errors);
             AppError::Reported
         })?;
 
-    let program = driver
-        .compile(&ModulePath::new([entry_name.clone()]))
-        .map_err(|errors| {
-            render_compile_errors(&renderer, &driver, &errors);
-            AppError::Reported
-        })?;
+    let Compilation { sources, result } = driver.compile(&ModulePath::new([entry_name.clone()]));
+    let program = result.map_err(|errors| {
+        render_compile_errors(&renderer, &sources, &errors);
+        AppError::Reported
+    })?;
 
     for (module, warning) in &program.warnings {
-        let source = driver.source_id(module);
+        let source = sources.source_id(module);
         eprintln!(
             "{}\n",
             renderer.render(
                 &warning.to_diagnostic().with_default_source(source),
-                driver.sources()
+                sources.registry()
             )
         );
     }
@@ -157,7 +156,6 @@ fn compile(args: Args) -> Result<(), AppError> {
         opt_level,
         emit,
         units,
-        entry: program.entry.segments().to_vec(),
         extern_functions: program.extern_functions,
         extern_globals: program.extern_globals,
         types: program.types,
@@ -248,17 +246,17 @@ fn render_driver_errors(renderer: &Renderer, errors: &[omega_driver::CompileErro
 
 fn render_compile_errors(
     renderer: &Renderer,
-    driver: &Driver,
+    sources: &ModuleSources,
     errors: &[omega_driver::CompileError],
 ) {
     let mut count = 0usize;
     for error in errors {
-        let source = error.module().and_then(|module| driver.source_id(module));
+        let source = error.module().and_then(|module| sources.source_id(module));
         for diagnostic in error.to_diagnostics() {
             count += 1;
             eprintln!(
                 "{}\n",
-                renderer.render(&diagnostic.with_default_source(source), driver.sources())
+                renderer.render(&diagnostic.with_default_source(source), sources.registry())
             );
         }
     }
@@ -267,7 +265,7 @@ fn render_compile_errors(
     let summary = Diagnostic::error(format!(
         "could not compile the program due to {count} previous {plural}"
     ));
-    eprintln!("{}", renderer.render(&summary, driver.sources()));
+    eprintln!("{}", renderer.render(&summary, sources.registry()));
 }
 
 fn verbose_step(colors: bool, verb: &str, detail: &str) {

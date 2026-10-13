@@ -2,7 +2,7 @@ use crate::ast::annotation::AnnotationNode;
 use crate::ast::expression::{CodeblockExpr, ExpressionNode, MacroInvocationExpr};
 use crate::ast::generics::GenericParam;
 use crate::ast::identifier::{Ident, Path};
-use crate::ast::self_mode::SelfMode;
+use crate::ast::self_mode::SelfParam;
 use crate::ast::statement::{DeclarationStmt, FunctionDefinitionStmt, WalrusStmt};
 use crate::ast::r#type::{FunctionType, Param, RawConvention, Type};
 use crate::ast::visibility::Visibility;
@@ -224,7 +224,7 @@ pub struct SpecFunctionStmt {
     pub visibility: Visibility,
     pub explicit_hidden_span: Option<Span>,
     pub generics: Vec<GenericParam>,
-    pub self_mode: Option<SelfMode>,
+    pub self_param: Option<SelfParam>,
     pub params: Vec<Param>,
     pub is_variadic: bool,
     pub return_type: Type,

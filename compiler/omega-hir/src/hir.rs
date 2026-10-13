@@ -463,7 +463,7 @@ pub struct HirLoop {
 pub struct HirFor {
     pub id: HirId,
     pub span: Span,
-    pub init: Vec<HirStmt>,
+    pub init: Option<Box<HirStmt>>,
     pub condition: Option<HirExprNode>,
     pub post: Option<HirExprNode>,
     pub body: HirBlock,
@@ -475,6 +475,7 @@ pub struct HirForIn {
     pub span: Span,
     pub mutable: bool,
     pub binding: Ident,
+    pub binding_span: Span,
     pub binding_type: Option<Type>,
     pub iterator: HirExprNode,
     pub body: HirBlock,

@@ -128,7 +128,7 @@ pub fn parse_function_definition(
     let name_span = p.last_span();
     let generics = parse_optional_generics(p)?;
     p.expect(&TokenKind::LParen, "'('");
-    let (self_mode, params) = crate::parser::parse_param_list(p);
+    let (self_param, params) = crate::parser::parse_param_list(p);
     p.expect(&TokenKind::RParen, "')'");
     p.expect(&TokenKind::FatArrow, "'=>'");
     // The whole declared type, not just its last token -- `=> *mut Node<T>`
@@ -151,7 +151,7 @@ pub fn parse_function_definition(
         signature_span,
         return_type_span,
         generics,
-        self_mode,
+        self_param,
         params,
         return_type,
         codeblock,

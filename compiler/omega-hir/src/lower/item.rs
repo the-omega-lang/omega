@@ -9,8 +9,8 @@ use crate::hir::{
 use omega_parser::prelude::{
     AnnotationNode, DeclarationStmt, EnumStmt, ExpressionNode, ForeignBindingItem,
     ForeignBlockEntry, ForeignBlockItem, ForeignFunctionItem, FunctionDefinitionStmt, GenericParam,
-    Ident, Item, ItemNode, Param, Path, SelfMode, Span, SpecFunctionStmt, SpecStmt, StructStmt,
-    Type, UnionStmt,
+    Ident, Item, ItemNode, Param, Path, SelfMode, SelfParam, Span, SpecFunctionStmt, SpecStmt,
+    StructStmt, Type, UnionStmt,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -273,7 +273,7 @@ impl Lowerer {
             Some(codeblock) => f.signature_span.to(codeblock.span),
             None => f.signature_span,
         };
-        let params = self.lower_callable_params(&f.params, f.self_mode, span, kind);
+        let params = self.lower_callable_params(&f.params, f.self_param, kind);
         let body = f.codeblock.as_ref().map(|codeblock| {
             let mut body = self.lower_block(codeblock);
             // A naked function's body must stay exactly the user-authored `asm`
@@ -281,7 +281,7 @@ impl Lowerer {
             // shadow is meaningless for an ABI-only receiver anyway.
             let is_naked = f.annotations.iter().any(|a| a.name.as_ref() == "naked");
             if !is_naked {
-                self.prepend_mut_self_shadow(&mut body, f.self_mode, span);
+                self.prepend_mut_self_shadow(&mut body, f.self_param);
             }
             body
         });
@@ -299,7 +299,7 @@ impl Lowerer {
             explicit_hidden_span: f.explicit_hidden_span,
             name: f.ident.clone(),
             generics,
-            self_mode: f.self_mode,
+            self_mode: f.self_param.map(|receiver| receiver.mode),
             params,
             return_type: f.return_type.clone(),
             body,
@@ -309,50 +309,44 @@ impl Lowerer {
     fn lower_callable_params(
         &mut self,
         params: &[Param],
-        self_mode: Option<SelfMode>,
-        span: Span,
+        receiver: Option<SelfParam>,
         kind: FunctionKind,
     ) -> Vec<HirParam> {
-        let self_capacity = usize::from(kind.has_implicit_self() && self_mode.is_some());
+        let self_capacity = usize::from(kind.has_implicit_self() && receiver.is_some());
         let mut lowered = Vec::with_capacity(params.len() + self_capacity);
         if kind.has_implicit_self()
-            && let Some(self_param) = self.self_param(self_mode, span)
+            && let Some(receiver) = receiver
         {
-            lowered.push(self_param);
+            lowered.push(self.self_param(receiver));
         }
         lowered.extend(params.iter().map(|param| self.lower_param(param)));
         lowered
     }
 
-    fn prepend_mut_self_shadow(
-        &mut self,
-        body: &mut HirBlock,
-        self_mode: Option<SelfMode>,
-        span: Span,
-    ) {
-        if self_mode == Some(SelfMode::MutValue) {
-            body.stmts.insert(0, self.self_shadow_stmt(span));
+    fn prepend_mut_self_shadow(&mut self, body: &mut HirBlock, receiver: Option<SelfParam>) {
+        if let Some(receiver) = receiver
+            && receiver.mode == SelfMode::MutValue
+        {
+            body.stmts.insert(0, self.self_shadow_stmt(receiver.span));
         }
     }
 
-    fn self_param(&mut self, self_mode: Option<SelfMode>, span: Span) -> Option<HirParam> {
-        let mode = self_mode?;
+    fn self_param(&mut self, receiver: SelfParam) -> HirParam {
+        let mode = receiver.mode;
         let self_type = Ident("Self".to_string());
         let r#type = if mode.is_pointer() {
             Type::Pointer(Box::new(Type::Named(self_type.into())), mode.is_mutable())
         } else {
             Type::Named(self_type.into())
         };
-        Some(HirParam {
+        HirParam {
             id: self.ids.next(),
-            span,
-            // The parser preserves the self mode but not the `self` token span,
-            // so this synthetic parameter falls back to the function span.
-            name_span: span,
+            span: receiver.span,
+            name_span: receiver.span,
             ident: Ident("self".to_string()),
             origin: omega_parser::prelude::Origin::default(),
             r#type,
-        })
+        }
     }
 
     fn self_shadow_stmt(&mut self, span: Span) -> HirStmt {
@@ -426,10 +420,10 @@ impl Lowerer {
             .body
             .as_ref()
             .map_or(f.signature_span, |body| f.signature_span.to(body.span));
-        let params = self.lower_callable_params(&f.params, f.self_mode, span, FunctionKind::Member);
+        let params = self.lower_callable_params(&f.params, f.self_param, FunctionKind::Member);
         let mut body = f.body.as_ref().map(|block| self.lower_block(block));
         if let Some(body) = &mut body {
-            self.prepend_mut_self_shadow(body, f.self_mode, span);
+            self.prepend_mut_self_shadow(body, f.self_param);
         }
 
         HirSpecFunction {
@@ -442,7 +436,7 @@ impl Lowerer {
             explicit_hidden_span: f.explicit_hidden_span,
             name: f.ident.clone(),
             generics: Self::lower_generics(&f.generics),
-            self_mode: f.self_mode,
+            self_mode: f.self_param.map(|receiver| receiver.mode),
             params,
             is_variadic: f.is_variadic,
             return_type: f.return_type.clone(),

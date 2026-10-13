@@ -37,6 +37,7 @@ impl TestPackage {
         let program = Driver::new(self.0.clone(), None, vec![], Target::DEFAULT)
             .expect("construct driver")
             .compile(&omega_hir::ModulePath::new([Ident("main".into())]))
+            .result
             .unwrap_or_else(|errors| panic!("expected this to compile, got: {errors:#?}"));
         let entry = program.entry.clone();
         omega_mir::lower_program(program.modules, &entry, &program.types)

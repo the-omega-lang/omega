@@ -77,7 +77,7 @@ fn a_receiver_is_rejected_in_every_spelling() {
 fn a_method_declaration_keeps_its_receiver() {
     let module = SourceModule::parse("struct Thing { get(*self) => i32 { 0 } }")
         .expect("a receiver belongs to a method declaration");
-    assert!(format!("{:?}", module.nodes).contains("Some(Pointer)"));
+    assert!(format!("{:?}", module.nodes).contains("mode: Pointer"));
 }
 
 #[test]

@@ -13,8 +13,9 @@ mod resolver;
 mod roots;
 mod selection;
 
-pub use error::{CompileError, CompiledProgram};
+pub use error::{Compilation, CompileError, CompiledProgram};
 pub use fs_resolve::basename;
+pub use modules::ModuleSources;
 pub use roots::{ExternRoot, LocalSource};
 
 use aliases::AliasState;

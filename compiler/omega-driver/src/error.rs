@@ -1,3 +1,4 @@
+use crate::modules::ModuleSources;
 use crate::roots::LocalSource;
 use omega_analyzer::annotation_eval::{ConditionError, ConditionErrorKind};
 use omega_analyzer::checked::{CheckedModule, ExternFunctionRef, ExternGlobalRef};
@@ -198,6 +199,13 @@ impl CompileError {
             ))],
         }
     }
+}
+
+pub struct Compilation {
+    /// The source texts every diagnostic of `result` (and every warning of a
+    /// successful program) is rendered against.
+    pub sources: ModuleSources,
+    pub result: Result<CompiledProgram, Vec<CompileError>>,
 }
 
 pub struct CompiledProgram {
