@@ -498,7 +498,11 @@ mod tests {
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("../../tests/t10c_generic_member_functions"),
             None,
-            Vec::new(),
+            vec![crate::ExternRoot {
+                name: ident("core"),
+                dir: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../runtime/core"),
+            }],
             omega_analyzer::Target::DEFAULT,
         )
         .unwrap();

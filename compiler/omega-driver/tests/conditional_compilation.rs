@@ -52,7 +52,14 @@ impl TestPackage {
     }
 
     fn driver(&self, options: &[&str]) -> Driver {
-        self.driver_with_externs(options, vec![])
+        let core = ExternRoot {
+            name: Ident("core".into()),
+            dir: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../runtime/core")
+                .canonicalize()
+                .expect("runtime/core exists"),
+        };
+        self.driver_with_externs(options, vec![core])
     }
 
     fn driver_with_externs(&self, options: &[&str], externs: Vec<ExternRoot>) -> Driver {
@@ -105,6 +112,7 @@ fn names(program: &CompiledProgram) -> Vec<String> {
     let mut names: Vec<String> = program
         .modules
         .iter()
+        .filter(|(path, _)| path.root().is_some_and(|root| root.as_ref() == "main"))
         .flat_map(|(_, module)| &module.items)
         .map(|item| match item {
             CheckedItem::Declaration(declaration) => declaration.ident.to_string(),

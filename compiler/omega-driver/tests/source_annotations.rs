@@ -41,9 +41,15 @@ impl Package {
         .unwrap()
     }
     fn compile(&self) -> Result<CompiledProgram, Vec<CompileError>> {
-        self.driver(vec![])
-            .compile(&omega_hir::ModulePath::new([Ident("main".into())]))
-            .result
+        self.driver(vec![ExternRoot {
+            name: Ident("core".into()),
+            dir: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../runtime/core")
+                .canonicalize()
+                .expect("runtime/core exists"),
+        }])
+        .compile(&omega_hir::ModulePath::new([Ident("main".into())]))
+        .result
     }
     fn errors(&self) -> Vec<CompileError> {
         self.compile().err().expect("must fail")

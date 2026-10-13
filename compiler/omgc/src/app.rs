@@ -238,7 +238,10 @@ fn write_artifacts(
 fn render_driver_errors(renderer: &Renderer, errors: &[omega_driver::CompileError]) {
     let sources = SourceRegistry::default();
     for error in errors {
-        for diagnostic in error.to_diagnostics() {
+        for mut diagnostic in error.to_diagnostics() {
+            if matches!(error, omega_driver::CompileError::MissingCore) {
+                diagnostic = diagnostic.with_help("pass --import=core=<dir>");
+            }
             eprintln!("{}\n", renderer.render(&diagnostic, &sources));
         }
     }

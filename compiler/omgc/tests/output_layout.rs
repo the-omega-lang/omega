@@ -36,9 +36,10 @@ impl Workspace {
     }
 
     fn compile(&self, args: &[&str]) -> Output {
+        let core = core_import();
         Command::new(env!("CARGO_BIN_EXE_omgc"))
             .current_dir(&self.0)
-            .args(args)
+            .args(with_core(args, &core))
             .output()
             .expect("run omgc")
     }
@@ -221,4 +222,25 @@ fn the_help_and_usage_text_describe_an_output_directory() {
         "{stderr}"
     );
     assert!(stderr.contains("-o <output-dir>"), "{stderr}");
+}
+
+/// Every compilation needs `core`; the repository's own is used unless the
+/// invocation registers one.
+fn with_core<'a>(args: &[&'a str], core: &'a str) -> Vec<&'a str> {
+    let mut args = args.to_vec();
+    if !args.iter().any(|arg| arg.starts_with("--import=core=")) {
+        args.push(core);
+    }
+    args
+}
+
+fn core_import() -> String {
+    format!(
+        "--import=core={}",
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../runtime/core")
+            .canonicalize()
+            .expect("runtime/core exists")
+            .display()
+    )
 }

@@ -7,11 +7,21 @@ use omega_analyzer::annotations::{ItemKind, ManglingMode, SymbolPolicy, SymbolVi
 use omega_analyzer::checked::{CheckedDeclaration, CheckedItem, NumberValue};
 use omega_analyzer::error::{AnalysisError, AnalysisErrorKind};
 use omega_analyzer::resolved_type::ConstValue;
-use omega_driver::{CompileError, CompiledProgram, Driver};
+use omega_driver::{CompileError, CompiledProgram, Driver, ExternRoot};
 use omega_parser::prelude::Ident;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+fn core_extern() -> ExternRoot {
+    ExternRoot {
+        name: Ident("core".to_string()),
+        dir: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../runtime/core")
+            .canonicalize()
+            .expect("runtime/core exists"),
+    }
+}
 
 static NEXT_DIR: AtomicUsize = AtomicUsize::new(0);
 
@@ -32,7 +42,7 @@ impl TestPackage {
     }
 
     fn result(&self) -> Result<CompiledProgram, Vec<CompileError>> {
-        Driver::new(self.0.clone(), None, vec![], Target::DEFAULT)
+        Driver::new(self.0.clone(), None, vec![core_extern()], Target::DEFAULT)
             .expect("construct driver")
             .compile(&omega_hir::ModulePath::new([Ident("main".into())]))
             .result

@@ -32,21 +32,6 @@ impl TestPackage {
         Driver::new(
             self.0.clone(),
             None,
-            Vec::<ExternRoot>::new(),
-            Target::DEFAULT,
-        )
-        .expect("construct driver")
-        .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]))
-        .result
-    }
-
-    /// The same compilation with the real `core` registered, for a case whose
-    /// body reaches a compiler-generated runtime check and therefore needs
-    /// `core`'s panic contract.
-    fn compile_with_core(&self) -> Result<omega_driver::CompiledProgram, Vec<CompileError>> {
-        Driver::new(
-            self.0.clone(),
-            None,
             vec![ExternRoot {
                 name: Ident("core".to_string()),
                 dir: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -102,7 +87,7 @@ fn never_main_is_accepted() {
         "#,
     );
     package
-        .compile_with_core()
+        .compile()
         .expect("`main() => never` must be accepted");
 }
 

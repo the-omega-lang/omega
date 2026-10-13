@@ -61,6 +61,21 @@ impl TestPackage {
         }])
     }
 
+    /// Compiles against a `core` that declares nothing, so no panic contract.
+    fn compile_with_bare_core(&self) -> Result<omega_driver::CompiledProgram, Vec<CompileError>> {
+        let core = self
+            .0
+            .parent()
+            .expect("test root has a parent")
+            .join("core");
+        fs::create_dir_all(&core).expect("create bare core package");
+        fs::write(core.join("core.omg"), "").expect("write bare core module");
+        self.compile_with(vec![ExternRoot {
+            name: Ident("core".to_string()),
+            dir: core,
+        }])
+    }
+
     fn expect_ok(&self) -> omega_driver::CompiledProgram {
         match self.compile() {
             Ok(program) => program,
@@ -705,7 +720,7 @@ fn a_structurally_unreachable_block_is_not_instrumented() {
 // -- Missing or incompatible core support ---------------------------------
 
 #[test]
-fn a_check_without_core_is_a_source_located_diagnostic() {
+fn a_check_without_panic_support_is_a_source_located_diagnostic() {
     let package = TestPackage::new(&format!(
         "{SIGNAL}\
          classify(signal: Signal) => i32 {{\n\
@@ -717,7 +732,7 @@ fn a_check_without_core_is_a_source_located_diagnostic() {
          }}\n\
          main() => void {{ }}"
     ));
-    let errors = match package.compile_with(Vec::new()) {
+    let errors = match package.compile_with_bare_core() {
         Ok(_) => panic!("a check with no panic contract to call must be reported"),
         Err(errors) => errors,
     };
@@ -742,9 +757,9 @@ fn a_check_without_core_is_a_source_located_diagnostic() {
 }
 
 #[test]
-fn a_body_with_no_check_still_compiles_without_core() {
+fn a_body_with_no_check_still_compiles_without_panic_support() {
     TestPackage::new("add(a: i32, b: i32) => i32 { a + b }\nmain() => void { }")
-        .compile_with(Vec::new())
+        .compile_with_bare_core()
         .expect("nothing here needs `core`'s panic contract");
 }
 

@@ -108,6 +108,12 @@ impl Workspace {
     }
 
     fn run(&self, program: &str, args: &[&str]) -> Output {
+        let core = core_import();
+        let args = if program == env!("CARGO_BIN_EXE_omgc") {
+            with_core(args, &core)
+        } else {
+            args.to_vec()
+        };
         Command::new(program)
             .current_dir(&self.0)
             .args(args)
@@ -200,4 +206,25 @@ fn symbol_entry<'a>(symbols: &'a str, symbol: &str) -> &'a str {
         .lines()
         .find(|line| line.split_whitespace().next_back() == Some(symbol))
         .unwrap_or_else(|| panic!("no symbol-table entry for '{symbol}' in:\n{symbols}"))
+}
+
+/// Every compilation needs `core`; the repository's own is used unless the
+/// invocation registers one.
+fn with_core<'a>(args: &[&'a str], core: &'a str) -> Vec<&'a str> {
+    let mut args = args.to_vec();
+    if !args.iter().any(|arg| arg.starts_with("--import=core=")) {
+        args.push(core);
+    }
+    args
+}
+
+fn core_import() -> String {
+    format!(
+        "--import=core={}",
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../runtime/core")
+            .canonicalize()
+            .expect("runtime/core exists")
+            .display()
+    )
 }

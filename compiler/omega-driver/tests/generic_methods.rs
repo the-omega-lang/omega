@@ -51,6 +51,7 @@ impl TestWorkspace {
                 name: Ident("provider".to_string()),
                 dir: dir.clone(),
             })
+            .chain([core_extern()])
             .collect()
     }
 
@@ -641,4 +642,14 @@ fn a_spec_that_requires_nothing_is_not_satisfied_without_a_conformance() {
             .any(|error| error.contains("'Plain' does not implement spec 'Marker'")),
         "{errors:#?}",
     );
+}
+
+fn core_extern() -> ExternRoot {
+    ExternRoot {
+        name: Ident("core".to_string()),
+        dir: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../runtime/core")
+            .canonicalize()
+            .expect("runtime/core exists"),
+    }
 }

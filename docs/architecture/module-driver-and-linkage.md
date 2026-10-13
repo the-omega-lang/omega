@@ -19,6 +19,10 @@ This document also explains where package identity and emission ownership feed l
 - registered `--import` roots;
 - the compilation's configuration: its target and its compiler definitions.
 
+The compiler reaches `core` directly, so construction rejects a compilation
+whose local package is not `core` and that registers no `core` root
+(`CompileError::MissingCore`), before any module is read.
+
 It then calls:
 
 ```text

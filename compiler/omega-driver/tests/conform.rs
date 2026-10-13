@@ -12,6 +12,16 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+fn core_extern() -> ExternRoot {
+    ExternRoot {
+        name: Ident("core".to_string()),
+        dir: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../runtime/core")
+            .canonicalize()
+            .expect("runtime/core exists"),
+    }
+}
+
 static NEXT_DIR: AtomicUsize = AtomicUsize::new(0);
 
 struct TestPackage(PathBuf);
@@ -45,7 +55,7 @@ impl TestPackage {
     }
 
     fn compile(&self) -> Result<omega_driver::CompiledProgram, Vec<CompileError>> {
-        Driver::new(self.0.clone(), None, Vec::new(), Target::DEFAULT)
+        Driver::new(self.0.clone(), None, vec![core_extern()], Target::DEFAULT)
             .expect("construct driver")
             .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]))
             .result
@@ -736,10 +746,13 @@ fn extern_generic_instantiation_keeps_its_declaring_module() {
     let program = Driver::new(
         consumer.0.clone(),
         None,
-        vec![ExternRoot {
-            name: Ident("lib".to_string()),
-            dir: library.0.clone(),
-        }],
+        vec![
+            ExternRoot {
+                name: Ident("lib".to_string()),
+                dir: library.0.clone(),
+            },
+            core_extern(),
+        ],
         Target::DEFAULT,
     )
     .expect("construct driver with generic library extern")
@@ -784,10 +797,13 @@ fn extern_owned_concrete_conform_is_imported_not_reemitted() {
     let program = Driver::new(
         consumer.0.clone(),
         None,
-        vec![ExternRoot {
-            name: Ident("lib".to_string()),
-            dir: library.0.clone(),
-        }],
+        vec![
+            ExternRoot {
+                name: Ident("lib".to_string()),
+                dir: library.0.clone(),
+            },
+            core_extern(),
+        ],
         Target::DEFAULT,
     )
     .expect("construct driver with library extern")
@@ -823,10 +839,13 @@ fn blanket_conforms_require_a_package_local_spec() {
     let result = Driver::new(
         consumer.0.clone(),
         None,
-        vec![ExternRoot {
-            name: Ident("lib".to_string()),
-            dir: library.0.clone(),
-        }],
+        vec![
+            ExternRoot {
+                name: Ident("lib".to_string()),
+                dir: library.0.clone(),
+            },
+            core_extern(),
+        ],
         Target::DEFAULT,
     )
     .expect("construct consumer")
@@ -1848,7 +1867,7 @@ fn a_package_root_with_no_modules_is_a_reportable_error() {
     let own = format!("{}.omg", root.file_name().unwrap().to_str().unwrap());
     fs::write(nested.join(&own), "exposed helper() => i32 { 7 }\n").expect("write inner module");
 
-    let result = Driver::new(root.clone(), None, Vec::new(), Target::DEFAULT)
+    let result = Driver::new(root.clone(), None, vec![core_extern()], Target::DEFAULT)
         .expect("construct driver")
         .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]))
         .result;
@@ -2287,7 +2306,7 @@ fn a_32_bit_target_sizes_usize_at_four_bytes() {
         entry_fn() => i32 { 0 }
         "#,
     );
-    let program = Driver::new(package.0.clone(), None, Vec::new(), target)
+    let program = Driver::new(package.0.clone(), None, vec![core_extern()], target)
         .expect("construct driver")
         .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]))
         .result
@@ -2330,7 +2349,7 @@ fn a_usize_literal_above_u32_max_is_rejected_on_a_32_bit_target() {
         os: omega_analyzer::Os::None,
     };
     let package32 = TestPackage::new(source);
-    let errors32 = match Driver::new(package32.0.clone(), None, Vec::new(), target32)
+    let errors32 = match Driver::new(package32.0.clone(), None, vec![core_extern()], target32)
         .expect("construct driver")
         .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]))
         .result
@@ -2360,11 +2379,16 @@ fn lowered_mir_carries_symbols_and_linkage() {
         main() => void { add(1, 2); }
         "#,
     );
-    let program = Driver::new(package.0.clone(), None, Vec::new(), Target::DEFAULT)
-        .expect("construct driver")
-        .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]))
-        .result
-        .expect("compiles");
+    let program = Driver::new(
+        package.0.clone(),
+        None,
+        vec![core_extern()],
+        Target::DEFAULT,
+    )
+    .expect("construct driver")
+    .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]))
+    .result
+    .expect("compiles");
     let mir = omega_mir::lower_program(program.modules, &program.entry, &program.types);
     let functions: Vec<&omega_mir::MirFunctionDef> = mir
         .iter()

@@ -6,6 +6,16 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+fn core_extern() -> ExternRoot {
+    ExternRoot {
+        name: Ident("core".to_string()),
+        dir: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../runtime/core")
+            .canonicalize()
+            .expect("runtime/core exists"),
+    }
+}
+
 static NEXT_DIR: AtomicUsize = AtomicUsize::new(0);
 
 fn warnings(body: &str) -> Vec<AnalysisWarning> {
@@ -22,7 +32,7 @@ fn warnings(body: &str) -> Vec<AnalysisWarning> {
         format!("entry_fn() => i32 {{ {body} }}"),
     )
     .expect("write root module");
-    let result = Driver::new(root, None, Vec::<ExternRoot>::new(), Target::DEFAULT)
+    let result = Driver::new(root, None, vec![core_extern()], Target::DEFAULT)
         .expect("construct driver")
         .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]))
         .result;

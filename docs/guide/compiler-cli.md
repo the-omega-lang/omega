@@ -41,13 +41,17 @@ object behind. An existing `-o` path that is a regular file is rejected.
 The compiled package and its dependencies use the same `[<name>=]<dir>` spelling. A bare directory takes its identity from the directory basename; `<name>=<dir>` supplies the identity explicitly:
 
 ```sh
-omgc mathlib=examples/extern_lib/ -o target/mathlib
-omgc app/ --import=mathlib=examples/extern_lib/ -o target/app
+omgc mathlib=examples/extern_lib/ --import=core=runtime/core/ -o target/mathlib
+omgc app/ --import=mathlib=examples/extern_lib/ --import=core=runtime/core/ -o target/app
 ```
 
 As with `-D`, only the **first** `=` separates the name, so `name=./a=b` declares `name` for the directory `./a=b`. A bare directory whose path contains `=` therefore needs an explicit name. `:` has no special meaning, so a Windows path such as `C:\omega\core` is an ordinary bare directory and `core=C:\omega\core` names it.
 
 Source-level meaning is specified in [`../language/modules-and-imports.md`](../language/modules-and-imports.md).
+
+## The `core` package
+
+The compiler relies on `core` in every program, so every compilation needs it: a package other than `core` must register it with `--import=core=<dir>`, and `omgc` rejects the invocation otherwise. Compiling `core` itself needs no import, because the package being compiled is `core`. The remaining examples on this page leave the `core` import out for brevity.
 
 ## Targets
 
@@ -162,7 +166,7 @@ A normal multi-package build compiles each package in a separate `omgc` process 
 
 ```sh
 omgc runtime/core/ -o target/core
-omgc examples/mathlib/ -o target/mathlib
+omgc examples/mathlib/ --import=core=runtime/core/ -o target/mathlib
 omgc examples/dev/ \
     --import=mathlib=examples/mathlib/ \
     --import=core=runtime/core/ \

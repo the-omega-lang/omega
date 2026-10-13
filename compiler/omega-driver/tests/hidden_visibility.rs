@@ -72,19 +72,26 @@ fn core_root() -> PathBuf {
         .expect("runtime/core exists")
 }
 
-/// Compiles `root` against bare extern packages, without the real `core`.
+/// Compiles `root` against bare extern packages, plus the real `core` unless
+/// `root` is a `core` of its own.
 fn compile_bare(
     root: &TestPackage,
     root_name: &str,
     externs: &[(&str, &TestPackage)],
 ) -> Result<omega_driver::CompiledProgram, Vec<CompileError>> {
-    let externs = externs
+    let mut externs: Vec<ExternRoot> = externs
         .iter()
         .map(|(name, package)| ExternRoot {
             name: Ident(name.to_string()),
             dir: package.0.clone(),
         })
         .collect();
+    if root_name != "core" {
+        externs.push(ExternRoot {
+            name: Ident("core".to_string()),
+            dir: core_root(),
+        });
+    }
     Driver::new(
         root.0.clone(),
         Some(Ident(root_name.to_string())),

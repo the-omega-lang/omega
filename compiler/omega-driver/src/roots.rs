@@ -94,6 +94,10 @@ impl ModuleRoots {
                 second: extern_root.dir.clone(),
             }]);
         }
+        let core = Ident(CORE_MODULE.to_string());
+        if local_identity.as_ref() != Some(&core) && !registered.contains_key(&core) {
+            return Err(vec![CompileError::MissingCore]);
+        }
         // Unconditional here: `relabel_root` is already a
         // no-op whenever an extern's declared name matches its own
         // on-disk basename (the common case -- `core`, `mathlib`, and
@@ -299,6 +303,15 @@ mod tests {
         }
     }
 
+    /// An empty `core` package, which every compilation but `core`'s own needs.
+    fn bare_core(dir: &TestDir) -> ExternRoot {
+        write(&dir.0, "core.omg");
+        ExternRoot {
+            name: Ident(CORE_MODULE.into()),
+            dir: dir.0.clone(),
+        }
+    }
+
     fn write(dir: &std::path::Path, relative: &str) {
         let path = dir.join(relative);
         std::fs::create_dir_all(path.parent().expect("test file has a parent"))
@@ -317,18 +330,23 @@ mod tests {
         write(&external.0, "thing/child.omg");
         let name = Ident("local".into());
         let ext = Ident("ext".into());
+        let core = TestDir::new();
         let mut roots = ModuleRoots::new(
             local.0.clone(),
             Some(name.clone()),
-            vec![ExternRoot {
-                name: ext.clone(),
-                dir: external.0.clone(),
-            }],
+            vec![
+                ExternRoot {
+                    name: ext.clone(),
+                    dir: external.0.clone(),
+                },
+                bare_core(&core),
+            ],
         )
         .unwrap();
         roots.prune(&[
             ModulePath::new([name.clone(), Ident("thing".into())]),
             ModulePath::new([ext.clone()]),
+            ModulePath::new([Ident(CORE_MODULE.into())]),
         ]);
         assert_eq!(roots.local_sources().len(), 1);
         assert!(roots.extern_modules().is_empty());
@@ -403,10 +421,11 @@ mod tests {
     }
 
     fn sources(root: &TestDir, declared: Option<&str>) -> Vec<LocalSource> {
+        let core = TestDir::new();
         ModuleRoots::new(
             root.0.clone(),
             declared.map(|name| Ident(name.to_string())),
-            vec![],
+            vec![bare_core(&core)],
         )
         .expect("valid roots")
         .local_sources()
@@ -498,13 +517,17 @@ mod tests {
         let dependency = TestDir::new();
         write(&dependency.0, "lib.omg");
 
+        let core = TestDir::new();
         let roots = ModuleRoots::new(
             local.0.clone(),
             None,
-            vec![ExternRoot {
-                name: Ident("lib".to_string()),
-                dir: dependency.0.clone(),
-            }],
+            vec![
+                ExternRoot {
+                    name: Ident("lib".to_string()),
+                    dir: dependency.0.clone(),
+                },
+                bare_core(&core),
+            ],
         )
         .expect("valid roots");
 
@@ -512,5 +535,24 @@ mod tests {
         assert!(roots.is_known_top_level(&local_name));
         assert!(roots.is_known_top_level(&Ident("lib".to_string())));
         assert!(!roots.is_known_top_level(&Ident("unregistered".to_string())));
+    }
+
+    #[test]
+    fn a_compilation_without_core_is_rejected() {
+        let local = TestDir::new();
+        write(&local.0, "main.omg");
+        let result = ModuleRoots::new(local.0.clone(), Some(Ident("main".into())), vec![]);
+        assert!(
+            matches!(&result, Err(errors) if matches!(errors.as_slice(), [CompileError::MissingCore])),
+            "a package other than core must register it"
+        );
+    }
+
+    #[test]
+    fn core_itself_needs_no_core_extern() {
+        let local = TestDir::new();
+        write(&local.0, "core.omg");
+        ModuleRoots::new(local.0.clone(), Some(Ident(CORE_MODULE.into())), vec![])
+            .expect("core is the package being compiled");
     }
 }

@@ -74,9 +74,16 @@ fn analysis_errors(errors: &[CompileError]) -> Vec<&AnalysisErrorKind> {
 }
 
 #[test]
-fn typeinfo_without_core_is_a_diagnostic() {
+fn typeinfo_without_core_reflection_is_a_diagnostic() {
     let package = TestPackage::new("main() => void { info := typeinfo<i32>; }");
-    let errors = match package.compile_with(Vec::new()) {
+    let core = package.0.parent().unwrap().join("core");
+    fs::create_dir_all(&core).expect("create bare core package");
+    fs::write(core.join("core.omg"), "").expect("write bare core module");
+    let bare_core = vec![ExternRoot {
+        name: Ident("core".to_string()),
+        dir: core,
+    }];
+    let errors = match package.compile_with(bare_core) {
         Ok(_) => panic!("typeinfo without core::reflection must be rejected"),
         Err(errors) => errors,
     };

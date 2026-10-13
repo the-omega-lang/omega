@@ -76,6 +76,9 @@ pub enum CompileError {
         root: PathBuf,
         expected: PathBuf,
     },
+    /// The compilation is not `core` itself and registers no `core` package.
+    /// The compiler reaches `core` directly, so nothing compiles without it.
+    MissingCore,
 }
 
 impl CompileError {
@@ -91,6 +94,7 @@ impl CompileError {
             Self::DuplicateModuleIdentity { .. }
             | Self::AmbiguousPreludeMacro { .. }
             | Self::EmptyPackage { .. }
+            | Self::MissingCore
             | Self::FullyDisabledPackage { .. } => None,
         }
     }
@@ -161,6 +165,9 @@ impl CompileError {
                 first.display(),
                 second.display(),
             ))],
+            Self::MissingCore => vec![Diagnostic::error(
+                "no 'core' package is registered for this compilation; every program needs it",
+            )],
             Self::EmptyPackage { root, expected } => vec![
                 Diagnostic::error(format!(
                     "package root '{}' contains no modules -- expected its own module file at '{}'",

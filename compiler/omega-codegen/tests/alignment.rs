@@ -14,6 +14,16 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+fn core_extern() -> ExternRoot {
+    ExternRoot {
+        name: Ident("core".to_string()),
+        dir: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../runtime/core")
+            .canonicalize()
+            .expect("runtime/core exists"),
+    }
+}
+
 static NEXT_DIR: AtomicUsize = AtomicUsize::new(0);
 
 struct TestPackage(PathBuf);
@@ -47,7 +57,7 @@ impl Drop for TestPackage {
 /// relative to the package root.
 fn artifacts_for(files: &[(&str, &str)], target: Target) -> Vec<(String, String)> {
     let package = TestPackage::new(files);
-    let program = match Driver::new(package.0.clone(), None, Vec::<ExternRoot>::new(), target)
+    let program = match Driver::new(package.0.clone(), None, vec![core_extern()], target)
         .expect("construct driver")
         .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]))
         .result

@@ -98,6 +98,12 @@ impl Workspace {
     }
 
     fn run(&self, program: &str, args: &[&str]) -> Output {
+        let core = core_import();
+        let args = if program == env!("CARGO_BIN_EXE_omgc") {
+            with_core(args, &core)
+        } else {
+            args.to_vec()
+        };
         Command::new(program)
             .current_dir(&self.0)
             .args(args)
@@ -203,4 +209,25 @@ fn same_named_specs_from_two_modules_link_to_their_own_conformances() {
         2,
         "the consumer emits one vtable per spec: {vtables:?}"
     );
+}
+
+/// Every compilation needs `core`; the repository's own is used unless the
+/// invocation registers one.
+fn with_core<'a>(args: &[&'a str], core: &'a str) -> Vec<&'a str> {
+    let mut args = args.to_vec();
+    if !args.iter().any(|arg| arg.starts_with("--import=core=")) {
+        args.push(core);
+    }
+    args
+}
+
+fn core_import() -> String {
+    format!(
+        "--import=core={}",
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../runtime/core")
+            .canonicalize()
+            .expect("runtime/core exists")
+            .display()
+    )
 }

@@ -11,6 +11,16 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+fn core_extern() -> ExternRoot {
+    ExternRoot {
+        name: Ident("core".to_string()),
+        dir: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../runtime/core")
+            .canonicalize()
+            .expect("runtime/core exists"),
+    }
+}
+
 static NEXT_DIR: AtomicUsize = AtomicUsize::new(0);
 
 struct TestPackage(PathBuf);
@@ -30,7 +40,7 @@ impl TestPackage {
     }
 
     fn result(&self, target: Target) -> Result<omega_driver::CompiledProgram, Vec<CompileError>> {
-        Driver::new(self.0.clone(), None, Vec::<ExternRoot>::new(), target)
+        Driver::new(self.0.clone(), None, vec![core_extern()], target)
             .expect("construct driver")
             .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]))
             .result

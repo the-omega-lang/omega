@@ -6,6 +6,16 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+fn core_extern() -> ExternRoot {
+    ExternRoot {
+        name: Ident("core".to_string()),
+        dir: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../runtime/core")
+            .canonicalize()
+            .expect("runtime/core exists"),
+    }
+}
+
 static NEXT_DIR: AtomicUsize = AtomicUsize::new(0);
 
 /// A workspace holding a `main` package and, optionally, a separately
@@ -49,6 +59,7 @@ impl TestWorkspace {
                 name: Ident("provider".to_string()),
                 dir: dir.clone(),
             })
+            .chain([core_extern()])
             .collect()
     }
 
@@ -63,7 +74,7 @@ impl TestWorkspace {
     /// would, and returns the symbols it defines.
     fn provider_symbols(&self) -> Vec<String> {
         let dir = self.provider.clone().expect("workspace has a provider");
-        let program = Driver::new(dir, None, Vec::new(), Target::DEFAULT)
+        let program = Driver::new(dir, None, vec![core_extern()], Target::DEFAULT)
             .expect("construct provider driver")
             .compile(&omega_hir::ModulePath::new([Ident("provider".to_string())]))
             .result

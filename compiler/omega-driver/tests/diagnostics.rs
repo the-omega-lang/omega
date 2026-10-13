@@ -36,11 +36,14 @@ impl TestPackage {
     }
 
     fn result(&self) -> Result<CompiledProgram, Vec<CompileError>> {
-        self.result_with(vec![])
-    }
-
-    fn result_with(&self, externs: Vec<ExternRoot>) -> Result<CompiledProgram, Vec<CompileError>> {
-        Driver::new(self.0.clone(), None, externs, Target::DEFAULT)
+        let core = ExternRoot {
+            name: Ident("core".to_string()),
+            dir: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../runtime/core")
+                .canonicalize()
+                .expect("runtime/core exists"),
+        };
+        Driver::new(self.0.clone(), None, vec![core], Target::DEFAULT)
             .expect("construct driver")
             .compile(&omega_hir::ModulePath::new([Ident("main".into())]))
             .result
@@ -558,16 +561,7 @@ fn nested_statements_keep_their_own_source_site() {
     for unused_item in 0..<3 { }
 }
 main() => void { helper(); }";
-    let core = ExternRoot {
-        name: Ident("core".to_string()),
-        dir: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../runtime/core")
-            .canonicalize()
-            .expect("runtime/core exists"),
-    };
-    let program = TestPackage::new(source)
-        .result_with(vec![core])
-        .unwrap_or_else(|errors| panic!("expected this package to compile, got: {errors:#?}"));
+    let program = TestPackage::new(source).expect_ok();
     let sites: Vec<(String, &str)> = program
         .warnings
         .iter()
