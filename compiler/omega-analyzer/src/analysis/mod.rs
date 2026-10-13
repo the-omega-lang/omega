@@ -57,8 +57,8 @@ use crate::{
     resolver::{
         GenericLiteralSignature, GenericMethodTemplate, GenericOwnerFunctionSignature,
         ImportTarget, ItemAccess, ItemNamespace, ModuleResolver, OverloadCandidate,
-        OverloadSignature, OverloadTemplate, ResolveError, ResolveItemOptions, ResolvedItem,
-        ResolvedOverloadSet,
+        OverloadSignature, OverloadTemplate, Provenance, ResolveError, ResolveItemOptions,
+        ResolvedItem, ResolvedOverloadSet,
     },
     similarity::best_match,
     type_store::{EnumFacts, Incomplete, NominalRef, StructFacts, TypeStore, UnionFacts},
@@ -1566,9 +1566,9 @@ impl<'r> Analyzer<'r> {
 /// exactly as a member's parameter shadows its owner's. An anonymous binding
 /// has no name to install; it is reached by identity through the analyzer's
 /// generic environment. Returns the bindings no declaration may install.
-fn install_substitution(
+fn install_substitution<R: Provenance + ?Sized>(
     context: &mut Context,
-    resolver: &mut dyn ModuleResolver,
+    resolver: &mut R,
     substitution: &GenericSubstitution,
     span: Span,
 ) -> Vec<(Ident, fn(Ident) -> AnalysisErrorKind)> {

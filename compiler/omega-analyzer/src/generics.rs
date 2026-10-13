@@ -1,5 +1,5 @@
 use crate::resolved_type::{CompScalar, ResolvedGenericArg, ResolvedType};
-use crate::resolver::{ModuleResolver, ResolveError};
+use crate::resolver::{Names, ResolveError};
 use omega_hir::{HirFunctionDef, HirGenericParam, HirId, ItemPath, ModulePath};
 use omega_parser::prelude::{GenericArg, GenericParamKind, Ident, Type};
 
@@ -143,8 +143,8 @@ impl NormalizedFunction {
 ///
 /// This is the one place the rule lives; every query that reports a function's
 /// generics, signature, or body works from the result.
-pub fn normalize_function(
-    resolver: &mut dyn ModuleResolver,
+pub fn normalize_function<R: Names + ?Sized>(
+    resolver: &mut R,
     module_path: &ModulePath,
     f: &HirFunctionDef,
 ) -> Result<NormalizedFunction, ResolveError> {

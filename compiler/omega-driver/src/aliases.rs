@@ -5,9 +5,7 @@
 //! the item queries rather than inside them.
 
 use crate::Driver;
-use omega_analyzer::resolver::{
-    ImportTarget, ItemAccess, ModuleResolver, ResolveError, ResolvedAlias,
-};
+use omega_analyzer::resolver::{ImportTarget, ItemAccess, Names, ResolveError, ResolvedAlias};
 use omega_hir::{AliasTarget, HirAlias, HirGenericParam, HirItem};
 use omega_hir::{ItemPath, ModulePath};
 use omega_parser::prelude::{

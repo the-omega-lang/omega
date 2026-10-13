@@ -1,6 +1,6 @@
 use super::*;
 use crate::resolved_type::ResolvedConformance;
-use crate::resolver::ResolveError;
+use crate::resolver::{Calls, CompileTime, Conformances, Items, Names, Provenance, ResolveError};
 use crate::type_store::NominalKind;
 use omega_hir::ModuleId;
 
@@ -13,17 +13,15 @@ pub(crate) struct NoResolver {
     types: TypeStore,
 }
 
-impl ModuleResolver for NoResolver {
+impl Provenance for NoResolver {
+    fn fresh_synthetic_id(&mut self) -> HirId {
+        unreachable!("test never requests a synthetic id")
+    }
+}
+
+impl Names for NoResolver {
     fn macro_origin_module(&self, _origin: Origin) -> Option<ModulePath> {
         None
-    }
-
-    fn types(&self) -> &TypeStore {
-        &self.types
-    }
-
-    fn types_mut(&mut self) -> &mut TypeStore {
-        &mut self.types
     }
 
     fn resolve_explicit_anchor(
@@ -32,6 +30,14 @@ impl ModuleResolver for NoResolver {
         _path: &omega_parser::prelude::Path,
     ) -> Option<Result<Vec<Ident>, ResolveError>> {
         None
+    }
+
+    fn resolve_module_path(
+        &mut self,
+        _accessor: &ModulePath,
+        _absolute_path: &ModulePath,
+    ) -> Result<Option<ModulePath>, ResolveError> {
+        Ok(None)
     }
 
     fn declared_item_visibility(&mut self, _absolute_path: &ItemPath) -> Option<Visibility> {
@@ -68,12 +74,31 @@ impl ModuleResolver for NoResolver {
         vec![]
     }
 
-    fn resolve_module_path(
+    fn is_item_visible(
         &mut self,
-        _accessor: &ModulePath,
-        _absolute_path: &ModulePath,
-    ) -> Result<Option<ModulePath>, ResolveError> {
-        Ok(None)
+        _accessor_module_path: &ModulePath,
+        _absolute_path: &ItemPath,
+    ) -> bool {
+        true
+    }
+
+    fn similar_item_name(
+        &mut self,
+        _module_path: &ModulePath,
+        _target: &Ident,
+        _namespace: ItemNamespace,
+    ) -> Option<Ident> {
+        None
+    }
+}
+
+impl Items for NoResolver {
+    fn types(&self) -> &TypeStore {
+        &self.types
+    }
+
+    fn types_mut(&mut self) -> &mut TypeStore {
+        &mut self.types
     }
 
     fn resolve_item(
@@ -91,14 +116,6 @@ impl ModuleResolver for NoResolver {
         _absolute_path: &ItemPath,
     ) -> Result<Option<Vec<GenericParam>>, ResolveError> {
         Ok(None)
-    }
-
-    fn is_item_visible(
-        &mut self,
-        _accessor_module_path: &ModulePath,
-        _absolute_path: &ItemPath,
-    ) -> bool {
-        true
     }
 
     fn generic_function_signature(
@@ -143,7 +160,9 @@ impl ModuleResolver for NoResolver {
     ) -> Result<Option<ResolvedMethod>, ResolveError> {
         unreachable!("test never instantiates a generic method")
     }
+}
 
+impl Calls for NoResolver {
     fn resolve_overload_set(
         &mut self,
         _accessor: &ModulePath,
@@ -152,19 +171,17 @@ impl ModuleResolver for NoResolver {
         unreachable!("test never triggers overload resolution")
     }
 
-    fn fresh_synthetic_id(&mut self) -> HirId {
-        unreachable!("test never requests a synthetic id")
-    }
-
-    fn similar_item_name(
+    fn method_overload_candidates(
         &mut self,
-        _module_path: &ModulePath,
-        _target: &Ident,
-        _namespace: ItemNamespace,
-    ) -> Option<Ident> {
-        None
+        _owner: &ResolvedType,
+        _name: &Ident,
+        _namespace: crate::resolved_type::FunctionNamespace,
+    ) -> Result<crate::resolver::OverloadCandidates, ResolveError> {
+        unreachable!("test never triggers method overload resolution")
     }
+}
 
+impl Conformances for NoResolver {
     fn spec_declaration(
         &mut self,
         _absolute_path: &ItemPath,
@@ -202,7 +219,9 @@ impl ModuleResolver for NoResolver {
     ) -> Result<Vec<ResolvedConformance>, ResolveError> {
         unreachable!("test never triggers conformance lookup")
     }
+}
 
+impl CompileTime for NoResolver {
     fn resolve_function_body(
         &mut self,
         _decl_id: HirId,

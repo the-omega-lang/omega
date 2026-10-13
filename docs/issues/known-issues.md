@@ -175,8 +175,6 @@ Remaining known conformance/spec issues:
 
 Shape problems in `omega-driver` and `omega-analyzer` that still need a deliberate design change — full writeups in [design-debt.md](design-debt.md).
 
-- **`ModuleResolver` is still a broad semantic service facade.** The dependency direction is sound (analyzer asks, driver owns lifetime), but one trait currently spans imports, item lookup, generic signatures, overloads, specs, conformances, compile-time bodies/values, macro-origin metadata, and synthetic IDs. A narrower capability/query model is a deliberate future architecture change, not something to simulate with more ad-hoc helpers.
-
 - **`reveal` activation is centralized but not structurally enforced by place resolution.** `RevealState` and the shared operand helpers remove the old raw-frame duplication and nested-reveal warning bug, but a future syntactic position can still forget to enter the helper before resolving a revealed place.
 
 - **`Driver::compile(&mut self)` looks reusable even though its semantic/query state is one-shot.** The CLI only compiles once per driver today, but a second call can retain failed queries, registrations, diagnostics, and materialized bodies. The future API should either consume the driver or split reusable workspace/module state from a fresh `CompilationSession`.

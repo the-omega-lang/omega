@@ -15,7 +15,7 @@ use omega_analyzer::error::{
 };
 use omega_analyzer::generics::GenericParam;
 use omega_analyzer::resolved_type::{ResolvedFunctionType, ResolvedType};
-use omega_analyzer::resolver::{ModuleResolver, ResolveError, ResolveItemOptions, ResolvedItem};
+use omega_analyzer::resolver::{Items, Provenance, ResolveError, ResolveItemOptions, ResolvedItem};
 use omega_analyzer::type_store::NominalKind;
 use omega_hir::ModulePath;
 use omega_hir::{HirEnumDef, HirField, HirGlueDef, HirId, HirItem, HirStructDef, HirUnionDef};

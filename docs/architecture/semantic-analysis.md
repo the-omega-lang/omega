@@ -25,23 +25,20 @@ It does **not** retain a whole package's modules or filesystem cache.
 
 ## The resolver boundary
 
-All module-shaped questions go through `ModuleResolver`.
+All module-shaped questions go through `ModuleResolver`, which is the composition of six capability traits in `omega_analyzer::resolver`:
 
-The analyzer can ask for:
+| Capability | Answers |
+| --- | --- |
+| `Provenance` | which file a module or function body came from, macro authorship, `core`'s trusted panic field, fresh synthetic IDs |
+| `Names` | the module a macro-authored path resolves in, explicit anchors, module paths, imports, declared aliases, ambient `core` names, visibility, similar-name suggestions |
+| `Items` | item lookup, nominal type facts (`types`/`types_mut`), generic parameter metadata and defaults, generic signatures as positional patterns, generic method templates and their instantiations |
+| `Calls` | overload sets, function-value candidates, generic call preparation and overload instantiation, method overload candidates |
+| `Conformances` | canonical spec declarations, primitive methods, conformance proofs and enumeration |
+| `CompileTime` | other checked function bodies for compile-time evaluation, known `comp` declaration values |
 
-- import/module/name resolution;
-- visibility facts;
-- generic signatures as positional patterns, for inference;
-- generic method templates and their instantiations;
-- overload candidates;
-- canonical spec declarations;
-- primitive methods;
-- conformance proofs/candidates;
-- other function bodies for compile-time evaluation;
-- known `comp` declaration values;
-- synthetic IDs.
+`ModuleResolver` has a blanket impl over the six, and only `Analyzer` holds the whole facade (`&mut dyn ModuleResolver`). A free helper is generic over the narrowest set it calls (`R: Names + ?Sized` for alias expansion, `R: Names + Items + CompileTime + ?Sized` for `Context`'s type resolution, `R: Provenance + ?Sized` for generic-binding installation), so a focused test mocks only that capability. Adding a query means choosing the capability that owns the fact, not growing the facade.
 
-The driver implements this interface with its item/module/conformance query caches.
+The driver implements each capability with its item/module/conformance query caches.
 
 This dependency direction lets analyzer unit logic remain independent of filesystem discovery and prevents semantic code from growing a second module cache.
 
@@ -89,7 +86,7 @@ The ordering inside `apply_alias_once` is what makes alias-owned `(bound, argume
 
 `expand_type_alias` (used at the top of `Context::resolve_type`, and again for a pointer's pointee to decide pointer-versus-dynamic-object) and `applied_alias_bounds` (used to check those obligations) are both thin views over this one operation, so expansion and bound-checking cannot diverge. `Analyzer::check_alias_generic_bounds` consumes the obligations directly and does not re-walk the source type looking for nested applications. Path-shaped aliases are instead canonicalized by the driver, which answers each query for the target's own identity. No `ResolvedType`, `NominalRef`, `decl_id`, or checked node is ever created for an alias.
 
-`omega_analyzer::aliases::alias_reference` resolves a written type's head through the same anchor/import machinery an ordinary path uses -- an explicit anchor goes through `ModuleResolver::resolve_explicit_anchor`, and an unqualified head reached through an import (not just a locally-declared name) is followed via `ImportTarget::ItemPath` before falling back to the current module -- and carries the resulting `ItemAccess` (absolute path plus whether visibility was already authorized) into `ModuleResolver::resolve_visible_alias`. The analyzer never asks whether an alias merely *exists*; it asks the accessor-aware query, which is the alias's own visibility gate. A bare reference to a structural alias imported from another module therefore resolves exactly as a locally-declared one does, and a hidden structural alias is rejected wherever it is named.
+`omega_analyzer::aliases::alias_reference` resolves a written type's head through the same anchor/import machinery an ordinary path uses -- an explicit anchor goes through `Names::resolve_explicit_anchor`, and an unqualified head reached through an import (not just a locally-declared name) is followed via `ImportTarget::ItemPath` before falling back to the current module -- and carries the resulting `ItemAccess` (absolute path plus whether visibility was already authorized) into `Names::resolve_visible_alias`. The analyzer never asks whether an alias merely *exists*; it asks the accessor-aware query, which is the alias's own visibility gate. A bare reference to a structural alias imported from another module therefore resolves exactly as a locally-declared one does, and a hidden structural alias is rejected wherever it is named.
 
 ## Analysis sites and synthetic identity
 
@@ -216,7 +213,7 @@ A written generic argument list on a function is an `ExprGenericArg` list rather
 
 Every route shares both stages: `resolve_overload_candidates`, `select_function_value`, and the singleton paths through `resolve_written_generics`. Selection with or without an expected function type therefore sees the same validated selector data.
 
-Deciding whether a candidate applies is a driver query, `ModuleResolver::prepare_generic_call`. Given a declaration -- by candidate identity, by absolute path, or by owner and name -- and the bindings a call site has, it completes the remaining arguments from the declaration's own defaults, reports the bound set each generic parameter then declares, and says whether those bounds are proved. It deliberately stops short of `ensure_item_at`: preparing a candidate that goes on to lose leaves no instantiation, no signature, and no analyzed body behind. Resolving a default a candidate needs to reach its bounds is the one thing preparation may do for a loser.
+Deciding whether a candidate applies is a driver query, `Calls::prepare_generic_call`. Given a declaration -- by candidate identity, by absolute path, or by owner and name -- and the bindings a call site has, it completes the remaining arguments from the declaration's own defaults, reports the bound set each generic parameter then declares, and says whether those bounds are proved. It deliberately stops short of `ensure_item_at`: preparing a candidate that goes on to lose leaves no instantiation, no signature, and no analyzed body behind. Resolving a default a candidate needs to reach its bounds is the one thing preparation may do for a loser.
 
 Both sides of a selector comparison go through `Analyzer::bound_key`, so a declared bound and a written one are canonicalized identically: aliases expanded, the spec resolved to its declaration identity, and the spec's own declared defaults applied to its arguments. An unmet alias-owned bound makes it no key at all rather than a reported-but-usable one. `check_generic_bound` uses the same key, which is what keeps a bound's spelling at the declaration and at the use site from disagreeing about which conformance would satisfy it. A bound is satisfied only by an actual conformance witness (`conformance_for`); the method-matching fallback in `type_implements_spec` remains for dynamic-shape questions and now only names what a failing type is missing.
 

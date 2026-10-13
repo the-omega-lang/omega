@@ -7,8 +7,8 @@ use crate::resolved_type::{
     ResolvedFunctionParam, ResolvedFunctionType, ResolvedGenericArg, ResolvedType,
 };
 use crate::resolver::{
-    ImportTarget, ItemAccess, ItemNamespace, ModuleResolver, ResolveError, ResolveItemOptions,
-    ResolvedItem,
+    CompileTime, ImportTarget, ItemAccess, ItemNamespace, Items, Names, ResolveError,
+    ResolveItemOptions, ResolvedItem,
 };
 use crate::similarity::best_match;
 use crate::target::Target;
@@ -343,10 +343,10 @@ impl Context {
         )
     }
 
-    pub fn resolve_function_type(
+    pub fn resolve_function_type<R: Names + Items + CompileTime + ?Sized>(
         &self,
         fntype: FunctionType,
-        resolver: &mut dyn ModuleResolver,
+        resolver: &mut R,
         module_path: &ModulePath,
         options: ResolveItemOptions,
         reveals: RevealAuthority<'_>,
@@ -398,9 +398,9 @@ impl Context {
     /// (see [`ItemAccess`]). An explicit `root::`/`self::`/`super::` anchor
     /// is resolved before any "is the head an import?" reading, so an
     /// anchored spelling means the same thing here as it does in an import.
-    pub(crate) fn resolve_absolute_item_path(
+    pub(crate) fn resolve_absolute_item_path<R: Names + ?Sized>(
         &self,
-        resolver: &mut dyn ModuleResolver,
+        resolver: &mut R,
         path: &Path,
         module_path: &ModulePath,
     ) -> Result<ItemAccess, TypeResolutionError> {
@@ -464,10 +464,10 @@ impl Context {
         }
     }
 
-    pub fn resolve_type(
+    pub fn resolve_type<R: Names + Items + CompileTime + ?Sized>(
         &self,
         typ: Type,
-        resolver: &mut dyn ModuleResolver,
+        resolver: &mut R,
         module_path: &ModulePath,
         options: ResolveItemOptions,
         reveals: RevealAuthority<'_>,
@@ -541,10 +541,10 @@ impl Context {
     /// immediate anonymous-enum members into leaves, and the resulting list
     /// alone decides equality, layout, tags, and mangling. The tag-domain
     /// check therefore runs on the flattened list, not on what was written.
-    fn resolve_anonymous_enum_type(
+    fn resolve_anonymous_enum_type<R: Names + Items + CompileTime + ?Sized>(
         &self,
         members: Vec<Type>,
-        resolver: &mut dyn ModuleResolver,
+        resolver: &mut R,
         module_path: &ModulePath,
         options: ResolveItemOptions,
         reveals: RevealAuthority<'_>,
@@ -573,10 +573,10 @@ impl Context {
         })
     }
 
-    fn resolve_named_type(
+    fn resolve_named_type<R: Names + Items + CompileTime + ?Sized>(
         &self,
         path: Path,
-        resolver: &mut dyn ModuleResolver,
+        resolver: &mut R,
         module_path: &ModulePath,
         options: ResolveItemOptions,
         reveals: RevealAuthority<'_>,
@@ -701,11 +701,11 @@ impl Context {
         Ok(resolved)
     }
 
-    fn resolve_generic_type(
+    fn resolve_generic_type<R: Names + Items + CompileTime + ?Sized>(
         &self,
         path: Path,
         args: Vec<GenericArg>,
-        resolver: &mut dyn ModuleResolver,
+        resolver: &mut R,
         module_path: &ModulePath,
         options: ResolveItemOptions,
         reveals: RevealAuthority<'_>,
@@ -777,11 +777,11 @@ impl Context {
     /// Resolves a written generic argument list against the declared
     /// parameters. Positions beyond the declaration are resolved as types so
     /// the arity error the item query raises stays the reported one.
-    pub(crate) fn resolve_generic_args(
+    pub(crate) fn resolve_generic_args<R: Names + Items + CompileTime + ?Sized>(
         &self,
         args: &[GenericArg],
         params: &[GenericParam],
-        resolver: &mut dyn ModuleResolver,
+        resolver: &mut R,
         module_path: &ModulePath,
         options: ResolveItemOptions,
         reveals: RevealAuthority<'_>,
@@ -801,11 +801,11 @@ impl Context {
             .collect()
     }
 
-    pub(crate) fn resolve_generic_arg(
+    pub(crate) fn resolve_generic_arg<R: Names + Items + CompileTime + ?Sized>(
         &self,
         arg: &GenericArg,
         param: Option<&GenericParam>,
-        resolver: &mut dyn ModuleResolver,
+        resolver: &mut R,
         module_path: &ModulePath,
         options: ResolveItemOptions,
         reveals: RevealAuthority<'_>,
@@ -850,10 +850,10 @@ impl Context {
 
     /// The declared value type of a `comp` parameter, gated on the closed set
     /// of types a compile-time generic argument may currently have.
-    fn comp_param_type(
+    fn comp_param_type<R: Names + Items + CompileTime + ?Sized>(
         &self,
         param: &GenericParam,
-        resolver: &mut dyn ModuleResolver,
+        resolver: &mut R,
         module_path: &ModulePath,
         reveals: RevealAuthority<'_>,
     ) -> Result<CompScalarType, TypeResolutionError> {
@@ -880,10 +880,10 @@ impl Context {
     /// than where the value came from: a `comp` generic may legitimately hold
     /// the full range of its declared type and only be out of bounds when it
     /// is used as a length.
-    fn resolve_array_length(
+    fn resolve_array_length<R: Names + Items + CompileTime + ?Sized>(
         &self,
         length: &ArrayLength,
-        resolver: &mut dyn ModuleResolver,
+        resolver: &mut R,
         module_path: &ModulePath,
         options: ResolveItemOptions,
         reveals: RevealAuthority<'_>,
@@ -928,10 +928,10 @@ impl Context {
     /// The compile-time value a path names. A local or generic `comp`
     /// binding is found in scope; anything else is a top-level item, which
     /// must itself be a `comp` binding.
-    fn comp_path_value(
+    fn comp_path_value<R: Names + Items + CompileTime + ?Sized>(
         &self,
         path: &Path,
-        resolver: &mut dyn ModuleResolver,
+        resolver: &mut R,
         module_path: &ModulePath,
         options: ResolveItemOptions,
         reveals: RevealAuthority<'_>,
@@ -987,11 +987,11 @@ impl Context {
         }
     }
 
-    fn resolve_pointer_type(
+    fn resolve_pointer_type<R: Names + Items + CompileTime + ?Sized>(
         &self,
         pointee_type: Type,
         mutable: bool,
-        resolver: &mut dyn ModuleResolver,
+        resolver: &mut R,
         module_path: &ModulePath,
         options: ResolveItemOptions,
         reveals: RevealAuthority<'_>,
@@ -1079,11 +1079,11 @@ impl Context {
     /// object. Each member is resolved to its final spec application
     /// independently, then the whole set is canonicalized: source order and
     /// exact duplicates never affect the resulting shape.
-    fn resolve_spec_object_type(
+    fn resolve_spec_object_type<R: Names + Items + CompileTime + ?Sized>(
         &self,
         members: Vec<Type>,
         mutable: bool,
-        resolver: &mut dyn ModuleResolver,
+        resolver: &mut R,
         module_path: &ModulePath,
         options: ResolveItemOptions,
         reveals: RevealAuthority<'_>,
@@ -1133,10 +1133,10 @@ impl Context {
         })
     }
 
-    fn try_resolve_enum_variant_type(
+    fn try_resolve_enum_variant_type<R: Names + Items + CompileTime + ?Sized>(
         &self,
         path: &Path,
-        resolver: &mut dyn ModuleResolver,
+        resolver: &mut R,
         module_path: &ModulePath,
         options: ResolveItemOptions,
         reveals: RevealAuthority<'_>,

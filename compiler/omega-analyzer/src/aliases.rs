@@ -7,7 +7,7 @@
 //! Turning the alias into a `ResolvedType` first would erase that distinction
 //! and force each of those positions to learn a second, alias-only format.
 
-use crate::resolver::{ImportTarget, ItemAccess, ModuleResolver, ResolveError, ResolvedAlias};
+use crate::resolver::{ImportTarget, ItemAccess, Names, ResolveError, ResolvedAlias};
 use omega_hir::{ItemPath, ModulePath};
 use omega_parser::prelude::{
     ArrayLength, FunctionType, FunctionTypeParam, GenericArg, Ident, Type,
@@ -105,8 +105,8 @@ struct AliasReference {
     bypass_visibility: bool,
 }
 
-fn alias_reference(
-    resolver: &mut dyn ModuleResolver,
+fn alias_reference<R: Names + ?Sized>(
+    resolver: &mut R,
     module_path: &ModulePath,
     ty: &Type,
 ) -> Result<Option<AliasReference>, ResolveError> {
@@ -171,8 +171,8 @@ fn alias_reference(
 ///
 /// `placeholders` are the enclosing template's own parameters, which are
 /// opaque here: they name nothing resolvable until they are substituted.
-fn apply_alias_once(
-    resolver: &mut dyn ModuleResolver,
+fn apply_alias_once<R: Names + ?Sized>(
+    resolver: &mut R,
     module_path: &ModulePath,
     placeholders: &[Ident],
     ty: &Type,
@@ -248,8 +248,8 @@ fn apply_alias_once(
 /// appended to `obligations`. Aliases reached only through another alias's
 /// right-hand side, default, or bound are reached here too, which a
 /// root-only expansion loop could not do.
-fn normalize_generic_arg(
-    resolver: &mut dyn ModuleResolver,
+fn normalize_generic_arg<R: Names + ?Sized>(
+    resolver: &mut R,
     module_path: &ModulePath,
     placeholders: &[Ident],
     arg: &GenericArg,
@@ -267,8 +267,8 @@ fn normalize_generic_arg(
     }
 }
 
-fn normalize_type(
-    resolver: &mut dyn ModuleResolver,
+fn normalize_type<R: Names + ?Sized>(
+    resolver: &mut R,
     module_path: &ModulePath,
     placeholders: &[Ident],
     ty: &Type,
@@ -342,16 +342,16 @@ fn normalize_type(
 /// Expands `ty` through every alias application in it, discarding the
 /// obligations: the caller either does not need them (plain resolution) or
 /// collects them separately via [`applied_alias_bounds`].
-pub fn expand_type_alias(
-    resolver: &mut dyn ModuleResolver,
+pub fn expand_type_alias<R: Names + ?Sized>(
+    resolver: &mut R,
     module_path: &ModulePath,
     ty: Type,
 ) -> Result<Type, ResolveError> {
     normalize_type(resolver, module_path, &[], &ty, &mut Vec::new())
 }
 
-pub fn expand_template_type(
-    resolver: &mut dyn ModuleResolver,
+pub fn expand_template_type<R: Names + ?Sized>(
+    resolver: &mut R,
     module_path: &ModulePath,
     parameters: &[Ident],
     ty: &Type,
@@ -362,8 +362,8 @@ pub fn expand_template_type(
 /// Flattens a written bound list. A bound naming an alias of `spec A + B`
 /// contributes each member, so `<T: AB>` and `<T: A + B>` produce the same
 /// bound set rather than making bound checking learn an alias-only format.
-pub fn expand_bounds(
-    resolver: &mut dyn ModuleResolver,
+pub fn expand_bounds<R: Names + ?Sized>(
+    resolver: &mut R,
     module_path: &ModulePath,
     bounds: &[Type],
 ) -> Result<Vec<Type>, ResolveError> {
@@ -380,8 +380,8 @@ pub fn expand_bounds(
 /// Every alias-owned generic bound a written type applies, anywhere in it,
 /// paired with the (possibly defaulted) argument bound to each. The caller
 /// resolves and checks them; normalization itself stays syntactic.
-pub fn applied_alias_bounds(
-    resolver: &mut dyn ModuleResolver,
+pub fn applied_alias_bounds<R: Names + ?Sized>(
+    resolver: &mut R,
     module_path: &ModulePath,
     ty: &Type,
 ) -> Result<Vec<(Type, Type)>, ResolveError> {
@@ -389,3 +389,6 @@ pub fn applied_alias_bounds(
     normalize_type(resolver, module_path, &[], ty, &mut obligations)?;
     Ok(obligations)
 }
+
+#[cfg(test)]
+mod tests;

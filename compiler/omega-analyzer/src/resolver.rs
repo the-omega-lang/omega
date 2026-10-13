@@ -390,16 +390,8 @@ impl ResolveItemOptions {
     }
 }
 
-pub trait ModuleResolver {
-    fn macro_origin_module(&self, origin: Origin) -> Option<ModulePath>;
-
-    /// The facts of every nominal type interned so far. Reads hand out
-    /// `Rc`'d records, so no borrow of the store outlives a single read.
-    fn types(&self) -> &crate::type_store::TypeStore;
-
-    /// Where signature analysis writes each nominal type's staged facts.
-    fn types_mut(&mut self) -> &mut crate::type_store::TypeStore;
-
+/// Where syntax and declarations came from, and fresh synthetic identity.
+pub trait Provenance {
     /// The retained source file of a module, when one has been read. Findings
     /// use it to name the file their spans index, so a diagnostic can still
     /// be rendered once it leaves the module it was produced in.
@@ -423,6 +415,14 @@ pub trait ModuleResolver {
     fn trusted_panic_message_field(&mut self, _decl_id: HirId) -> Option<usize> {
         None
     }
+
+    fn fresh_synthetic_id(&mut self) -> HirId;
+}
+
+/// The module a path resolves in, module navigation, imports, aliases and
+/// item visibility.
+pub trait Names {
+    fn macro_origin_module(&self, origin: Origin) -> Option<ModulePath>;
 
     /// Resolves a `Path`'s explicit anchor (`root::`/`self::`/`super::`)
     /// relative to `origin_module`. Returns `None` when the path carries no
@@ -479,6 +479,29 @@ pub trait ModuleResolver {
 
     fn import_alias_names(&mut self, module_path: &ModulePath) -> Vec<Ident>;
 
+    fn is_item_visible(
+        &mut self,
+        accessor_module_path: &ModulePath,
+        absolute_path: &ItemPath,
+    ) -> bool;
+
+    fn similar_item_name(
+        &mut self,
+        module_path: &ModulePath,
+        target: &Ident,
+        namespace: ItemNamespace,
+    ) -> Option<Ident>;
+}
+
+/// Item lookup, nominal type facts and generic declaration shapes.
+pub trait Items {
+    /// The facts of every nominal type interned so far. Reads hand out
+    /// `Rc`'d records, so no borrow of the store outlives a single read.
+    fn types(&self) -> &crate::type_store::TypeStore;
+
+    /// Where signature analysis writes each nominal type's staged facts.
+    fn types_mut(&mut self) -> &mut crate::type_store::TypeStore;
+
     fn resolve_item(
         &mut self,
         accessor_module_path: &ModulePath,
@@ -507,12 +530,6 @@ pub trait ModuleResolver {
         let _ = absolute_path;
         Ok(arguments.iter().map_while(Clone::clone).collect())
     }
-
-    fn is_item_visible(
-        &mut self,
-        accessor_module_path: &ModulePath,
-        absolute_path: &ItemPath,
-    ) -> bool;
 
     /// The pattern signature of the one generic function `absolute_path`
     /// names, taken in its declaring module, with defaults anchored there.
@@ -562,6 +579,35 @@ pub trait ModuleResolver {
         generic_args: &[ResolvedGenericArg],
     ) -> Result<Option<ResolvedMethod>, ResolveError>;
 
+    /// The generic declarations `owner` makes under `name`, as value-selection
+    /// candidates. Concrete declarations are not repeated here: they already
+    /// reach the caller through the owner's resolved functions.
+    fn generic_method_candidates(
+        &mut self,
+        owner: &ResolvedType,
+        name: &Ident,
+        namespace: crate::resolved_type::FunctionNamespace,
+    ) -> Result<OverloadCandidates, ResolveError> {
+        let _ = (owner, name, namespace);
+        Ok(Vec::new())
+    }
+
+    /// The generic declarations `owner`'s conformances provide under `name`,
+    /// as value-selection candidates. Separate from the owner's own, because
+    /// an inherent declaration of the name hides every conforming one.
+    fn conformance_generic_method_candidates(
+        &mut self,
+        owner: &ResolvedType,
+        name: &Ident,
+        namespace: crate::resolved_type::FunctionNamespace,
+    ) -> Result<OverloadCandidates, ResolveError> {
+        let _ = (owner, name, namespace);
+        Ok(Vec::new())
+    }
+}
+
+/// Overload sets and generic call preparation.
+pub trait Calls {
     /// The overload candidates `accessor` may choose between when it writes
     /// the name bound by `access`. `Ok(None)` means the name is not an
     /// overload set at all.
@@ -590,32 +636,6 @@ pub trait ModuleResolver {
         access: &ItemAccess,
     ) -> Result<Option<ResolvedOverloadSet>, ResolveError> {
         self.resolve_overload_set(accessor, access)
-    }
-
-    /// The generic declarations `owner` makes under `name`, as value-selection
-    /// candidates. Concrete declarations are not repeated here: they already
-    /// reach the caller through the owner's resolved functions.
-    fn generic_method_candidates(
-        &mut self,
-        owner: &ResolvedType,
-        name: &Ident,
-        namespace: crate::resolved_type::FunctionNamespace,
-    ) -> Result<OverloadCandidates, ResolveError> {
-        let _ = (owner, name, namespace);
-        Ok(Vec::new())
-    }
-
-    /// The generic declarations `owner`'s conformances provide under `name`,
-    /// as value-selection candidates. Separate from the owner's own, because
-    /// an inherent declaration of the name hides every conforming one.
-    fn conformance_generic_method_candidates(
-        &mut self,
-        owner: &ResolvedType,
-        name: &Ident,
-        namespace: crate::resolved_type::FunctionNamespace,
-    ) -> Result<OverloadCandidates, ResolveError> {
-        let _ = (owner, name, namespace);
-        Ok(Vec::new())
     }
 
     fn instantiate_overload(
@@ -653,29 +673,11 @@ pub trait ModuleResolver {
         owner: &ResolvedType,
         name: &Ident,
         namespace: crate::resolved_type::FunctionNamespace,
-    ) -> Result<OverloadCandidates, ResolveError> {
-        Ok(owner
-            .candidates_in(self.types(), namespace, name)?
-            .unwrap_or_default()
-            .into_iter()
-            .map(|method| OverloadCandidate {
-                decl_id: method.decl_id,
-                signature: crate::resolver::OverloadSignature::Concrete(method.fn_type),
-                visibility: method.visibility,
-                declaring_module: method.declaring_module,
-            })
-            .collect())
-    }
+    ) -> Result<OverloadCandidates, ResolveError>;
+}
 
-    fn fresh_synthetic_id(&mut self) -> HirId;
-
-    fn similar_item_name(
-        &mut self,
-        module_path: &ModulePath,
-        target: &Ident,
-        namespace: ItemNamespace,
-    ) -> Option<Ident>;
-
+/// Spec declarations, primitive methods and conformance queries.
+pub trait Conformances {
     fn spec_declaration(
         &mut self,
         absolute_path: &ItemPath,
@@ -703,13 +705,26 @@ pub trait ModuleResolver {
         target: &ResolvedType,
         spec_ids: &[HirId],
     ) -> Result<Vec<ResolvedConformance>, ResolveError>;
+}
 
+/// Checked bodies and values for compile-time evaluation.
+pub trait CompileTime {
     fn resolve_function_body(
         &mut self,
         decl_id: HirId,
     ) -> Result<Option<crate::checked::CheckedFunctionDef>, ResolveError>;
 
     fn resolve_comp_value(&mut self, decl_id: HirId) -> Option<ConstValue>;
+}
+
+/// Everything semantic analysis asks of the module/package layer. Helpers
+/// depend on the narrowest capability they use; only `Analyzer` holds the
+/// whole facade.
+pub trait ModuleResolver: Provenance + Names + Items + Calls + Conformances + CompileTime {}
+
+impl<R: Provenance + Names + Items + Calls + Conformances + CompileTime + ?Sized> ModuleResolver
+    for R
+{
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -815,7 +830,7 @@ pub enum GenericCallTarget<'a> {
     },
 }
 
-/// The answer to [`ModuleResolver::prepare_generic_call`].
+/// The answer to [`Calls::prepare_generic_call`].
 #[derive(Debug, Clone)]
 pub struct PreparedCall {
     /// Every generic argument, with the declaration's own defaults applied

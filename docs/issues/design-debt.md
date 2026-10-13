@@ -153,14 +153,6 @@ cannot be forgotten by a new caller. That change cuts across analysis entry
 points and should be designed deliberately rather than hidden in a local
 refactor.
 
-### `ModuleResolver` is a broad semantic service facade rather than one coherent capability
-
-`omega-analyzer::resolver::ModuleResolver` is the correct dependency direction — the analyzer does not own filesystem/module/query state — but the trait has accumulated too many unrelated capabilities. One implementation currently provides macro-origin metadata, import and module navigation, item visibility and lookup, generic declaration shapes, overload groups, synthetic IDs, spec declarations, primitive methods, conformance proving/enumeration, checked function bodies for compile-time execution, and resolved `comp` values.
-
-That breadth couples almost every analyzer concern to the entire driver facade, makes focused analyzer tests/mocks expensive, and means adding a new semantic service often grows the same central trait even when the consumer only needs one capability. Splitting it mechanically now would mostly create trait plumbing, so this refactor keeps the facade intact.
-
-Before incremental/parallel compilation or a more independently testable analyzer becomes a priority, design a narrower query boundary: either capability traits (name/module lookup, generic signatures, conformance queries, compile-time body/value queries, synthetic identity) composed by the analyzer, or an explicit semantic query database with focused handles. The goal is not “more traits”; it is that each analysis subsystem depends only on the facts it can actually request. This is a cross-crate architectural/API change and should be reviewed as such.
-
 ### Nested statement fields lose their own source site
 
 A few AST nodes discard a more specific source site that later phases could use. Nested

@@ -231,7 +231,7 @@ chain can cycle. An alias never gets an `ItemKey`, a nominal type, or a symbol.
 `Driver::declared_alias` is the **raw** query: it exists to build and cache the
 alias graph and to detect cycles, and it answers *what* an alias names.
 `Driver::visible_alias`, exposed to the analyzer as
-`ModuleResolver::resolve_visible_alias`, is the accessor-aware query: it
+`Names::resolve_visible_alias`, is the accessor-aware query: it
 answers whether a given module may ask at all. Every semantic use site --
 structural expansion, forwarding chains, imports, overload lookup -- goes
 through the accessor-aware one. Deciding an alias's visibility from the
@@ -297,7 +297,7 @@ expansion at a use site.
 Re-export applies the same rule at **every** link of a chain, not just the
 outermost alias: `forward_alias_path` gates each intermediate alias through
 `visible_alias` from the module naming it before following that alias's
-target. Once the chain is validated, `ModuleResolver::resolve_import_alias`
+target. Once the chain is validated, `Names::resolve_import_alias`
 hands the caller an authorized `ItemAccess`, so a consumer (item resolution,
 overload lookup, value/place resolution) knows the accessor's visibility to
 the final target was established transitively and is not re-checked.
@@ -306,7 +306,7 @@ An overload alias applies the identical rule to a whole candidate set, but has
 to freeze it: the group's candidates may differ in visibility, so
 `forward_alias_path` filters them once, at the alias declaration site, and
 stores that subset. A group with no candidate the aliasing module can name is
-`NotVisible`. `ModuleResolver::resolve_overload_set` is the single query the
+`NotVisible`. `Calls::resolve_overload_set` is the single query the
 analyzer uses for every spelling -- bare, anchored, module-qualified, aliased:
 a declared alias is gated once and then forwards its frozen subset unchanged
 (an alias chain never reopens the raw group), while a direct name is filtered
@@ -419,13 +419,13 @@ The result is not stored in a second parallel map. This makes `InProgress`, succ
 
 `ItemQueries` and `ImportState` also keep an ordered resolution stack beside their memoized states. Re-entering an active query therefore reconstructs the actual dependency suffix (`a::X -> b::Y -> a::X`) instead of merely knowing that *some* cycle exists.
 
-If item resolution requests an item already `InProgress`, the driver still decides whether the reference is safely indirect or forms an illegal by-value recursive type cycle. `ModuleResolver::resolve_item` receives a `ResolveItemOptions` policy. Its indirection bit records this exact recursive-type distinction, while the visibility-bypass bit makes deliberate `reveal` access explicit at the query boundary. Pointers/function type positions can refer through an in-progress type identity without embedding its unfinished layout, while by-value fields/array elements cannot.
+If item resolution requests an item already `InProgress`, the driver still decides whether the reference is safely indirect or forms an illegal by-value recursive type cycle. `Items::resolve_item` receives a `ResolveItemOptions` policy. Its indirection bit records this exact recursive-type distinction, while the visibility-bypass bit makes deliberate `reveal` access explicit at the query boundary. Pointers/function type positions can refer through an in-progress type identity without embedding its unfinished layout, while by-value fields/array elements cannot.
 
 ## Nominal types
 
 `ItemQueries` owns the `TypeStore` and a `Nominals` table mapping each struct/enum/union `ItemKey` to its `NominalRef`. A type is interned once per key when its item query starts, so two instantiations are distinct types exactly when their keys differ, and one instantiation reached twice is one type. Specs are interned by their declaration query.
 
-Interning precedes the definition, so recursive **indirect** references can name the type while its signature is still being built. The owning signature analysis writes the definition and functions stages through `ModuleResolver::types_mut`, and every later reader shares those facts instead of reconstructing an aggregate definition. The stage model is described in [`types-layout-and-const-eval.md`](types-layout-and-const-eval.md#nominal-identity-and-the-type-store).
+Interning precedes the definition, so recursive **indirect** references can name the type while its signature is still being built. The owning signature analysis writes the definition and functions stages through `Items::types_mut`, and every later reader shares those facts instead of reconstructing an aggregate definition. The stage model is described in [`types-layout-and-const-eval.md`](types-layout-and-const-eval.md#nominal-identity-and-the-type-store).
 
 Output sweeps over every nominal type (unused fields, the extern method catalog) skip a type whose definition never completed: a failed declaration declares nothing. A successful `compile` hands a copy of the store to the program for MIR lowering and codegen.
 
@@ -478,19 +478,7 @@ This prevents module/query caches from leaking into analyzer-local scope state a
 
 `omega-analyzer::resolver::ModuleResolver` is the explicit dependency-inversion boundary.
 
-The analyzer asks for semantic/module facts such as:
-
-- resolve named item;
-- resolve import alias;
-- resolve a declared `alias`;
-- lookup overload candidates;
-- obtain generic signatures, as positional patterns, for inference;
-- obtain canonical spec declarations;
-- prove/query conformances;
-- resolve primitive methods;
-- request another function body for compile-time execution;
-- fetch a previously resolved `comp` value;
-- mint a synthetic ID.
+It is composed of focused capability traits (`Provenance`, `Names`, `Items`, `Calls`, `Conformances`, `CompileTime`); the driver implements each one over its module, item and conformance caches. The partition and how analyzer helpers depend on single capabilities are described in [`semantic-analysis.md`](semantic-analysis.md#the-resolver-boundary).
 
 The analyzer never calls the filesystem and never owns cross-module query state.
 
@@ -498,7 +486,7 @@ The analyzer never calls the filesystem and never owns cross-module query state.
 
 For argument/field-driven inference, the analyzer sometimes needs the **raw declared shape** of a generic function/type before deciding concrete arguments. `ModuleResolver` exposes focused raw-signature queries that do not instantiate the item just to inspect its generic pattern.
 
-Resolving a written argument list needs the declaration's parameter kinds first, because a bare path is a type or a compile-time value according to the parameter it lands on. `ModuleResolver::item_generic_params` is the metadata-only query that supplies them; it follows alias forwarding and instantiates nothing.
+Resolving a written argument list needs the declaration's parameter kinds first, because a bare path is a type or a compile-time value according to the parameter it lands on. `Items::item_generic_params` is the metadata-only query that supplies them; it follows alias forwarding and instantiates nothing.
 
 Overload candidates carry either a concrete signature or a structural template.
 Template preparation resolves declaration-owned names and expands aliases, while

@@ -854,7 +854,7 @@ impl<'r> Analyzer<'r> {
     /// it is collected as a template instead: the owner keeps only the
     /// methods that are concrete for this instantiation, and a call site
     /// materializes the rest through
-    /// [`crate::resolver::ModuleResolver::instantiate_generic_method`].
+    /// [`crate::resolver::Items::instantiate_generic_method`].
     ///
     /// The *normalized* generics decide this: a `spec S` parameter becomes an
     /// ordinary bounded generic, so `f(x: spec S)` is as much a template as

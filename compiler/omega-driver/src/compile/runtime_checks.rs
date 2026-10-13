@@ -64,7 +64,7 @@ impl Driver {
     /// The file a body's spans index: the one its text was written in, which
     /// for a generic instantiation is still its template's.
     fn body_source(&self, module: &ModulePath, decl_id: HirId) -> Option<Rc<SourceFile>> {
-        let id = ModuleResolver::function_source(self, decl_id)
+        let id = Provenance::function_source(self, decl_id)
             .or_else(|| self.modules.source_id(module))?;
         self.modules.sources().shared(id)
     }

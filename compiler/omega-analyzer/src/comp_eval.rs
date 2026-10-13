@@ -37,22 +37,22 @@ pub trait CompFunctionResolver {
 
 impl CompFunctionResolver for dyn crate::resolver::ModuleResolver + '_ {
     fn types(&self) -> &crate::type_store::TypeStore {
-        crate::resolver::ModuleResolver::types(self)
+        crate::resolver::Items::types(self)
     }
 
     fn resolve_function_body(
         &mut self,
         decl_id: HirId,
     ) -> Result<Option<CheckedFunctionDef>, ResolveError> {
-        crate::resolver::ModuleResolver::resolve_function_body(self, decl_id)
+        crate::resolver::CompileTime::resolve_function_body(self, decl_id)
     }
 
     fn function_source(&self, decl_id: HirId) -> Option<SourceId> {
-        crate::resolver::ModuleResolver::function_source(self, decl_id)
+        crate::resolver::Provenance::function_source(self, decl_id)
     }
 
     fn trusted_panic_message_field(&mut self, decl_id: HirId) -> Option<usize> {
-        crate::resolver::ModuleResolver::trusted_panic_message_field(self, decl_id)
+        crate::resolver::Provenance::trusted_panic_message_field(self, decl_id)
     }
 }
 

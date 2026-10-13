@@ -143,7 +143,7 @@ impl<'r> Analyzer<'r> {
     }
 
     /// The same set for an *uncalled* reference, which a lone declaration
-    /// also belongs to. See [`ModuleResolver::function_value_candidates`].
+    /// also belongs to. See [`crate::resolver::Calls::function_value_candidates`].
     pub(crate) fn function_value_set(
         &mut self,
         accessor: &ModulePath,

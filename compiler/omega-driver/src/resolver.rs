@@ -10,9 +10,10 @@ use omega_analyzer::resolved_type::{
     ResolvedType,
 };
 use omega_analyzer::resolver::{
-    GenericLiteralSignature, GenericOwnerFunctionSignature, ImportTarget, ItemAccess,
-    ItemNamespace, ModuleResolver, OverloadCandidate, OverloadCandidates, OverloadTemplate,
-    ResolveError, ResolveItemOptions, ResolvedAlias, ResolvedItem, ResolvedOverloadSet,
+    Calls, CompileTime, Conformances, GenericLiteralSignature, GenericOwnerFunctionSignature,
+    ImportTarget, ItemAccess, ItemNamespace, Items, Names, OverloadCandidate, OverloadCandidates,
+    OverloadTemplate, Provenance, ResolveError, ResolveItemOptions, ResolvedAlias, ResolvedItem,
+    ResolvedOverloadSet,
 };
 use omega_analyzer::similarity::best_match;
 use omega_analyzer::type_store::{NominalRef, TypeStore};
@@ -601,19 +602,7 @@ impl Driver {
     }
 }
 
-impl ModuleResolver for Driver {
-    fn macro_origin_module(&self, origin: omega_parser::prelude::Origin) -> Option<ModulePath> {
-        self.modules.macro_origin_module(origin)
-    }
-
-    fn types(&self) -> &TypeStore {
-        &self.items.types
-    }
-
-    fn types_mut(&mut self) -> &mut TypeStore {
-        &mut self.items.types
-    }
-
+impl Provenance for Driver {
     fn module_source(&self, module: &ModulePath) -> Option<omega_diagnostics::SourceId> {
         self.modules.source_id(module)
     }
@@ -623,6 +612,26 @@ impl ModuleResolver for Driver {
         origin: omega_parser::prelude::Origin,
     ) -> Option<omega_parser::macros::MacroAuthorship> {
         self.modules.authorship(origin)
+    }
+
+    fn function_source(&self, decl_id: HirId) -> Option<omega_diagnostics::SourceId> {
+        let key = self.items.decl_id_owner.get(&decl_id)?;
+        self.modules.source_id(key.module())
+    }
+
+    fn trusted_panic_message_field(&mut self, decl_id: HirId) -> Option<usize> {
+        let support = self.panic_support().ok()?;
+        (support.handler_decl_id == decl_id).then_some(support.message.index)
+    }
+
+    fn fresh_synthetic_id(&mut self) -> HirId {
+        self.items.fresh_synthetic_id()
+    }
+}
+
+impl Names for Driver {
+    fn macro_origin_module(&self, origin: omega_parser::prelude::Origin) -> Option<ModulePath> {
+        self.modules.macro_origin_module(origin)
     }
 
     fn resolve_explicit_anchor(
@@ -737,7 +746,7 @@ impl ModuleResolver for Driver {
             }
             let index = self.modules.index(&path);
             if index.overloads.contains_key(name) {
-                continue; // scope cut -- see `ModuleResolver::ambient_core_candidates`'s doc comment
+                continue; // scope cut -- see `Names::ambient_core_candidates`'s doc comment
             }
             let Some(&item_index) = index.items.get(name) else {
                 continue;
@@ -767,6 +776,67 @@ impl ModuleResolver for Driver {
             .keys()
             .cloned()
             .collect()
+    }
+
+    fn is_item_visible(
+        &mut self,
+        accessor_module_path: &ModulePath,
+        absolute_path: &ItemPath,
+    ) -> bool {
+        let module_path = absolute_path.module.clone();
+        self.declared_item_visibility(absolute_path)
+            .is_some_and(|visibility| {
+                Self::visibility_allows(visibility, &module_path, accessor_module_path)
+            })
+    }
+
+    fn similar_item_name(
+        &mut self,
+        module_path: &ModulePath,
+        target: &Ident,
+        namespace: ItemNamespace,
+    ) -> Option<Ident> {
+        if self.ensure_module_indexed(module_path).is_err() {
+            return None;
+        }
+        // An alias's namespace is only known once its target resolves, so
+        // alias names are offered as candidates in either namespace.
+        let declared_aliases = self.alias_names(module_path);
+        let module = self.modules.get(module_path)?;
+        let index = module.index.as_ref()?;
+        let candidates = index
+            .items
+            .iter()
+            .filter(|&(_, &i)| match &module.hir.items[i] {
+                HirItem::Struct(_) | HirItem::Enum(_) | HirItem::Union(_) | HirItem::Spec(_) => {
+                    namespace == ItemNamespace::Type
+                }
+                HirItem::Gap(_) => namespace == ItemNamespace::Value,
+                HirItem::FunctionDefinition(_)
+                | HirItem::Declaration { .. }
+                | HirItem::DeclarationWithInit { .. }
+                | HirItem::Walrus { .. }
+                | HirItem::ForeignBinding(_)
+                | HirItem::ForeignFunction(_) => namespace == ItemNamespace::Value,
+                HirItem::Glue(_)
+                | HirItem::Conform(_)
+                | HirItem::Primitive(_)
+                | HirItem::Import(_)
+                | HirItem::Alias(_) => false,
+            })
+            .map(|(name, _)| name)
+            .chain(declared_aliases.iter());
+        best_match(target, candidates)
+    }
+}
+
+impl Items for Driver {
+    fn types(&self) -> &TypeStore {
+        &self.items.types
+    }
+
+    fn types_mut(&mut self) -> &mut TypeStore {
+        &mut self.items.types
     }
 
     fn resolve_item(
@@ -873,22 +943,6 @@ impl ModuleResolver for Driver {
         let owner =
             omega_analyzer::analysis::item_site(&self.modules.hir(module_path).items[index]);
         self.complete_item_generic_args(module_path, name, owner, &generic_params, arguments)
-    }
-
-    fn is_item_visible(
-        &mut self,
-        accessor_module_path: &ModulePath,
-        absolute_path: &ItemPath,
-    ) -> bool {
-        let module_path = absolute_path.module.clone();
-        self.declared_item_visibility(absolute_path)
-            .is_some_and(|visibility| {
-                Self::visibility_allows(visibility, &module_path, accessor_module_path)
-            })
-    }
-
-    fn fresh_synthetic_id(&mut self) -> HirId {
-        self.items.fresh_synthetic_id()
     }
 
     fn generic_function_signature(
@@ -1061,17 +1115,6 @@ impl ModuleResolver for Driver {
         Driver::instantiate_generic_method(self, owner, name, namespace, generic_args)
     }
 
-    fn function_value_candidates(
-        &mut self,
-        accessor: &ModulePath,
-        access: &ItemAccess,
-    ) -> Result<Option<ResolvedOverloadSet>, ResolveError> {
-        match self.resolve_overload_set(accessor, access)? {
-            Some(set) => Ok(Some(set)),
-            None => self.singleton_function_candidates(accessor, access),
-        }
-    }
-
     fn generic_method_candidates(
         &mut self,
         owner: &ResolvedType,
@@ -1089,78 +1132,9 @@ impl ModuleResolver for Driver {
     ) -> Result<OverloadCandidates, ResolveError> {
         self.collect_conformance_value_templates(owner, name, namespace)
     }
+}
 
-    fn prepare_generic_call(
-        &mut self,
-        target: omega_analyzer::resolver::GenericCallTarget<'_>,
-        arguments: &[Option<ResolvedGenericArg>],
-    ) -> Result<Option<omega_analyzer::resolver::PreparedCall>, ResolveError> {
-        Driver::prepare_generic_call(self, target, arguments)
-    }
-
-    fn instantiate_overload(
-        &mut self,
-        declaration: HirId,
-        arguments: &[Option<ResolvedGenericArg>],
-    ) -> Result<ResolvedMethod, ResolveError> {
-        let key = self.items.decl_id_owner[&declaration].clone();
-        if key.owner().is_some() {
-            return self.instantiate_method_overload(&key, arguments);
-        }
-        let hir = self.modules.hir(key.module());
-        let HirItem::FunctionDefinition(function) = &hir.items[key.disambiguator] else {
-            unreachable!()
-        };
-        let function = self.normalized_function(key.module(), function)?;
-        let arguments = self.complete_overload_arguments(
-            &key,
-            &function,
-            &GenericSubstitution::new(),
-            arguments,
-        )?;
-        let item = self.ensure_item_at(
-            key.module(),
-            key.module(),
-            &key.name,
-            key.disambiguator,
-            &arguments,
-            ResolveItemOptions::INDIRECT,
-        )?;
-        let ResolvedItem::Value {
-            decl_id,
-            r#type: ResolvedType::Function(fn_type),
-            ..
-        } = item
-        else {
-            unreachable!("an overload candidate is a function")
-        };
-        Ok(ResolvedMethod {
-            decl_id,
-            fn_type,
-            visibility: item_visibility(&self.modules.hir(key.module()).items[key.disambiguator]),
-            declaring_module: key.module().clone(),
-            annotations: self.items.function_annotations[&decl_id].clone(),
-            source: None,
-        })
-    }
-
-    fn method_overload_candidates(
-        &mut self,
-        owner: &ResolvedType,
-        name: &Ident,
-        namespace: FunctionNamespace,
-    ) -> Result<OverloadCandidates, ResolveError> {
-        self.collect_method_overloads(owner, name, namespace)
-    }
-
-    fn spec_declaration(
-        &mut self,
-        absolute_path: &ItemPath,
-    ) -> Result<Option<NominalRef>, ResolveError> {
-        let absolute_path = self.canonical_query_path(absolute_path);
-        self.resolve_spec_declaration(&absolute_path)
-    }
-
+impl Calls for Driver {
     fn resolve_overload_set(
         &mut self,
         accessor: &ModulePath,
@@ -1214,43 +1188,88 @@ impl ModuleResolver for Driver {
         }))
     }
 
-    fn similar_item_name(
+    fn function_value_candidates(
         &mut self,
-        module_path: &ModulePath,
-        target: &Ident,
-        namespace: ItemNamespace,
-    ) -> Option<Ident> {
-        if self.ensure_module_indexed(module_path).is_err() {
-            return None;
+        accessor: &ModulePath,
+        access: &ItemAccess,
+    ) -> Result<Option<ResolvedOverloadSet>, ResolveError> {
+        match self.resolve_overload_set(accessor, access)? {
+            Some(set) => Ok(Some(set)),
+            None => self.singleton_function_candidates(accessor, access),
         }
-        // An alias's namespace is only known once its target resolves, so
-        // alias names are offered as candidates in either namespace.
-        let declared_aliases = self.alias_names(module_path);
-        let module = self.modules.get(module_path)?;
-        let index = module.index.as_ref()?;
-        let candidates = index
-            .items
-            .iter()
-            .filter(|&(_, &i)| match &module.hir.items[i] {
-                HirItem::Struct(_) | HirItem::Enum(_) | HirItem::Union(_) | HirItem::Spec(_) => {
-                    namespace == ItemNamespace::Type
-                }
-                HirItem::Gap(_) => namespace == ItemNamespace::Value,
-                HirItem::FunctionDefinition(_)
-                | HirItem::Declaration { .. }
-                | HirItem::DeclarationWithInit { .. }
-                | HirItem::Walrus { .. }
-                | HirItem::ForeignBinding(_)
-                | HirItem::ForeignFunction(_) => namespace == ItemNamespace::Value,
-                HirItem::Glue(_)
-                | HirItem::Conform(_)
-                | HirItem::Primitive(_)
-                | HirItem::Import(_)
-                | HirItem::Alias(_) => false,
-            })
-            .map(|(name, _)| name)
-            .chain(declared_aliases.iter());
-        best_match(target, candidates)
+    }
+
+    fn instantiate_overload(
+        &mut self,
+        declaration: HirId,
+        arguments: &[Option<ResolvedGenericArg>],
+    ) -> Result<ResolvedMethod, ResolveError> {
+        let key = self.items.decl_id_owner[&declaration].clone();
+        if key.owner().is_some() {
+            return self.instantiate_method_overload(&key, arguments);
+        }
+        let hir = self.modules.hir(key.module());
+        let HirItem::FunctionDefinition(function) = &hir.items[key.disambiguator] else {
+            unreachable!()
+        };
+        let function = self.normalized_function(key.module(), function)?;
+        let arguments = self.complete_overload_arguments(
+            &key,
+            &function,
+            &GenericSubstitution::new(),
+            arguments,
+        )?;
+        let item = self.ensure_item_at(
+            key.module(),
+            key.module(),
+            &key.name,
+            key.disambiguator,
+            &arguments,
+            ResolveItemOptions::INDIRECT,
+        )?;
+        let ResolvedItem::Value {
+            decl_id,
+            r#type: ResolvedType::Function(fn_type),
+            ..
+        } = item
+        else {
+            unreachable!("an overload candidate is a function")
+        };
+        Ok(ResolvedMethod {
+            decl_id,
+            fn_type,
+            visibility: item_visibility(&self.modules.hir(key.module()).items[key.disambiguator]),
+            declaring_module: key.module().clone(),
+            annotations: self.items.function_annotations[&decl_id].clone(),
+            source: None,
+        })
+    }
+
+    fn prepare_generic_call(
+        &mut self,
+        target: omega_analyzer::resolver::GenericCallTarget<'_>,
+        arguments: &[Option<ResolvedGenericArg>],
+    ) -> Result<Option<omega_analyzer::resolver::PreparedCall>, ResolveError> {
+        Driver::prepare_generic_call(self, target, arguments)
+    }
+
+    fn method_overload_candidates(
+        &mut self,
+        owner: &ResolvedType,
+        name: &Ident,
+        namespace: FunctionNamespace,
+    ) -> Result<OverloadCandidates, ResolveError> {
+        self.collect_method_overloads(owner, name, namespace)
+    }
+}
+
+impl Conformances for Driver {
+    fn spec_declaration(
+        &mut self,
+        absolute_path: &ItemPath,
+    ) -> Result<Option<NominalRef>, ResolveError> {
+        let absolute_path = self.canonical_query_path(absolute_path);
+        self.resolve_spec_declaration(&absolute_path)
     }
 
     fn primitive_methods(
@@ -1316,17 +1335,9 @@ impl ModuleResolver for Driver {
             })
             .collect())
     }
+}
 
-    fn function_source(&self, decl_id: HirId) -> Option<omega_diagnostics::SourceId> {
-        let key = self.items.decl_id_owner.get(&decl_id)?;
-        self.modules.source_id(key.module())
-    }
-
-    fn trusted_panic_message_field(&mut self, decl_id: HirId) -> Option<usize> {
-        let support = self.panic_support().ok()?;
-        (support.handler_decl_id == decl_id).then_some(support.message.index)
-    }
-
+impl CompileTime for Driver {
     fn resolve_function_body(
         &mut self,
         decl_id: HirId,
