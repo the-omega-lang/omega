@@ -56,7 +56,7 @@ fn emit_for(source: &str, target: Target, emit: omega_codegen::EmitKind) -> Stri
     let extern_globals = program.extern_globals.clone();
     let entry = program.entry.clone();
     let sources = emission_sources(&program);
-    let modules = omega_mir::lower_program(program.modules, &entry);
+    let modules = omega_mir::lower_program(program.modules, &entry, &program.types);
     single_artifact_text(omega_codegen::CodegenRequest {
         target,
         opt_level: omega_codegen::OptLevel::O0,
@@ -65,6 +65,7 @@ fn emit_for(source: &str, target: Target, emit: omega_codegen::EmitKind) -> Stri
         entry: entry.segments().to_vec(),
         extern_functions,
         extern_globals,
+        types: program.types,
     })
 }
 

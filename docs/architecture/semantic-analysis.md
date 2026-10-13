@@ -87,7 +87,7 @@ Declared `alias` names are erased during this resolution rather than represented
 
 The ordering inside `apply_alias_once` is what makes alias-owned `(bound, argument)` obligations complete and non-duplicated: each supplied or defaulted argument is normalized once *before* substitution, and the template body is normalized *before* the arguments are substituted into it, with the alias's own parameters treated as opaque placeholders. The body's obligations then have the final arguments substituted into them. So `alias Duo<T> = Pair<T, T>` checks one written argument once, while `alias Outer<T> = Pair<Inner<T>, T>` still reports `Inner`'s own bound against the real argument -- an alias reachable only through another alias's RHS, default or bound cannot disappear.
 
-`expand_type_alias` (used at the top of `Context::resolve_type`, and again for a pointer's pointee to decide pointer-versus-dynamic-object) and `applied_alias_bounds` (used to check those obligations) are both thin views over this one operation, so expansion and bound-checking cannot diverge. `Analyzer::check_alias_generic_bounds` consumes the obligations directly and does not re-walk the source type looking for nested applications. Path-shaped aliases are instead canonicalized by the driver, which answers each query for the target's own identity. No `ResolvedType`, spec cell, `decl_id`, or checked node is ever created for an alias.
+`expand_type_alias` (used at the top of `Context::resolve_type`, and again for a pointer's pointee to decide pointer-versus-dynamic-object) and `applied_alias_bounds` (used to check those obligations) are both thin views over this one operation, so expansion and bound-checking cannot diverge. `Analyzer::check_alias_generic_bounds` consumes the obligations directly and does not re-walk the source type looking for nested applications. Path-shaped aliases are instead canonicalized by the driver, which answers each query for the target's own identity. No `ResolvedType`, `NominalRef`, `decl_id`, or checked node is ever created for an alias.
 
 `omega_analyzer::aliases::alias_reference` resolves a written type's head through the same anchor/import machinery an ordinary path uses -- an explicit anchor goes through `ModuleResolver::resolve_explicit_anchor`, and an unqualified head reached through an import (not just a locally-declared name) is followed via `ImportTarget::ItemPath` before falling back to the current module -- and carries the resulting `ItemAccess` (absolute path plus whether visibility was already authorized) into `ModuleResolver::resolve_visible_alias`. The analyzer never asks whether an alias merely *exists*; it asks the accessor-aware query, which is the alias's own visibility gate. A bare reference to a structural alias imported from another module therefore resolves exactly as a locally-declared one does, and a hidden structural alias is rejected wherever it is named.
 
@@ -172,12 +172,12 @@ It contains primitive/scalar forms plus compound forms such as:
 
 - pointers, slices, strings, unsized/sized arrays;
 - function types;
-- struct/enum/union nominal cells;
+- struct/enum/union nominal types;
 - specs/spec objects;
 - refined enum variants;
 - `never`/`void` distinctions.
 
-Nominal aggregates use shared `Rc<RefCell<Resolved*Type>>` cells. Checked nodes therefore refer to the same canonical semantic declaration/layout/method information instead of embedding diverging copies.
+Nominal types are `NominalRef` handles into the driver-owned `TypeStore`, whose definition and function stages are written once by signature analysis. Checked nodes therefore refer to the same canonical declaration/layout/method facts instead of embedding diverging copies, and a fact read before its stage is written is reported as a resolution cycle rather than seen as empty.
 
 More detail: [`types-layout-and-const-eval.md`](types-layout-and-const-eval.md).
 
@@ -256,7 +256,7 @@ Bounds are resolved/expanded and available to body checking. Conformance lookup 
 
 ## Specs and conformances
 
-Specs have canonical declaration cells containing their own raw requirement information -- a spec declares only itself, with no alias/dependency mechanism. A concrete use substitutes spec arguments + `Self` and resolves effective member slots.
+Specs have one canonical interned declaration whose stored facts hold their own raw requirement information -- a spec declares only itself, with no alias/dependency mechanism. A concrete use substitutes spec arguments + `Self` and resolves effective member slots.
 
 A raw `spec A + B + ...` conjunction (`Type::SpecStatic`, parser/HIR-level) becomes semantic only at the point where `Context::resolve_pointer_type` sees it as an *immediate* pointer pointee: `Pointer(SpecStatic(members), mutable)` resolves to `ResolvedType::SpecObject { shape, mutable }`. A bare (non-pointer) `spec ...` in a supported static position is instead normalized into one fresh generic bounded by every member; a bare `spec ...` anywhere else remains a `TypeResolutionError`. This is the one place static-vs-dynamic is decided -- MIR/codegen never see an unresolved `Type::SpecStatic`.
 

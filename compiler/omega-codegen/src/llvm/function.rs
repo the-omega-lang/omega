@@ -33,7 +33,7 @@ pub(crate) fn visibility_of(visibility: SymbolVisibility) -> GlobalVisibility {
 impl<'ctx> Codegen<'ctx> {
     pub(super) fn needs_sret(&self, return_type: &ResolvedType) -> bool {
         matches!(
-            AbiReturn::for_type(self.target, return_type),
+            AbiReturn::for_type(self.target, self.types, return_type),
             AbiReturn::Indirect
         )
     }
@@ -42,7 +42,7 @@ impl<'ctx> Codegen<'ctx> {
         &self,
         fn_type: &ResolvedFunctionType,
     ) -> inkwell::types::FunctionType<'ctx> {
-        let abi = AbiSignature::build(self.target, fn_type);
+        let abi = AbiSignature::build(self.target, self.types, fn_type);
         let mut param_types: Vec<BasicTypeEnum> = Vec::new();
         if matches!(abi.ret, AbiReturn::Indirect) {
             param_types.push(self.ptr_type().as_basic_type_enum());
@@ -222,10 +222,10 @@ impl<'ctx> Codegen<'ctx> {
             .iter()
             .map(|local| local.r#type.clone())
             .collect();
-        let frame = layout::locals_layout(&non_param_types, self.pointer_bytes());
+        let frame = layout::locals_layout(self.types, &non_param_types, self.pointer_bytes());
         let max_align = non_param_types
             .iter()
-            .map(layout::type_alignment)
+            .map(|ty| layout::type_alignment(self.types, ty))
             .max()
             .unwrap_or(1);
 
@@ -264,7 +264,8 @@ impl<'ctx> Codegen<'ctx> {
             .iter()
             .enumerate()
             .flat_map(|(i, local)| {
-                let value_count = leaf::llvm_leaves(self.context, &local.r#type, self.target).len();
+                let value_count =
+                    leaf::llvm_leaves(self.context, self.types, &local.r#type, self.target).len();
                 vec![i; value_count]
             })
             .collect();
@@ -277,9 +278,9 @@ impl<'ctx> Codegen<'ctx> {
                 continue;
             }
             let parameter_type = &body.locals[index].r#type;
-            let align = layout::type_alignment(parameter_type);
+            let align = layout::type_alignment(self.types, parameter_type);
             let slot = self.entry_alloca(
-                layout::total_bytes(parameter_type, self.pointer_bytes()),
+                layout::total_bytes(self.types, parameter_type, self.pointer_bytes()),
                 align,
                 "param",
             );
@@ -365,7 +366,7 @@ impl<'ctx> Codegen<'ctx> {
                             &pointer,
                             0,
                             &leaves,
-                            layout::type_alignment(return_type),
+                            layout::type_alignment(self.types, return_type),
                         );
                         self.builder.build_return(None).expect("builder positioned");
                     }

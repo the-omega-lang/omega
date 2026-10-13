@@ -131,7 +131,7 @@ impl Driver {
                         || entry.origin != ConformanceOrigin::Concrete)
                     && !self.conformances.emitted.contains(&(
                         entry.target.clone(),
-                        entry.spec.borrow().id,
+                        entry.spec.decl_id,
                         entry.spec_args.clone(),
                     ))
             })
@@ -141,7 +141,7 @@ impl Driver {
         for entry in entries {
             self.conformances.emitted.push((
                 entry.target.clone(),
-                entry.spec.borrow().id,
+                entry.spec.decl_id,
                 entry.spec_args.clone(),
             ));
             let (bounds, bound_warnings) = self.conformance_bounds(&entry);
@@ -258,7 +258,7 @@ impl Driver {
                 .find(|entry| {
                     !self.conformances.emitted.contains(&(
                         entry.target.clone(),
-                        entry.spec.borrow().id,
+                        entry.spec.decl_id,
                         entry.spec_args.clone(),
                     )) && (!self.roots.is_extern(&entry.module)
                         || entry.origin != ConformanceOrigin::Concrete)

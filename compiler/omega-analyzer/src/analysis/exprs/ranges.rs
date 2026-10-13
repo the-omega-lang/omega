@@ -44,7 +44,7 @@ impl<'r> Analyzer<'r> {
             None => self.synthesize_bounded_call(id, span, &element, "max")?,
         };
 
-        let ResolvedItem::Type(ResolvedType::Struct(cell)) = self
+        let ResolvedItem::Type(ResolvedType::Struct(nominal)) = self
             .resolve_item_checked(
                 &ItemAccess::gated(Self::core_range_path("Range")),
                 &[ResolvedGenericArg::Type(element)],
@@ -61,7 +61,7 @@ impl<'r> Analyzer<'r> {
         Some(CheckedExprNode {
             id,
             span,
-            r#type: ResolvedType::Struct(cell),
+            r#type: ResolvedType::Struct(nominal),
             kind: CheckedExpr::StructLiteral(CheckedStructLiteral {
                 fields: vec![
                     CheckedStructLiteralField {
@@ -91,10 +91,10 @@ impl<'r> Analyzer<'r> {
     }
 
     fn expected_range_element(expected: Option<&ResolvedType>) -> Option<ResolvedType> {
-        let ResolvedType::Struct(cell) = expected? else {
+        let ResolvedType::Struct(nominal) = expected? else {
             return None;
         };
-        let definition = cell.borrow();
+        let definition = &**nominal;
         let is_core_range =
             definition.name.as_ref() == "Range" && definition.module_path.is(&["core", "range"]);
         is_core_range

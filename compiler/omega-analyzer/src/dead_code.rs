@@ -151,10 +151,10 @@ pub(crate) fn collect_expr(expr: &CheckedExprNode, usage: &mut FieldUsage) {
             }
         }
         CheckedExpr::EnumConstruct(construct) => {
-            if let ResolvedType::Enum { cell, .. } = &expr.r#type {
+            if let ResolvedType::Enum { nominal, .. } = &expr.r#type {
                 usage
                     .enum_variants
-                    .insert((cell.borrow().id, construct.variant_index));
+                    .insert((nominal.decl_id, construct.variant_index));
             }
             for f in &construct.fields {
                 collect_expr(&f.value, usage);
@@ -205,8 +205,8 @@ pub(crate) fn collect_expr(expr: &CheckedExprNode, usage: &mut FieldUsage) {
 fn collect_try(r#try: &CheckedTry, usage: &mut FieldUsage) {
     collect_expr(&r#try.operand, usage);
 
-    if let ResolvedType::Enum { cell, .. } = &r#try.operand.r#type {
-        let source = cell.borrow().id;
+    if let ResolvedType::Enum { nominal, .. } = &r#try.operand.r#type {
+        let source = nominal.decl_id;
         let s = &r#try.source;
         usage.enum_variants.insert((source, s.success_variant));
         usage.enum_variants.insert((source, s.failure_variant));
@@ -220,8 +220,8 @@ fn collect_try(r#try: &CheckedTry, usage: &mut FieldUsage) {
         }
     }
 
-    if let ResolvedType::Enum { cell, .. } = &r#try.destination.r#type {
-        let destination = cell.borrow().id;
+    if let ResolvedType::Enum { nominal, .. } = &r#try.destination.r#type {
+        let destination = nominal.decl_id;
         let d = &r#try.destination;
         usage.enum_variants.insert((destination, d.failure_variant));
         if let Some(field) = d.failure_field {
@@ -244,20 +244,20 @@ pub(crate) fn collect_place(place: &CheckedPlace, usage: &mut FieldUsage) {
     for proj in &place.projections {
         match proj {
             CheckedProjection::FieldAccess { index, r#type, .. } => {
-                if let Some(ResolvedType::Struct(cell)) = &current_type {
-                    usage.struct_fields.insert((cell.borrow().id, *index));
+                if let Some(ResolvedType::Struct(nominal)) = &current_type {
+                    usage.struct_fields.insert((nominal.decl_id, *index));
                 }
                 current_type = Some(r#type.clone());
             }
             CheckedProjection::UnionField { index, r#type, .. } => {
-                if let Some(ResolvedType::Union(cell)) = &current_type {
-                    usage.union_fields.insert((cell.borrow().id, *index));
+                if let Some(ResolvedType::Union(nominal)) = &current_type {
+                    usage.union_fields.insert((nominal.decl_id, *index));
                 }
                 current_type = Some(r#type.clone());
             }
             CheckedProjection::EnumDynamicField { index, r#type, .. } => {
-                if let Some(ResolvedType::Enum { cell, .. }) = &current_type {
-                    usage.enum_dynamic_fields.insert((cell.borrow().id, *index));
+                if let Some(ResolvedType::Enum { nominal, .. }) = &current_type {
+                    usage.enum_dynamic_fields.insert((nominal.decl_id, *index));
                 }
                 current_type = Some(r#type.clone());
             }
@@ -267,10 +267,10 @@ pub(crate) fn collect_place(place: &CheckedPlace, usage: &mut FieldUsage) {
                 r#type,
                 ..
             } => {
-                if let Some(ResolvedType::Enum { cell, .. }) = &current_type {
+                if let Some(ResolvedType::Enum { nominal, .. }) = &current_type {
                     usage
                         .enum_body_fields
-                        .insert((cell.borrow().id, *variant_index, *field_index));
+                        .insert((nominal.decl_id, *variant_index, *field_index));
                 }
                 current_type = Some(r#type.clone());
             }

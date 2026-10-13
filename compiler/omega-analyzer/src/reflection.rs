@@ -12,6 +12,7 @@ use crate::resolved_type::{
     CallingConvention, CanonicalType, CompScalar, ConstValue, Reflected, ResolvedField,
     ResolvedGenericArg, ResolvedSpecApplication, ResolvedType,
 };
+use crate::type_store::{NominalRef, TypeStore};
 use omega_hir::{ItemPath, ModulePath};
 use omega_parser::prelude::{Ident, Visibility};
 
@@ -35,13 +36,17 @@ pub fn type_info_ref(described: &ResolvedType, table: &ResolvedType) -> ConstVal
 /// What a `comp` dereference of a `Reflected` address reads through a
 /// pointer to `pointee`.
 pub fn deref(
+    types: &TypeStore,
     reflected: &Reflected,
     pointee: &ResolvedType,
     pointer_bytes: u32,
 ) -> Result<ConstValue, &'static str> {
     match reflected {
         Reflected::TypeInfo { described, table } if pointee.widened() == *table => {
-            Ok(type_info_value(described, table, pointer_bytes))
+            if layout::require_complete(types, described).is_err() {
+                return Err("reading reflection data of a type whose definition is incomplete");
+            }
+            Ok(type_info_value(types, described, table, pointer_bytes))
         }
         Reflected::TypeInfo { .. } => {
             Err("reading reflection data through a pointer of another type")
@@ -54,11 +59,13 @@ pub fn deref(
 /// Every nested `*TypeInfo` or prototype is a `Reflected` leaf, so building
 /// never recurses into the types this one refers to.
 pub fn type_info_value(
+    types: &TypeStore,
     described: &ResolvedType,
     info_type: &ResolvedType,
     pointer_bytes: u32,
 ) -> ConstValue {
     let builder = Builder {
+        types,
         info_type,
         pointer_bytes,
     };
@@ -66,6 +73,7 @@ pub fn type_info_value(
 }
 
 struct Builder<'a> {
+    types: &'a TypeStore,
     info_type: &'a ResolvedType,
     pointer_bytes: u32,
 }
@@ -83,15 +91,16 @@ impl Builder<'_> {
 
     fn type_info(&self, described: &ResolvedType) -> ConstValue {
         let naming = naming(described);
-        let generic_arg_type = slice_item(&field_type(self.info_type, "generic_args"));
+        let generic_arg_type = slice_item(&field_type(self.types, self.info_type, "generic_args"));
         let generic_args = naming
             .generic_args
             .iter()
             .map(|arg| self.generic_arg(&generic_arg_type, arg))
             .collect();
-        let size = layout::total_bytes(described, self.pointer_bytes);
-        let align = layout::type_alignment(described);
+        let size = layout::total_bytes(self.types, described, self.pointer_bytes);
+        let align = layout::type_alignment(self.types, described);
         build_struct(
+            self.types,
             self.info_type,
             vec![
                 ("name", ConstValue::Str(naming.name)),
@@ -106,10 +115,14 @@ impl Builder<'_> {
 
     fn generic_arg(&self, arg_type: &ResolvedType, arg: &ResolvedGenericArg) -> ConstValue {
         match arg {
-            ResolvedGenericArg::Type(r#type) => {
-                build_variant(arg_type, "Type", vec![("type", self.type_ref(r#type))])
-            }
+            ResolvedGenericArg::Type(r#type) => build_variant(
+                self.types,
+                arg_type,
+                "Type",
+                vec![("type", self.type_ref(r#type))],
+            ),
             ResolvedGenericArg::Comp(value) => build_variant(
+                self.types,
                 arg_type,
                 "Comp",
                 vec![
@@ -126,7 +139,8 @@ impl Builder<'_> {
     fn comp_bits(&self, value: &CompScalar) -> u64 {
         match value {
             CompScalar::Int { r#type, value } => {
-                let width = layout::total_bytes(&r#type.resolved(), self.pointer_bytes) * 8;
+                let width =
+                    layout::total_bytes(self.types, &r#type.resolved(), self.pointer_bytes) * 8;
                 truncate(*value as u64, width)
             }
             CompScalar::Bool(value) => u64::from(*value),
@@ -135,10 +149,15 @@ impl Builder<'_> {
     }
 
     fn kind(&self, described: &ResolvedType) -> ConstValue {
-        let kind_type = field_type(self.info_type, "kind");
-        let variant = |name, fields| build_variant(&kind_type, name, fields);
+        let kind_type = field_type(self.types, self.info_type, "kind");
+        let variant = |name, fields| build_variant(self.types, &kind_type, name, fields);
         let field_list = |variant_name: &str, field_name: &str| {
-            slice_item(&variant_field_type(&kind_type, variant_name, field_name))
+            slice_item(&variant_field_type(
+                self.types,
+                &kind_type,
+                variant_name,
+                field_name,
+            ))
         };
         match described {
             ResolvedType::Pointer { pointee, mutable } => variant(
@@ -172,13 +191,14 @@ impl Builder<'_> {
             ResolvedType::Str { mutable } => {
                 variant("Str", vec![("mutable", ConstValue::Bool(*mutable))])
             }
-            ResolvedType::Struct(cell) => {
-                let struct_type = cell.borrow();
+            ResolvedType::Struct(nominal) => {
+                let struct_type = self.types.frozen().struct_facts(nominal);
                 if struct_type.is_marker {
                     return variant("Marker", vec![]);
                 }
                 let info = field_list("Struct", "fields");
-                let offsets = layout::struct_layout(&struct_type, self.pointer_bytes).byte_offsets;
+                let offsets =
+                    layout::struct_layout(self.types, struct_type, self.pointer_bytes).byte_offsets;
                 let fields = struct_type
                     .fields
                     .iter()
@@ -187,30 +207,37 @@ impl Builder<'_> {
                     .collect();
                 variant("Struct", vec![("fields", ConstValue::Slice(fields))])
             }
-            ResolvedType::Union(cell) => {
+            ResolvedType::Union(nominal) => {
                 let info = field_list("Union", "fields");
-                let fields = cell
-                    .borrow()
-                    .fields
+                let fields = self
+                    .types
+                    .frozen()
+                    .fields(nominal)
                     .iter()
                     .map(|field| self.field_info_of(&info, field, 0))
                     .collect();
                 variant("Union", vec![("fields", ConstValue::Slice(fields))])
             }
-            ResolvedType::Enum { cell, .. } => self.named_enum(&kind_type, described, cell),
+            ResolvedType::Enum { nominal, .. } => self.named_enum(&kind_type, described, nominal),
             ResolvedType::AnonymousEnum { shape, .. } => {
                 let view = EnumView::of_anonymous(shape);
-                let info = variant_field_type(&kind_type, "AnonymousEnum", "tag_field");
+                let info = variant_field_type(self.types, &kind_type, "AnonymousEnum", "tag_field");
                 let member_type = field_list("AnonymousEnum", "members");
-                let body_info = slice_item(&field_type(&member_type, "fields"));
+                let body_info = slice_item(&field_type(self.types, &member_type, "fields"));
                 let members = shape
                     .members()
                     .iter()
                     .enumerate()
                     .map(|(index, member)| {
-                        let offset =
-                            layout::enum_body_field_offset(&view, index, 0, self.pointer_bytes);
+                        let offset = layout::enum_body_field_offset(
+                            self.types,
+                            &view,
+                            index,
+                            0,
+                            self.pointer_bytes,
+                        );
                         build_struct(
+                            self.types,
                             &member_type,
                             vec![
                                 ("name", ConstValue::Str(CanonicalType(member).to_string())),
@@ -245,7 +272,8 @@ impl Builder<'_> {
                 unreachable!("a receiver belongs to a method declaration, never to a value type")
             }
             ResolvedType::Function(function) => {
-                let convention_type = variant_field_type(&kind_type, "Function", "convention");
+                let convention_type =
+                    variant_field_type(self.types, &kind_type, "Function", "convention");
                 let convention = match function.calling_convention {
                     CallingConvention::Omega => "Omega",
                     CallingConvention::C => "C",
@@ -264,7 +292,7 @@ impl Builder<'_> {
                         ("variadic", ConstValue::Bool(function.is_variadic)),
                         (
                             "convention",
-                            build_variant(&convention_type, convention, vec![]),
+                            build_variant(self.types, &convention_type, convention, vec![]),
                         ),
                     ],
                 )
@@ -286,12 +314,18 @@ impl Builder<'_> {
             }
             ResolvedType::Spec(_) => unreachable!("a spec definition is never itself a value type"),
             primitive => {
-                let primitive_type = variant_field_type(&kind_type, "Primitive", "primitive");
+                let primitive_type =
+                    variant_field_type(self.types, &kind_type, "Primitive", "primitive");
                 variant(
                     "Primitive",
                     vec![(
                         "primitive",
-                        build_variant(&primitive_type, primitive_name(primitive), vec![]),
+                        build_variant(
+                            self.types,
+                            &primitive_type,
+                            primitive_name(primitive),
+                            vec![],
+                        ),
                     )],
                 )
             }
@@ -302,18 +336,21 @@ impl Builder<'_> {
         &self,
         kind_type: &ResolvedType,
         described: &ResolvedType,
-        cell: &std::cell::RefCell<crate::resolved_type::ResolvedEnumType>,
+        nominal: &NominalRef,
     ) -> ConstValue {
-        let enum_type = cell.borrow();
-        let view = EnumView::of_named(&enum_type);
-        let info = variant_field_type(kind_type, "Enum", "tag_field");
-        let variant_type = slice_item(&variant_field_type(kind_type, "Enum", "variants"));
+        let enum_type = self.types.frozen().enum_facts(nominal);
+        let view = EnumView::of_named(enum_type);
+        let info = variant_field_type(self.types, kind_type, "Enum", "tag_field");
+        let variant_type = slice_item(&variant_field_type(
+            self.types, kind_type, "Enum", "variants",
+        ));
         let header = enum_type
             .header
             .iter()
             .enumerate()
             .map(|(index, field)| {
-                let offset = layout::enum_header_offset(&view, index, self.pointer_bytes);
+                let offset =
+                    layout::enum_header_offset(self.types, &view, index, self.pointer_bytes);
                 self.field_info_of(&info, field, offset)
             })
             .collect();
@@ -322,11 +359,12 @@ impl Builder<'_> {
             .iter()
             .enumerate()
             .map(|(index, field)| {
-                let offset = layout::enum_dynamic_field_offset(&view, index, self.pointer_bytes);
+                let offset =
+                    layout::enum_dynamic_field_offset(self.types, &view, index, self.pointer_bytes);
                 self.field_info_of(&info, field, offset)
             })
             .collect();
-        let tag_bits = layout::total_bytes(&enum_type.tag_type, self.pointer_bytes) * 8;
+        let tag_bits = layout::total_bytes(self.types, &enum_type.tag_type, self.pointer_bytes) * 8;
         let variants = enum_type
             .variants
             .iter()
@@ -338,6 +376,7 @@ impl Builder<'_> {
                     .enumerate()
                     .map(|(index, field)| {
                         let offset = layout::enum_body_field_offset(
+                            self.types,
                             &view,
                             variant_index,
                             index,
@@ -347,6 +386,7 @@ impl Builder<'_> {
                     })
                     .collect();
                 build_struct(
+                    self.types,
                     &variant_type,
                     vec![
                         ("name", ConstValue::Str(variant.name.as_ref().to_string())),
@@ -364,6 +404,7 @@ impl Builder<'_> {
             })
             .collect();
         build_variant(
+            self.types,
             kind_type,
             "Enum",
             vec![
@@ -376,9 +417,10 @@ impl Builder<'_> {
     }
 
     fn spec_info(&self, info: &ResolvedType, member: &ResolvedSpecApplication) -> ConstValue {
-        let spec = member.spec.borrow();
-        let generic_arg_type = slice_item(&field_type(info, "generic_args"));
+        let spec = &*member.spec;
+        let generic_arg_type = slice_item(&field_type(self.types, info, "generic_args"));
         build_struct(
+            self.types,
             info,
             vec![
                 ("name", ConstValue::Str(spec.name.as_ref().to_string())),
@@ -415,13 +457,14 @@ impl Builder<'_> {
         r#type: &ResolvedType,
         visibility: Visibility,
     ) -> ConstValue {
-        let visibility_type = field_type(info, "visibility");
+        let visibility_type = field_type(self.types, info, "visibility");
         let visibility = match visibility {
             Visibility::Hidden => "Hidden",
             Visibility::Shared => "Shared",
             Visibility::Exposed => "Exposed",
         };
         build_struct(
+            self.types,
             info,
             vec![
                 ("name", ConstValue::Str(name.to_string())),
@@ -429,14 +472,15 @@ impl Builder<'_> {
                 ("type", self.type_ref(r#type)),
                 (
                     "visibility",
-                    build_variant(&visibility_type, visibility, vec![]),
+                    build_variant(self.types, &visibility_type, visibility, vec![]),
                 ),
             ],
         )
     }
 
     fn tag_field(&self, info: &ResolvedType, view: &EnumView) -> ConstValue {
-        let offset = layout::enum_prefix_layout(view, self.pointer_bytes).byte_offsets[0];
+        let offset =
+            layout::enum_prefix_layout(self.types, view, self.pointer_bytes).byte_offsets[0];
         self.field_info(info, "tag", offset, &view.tag_type, Visibility::Exposed)
     }
 }
@@ -448,17 +492,10 @@ fn naming(described: &ResolvedType) -> Naming {
         generic_args: generic_args.to_vec(),
     };
     match described {
-        ResolvedType::Struct(cell) => {
-            let s = cell.borrow();
-            named(&s.name, &s.module_path, &s.generic_args)
-        }
-        ResolvedType::Union(cell) => {
-            let u = cell.borrow();
-            named(&u.name, &u.module_path, &u.generic_args)
-        }
-        ResolvedType::Enum { cell, .. } => {
-            let e = cell.borrow();
-            named(&e.name, &e.module_path, &e.generic_args)
+        ResolvedType::Struct(nominal)
+        | ResolvedType::Union(nominal)
+        | ResolvedType::Enum { nominal, .. } => {
+            named(&nominal.name, &nominal.module_path, &nominal.generic_args)
         }
         unnamed => Naming {
             name: CanonicalType(unnamed).to_string(),
@@ -538,23 +575,31 @@ fn slice_item(r#type: &ResolvedType) -> ResolvedType {
     }
 }
 
-fn field_type(owner: &ResolvedType, name: &str) -> ResolvedType {
-    let ResolvedType::Struct(cell) = owner else {
+fn field_type(types: &TypeStore, owner: &ResolvedType, name: &str) -> ResolvedType {
+    let ResolvedType::Struct(nominal) = owner else {
         missing(format_args!("'{owner}' as a struct"));
     };
-    cell.borrow()
-        .fields
+    types
+        .frozen()
+        .fields(nominal)
         .iter()
         .find(|field| field.name.as_ref() == name)
         .map(|field| field.r#type.clone())
         .unwrap_or_else(|| missing(format_args!("'{owner}::{name}'")))
 }
 
-fn variant_field_type(owner: &ResolvedType, variant: &str, name: &str) -> ResolvedType {
-    let ResolvedType::Enum { cell, .. } = owner else {
+fn variant_field_type(
+    types: &TypeStore,
+    owner: &ResolvedType,
+    variant: &str,
+    name: &str,
+) -> ResolvedType {
+    let ResolvedType::Enum { nominal, .. } = owner else {
         missing(format_args!("'{owner}' as an enum"));
     };
-    cell.borrow()
+    types
+        .frozen()
+        .enum_facts(nominal)
         .variants
         .iter()
         .find(|v| v.name.as_ref() == variant)
@@ -590,23 +635,31 @@ fn ordered(
     ordered
 }
 
-fn build_struct(r#type: &ResolvedType, values: Vec<(&str, ConstValue)>) -> ConstValue {
-    let ResolvedType::Struct(cell) = r#type else {
+fn build_struct(
+    types: &TypeStore,
+    r#type: &ResolvedType,
+    values: Vec<(&str, ConstValue)>,
+) -> ConstValue {
+    let ResolvedType::Struct(nominal) = r#type else {
         missing(format_args!("'{type}' as a struct"));
     };
-    let struct_type = cell.borrow();
     ConstValue::Struct(ordered(
-        &struct_type.fields,
-        struct_type.name.as_ref(),
+        types.frozen().fields(nominal),
+        nominal.name.as_ref(),
         values,
     ))
 }
 
-fn build_variant(r#type: &ResolvedType, name: &str, values: Vec<(&str, ConstValue)>) -> ConstValue {
-    let ResolvedType::Enum { cell, .. } = r#type else {
+fn build_variant(
+    types: &TypeStore,
+    r#type: &ResolvedType,
+    name: &str,
+    values: Vec<(&str, ConstValue)>,
+) -> ConstValue {
+    let ResolvedType::Enum { nominal, .. } = r#type else {
         missing(format_args!("'{type}' as an enum"));
     };
-    let enum_type = cell.borrow();
+    let enum_type = types.frozen().enum_facts(nominal);
     let Some((variant_index, variant)) = enum_type
         .variants
         .iter()

@@ -1,8 +1,6 @@
 use crate::checked::NumberValue;
-use crate::resolved_type::{
-    ConstValue, ResolvedAnonymousEnum, ResolvedEnumType, ResolvedStructType, ResolvedType,
-    ResolvedUnionType,
-};
+use crate::resolved_type::{ConstValue, ResolvedAnonymousEnum, ResolvedType};
+use crate::type_store::{EnumFacts, Incomplete, StructFacts, TypeStore, UnionFacts};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Leaf {
@@ -35,7 +33,7 @@ impl Leaf {
     }
 }
 
-pub fn leaves_of(ty: &ResolvedType, pointer_bytes: u32) -> Vec<Leaf> {
+pub fn leaves_of(types: &TypeStore, ty: &ResolvedType, pointer_bytes: u32) -> Vec<Leaf> {
     match ty {
         ResolvedType::Void | ResolvedType::Never => vec![],
         ResolvedType::Bool => vec![Leaf::I8],
@@ -53,11 +51,18 @@ pub fn leaves_of(ty: &ResolvedType, pointer_bytes: u32) -> Vec<Leaf> {
         // scalars), so `field_byte_offset`'s offsets and this list's
         // positions must agree.
         ResolvedType::Struct(struct_type) => {
-            struct_layout(&struct_type.borrow(), pointer_bytes).leaves
+            struct_layout(
+                types,
+                types.frozen().struct_facts(struct_type),
+                pointer_bytes,
+            )
+            .leaves
         }
-        ResolvedType::Union(union_type) => {
-            payload_chunks(union_bytes(&union_type.borrow(), pointer_bytes))
-        }
+        ResolvedType::Union(union_type) => payload_chunks(union_bytes(
+            types,
+            types.frozen().union_facts(union_type),
+            pointer_bytes,
+        )),
         // An enum value is `[tag][header fields][shared dynamic fields]
         // [payload]` -- tag/header/dynamic fields flatten like ordinary
         // struct fields, while the payload (a union of every variant's
@@ -71,14 +76,14 @@ pub fn leaves_of(ty: &ResolvedType, pointer_bytes: u32) -> Vec<Leaf> {
         // (see `enum_payload_alignment`), since every variant shares that
         // one starting offset.
         ResolvedType::Enum { .. } | ResolvedType::AnonymousEnum { .. } => {
-            let view = EnumView::of(ty).expect("just matched an enum-like type");
-            let prefix = enum_prefix_layout(&view, pointer_bytes);
+            let view = EnumView::of(types, ty).expect("just matched an enum-like type");
+            let prefix = enum_prefix_layout(types, &view, pointer_bytes);
             let mut leaves = prefix.leaves;
 
-            let payload_size = enum_payload_bytes(&view, pointer_bytes);
+            let payload_size = enum_payload_bytes(types, &view, pointer_bytes);
             let payload_offset = place_field(
                 prefix.packed_end,
-                enum_payload_alignment(&view),
+                enum_payload_alignment(types, &view),
                 payload_size,
                 view.pack,
             );
@@ -88,7 +93,7 @@ pub fn leaves_of(ty: &ResolvedType, pointer_bytes: u32) -> Vec<Leaf> {
             ));
             leaves.extend(payload_chunks(payload_size));
 
-            let final_size = round_up(payload_offset + payload_size, enum_alignment(&view));
+            let final_size = round_up(payload_offset + payload_size, enum_alignment(types, &view));
             leaves.extend(std::iter::repeat_n(
                 Leaf::I8,
                 (final_size - (payload_offset + payload_size)) as usize,
@@ -96,7 +101,7 @@ pub fn leaves_of(ty: &ResolvedType, pointer_bytes: u32) -> Vec<Leaf> {
             leaves
         }
         ResolvedType::SizedArray(item_type, size) => {
-            let item_leaves = leaves_of(item_type, pointer_bytes);
+            let item_leaves = leaves_of(types, item_type, pointer_bytes);
             std::iter::repeat_n(item_leaves, *size as usize)
                 .flatten()
                 .collect()
@@ -110,26 +115,61 @@ pub fn leaves_of(ty: &ResolvedType, pointer_bytes: u32) -> Vec<Leaf> {
 }
 
 pub fn project_field_access<T: Clone>(
+    types: &TypeStore,
     values: &[T],
-    struct_type: &ResolvedStructType,
+    struct_type: &StructFacts,
     field_index: usize,
     pointer_bytes: u32,
 ) -> Vec<T> {
-    let start = struct_layout(struct_type, pointer_bytes).leaf_starts[field_index];
-    let len = leaves_of(&struct_type.fields[field_index].r#type, pointer_bytes).len();
+    let start = struct_layout(types, struct_type, pointer_bytes).leaf_starts[field_index];
+    let len = leaves_of(
+        types,
+        &struct_type.fields[field_index].r#type,
+        pointer_bytes,
+    )
+    .len();
 
     values[start..start + len].to_vec()
 }
 
-pub fn total_bytes(ty: &ResolvedType, pointer_bytes: u32) -> u32 {
-    leaves_of(ty, pointer_bytes)
+pub fn total_bytes(types: &TypeStore, ty: &ResolvedType, pointer_bytes: u32) -> u32 {
+    leaves_of(types, ty, pointer_bytes)
         .iter()
         .map(|leaf| leaf.bytes(pointer_bytes))
         .sum()
 }
 
-pub fn is_zero_sized(ty: &ResolvedType) -> bool {
-    leaves_of(ty, 0).is_empty()
+pub fn is_zero_sized(types: &TypeStore, ty: &ResolvedType) -> bool {
+    leaves_of(types, ty, 0).is_empty()
+}
+
+/// Whether every nominal type `ty` contains inline has its definition
+/// written, which every other function here assumes. Analysis checks this
+/// before asking for a layout; after a successful analysis it always holds.
+pub fn require_complete(types: &TypeStore, ty: &ResolvedType) -> Result<(), Incomplete> {
+    let all = |fields: &[crate::resolved_type::ResolvedField]| {
+        fields
+            .iter()
+            .try_for_each(|field| require_complete(types, &field.r#type))
+    };
+    match ty {
+        ResolvedType::Struct(nominal) | ResolvedType::Union(nominal) => all(types.fields(nominal)?),
+        ResolvedType::Enum { nominal, .. } => {
+            let facts = types.enum_facts(nominal)?;
+            all(&facts.header)?;
+            all(&facts.dynamic_fields)?;
+            facts
+                .variants
+                .iter()
+                .try_for_each(|variant| all(&variant.fields))
+        }
+        ResolvedType::AnonymousEnum { shape, .. } => shape
+            .members()
+            .iter()
+            .try_for_each(|member| require_complete(types, member)),
+        ResolvedType::SizedArray(item_type, _) => require_complete(types, item_type),
+        _ => Ok(()),
+    }
 }
 
 /// A type's effective alignment: the strongest address requirement any
@@ -139,20 +179,26 @@ pub fn is_zero_sized(ty: &ResolvedType) -> bool {
 /// object stores an address rather than the pointee, so its own alignment
 /// stays 1 and the pointee is never queried -- which is also what keeps a
 /// recursive nominal type from recursing here forever.
-pub fn type_alignment(ty: &ResolvedType) -> u32 {
+pub fn type_alignment(types: &TypeStore, ty: &ResolvedType) -> u32 {
     match ty {
-        ResolvedType::Struct(cell) => {
-            let struct_type = cell.borrow();
-            max_alignment(struct_type.fields.iter().map(|field| &field.r#type))
+        ResolvedType::Struct(nominal) => {
+            let struct_type = types.frozen().struct_facts(nominal);
+            max_alignment(types, struct_type.fields.iter().map(|field| &field.r#type))
                 .max(struct_type.layout.align)
         }
-        ResolvedType::Union(cell) => {
-            max_alignment(cell.borrow().fields.iter().map(|field| &field.r#type))
-        }
-        ResolvedType::Enum { .. } | ResolvedType::AnonymousEnum { .. } => {
-            enum_alignment(&EnumView::of(ty).expect("just matched an enum-like type"))
-        }
-        ResolvedType::SizedArray(item_type, _) => type_alignment(item_type),
+        ResolvedType::Union(nominal) => max_alignment(
+            types,
+            types
+                .frozen()
+                .fields(nominal)
+                .iter()
+                .map(|field| &field.r#type),
+        ),
+        ResolvedType::Enum { .. } | ResolvedType::AnonymousEnum { .. } => enum_alignment(
+            types,
+            &EnumView::of(types, ty).expect("just matched an enum-like type"),
+        ),
+        ResolvedType::SizedArray(item_type, _) => type_alignment(types, item_type),
         _ => 1,
     }
 }
@@ -161,8 +207,8 @@ pub fn type_alignment(ty: &ResolvedType) -> u32 {
 /// thin pointer is accessed in one instruction, which needs natural alignment
 /// even though its declared alignment is 1; anything else keeps its declared
 /// alignment, so a single-field struct deliberately stays on `type_alignment`.
-pub fn volatile_alignment(ty: &ResolvedType, pointer_bytes: u32) -> u32 {
-    let declared = type_alignment(ty);
+pub fn volatile_alignment(types: &TypeStore, ty: &ResolvedType, pointer_bytes: u32) -> u32 {
+    let declared = type_alignment(types, ty);
     match ty {
         ResolvedType::Bool
         | ResolvedType::Char
@@ -180,21 +226,28 @@ pub fn volatile_alignment(ty: &ResolvedType, pointer_bytes: u32) -> u32 {
         | ResolvedType::F64
         | ResolvedType::Pointer { .. }
         | ResolvedType::Array(_, _)
-        | ResolvedType::Function(_) => declared.max(total_bytes(ty, pointer_bytes)),
+        | ResolvedType::Function(_) => declared.max(total_bytes(types, ty, pointer_bytes)),
         _ => declared,
     }
 }
 
-fn max_alignment<'a>(types: impl IntoIterator<Item = &'a ResolvedType>) -> u32 {
-    types.into_iter().map(type_alignment).max().unwrap_or(1)
+fn max_alignment<'a>(
+    types: &TypeStore,
+    members: impl IntoIterator<Item = &'a ResolvedType>,
+) -> u32 {
+    members
+        .into_iter()
+        .map(|ty| type_alignment(types, ty))
+        .max()
+        .unwrap_or(1)
 }
 
-pub fn enum_alignment(view: &EnumView) -> u32 {
+pub fn enum_alignment(types: &TypeStore, view: &EnumView) -> u32 {
     view.align
-        .max(type_alignment(&view.tag_type))
-        .max(max_alignment(&view.header))
-        .max(max_alignment(&view.dynamic_fields))
-        .max(enum_payload_alignment(view))
+        .max(type_alignment(types, &view.tag_type))
+        .max(max_alignment(types, &view.header))
+        .max(max_alignment(types, &view.dynamic_fields))
+        .max(enum_payload_alignment(types, view))
 }
 
 pub fn round_up(offset: u32, align: u32) -> u32 {
@@ -239,30 +292,39 @@ impl FieldLayout {
 ///
 /// Flattening and value construction must both read this, or a struct's
 /// whole-value shape and its field offsets would disagree.
-pub fn struct_layout(struct_type: &ResolvedStructType, pointer_bytes: u32) -> FieldLayout {
+pub fn struct_layout(
+    types: &TypeStore,
+    struct_type: &StructFacts,
+    pointer_bytes: u32,
+) -> FieldLayout {
     let field_types: Vec<ResolvedType> = struct_type
         .fields
         .iter()
         .map(|field| field.r#type.clone())
         .collect();
-    let mut layout = layout_fields(&field_types, struct_type.layout.pack, pointer_bytes);
-    let alignment = max_alignment(&field_types).max(struct_type.layout.align);
+    let mut layout = layout_fields(types, &field_types, struct_type.layout.pack, pointer_bytes);
+    let alignment = max_alignment(types, &field_types).max(struct_type.layout.align);
     layout.pad_to(round_up(layout.packed_end, alignment));
     layout
 }
 
-pub fn layout_fields(types: &[ResolvedType], pack: u32, pointer_bytes: u32) -> FieldLayout {
-    let mut byte_offsets = Vec::with_capacity(types.len());
-    let mut leaf_starts = Vec::with_capacity(types.len());
+pub fn layout_fields(
+    types: &TypeStore,
+    fields: &[ResolvedType],
+    pack: u32,
+    pointer_bytes: u32,
+) -> FieldLayout {
+    let mut byte_offsets = Vec::with_capacity(fields.len());
+    let mut leaf_starts = Vec::with_capacity(fields.len());
     let mut leaves = Vec::new();
     let mut offset = 0u32;
-    for ty in types {
-        let field_leaves = leaves_of(ty, pointer_bytes);
+    for ty in fields {
+        let field_leaves = leaves_of(types, ty, pointer_bytes);
         let field_size = field_leaves
             .iter()
             .map(|leaf| leaf.bytes(pointer_bytes))
             .sum::<u32>();
-        let placed = place_field(offset, type_alignment(ty), field_size, pack);
+        let placed = place_field(offset, type_alignment(types, ty), field_size, pack);
         leaves.extend(std::iter::repeat_n(Leaf::I8, (placed - offset) as usize));
         byte_offsets.push(placed);
         leaf_starts.push(leaves.len());
@@ -278,15 +340,20 @@ pub fn layout_fields(types: &[ResolvedType], pack: u32, pointer_bytes: u32) -> F
 }
 
 pub fn field_byte_offset(
-    struct_type: &ResolvedStructType,
+    types: &TypeStore,
+    struct_type: &StructFacts,
     field_index: usize,
     pointer_bytes: u32,
 ) -> u32 {
-    struct_layout(struct_type, pointer_bytes).byte_offsets[field_index]
+    struct_layout(types, struct_type, pointer_bytes).byte_offsets[field_index]
 }
 
-pub fn locals_layout(local_types: &[ResolvedType], pointer_bytes: u32) -> FieldLayout {
-    layout_fields(local_types, 1, pointer_bytes)
+pub fn locals_layout(
+    types: &TypeStore,
+    local_types: &[ResolvedType],
+    pointer_bytes: u32,
+) -> FieldLayout {
+    layout_fields(types, local_types, 1, pointer_bytes)
 }
 
 /// One variant of an enum-like type, reduced to what layout and emission
@@ -316,15 +383,17 @@ pub struct EnumView {
 }
 
 impl EnumView {
-    pub fn of(ty: &ResolvedType) -> Option<Self> {
+    pub fn of(types: &TypeStore, ty: &ResolvedType) -> Option<Self> {
         match ty {
-            ResolvedType::Enum { cell, .. } => Some(Self::of_named(&cell.borrow())),
+            ResolvedType::Enum { nominal, .. } => {
+                Some(Self::of_named(types.frozen().enum_facts(nominal)))
+            }
             ResolvedType::AnonymousEnum { shape, .. } => Some(Self::of_anonymous(shape)),
             _ => None,
         }
     }
 
-    pub fn of_named(enum_type: &ResolvedEnumType) -> Self {
+    pub fn of_named(enum_type: &EnumFacts) -> Self {
         Self {
             tag_type: enum_type.tag_type.clone(),
             header: enum_type
@@ -381,39 +450,39 @@ impl EnumView {
 /// index in a `u32`.
 pub const ANONYMOUS_ENUM_TAG_TYPE: ResolvedType = ResolvedType::U32;
 
-pub fn enum_payload_bytes(view: &EnumView, pointer_bytes: u32) -> u32 {
+pub fn enum_payload_bytes(types: &TypeStore, view: &EnumView, pointer_bytes: u32) -> u32 {
     view.variants
         .iter()
-        .map(|v| layout_fields(&v.fields, view.pack, pointer_bytes).packed_end)
+        .map(|v| layout_fields(types, &v.fields, view.pack, pointer_bytes).packed_end)
         .max()
         .unwrap_or(0)
 }
 
-pub fn enum_payload_alignment(view: &EnumView) -> u32 {
+pub fn enum_payload_alignment(types: &TypeStore, view: &EnumView) -> u32 {
     view.variants
         .iter()
-        .flat_map(|v| v.fields.iter().map(type_alignment))
+        .flat_map(|v| v.fields.iter().map(|ty| type_alignment(types, ty)))
         .max()
         .unwrap_or(1)
 }
 
-pub fn enum_prefix_layout(view: &EnumView, pointer_bytes: u32) -> FieldLayout {
-    let mut types = vec![view.tag_type.clone()];
-    types.extend(view.header.iter().cloned());
-    types.extend(view.dynamic_fields.iter().cloned());
-    layout_fields(&types, view.pack, pointer_bytes)
+pub fn enum_prefix_layout(types: &TypeStore, view: &EnumView, pointer_bytes: u32) -> FieldLayout {
+    let mut prefix = vec![view.tag_type.clone()];
+    prefix.extend(view.header.iter().cloned());
+    prefix.extend(view.dynamic_fields.iter().cloned());
+    layout_fields(types, &prefix, view.pack, pointer_bytes)
 }
 
-pub fn union_bytes(union_type: &ResolvedUnionType, pointer_bytes: u32) -> u32 {
+pub fn union_bytes(types: &TypeStore, union_type: &UnionFacts, pointer_bytes: u32) -> u32 {
     let widest = union_type
         .fields
         .iter()
-        .map(|field| total_bytes(&field.r#type, pointer_bytes))
+        .map(|field| total_bytes(types, &field.r#type, pointer_bytes))
         .max()
         .unwrap_or(0);
     round_up(
         widest,
-        max_alignment(union_type.fields.iter().map(|field| &field.r#type)),
+        max_alignment(types, union_type.fields.iter().map(|field| &field.r#type)),
     )
 }
 
@@ -437,33 +506,45 @@ pub fn payload_chunks(mut bytes: u32) -> Vec<Leaf> {
     chunks
 }
 
-pub fn enum_header_offset(view: &EnumView, index: usize, pointer_bytes: u32) -> u32 {
-    enum_prefix_layout(view, pointer_bytes).byte_offsets[1 + index]
+pub fn enum_header_offset(
+    types: &TypeStore,
+    view: &EnumView,
+    index: usize,
+    pointer_bytes: u32,
+) -> u32 {
+    enum_prefix_layout(types, view, pointer_bytes).byte_offsets[1 + index]
 }
 
-pub fn enum_dynamic_field_offset(view: &EnumView, index: usize, pointer_bytes: u32) -> u32 {
-    enum_prefix_layout(view, pointer_bytes).byte_offsets[1 + view.header.len() + index]
+pub fn enum_dynamic_field_offset(
+    types: &TypeStore,
+    view: &EnumView,
+    index: usize,
+    pointer_bytes: u32,
+) -> u32 {
+    enum_prefix_layout(types, view, pointer_bytes).byte_offsets[1 + view.header.len() + index]
 }
 
-pub fn enum_payload_offset(view: &EnumView, pointer_bytes: u32) -> u32 {
-    let prefix = enum_prefix_layout(view, pointer_bytes);
-    let payload_size = enum_payload_bytes(view, pointer_bytes);
+pub fn enum_payload_offset(types: &TypeStore, view: &EnumView, pointer_bytes: u32) -> u32 {
+    let prefix = enum_prefix_layout(types, view, pointer_bytes);
+    let payload_size = enum_payload_bytes(types, view, pointer_bytes);
     place_field(
         prefix.packed_end,
-        enum_payload_alignment(view),
+        enum_payload_alignment(types, view),
         payload_size,
         view.pack,
     )
 }
 
 pub fn enum_body_field_offset(
+    types: &TypeStore,
     view: &EnumView,
     variant_index: usize,
     field_index: usize,
     pointer_bytes: u32,
 ) -> u32 {
-    enum_payload_offset(view, pointer_bytes)
+    enum_payload_offset(types, view, pointer_bytes)
         + layout_fields(
+            types,
             &view.variants[variant_index].fields,
             view.pack,
             pointer_bytes,

@@ -37,7 +37,7 @@ fn string_value(text: &str) -> omega_hir::HirAnnotationValue {
 /// way it forks the naming one.
 #[test]
 fn foreign_items_default_to_the_source_name_and_a_cross_image_symbol() {
-    let mut resolver = NoResolver;
+    let mut resolver = NoResolver::default();
     let mut a = analyzer(&mut resolver);
     let resolved = crate::annotations::resolve(
         &mut a,
@@ -55,7 +55,7 @@ fn foreign_items_default_to_the_source_name_and_a_cross_image_symbol() {
 
 #[test]
 fn ordinary_items_default_to_mangled_and_hidden() {
-    let mut resolver = NoResolver;
+    let mut resolver = NoResolver::default();
     let mut a = analyzer(&mut resolver);
     let resolved = crate::annotations::resolve(
         &mut a,
@@ -71,7 +71,7 @@ fn ordinary_items_default_to_mangled_and_hidden() {
 
 #[test]
 fn an_explicit_symbol_annotation_overrides_the_foreign_default() {
-    let mut resolver = NoResolver;
+    let mut resolver = NoResolver::default();
     let mut a = analyzer(&mut resolver);
     let enabled = symbol_annotation(vec![omega_hir::HirAnnotationArg::KeyValue(
         Ident("mangle".into()),
@@ -121,7 +121,7 @@ fn an_explicit_symbol_annotation_overrides_the_foreign_default() {
 /// resolves to the caller's item default rather than the ordinary one.
 #[test]
 fn export_alone_keeps_the_item_naming_default() {
-    let mut resolver = NoResolver;
+    let mut resolver = NoResolver::default();
     let mut a = analyzer(&mut resolver);
     let exported = symbol_annotation(vec![omega_hir::HirAnnotationArg::Positional(ident_value(
         "export",
@@ -150,7 +150,7 @@ fn export_alone_keeps_the_item_naming_default() {
 /// is resolved inside this image after all can say so.
 #[test]
 fn a_foreign_item_can_opt_back_into_a_hidden_symbol() {
-    let mut resolver = NoResolver;
+    let mut resolver = NoResolver::default();
     let mut a = analyzer(&mut resolver);
     let unexported = symbol_annotation(vec![omega_hir::HirAnnotationArg::KeyValue(
         Ident("export".into()),
@@ -177,7 +177,7 @@ fn a_foreign_item_can_opt_back_into_a_hidden_symbol() {
 /// still reject one where only an integer or `sizeof` is meaningful.
 #[test]
 fn an_identifier_value_is_rejected_by_layout() {
-    let mut resolver = NoResolver;
+    let mut resolver = NoResolver::default();
     let mut a = analyzer(&mut resolver);
     let layout = annotation(
         "layout",
@@ -205,7 +205,7 @@ fn an_identifier_value_is_rejected_by_layout() {
 fn hole_kinds(
     annotation: &Type,
 ) -> Result<Option<(Type, Vec<(String, bool)>)>, Vec<crate::error::AnalysisError>> {
-    let mut resolver = NoResolver;
+    let mut resolver = NoResolver::default();
     let mut a = analyzer(&mut resolver);
     let prepared = a.rewrite_annotation_holes(id(1), sp(), annotation);
     let (errors, _, _) = a.finish();

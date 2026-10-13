@@ -1,22 +1,13 @@
 use super::*;
 use crate::annotations::Layout;
 use crate::resolved_type::{
-    CompIntType, ResolvedAnonymousEnum, ResolvedEnumType, ResolvedEnumVariant,
-    ResolvedFunctionParam, ResolvedFunctionType, ResolvedSpecShape, ResolvedSpecType,
-    ResolvedStructType,
+    CompIntType, ResolvedAnonymousEnum, ResolvedEnumVariant, ResolvedFunctionParam,
+    ResolvedFunctionType, ResolvedSpecShape,
 };
-use omega_hir::ids::{HirId, ModuleId};
-use std::cell::RefCell;
+use crate::type_store::{EnumFacts, NominalKind, SpecFacts, StructFacts, testing};
 use std::rc::Rc;
 
 const POINTER_BYTES: u32 = 8;
-
-fn id(n: u32) -> HirId {
-    HirId {
-        module: ModuleId(0),
-        local: n,
-    }
-}
 
 fn ident(name: &str) -> Ident {
     Ident(name.to_string())
@@ -27,17 +18,25 @@ fn field(name: &str, r#type: ResolvedType) -> ResolvedField {
 }
 
 fn structure(n: u32, name: &str, fields: Vec<ResolvedField>, layout: Layout) -> ResolvedType {
-    ResolvedType::Struct(Rc::new(RefCell::new(ResolvedStructType {
-        id: id(n),
-        name: ident(name),
-        module_path: omega_hir::ModulePath::from(vec![ident("app")]),
-        generic_args: vec![],
-        fields,
-        functions: vec![],
-        layout,
-        suppress: vec![],
-        is_marker: false,
-    })))
+    structure_with_args(n, name, vec![], fields, layout)
+}
+
+fn structure_with_args(
+    n: u32,
+    name: &str,
+    generic_args: Vec<ResolvedGenericArg>,
+    fields: Vec<ResolvedField>,
+    layout: Layout,
+) -> ResolvedType {
+    testing::define_struct(
+        testing::identity(n, NominalKind::Struct, name, &["app"], generic_args),
+        StructFacts {
+            fields,
+            layout,
+            suppress: vec![],
+            is_marker: false,
+        },
+    )
 }
 
 struct Variant {
@@ -64,12 +63,9 @@ fn enumeration(
     dynamic_fields: Vec<ResolvedField>,
     variants: Vec<Variant>,
 ) -> ResolvedType {
-    ResolvedType::Enum {
-        cell: Rc::new(RefCell::new(ResolvedEnumType {
-            id: id(n),
-            name: ident(name),
-            module_path: omega_hir::ModulePath::from(vec![ident("app")]),
-            generic_args: vec![],
+    testing::define_enum(
+        testing::identity(n, NominalKind::Enum, name, &["app"], vec![]),
+        EnumFacts {
             tag_type,
             header,
             dynamic_fields,
@@ -82,12 +78,10 @@ fn enumeration(
                     fields: v.fields,
                 })
                 .collect(),
-            functions: vec![],
             layout: Layout::default(),
             suppress: vec![],
-        })),
-        variant: None,
-    }
+        },
+    )
 }
 
 fn unit_enum(n: u32, name: &str, variants: &[&'static str]) -> ResolvedType {
@@ -106,9 +100,46 @@ fn slice(item: ResolvedType) -> ResolvedType {
     }
 }
 
+thread_local! {
+    static INFO_TYPE: ResolvedType = build_info_type();
+}
+
+/// One stand-in per test thread, so every table of a test names the same
+/// `TypeInfo`.
+fn info_type() -> ResolvedType {
+    INFO_TYPE.with(ResolvedType::clone)
+}
+
+fn deref(
+    reflected: &Reflected,
+    pointee: &ResolvedType,
+    pointer_bytes: u32,
+) -> Result<ConstValue, &'static str> {
+    testing::with(|types| super::deref(types, reflected, pointee, pointer_bytes))
+}
+
+fn build_variant(r#type: &ResolvedType, name: &str, values: Vec<(&str, ConstValue)>) -> ConstValue {
+    testing::with(|types| super::build_variant(types, r#type, name, values))
+}
+
+fn enum_payload_offset(e: &ResolvedType) -> u64 {
+    testing::with(|types| {
+        let view = EnumView::of(types, e).unwrap();
+        u64::from(layout::enum_payload_offset(types, &view, POINTER_BYTES))
+    })
+}
+
+fn field_type(owner: &ResolvedType, name: &str) -> ResolvedType {
+    testing::with(|types| super::field_type(types, owner, name))
+}
+
+fn variant_field_type(owner: &ResolvedType, variant: &str, name: &str) -> ResolvedType {
+    testing::with(|types| super::variant_field_type(types, owner, variant, name))
+}
+
 /// A stand-in for `core::reflection`'s declarations. The builder never looks
 /// through a `*TypeInfo`, so those fields can point at anything.
-fn info_type() -> ResolvedType {
+fn build_info_type() -> ResolvedType {
     let opaque = ResolvedType::Pointer {
         pointee: Box::new(ResolvedType::U8),
         mutable: false,
@@ -260,16 +291,15 @@ fn table_ref(described: ResolvedType) -> ConstValue {
 }
 
 fn describe(described: &ResolvedType) -> ConstValue {
-    type_info_value(described, &info_type(), POINTER_BYTES)
+    let info_type = info_type();
+    testing::with(|types| type_info_value(types, described, &info_type, POINTER_BYTES))
 }
 
 /// Reads a struct's field, or the body field of an enum value, by name.
 fn get<'a>(value: &'a ConstValue, owner: &ResolvedType, name: &str) -> &'a ConstValue {
     match (value, owner) {
-        (ConstValue::Struct(values), ResolvedType::Struct(cell)) => {
-            let index = cell
-                .borrow()
-                .fields
+        (ConstValue::Struct(values), ResolvedType::Struct(nominal)) => {
+            let index = testing::with(|types| types.frozen().fields(nominal).to_vec())
                 .iter()
                 .position(|f| f.name.as_ref() == name)
                 .unwrap_or_else(|| panic!("no field {name}"));
@@ -281,13 +311,16 @@ fn get<'a>(value: &'a ConstValue, owner: &ResolvedType, name: &str) -> &'a Const
                 fields,
                 ..
             },
-            ResolvedType::Enum { cell, .. },
+            ResolvedType::Enum { nominal, .. },
         ) => {
-            let index = cell.borrow().variants[*variant_index]
-                .fields
-                .iter()
-                .position(|f| f.name.as_ref() == name)
-                .unwrap_or_else(|| panic!("no body field {name}"));
+            let index = testing::with(|types| {
+                types.frozen().enum_facts(nominal).variants[*variant_index]
+                    .fields
+                    .clone()
+            })
+            .iter()
+            .position(|f| f.name.as_ref() == name)
+            .unwrap_or_else(|| panic!("no body field {name}"));
             &fields[index]
         }
         _ => panic!("cannot read {name} from {value:?}"),
@@ -321,13 +354,10 @@ fn kind_name(info: &ConstValue) -> String {
     let ConstValue::Enum { variant_index, .. } = get(info, &info_type, "kind") else {
         panic!("kind is not an enum value");
     };
-    let ResolvedType::Enum { cell, .. } = kind_type else {
+    let ResolvedType::Enum { nominal, .. } = kind_type else {
         unreachable!()
     };
-    cell.borrow().variants[*variant_index]
-        .name
-        .as_ref()
-        .to_string()
+    nominal.variant_names[*variant_index].as_ref().to_string()
 }
 
 /// `(name, offset)` of every `FieldInfo` in a slice.
@@ -470,7 +500,6 @@ fn an_enum_describes_its_tag_header_shared_fields_and_variants() {
         ],
     );
     let info = describe(&e);
-    let view = EnumView::of(&e).unwrap();
 
     assert_eq!(kind_name(&info), "Enum");
     assert_eq!(
@@ -507,7 +536,7 @@ fn an_enum_describes_its_tag_header_shared_fields_and_variants() {
             variant: 1
         })
     );
-    let payload = layout::enum_payload_offset(&view, POINTER_BYTES) as u64;
+    let payload = enum_payload_offset(&e);
     assert_eq!(
         field_offsets(get(rect, &variant_info, "fields")),
         vec![("w".into(), payload), ("h".into(), payload + 2)]
@@ -550,8 +579,7 @@ fn an_anonymous_enum_describes_each_member_as_a_value_field() {
         variant: None,
     };
     let info = describe(&e);
-    let view = EnumView::of(&e).unwrap();
-    let payload = layout::enum_payload_offset(&view, POINTER_BYTES) as u64;
+    let payload = enum_payload_offset(&e);
 
     assert_eq!(kind_name(&info), "AnonymousEnum");
     assert_eq!(text(get(&info, &info_type(), "name")), e.to_string());
@@ -582,11 +610,11 @@ fn an_anonymous_enum_describes_each_member_as_a_value_field() {
 #[test]
 fn a_refined_enum_is_described_by_its_parent() {
     let parent = unit_enum(1, "Light", &["Off", "On"]);
-    let ResolvedType::Enum { cell, .. } = &parent else {
+    let ResolvedType::Enum { nominal, .. } = &parent else {
         unreachable!()
     };
     let refined = ResolvedType::Enum {
-        cell: cell.clone(),
+        nominal: nominal.clone(),
         variant: Some(1),
     };
 
@@ -599,14 +627,16 @@ fn a_refined_enum_is_described_by_its_parent() {
 
 #[test]
 fn a_comp_argument_is_truncated_to_its_parameter_width() {
-    let s = structure(1, "Signed", vec![], Layout::default());
-    let ResolvedType::Struct(cell) = &s else {
-        unreachable!()
-    };
-    cell.borrow_mut().generic_args = vec![ResolvedGenericArg::Comp(CompScalar::Int {
-        r#type: CompIntType::I8,
-        value: -1,
-    })];
+    let s = structure_with_args(
+        1,
+        "Signed",
+        vec![ResolvedGenericArg::Comp(CompScalar::Int {
+            r#type: CompIntType::I8,
+            value: -1,
+        })],
+        vec![],
+        Layout::default(),
+    );
     let info = describe(&s);
     let info_type = info_type();
     let arg_type = slice_item(&field_type(&info_type, "generic_args"));
@@ -748,17 +778,16 @@ fn anonymous_enum_member_names_are_descriptor_free() {
 #[test]
 fn a_spec_object_describes_each_spec_by_declaration() {
     let spec = |n: u32, module: &str| {
-        Rc::new(RefCell::new(ResolvedSpecType {
-            id: id(n),
-            name: ident("S"),
-            visibility: Visibility::Exposed,
-            generics: vec![],
-            module_path: omega_hir::ModulePath::from(vec![ident("app"), ident(module)]),
-            generic_args: vec![],
-            is_object_safe: true,
-            functions: vec![],
-            suppress: vec![],
-        }))
+        testing::define_spec(
+            testing::identity(n, NominalKind::Spec, "S", &["app", module], vec![]),
+            SpecFacts {
+                visibility: Visibility::Exposed,
+                generics: vec![],
+                is_object_safe: true,
+                functions: vec![],
+                suppress: vec![],
+            },
+        )
     };
     let object = ResolvedType::SpecObject {
         shape: ResolvedSpecShape::canonicalize(vec![ResolvedSpecApplication::new(

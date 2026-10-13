@@ -86,7 +86,7 @@ fn ir_for(source: &str) -> String {
     let extern_globals = program.extern_globals.clone();
     let entry = program.entry.clone();
     let sources = emission_sources(&program);
-    let modules = omega_mir::lower_program(program.modules, &entry);
+    let modules = omega_mir::lower_program(program.modules, &entry, &program.types);
     single_artifact_text(omega_codegen::CodegenRequest {
         target: Target::DEFAULT,
         opt_level: omega_codegen::OptLevel::O0,
@@ -95,6 +95,7 @@ fn ir_for(source: &str) -> String {
         entry: entry.segments().to_vec(),
         extern_functions,
         extern_globals,
+        types: program.types,
     })
 }
 

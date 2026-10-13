@@ -1,6 +1,6 @@
+use crate::type_store::{Incomplete, Methods, NominalRef, TypeStore};
 use omega_hir::{HirBlock, HirGenericParam, HirId, HirParam, ModulePath};
 use omega_parser::prelude::{Ident, SelfMode, Span, Type, Visibility};
-use std::cell::RefCell;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
@@ -237,14 +237,14 @@ impl ResolvedMethod {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConformanceSource {
-    pub spec: Rc<RefCell<ResolvedSpecType>>,
+    pub spec: NominalRef,
     pub spec_args: Vec<ResolvedGenericArg>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ResolvedConformance {
     pub target: ResolvedType,
-    pub spec: Rc<RefCell<ResolvedSpecType>>,
+    pub spec: NominalRef,
     pub spec_args: Vec<ResolvedGenericArg>,
     pub methods: Vec<(Ident, ResolvedMethod)>,
 }
@@ -252,16 +252,12 @@ pub struct ResolvedConformance {
 #[derive(Debug, Clone)]
 pub struct ResolvedBound {
     pub target: ResolvedType,
-    pub spec: Rc<RefCell<ResolvedSpecType>>,
+    pub spec: NominalRef,
     pub spec_args: Vec<ResolvedGenericArg>,
 }
 
 impl ResolvedBound {
-    pub fn new(
-        target: ResolvedType,
-        spec: Rc<RefCell<ResolvedSpecType>>,
-        spec_args: Vec<ResolvedGenericArg>,
-    ) -> Self {
+    pub fn new(target: ResolvedType, spec: NominalRef, spec_args: Vec<ResolvedGenericArg>) -> Self {
         Self {
             target,
             spec,
@@ -287,125 +283,12 @@ impl ResolvedField {
     }
 }
 
-#[derive(Debug)]
-pub struct ResolvedStructType {
-    pub id: HirId,
-    pub name: Ident,
-    pub module_path: ModulePath,
-    pub generic_args: Vec<ResolvedGenericArg>,
-    pub fields: Vec<ResolvedField>,
-    pub functions: Vec<(Ident, ResolvedMethod)>,
-    pub layout: crate::annotations::Layout,
-    pub suppress: Vec<Ident>,
-    pub is_marker: bool,
-}
-
-impl PartialEq for ResolvedStructType {
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
-    }
-}
-impl Eq for ResolvedStructType {}
-
-impl Hash for ResolvedStructType {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.id.hash(state);
-    }
-}
-
-#[derive(Debug)]
-pub struct ResolvedUnionType {
-    pub id: HirId,
-    pub name: Ident,
-    pub module_path: ModulePath,
-    pub generic_args: Vec<ResolvedGenericArg>,
-    pub fields: Vec<ResolvedField>,
-    pub functions: Vec<(Ident, ResolvedMethod)>,
-    pub suppress: Vec<Ident>,
-}
-
-impl PartialEq for ResolvedUnionType {
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
-    }
-}
-impl Eq for ResolvedUnionType {}
-
-impl Hash for ResolvedUnionType {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.id.hash(state);
-    }
-}
-
-#[derive(Debug)]
-pub struct ResolvedEnumType {
-    pub id: HirId,
-    pub name: Ident,
-    pub module_path: ModulePath,
-    pub generic_args: Vec<ResolvedGenericArg>,
-    pub tag_type: ResolvedType,
-    pub header: Vec<ResolvedField>,
-    pub dynamic_fields: Vec<ResolvedField>,
-    pub variants: Vec<ResolvedEnumVariant>,
-    pub functions: Vec<(Ident, ResolvedMethod)>,
-    pub layout: crate::annotations::Layout,
-    pub suppress: Vec<Ident>,
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedEnumVariant {
     pub name: Ident,
     pub tag: crate::checked::NumberValue,
     pub header_values: Vec<ConstValue>,
     pub fields: Vec<ResolvedField>,
-}
-
-impl ResolvedEnumType {
-    pub fn variant(&self, name: &Ident) -> Option<(usize, &ResolvedEnumVariant)> {
-        self.variants
-            .iter()
-            .enumerate()
-            .find(|(_, v)| &v.name == name)
-    }
-}
-
-impl PartialEq for ResolvedEnumType {
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
-    }
-}
-impl Eq for ResolvedEnumType {}
-
-impl Hash for ResolvedEnumType {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.id.hash(state);
-    }
-}
-
-#[derive(Debug)]
-pub struct ResolvedSpecType {
-    pub id: HirId,
-    pub name: Ident,
-    pub visibility: Visibility,
-    pub generics: Vec<crate::generics::GenericParam>,
-    pub module_path: ModulePath,
-    pub generic_args: Vec<ResolvedGenericArg>,
-    pub is_object_safe: bool,
-    pub functions: Vec<(Ident, RawSpecFunctionSig)>,
-    pub suppress: Vec<Ident>,
-}
-
-impl PartialEq for ResolvedSpecType {
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
-    }
-}
-impl Eq for ResolvedSpecType {}
-
-impl Hash for ResolvedSpecType {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.id.hash(state);
-    }
 }
 
 /// One resolved member of a spec conjunction: a spec declaration plus its
@@ -415,12 +298,12 @@ impl Hash for ResolvedSpecType {
 /// its own argument list here instead.
 #[derive(Debug, Clone)]
 pub struct ResolvedSpecApplication {
-    pub spec: Rc<RefCell<ResolvedSpecType>>,
+    pub spec: NominalRef,
     pub spec_args: Vec<ResolvedGenericArg>,
 }
 
 impl ResolvedSpecApplication {
-    pub fn new(spec: Rc<RefCell<ResolvedSpecType>>, spec_args: Vec<ResolvedGenericArg>) -> Self {
+    pub fn new(spec: NominalRef, spec_args: Vec<ResolvedGenericArg>) -> Self {
         Self { spec, spec_args }
     }
 
@@ -434,14 +317,14 @@ impl ResolvedSpecApplication {
 
 impl PartialEq for ResolvedSpecApplication {
     fn eq(&self, other: &Self) -> bool {
-        self.spec.borrow().id == other.spec.borrow().id && self.spec_args == other.spec_args
+        self.spec == other.spec && self.spec_args == other.spec_args
     }
 }
 impl Eq for ResolvedSpecApplication {}
 
 impl Hash for ResolvedSpecApplication {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.spec.borrow().hash(state);
+        self.spec.hash(state);
         self.spec_args.hash(state);
     }
 }
@@ -454,7 +337,7 @@ impl std::fmt::Display for ResolvedSpecApplication {
 
 impl ResolvedSpecApplication {
     fn write(&self, f: &mut std::fmt::Formatter<'_>, spelling: Spelling) -> std::fmt::Result {
-        let spec = self.spec.borrow();
+        let spec = &self.spec;
         if spelling.qualified {
             write_module_path(f, &spec.module_path)?;
         }
@@ -976,13 +859,13 @@ pub enum ResolvedType {
     Str {
         mutable: bool,
     },
-    Struct(Rc<RefCell<ResolvedStructType>>),
-    Union(Rc<RefCell<ResolvedUnionType>>),
+    Struct(NominalRef),
+    Union(NominalRef),
     Enum {
-        cell: Rc<RefCell<ResolvedEnumType>>,
+        nominal: NominalRef,
         variant: Option<usize>,
     },
-    Spec(Rc<RefCell<ResolvedSpecType>>),
+    Spec(NominalRef),
     SpecObject {
         shape: ResolvedSpecShape,
         mutable: bool,
@@ -1034,13 +917,13 @@ impl Hash for ResolvedType {
                 inner.hash(state);
                 size.hash(state);
             }
-            Self::Struct(cell) => cell.borrow().hash(state),
-            Self::Union(cell) => cell.borrow().hash(state),
-            Self::Enum { cell, variant } => {
-                cell.borrow().hash(state);
+            Self::Struct(nominal) | Self::Union(nominal) | Self::Spec(nominal) => {
+                nominal.hash(state)
+            }
+            Self::Enum { nominal, variant } => {
+                nominal.hash(state);
                 variant.hash(state);
             }
-            Self::Spec(cell) => cell.borrow().hash(state),
             Self::SpecObject { shape, mutable } => {
                 shape.hash(state);
                 mutable.hash(state);
@@ -1137,8 +1020,19 @@ impl ResolvedType {
         write!(f, ">")
     }
 
+    fn write_nominal(
+        f: &mut std::fmt::Formatter<'_>,
+        nominal: &NominalRef,
+        spelling: Spelling,
+    ) -> std::fmt::Result {
+        if spelling.qualified {
+            write_module_path(f, &nominal.module_path)?;
+        }
+        write!(f, "{}", nominal.name.as_ref())?;
+        Self::write_generic_args(f, &nominal.generic_args, spelling)
+    }
+
     fn write(&self, f: &mut std::fmt::Formatter<'_>, spelling: Spelling) -> std::fmt::Result {
-        let qualified = spelling.qualified;
         match self {
             Self::Void => write!(f, "void"),
             Self::Never => write!(f, "never"),
@@ -1231,41 +1125,15 @@ impl ResolvedType {
             }
             Self::Str { mutable: false } => write!(f, "*str"),
             Self::Str { mutable: true } => write!(f, "*mut str"),
-            Self::Struct(cell) => {
-                let s = cell.borrow();
-                if qualified {
-                    write_module_path(f, &s.module_path)?;
-                }
-                write!(f, "{}", s.name.as_ref())?;
-                Self::write_generic_args(f, &s.generic_args, spelling)
+            Self::Struct(nominal) | Self::Union(nominal) | Self::Spec(nominal) => {
+                Self::write_nominal(f, nominal, spelling)
             }
-            Self::Union(cell) => {
-                let u = cell.borrow();
-                if qualified {
-                    write_module_path(f, &u.module_path)?;
-                }
-                write!(f, "{}", u.name.as_ref())?;
-                Self::write_generic_args(f, &u.generic_args, spelling)
-            }
-            Self::Enum { cell, variant } => {
-                let e = cell.borrow();
-                if qualified {
-                    write_module_path(f, &e.module_path)?;
-                }
-                write!(f, "{}", e.name.as_ref())?;
-                Self::write_generic_args(f, &e.generic_args, spelling)?;
+            Self::Enum { nominal, variant } => {
+                Self::write_nominal(f, nominal, spelling)?;
                 if let Some(index) = variant {
-                    write!(f, "::{}", e.variants[*index].name.as_ref())?;
+                    write!(f, "::{}", nominal.variant_names[*index].as_ref())?;
                 }
                 Ok(())
-            }
-            Self::Spec(cell) => {
-                let sp = cell.borrow();
-                if qualified {
-                    write_module_path(f, &sp.module_path)?;
-                }
-                write!(f, "{}", sp.name.as_ref())?;
-                Self::write_generic_args(f, &sp.generic_args, spelling)
             }
             Self::SpecObject { shape, mutable } => {
                 write!(f, "*{}spec ", if *mutable { "mut " } else { "" })?;
@@ -1379,10 +1247,10 @@ impl ResolvedType {
     pub fn widened(&self) -> ResolvedType {
         match self {
             Self::Enum {
-                cell,
+                nominal,
                 variant: Some(_),
             } => Self::Enum {
-                cell: cell.clone(),
+                nominal: nominal.clone(),
                 variant: None,
             },
             Self::AnonymousEnum {
@@ -1412,8 +1280,8 @@ impl ResolvedType {
 
     pub fn lookup_key(&self) -> ResolvedType {
         match self {
-            Self::Enum { cell, .. } => Self::Enum {
-                cell: cell.clone(),
+            Self::Enum { nominal, .. } => Self::Enum {
+                nominal: nominal.clone(),
                 variant: None,
             },
             Self::AnonymousEnum { shape, .. } => Self::AnonymousEnum {
@@ -1440,14 +1308,14 @@ impl ResolvedType {
         match (self, value) {
             (
                 Self::Enum {
-                    cell: expected,
+                    nominal: expected,
                     variant: None,
                 },
                 Self::Enum {
-                    cell: found,
+                    nominal: found,
                     variant: Some(_),
                 },
-            ) => expected.borrow().id == found.borrow().id,
+            ) => expected == found,
             // Refinement is not part of the representation, so dropping it is
             // a plain copy. Widening between *different* anonymous shapes is
             // deliberately absent here: canonical indices and payload size can
@@ -1493,32 +1361,40 @@ impl ResolvedType {
     /// private: semantic lookup goes through [`Self::candidates_in`], so no
     /// path searches a mixed set and rejects the wrong receiver kind after
     /// selecting from it.
-    fn declared_functions(&self) -> Option<Vec<(Ident, ResolvedMethod)>> {
+    fn declared_functions<'s>(
+        &self,
+        types: &'s TypeStore,
+    ) -> Option<Result<&'s Methods, Incomplete>> {
+        self.aggregate().map(|nominal| types.functions(nominal))
+    }
+
+    /// The struct, union or enum this type names: the nominal types that
+    /// declare their own functions.
+    pub fn aggregate(&self) -> Option<&NominalRef> {
         match self {
-            Self::Struct(cell) => Some(cell.borrow().functions.clone()),
-            Self::Union(cell) => Some(cell.borrow().functions.clone()),
-            Self::Enum { cell, .. } => Some(cell.borrow().functions.clone()),
+            Self::Struct(nominal) | Self::Union(nominal) | Self::Enum { nominal, .. } => {
+                Some(nominal)
+            }
             _ => None,
         }
     }
 
     /// The declarations of `name` this owner offers in `namespace`, in
-    /// declaration order.
+    /// declaration order. `Ok(None)` is a type that owns no declarations.
     pub fn candidates_in(
         &self,
+        types: &TypeStore,
         namespace: FunctionNamespace,
         name: &Ident,
-    ) -> Option<Vec<ResolvedMethod>> {
-        Some(namespace.select(&self.declared_functions()?, name))
+    ) -> Result<Option<Vec<ResolvedMethod>>, Incomplete> {
+        self.declared_functions(types)
+            .map(|functions| Ok(namespace.select(functions?, name)))
+            .transpose()
     }
 
     pub fn declaring_owner(&self) -> Option<(ModulePath, HirId)> {
-        match self {
-            Self::Struct(cell) => Some((cell.borrow().module_path.clone(), cell.borrow().id)),
-            Self::Union(cell) => Some((cell.borrow().module_path.clone(), cell.borrow().id)),
-            Self::Enum { cell, .. } => Some((cell.borrow().module_path.clone(), cell.borrow().id)),
-            _ => None,
-        }
+        self.aggregate()
+            .map(|nominal| (nominal.module_path.clone(), nominal.decl_id))
     }
 
     pub fn autoderef(&self) -> &ResolvedType {

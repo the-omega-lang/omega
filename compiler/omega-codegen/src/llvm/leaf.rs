@@ -3,6 +3,7 @@ use inkwell::context::Context;
 use inkwell::types::{BasicTypeEnum, PointerType};
 use omega_analyzer::layout::{self, Leaf};
 use omega_analyzer::resolved_type::ResolvedType;
+use omega_analyzer::type_store::TypeStore;
 use omega_analyzer::{Arch, Target as OmegaTarget};
 
 /// The address space LLVM places executable code in. Harvard architectures
@@ -57,10 +58,11 @@ pub(super) fn fn_ptr_type<'ctx>(context: &'ctx Context, target: OmegaTarget) -> 
 
 pub(super) fn llvm_leaves<'ctx>(
     context: &'ctx Context,
+    types: &TypeStore,
     ty: &ResolvedType,
     target: OmegaTarget,
 ) -> Vec<BasicTypeEnum<'ctx>> {
-    layout::leaves_of(ty, target.pointer_bytes())
+    layout::leaves_of(types, ty, target.pointer_bytes())
         .into_iter()
         .map(|leaf| llvm_type(context, leaf, target))
         .collect()

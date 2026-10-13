@@ -55,9 +55,12 @@ impl<'ctx> Codegen<'ctx> {
 
                 // Indirect returns prepend the caller-allocated sret destination.
                 let sret_slot = self.needs_sret(&fn_type.return_type).then(|| {
-                    let shift =
-                        layout::stack_align_shift(layout::type_alignment(&fn_type.return_type));
-                    let size = layout::total_bytes(&fn_type.return_type, self.pointer_bytes());
+                    let shift = layout::stack_align_shift(layout::type_alignment(
+                        self.types,
+                        &fn_type.return_type,
+                    ));
+                    let size =
+                        layout::total_bytes(self.types, &fn_type.return_type, self.pointer_bytes());
                     self.entry_alloca(size, 1u32 << shift, "sret")
                 });
                 let mut call_args: Vec<BasicValueEnum> = Vec::new();
@@ -78,7 +81,7 @@ impl<'ctx> Codegen<'ctx> {
                 self.mark_guarded_call(call, fn_type);
 
                 if matches!(
-                    crate::abi::AbiReturn::for_type(self.target, &fn_type.return_type),
+                    crate::abi::AbiReturn::for_type(self.target, self.types, &fn_type.return_type),
                     crate::abi::AbiReturn::Void
                 ) {
                     return vec![];
@@ -87,7 +90,7 @@ impl<'ctx> Codegen<'ctx> {
                     Some(slot) => self.load_scalars(
                         &PlaceStorage::Slot { slot, offset: 0 },
                         &fn_type.return_type,
-                        layout::type_alignment(&fn_type.return_type),
+                        layout::type_alignment(self.types, &fn_type.return_type),
                     ),
                     None => {
                         let value = match call.try_as_basic_value() {
@@ -97,8 +100,12 @@ impl<'ctx> Codegen<'ctx> {
                             }
                         };
                         // LLVM returns multiple leaves as one aggregate value that must be unpacked.
-                        let leaves =
-                            leaf::llvm_leaves(self.context, &fn_type.return_type, self.target);
+                        let leaves = leaf::llvm_leaves(
+                            self.context,
+                            self.types,
+                            &fn_type.return_type,
+                            self.target,
+                        );
                         if leaves.len() > 1 {
                             (0..leaves.len())
                                 .map(|i| {
@@ -155,9 +162,12 @@ impl<'ctx> Codegen<'ctx> {
                     ir_args.extend(self.process_expr(arg));
                 }
                 let sret_slot = self.needs_sret(&fn_type.return_type).then(|| {
-                    let shift =
-                        layout::stack_align_shift(layout::type_alignment(&fn_type.return_type));
-                    let size = layout::total_bytes(&fn_type.return_type, self.pointer_bytes());
+                    let shift = layout::stack_align_shift(layout::type_alignment(
+                        self.types,
+                        &fn_type.return_type,
+                    ));
+                    let size =
+                        layout::total_bytes(self.types, &fn_type.return_type, self.pointer_bytes());
                     self.entry_alloca(size, 1u32 << shift, "sret")
                 });
                 let mut call_args: Vec<BasicValueEnum> = Vec::new();
@@ -175,7 +185,7 @@ impl<'ctx> Codegen<'ctx> {
                 self.mark_guarded_call(call, fn_type);
 
                 if matches!(
-                    crate::abi::AbiReturn::for_type(self.target, &fn_type.return_type),
+                    crate::abi::AbiReturn::for_type(self.target, self.types, &fn_type.return_type),
                     crate::abi::AbiReturn::Void
                 ) {
                     return vec![];
@@ -184,7 +194,7 @@ impl<'ctx> Codegen<'ctx> {
                     Some(slot) => self.load_scalars(
                         &PlaceStorage::Slot { slot, offset: 0 },
                         &fn_type.return_type,
-                        layout::type_alignment(&fn_type.return_type),
+                        layout::type_alignment(self.types, &fn_type.return_type),
                     ),
                     None => {
                         let value = match call.try_as_basic_value() {
@@ -193,8 +203,12 @@ impl<'ctx> Codegen<'ctx> {
                                 unreachable!("a non-void call always returns a value")
                             }
                         };
-                        let leaves =
-                            leaf::llvm_leaves(self.context, &fn_type.return_type, self.target);
+                        let leaves = leaf::llvm_leaves(
+                            self.context,
+                            self.types,
+                            &fn_type.return_type,
+                            self.target,
+                        );
                         if leaves.len() > 1 {
                             (0..leaves.len())
                                 .map(|i| {
@@ -216,8 +230,11 @@ impl<'ctx> Codegen<'ctx> {
             }
 
             MirExpr::Number(value) => {
-                let raw_leaf =
-                    omega_analyzer::layout::leaves_of(&node.r#type, self.pointer_bytes())[0];
+                let raw_leaf = omega_analyzer::layout::leaves_of(
+                    self.types,
+                    &node.r#type,
+                    self.pointer_bytes(),
+                )[0];
                 vec![self.scalar_const(raw_leaf, value)]
             }
 
@@ -229,12 +246,12 @@ impl<'ctx> Codegen<'ctx> {
             ],
 
             MirExpr::Sizeof(target_type) => {
-                let size = layout::total_bytes(target_type, self.pointer_bytes());
+                let size = layout::total_bytes(self.types, target_type, self.pointer_bytes());
                 vec![self.size_type().const_int(size as u64, false).into()]
             }
 
             MirExpr::Alignof(target_type) => {
-                let align = layout::type_alignment(target_type);
+                let align = layout::type_alignment(self.types, target_type);
                 vec![self.size_type().const_int(u64::from(align), false).into()]
             }
 
@@ -263,14 +280,14 @@ impl<'ctx> Codegen<'ctx> {
 
             MirExpr::VolatileRead(place) => {
                 let (storage, r#type, _align) = self.resolve_place_storage(place);
-                let align = layout::volatile_alignment(&r#type, self.pointer_bytes());
+                let align = layout::volatile_alignment(self.types, &r#type, self.pointer_bytes());
                 self.load_scalars_with(&storage, &r#type, align, true)
             }
 
             MirExpr::VolatileWrite(MirAssignment { target, value }) => {
                 let values = self.process_expr(value);
                 let (storage, r#type, _align) = self.resolve_place_storage(target);
-                let align = layout::volatile_alignment(&r#type, self.pointer_bytes());
+                let align = layout::volatile_alignment(self.types, &r#type, self.pointer_bytes());
                 let PlaceStorage::Address { base, offset } = storage else {
                     unreachable!("a volatile access is always through a dereferenced pointer")
                 };
@@ -505,7 +522,7 @@ impl<'ctx> Codegen<'ctx> {
                     }
                 };
                 // Cast the integer-domain result back when the expression type is a pointer.
-                let want = leaf::llvm_leaves(self.context, &node.r#type, self.target);
+                let want = leaf::llvm_leaves(self.context, self.types, &node.r#type, self.target);
                 let result = match want.first() {
                     Some(want) => self.reinterpret_leaf(result, *want),
                     None => result,
@@ -522,7 +539,7 @@ impl<'ctx> Codegen<'ctx> {
                     unreachable!("mir body guarantees a struct literal's own type is a struct");
                 };
                 let struct_type = struct_type.clone();
-                let field_count = struct_type.borrow().fields.len();
+                let field_count = self.types.frozen().fields(&struct_type).len();
                 // `fields` is in source order, so every initializer's side
                 // effects still happen before any leaf is placed.
                 let mut per_field: Vec<Option<Vec<BasicValueEnum>>> = vec![None; field_count];
@@ -533,7 +550,11 @@ impl<'ctx> Codegen<'ctx> {
                     .into_iter()
                     .map(|leaves| leaves.expect("mir body guarantees every field is initialized"))
                     .collect();
-                let layout = layout::struct_layout(&struct_type.borrow(), self.pointer_bytes());
+                let layout = layout::struct_layout(
+                    self.types,
+                    self.types.frozen().struct_facts(&struct_type),
+                    self.pointer_bytes(),
+                );
                 self.assemble_struct_leaves(&layout, &per_field)
             }
 
@@ -541,7 +562,7 @@ impl<'ctx> Codegen<'ctx> {
                 variant_index,
                 fields,
             }) => {
-                let view = enum_view(&node.r#type, "an EnumConstruct");
+                let view = enum_view(self.types, &node.r#type, "an EnumConstruct");
                 let pointer_bytes = self.pointer_bytes();
                 let variant = &view.variants[*variant_index];
                 let tag = variant.tag;
@@ -553,28 +574,39 @@ impl<'ctx> Codegen<'ctx> {
                     .zip(variant.header_values.iter().cloned())
                     .collect();
                 let field_offsets: Vec<u32> = (0..view.dynamic_fields.len())
-                    .map(|i| layout::enum_dynamic_field_offset(&view, i, pointer_bytes))
+                    .map(|i| layout::enum_dynamic_field_offset(self.types, &view, i, pointer_bytes))
                     .chain((0..variant.fields.len()).map(|i| {
-                        layout::enum_body_field_offset(&view, *variant_index, i, pointer_bytes)
+                        layout::enum_body_field_offset(
+                            self.types,
+                            &view,
+                            *variant_index,
+                            i,
+                            pointer_bytes,
+                        )
                     }))
                     .collect();
-                let total = layout::total_bytes(&node.r#type, pointer_bytes);
-                let slot = self.entry_alloca(total, Self::slot_alignment(&node.r#type), "enum");
+                let total = layout::total_bytes(self.types, &node.r#type, pointer_bytes);
+                let slot = self.entry_alloca(total, self.slot_alignment(&node.r#type), "enum");
                 self.zero_fill_slot(slot, &node.r#type);
 
                 let tag_values = self.emit_const_value(&ConstValue::Number(tag), &tag_type);
-                self.store_scalars(&slot, 0, &tag_values, layout::type_alignment(&tag_type));
+                self.store_scalars(
+                    &slot,
+                    0,
+                    &tag_values,
+                    layout::type_alignment(self.types, &tag_type),
+                );
 
-                let mut offset = layout::total_bytes(&tag_type, pointer_bytes);
+                let mut offset = layout::total_bytes(self.types, &tag_type, pointer_bytes);
                 for (r#type, value) in &header {
                     let const_values = self.emit_const_value(value, r#type);
                     self.store_scalars(
                         &slot,
                         offset,
                         &const_values,
-                        layout::type_alignment(r#type),
+                        layout::type_alignment(self.types, r#type),
                     );
-                    offset += layout::total_bytes(r#type, pointer_bytes);
+                    offset += layout::total_bytes(self.types, r#type, pointer_bytes);
                 }
 
                 for field in fields {
@@ -586,7 +618,7 @@ impl<'ctx> Codegen<'ctx> {
                 self.load_scalars(
                     &PlaceStorage::Slot { slot, offset: 0 },
                     &node.r#type,
-                    layout::type_alignment(&node.r#type),
+                    layout::type_alignment(self.types, &node.r#type),
                 )
             }
 
@@ -594,8 +626,8 @@ impl<'ctx> Codegen<'ctx> {
                 field_index: _,
                 value,
             }) => {
-                let total = layout::total_bytes(&node.r#type, self.pointer_bytes());
-                let slot = self.entry_alloca(total, Self::slot_alignment(&node.r#type), "union");
+                let total = layout::total_bytes(self.types, &node.r#type, self.pointer_bytes());
+                let slot = self.entry_alloca(total, self.slot_alignment(&node.r#type), "union");
                 self.zero_fill_slot(slot, &node.r#type);
 
                 let values = self.process_expr(value);
@@ -604,7 +636,7 @@ impl<'ctx> Codegen<'ctx> {
                 self.load_scalars(
                     &PlaceStorage::Slot { slot, offset: 0 },
                     &node.r#type,
-                    layout::type_alignment(&node.r#type),
+                    layout::type_alignment(self.types, &node.r#type),
                 )
             }
 
@@ -631,7 +663,7 @@ impl<'ctx> Codegen<'ctx> {
                         let leaves = self.load_scalars(
                             &storage,
                             &base_type,
-                            layout::type_alignment(&base_type),
+                            layout::type_alignment(self.types, &base_type),
                         );
                         (leaves[0].into_pointer_value(), leaves[1])
                     }
@@ -639,7 +671,7 @@ impl<'ctx> Codegen<'ctx> {
                         let leaves = self.load_scalars(
                             &storage,
                             &base_type,
-                            layout::type_alignment(&base_type),
+                            layout::type_alignment(self.types, &base_type),
                         );
                         (
                             leaves[0].into_pointer_value(),
@@ -651,7 +683,8 @@ impl<'ctx> Codegen<'ctx> {
                     ),
                 };
 
-                let elem_size = layout::total_bytes(item_type, self.pointer_bytes()) as i64;
+                let elem_size =
+                    layout::total_bytes(self.types, item_type, self.pointer_bytes()) as i64;
                 let start_val = match start {
                     Some(e) => self.process_expr(e)[0],
                     None => self.context.i32_type().const_int(0, false).into(),
@@ -716,12 +749,13 @@ impl<'ctx> Codegen<'ctx> {
                 if *kind == CastKind::Discard {
                     return vec![];
                 }
-                let target_ir = leaf::llvm_leaves(self.context, target_type, self.target)[0];
+                let target_ir =
+                    leaf::llvm_leaves(self.context, self.types, target_type, self.target)[0];
                 match kind {
                     CastKind::Discard => unreachable!("returned above"),
                     CastKind::Reinterpret => {
                         let target_leaves =
-                            leaf::llvm_leaves(self.context, target_type, self.target);
+                            leaf::llvm_leaves(self.context, self.types, target_type, self.target);
                         base_leaves
                             .into_iter()
                             .zip(target_leaves)

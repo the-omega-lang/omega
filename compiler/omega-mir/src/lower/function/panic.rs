@@ -10,7 +10,7 @@ use omega_analyzer::runtime_checks::{PanicInfoField, RuntimeCheck, static_callee
 use omega_hir::HirId;
 use omega_parser::prelude::Span;
 
-impl FunctionLowerer {
+impl FunctionLowerer<'_> {
     /// Whether a call names the canonical `core::panic::PanicHandler::panic`
     /// gap function itself, by the declaration analysis resolved rather than
     /// by any spelling a program could choose for a function of its own.
@@ -80,7 +80,7 @@ impl FunctionLowerer {
             kind: MirExpr::Place(MirPlace {
                 root: MirPlaceRoot::Function(handler),
                 projections: Vec::new(),
-                align: place_align(&callee_type),
+                align: place_align(self.types, &callee_type),
                 r#type: callee_type,
             }),
         };

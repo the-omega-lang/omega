@@ -1027,28 +1027,26 @@ impl<'r> Analyzer<'r> {
         r#type: &ResolvedType,
     ) -> Option<OwnerFunctions> {
         match r#type {
-            ResolvedType::Struct(cell) => {
-                let owner = cell.borrow();
+            ResolvedType::Struct(nominal) | ResolvedType::Union(nominal) => {
+                let functions =
+                    self.type_facts(node_id, span, |types| types.functions(nominal).cloned())?;
                 Some(OwnerFunctions {
-                    name: owner.name.clone(),
-                    functions: owner.functions.clone(),
+                    name: nominal.name.clone(),
+                    functions: functions.to_vec(),
                     variants: None,
                 })
             }
-            ResolvedType::Union(cell) => {
-                let owner = cell.borrow();
+            ResolvedType::Enum { nominal, .. } => {
+                let (facts, functions) = self.type_facts(node_id, span, |types| {
+                    Ok((
+                        types.enum_facts(nominal)?.clone(),
+                        types.functions(nominal)?.clone(),
+                    ))
+                })?;
                 Some(OwnerFunctions {
-                    name: owner.name.clone(),
-                    functions: owner.functions.clone(),
-                    variants: None,
-                })
-            }
-            ResolvedType::Enum { cell, .. } => {
-                let owner = cell.borrow();
-                Some(OwnerFunctions {
-                    name: owner.name.clone(),
-                    functions: owner.functions.clone(),
-                    variants: Some(owner.variants.iter().map(|v| v.name.clone()).collect()),
+                    name: nominal.name.clone(),
+                    functions: functions.to_vec(),
+                    variants: Some(facts.variants.iter().map(|v| v.name.clone()).collect()),
                 })
             }
             other => {
@@ -1097,14 +1095,16 @@ impl<'r> Analyzer<'r> {
         // A variant is an ordinary member of its enum's own name, never a
         // function, so `Enum::self::...` cannot reach one.
         if namespace == FunctionNamespace::Static
-            && let ResolvedType::Enum { cell, .. } = r#type
+            && let ResolvedType::Enum { nominal, .. } = r#type
         {
-            let found = cell.borrow().variant(member).map(|(i, v)| (i, v.clone()));
-            if let Some((variant_index, variant)) = found {
+            let facts =
+                self.type_facts(node_id, span, |types| types.enum_facts(nominal).cloned())?;
+            if let Some((variant_index, variant)) = facts.variant(member) {
                 return self.resolve_unit_variant(
                     node_id,
                     span,
-                    cell,
+                    nominal,
+                    &facts,
                     variant_index,
                     &variant,
                     rest,
@@ -1159,7 +1159,7 @@ impl<'r> Analyzer<'r> {
                         function: member.clone(),
                         specs: providers
                             .iter()
-                            .map(|(conform, _)| conform.spec.borrow().name.clone())
+                            .map(|(conform, _)| conform.spec.name.clone())
                             .collect(),
                         namespace,
                     },
@@ -1277,7 +1277,8 @@ impl<'r> Analyzer<'r> {
         &mut self,
         node_id: HirId,
         span: Span,
-        cell: &Rc<RefCell<ResolvedEnumType>>,
+        nominal: &NominalRef,
+        facts: &EnumFacts,
         variant_index: usize,
         variant: &ResolvedEnumVariant,
         rest: &[Ident],
@@ -1292,8 +1293,7 @@ impl<'r> Analyzer<'r> {
             );
             return None;
         }
-        let dynamic_field_names: Vec<Ident> = cell
-            .borrow()
+        let dynamic_field_names: Vec<Ident> = facts
             .dynamic_fields
             .iter()
             .map(|field| field.name.clone())
@@ -1307,7 +1307,7 @@ impl<'r> Analyzer<'r> {
                 node_id,
                 span,
                 AnalysisErrorKind::EnumVariantMissingBody {
-                    r#enum: cell.borrow().name.clone(),
+                    r#enum: nominal.name.clone(),
                     variant: variant.name.clone(),
                     fields,
                 },
@@ -1315,7 +1315,7 @@ impl<'r> Analyzer<'r> {
             return None;
         }
         let r#type = ResolvedType::Enum {
-            cell: cell.clone(),
+            nominal: nominal.clone(),
             variant: Some(variant_index),
         };
         let construct = CheckedExprNode {

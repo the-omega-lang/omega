@@ -77,7 +77,7 @@ fn ir_for_sources(sources: &[(&str, &str)], target: Target) -> String {
             path: source.relative_path.clone(),
         })
         .collect::<Vec<_>>();
-    let modules = omega_mir::lower_program(program.modules, &entry);
+    let modules = omega_mir::lower_program(program.modules, &entry, &program.types);
     omega_codegen::generate(omega_codegen::CodegenRequest {
         target,
         opt_level: omega_codegen::OptLevel::O0,
@@ -86,6 +86,7 @@ fn ir_for_sources(sources: &[(&str, &str)], target: Target) -> String {
         entry: entry.segments().to_vec(),
         extern_functions,
         extern_globals,
+        types: program.types,
     })
     .expect("codegen succeeds")
     .into_iter()

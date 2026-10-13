@@ -2,10 +2,7 @@ use super::*;
 
 /// A spec with its arguments by position; `None` is a hole the target's
 /// conformances determine.
-type OpenSpecApplication = (
-    Rc<RefCell<ResolvedSpecType>>,
-    Vec<Option<ResolvedGenericArg>>,
-);
+type OpenSpecApplication = (NominalRef, Vec<Option<ResolvedGenericArg>>);
 
 /// Each function a conformance provides, with the spec application that
 /// provides it, as diagnostics name it.
@@ -89,7 +86,7 @@ impl<'r> Analyzer<'r> {
                     None => return Intercepted::Claimed(None),
                 }
             }
-            None => vec![None; spec.borrow().generics.len()],
+            None => vec![None; self.resolver.types().spec_facts(&spec).generics.len()],
         };
         self.resolve_spec_call(
             node_id,
@@ -106,10 +103,7 @@ impl<'r> Analyzer<'r> {
 
     /// The spec a qualifying path names, if it names one. Silent: a path
     /// that is not a spec is some other call shape.
-    fn spec_declaration_for_path(
-        &mut self,
-        spec_path: &Path,
-    ) -> Option<Rc<RefCell<ResolvedSpecType>>> {
+    fn spec_declaration_for_path(&mut self, spec_path: &Path) -> Option<NominalRef> {
         let absolute = self
             .context
             .resolve_absolute_item_path(&mut *self.resolver, spec_path, &self.module_path)
@@ -135,16 +129,11 @@ impl<'r> Analyzer<'r> {
         &mut self,
         node_id: HirId,
         span: Span,
-        spec: &Rc<RefCell<ResolvedSpecType>>,
+        spec: &NominalRef,
         written: &[GenericArg],
     ) -> Option<Vec<Option<ResolvedGenericArg>>> {
-        let (params, owner) = {
-            let cell = spec.borrow();
-            (
-                cell.generics.clone(),
-                cell.module_path.join(cell.name.clone()),
-            )
-        };
+        let params = self.resolver.types().spec_facts(spec).generics.clone();
+        let owner = spec.module_path.join(spec.name.clone());
         self.check_generic_arity(node_id, span, &owner, &params, written.len())?;
         let mut args = Vec::with_capacity(written.len());
         let mut ok = true;
@@ -171,15 +160,17 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         call: &HirFunctionCall,
-        spec: &Rc<RefCell<ResolvedSpecType>>,
+        spec: &NominalRef,
         spec_args: &[Option<ResolvedGenericArg>],
         method_name: &Ident,
         target: Option<&ResolvedType>,
         expected: Expected<'_>,
         origin: Origin,
     ) -> Intercepted {
-        let requirement = spec
-            .borrow()
+        let requirement = self
+            .resolver
+            .types()
+            .spec_facts(spec)
             .functions
             .iter()
             .find(|(name, _)| name == method_name)
@@ -189,7 +180,7 @@ impl<'r> Analyzer<'r> {
                 node_id,
                 span,
                 AnalysisErrorKind::NoSuchSpecFunction {
-                    spec: spec.borrow().name.clone(),
+                    spec: spec.name.clone(),
                     function: method_name.clone(),
                 },
             );
@@ -203,7 +194,7 @@ impl<'r> Analyzer<'r> {
                 node_id,
                 span,
                 AnalysisErrorKind::GenericFunctionNotInstantiated {
-                    owner: spec.borrow().name.clone(),
+                    owner: spec.name.clone(),
                     function: method_name.clone(),
                     namespace: FunctionNamespace::Member,
                 },
@@ -321,7 +312,14 @@ impl<'r> Analyzer<'r> {
             && let Some(declaration) = self.spec_declaration_for_path(path)
         {
             if written.is_empty() {
-                let holes = vec![None; declaration.borrow().generics.len()];
+                let holes = vec![
+                    None;
+                    self.resolver
+                        .types()
+                        .spec_facts(&declaration)
+                        .generics
+                        .len()
+                ];
                 return Some((declaration, holes));
             }
             let args = self.written_spec_args(node_id, span, &declaration, written)?;
@@ -343,7 +341,7 @@ impl<'r> Analyzer<'r> {
         span: Span,
         target: &ResolvedType,
         function: &Ident,
-    ) -> Option<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedGenericArg>)> {
+    ) -> Option<(NominalRef, Vec<ResolvedGenericArg>)> {
         use crate::resolved_type::ResolvedSpecApplication;
         let conformances = match self.resolver.conformances_for_type(target) {
             Ok(conformances) => conformances,
@@ -406,11 +404,11 @@ impl<'r> Analyzer<'r> {
         &mut self,
         node_id: HirId,
         span: Span,
-        spec: &Rc<RefCell<ResolvedSpecType>>,
+        spec: &NominalRef,
         requirement: &RawSpecFunctionSig,
         origin: Origin,
     ) -> bool {
-        let declaring_module = spec.borrow().module_path.clone();
+        let declaring_module = spec.module_path.clone();
         if self.check_visibility(requirement.visibility, &declaring_module, origin) {
             return true;
         }
@@ -432,7 +430,7 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         target: &ResolvedType,
-        spec: &Rc<RefCell<ResolvedSpecType>>,
+        spec: &NominalRef,
         spec_args: &[Option<ResolvedGenericArg>],
     ) -> Option<ConformingMethods> {
         if let Some(exact) = spec_args.iter().cloned().collect::<Option<Vec<_>>>() {
@@ -445,11 +443,11 @@ impl<'r> Analyzer<'r> {
                 return None;
             }
         };
-        let spec_id = spec.borrow().id;
+        let spec_id = spec.decl_id;
         let matching: Vec<_> = conformances
             .into_iter()
             .filter(|conform| {
-                conform.spec.borrow().id == spec_id
+                conform.spec.decl_id == spec_id
                     && conform.spec_args.len() == spec_args.len()
                     && conform
                         .spec_args
@@ -459,8 +457,10 @@ impl<'r> Analyzer<'r> {
             })
             .collect();
         if matching.is_empty() {
-            let missing = spec
-                .borrow()
+            let missing = self
+                .resolver
+                .types()
+                .spec_facts(spec)
                 .functions
                 .iter()
                 .map(|(name, _)| name.clone())
@@ -470,7 +470,7 @@ impl<'r> Analyzer<'r> {
                 span,
                 AnalysisErrorKind::ModuleResolution(ResolveError::SpecNotImplemented {
                     type_name: target.to_string(),
-                    spec: spec.borrow().name.clone(),
+                    spec: spec.name.clone(),
                     missing,
                 }),
             );
@@ -484,7 +484,7 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         target: &ResolvedType,
-        spec: &Rc<RefCell<ResolvedSpecType>>,
+        spec: &NominalRef,
         spec_args: &[ResolvedGenericArg],
     ) -> Option<ConformingMethods> {
         match self.resolver.conformance_for(target, spec, spec_args) {
@@ -503,8 +503,10 @@ impl<'r> Analyzer<'r> {
                 }
             }
             Ok(None) => {
-                let missing = spec
-                    .borrow()
+                let missing = self
+                    .resolver
+                    .types()
+                    .spec_facts(spec)
                     .functions
                     .iter()
                     .map(|(name, _)| name.clone())
@@ -514,7 +516,7 @@ impl<'r> Analyzer<'r> {
                     span,
                     AnalysisErrorKind::ModuleResolution(ResolveError::SpecNotImplemented {
                         type_name: target.to_string(),
-                        spec: spec.borrow().name.clone(),
+                        spec: spec.name.clone(),
                         missing,
                     }),
                 );
@@ -543,7 +545,7 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         call: &HirFunctionCall,
-        spec: &Rc<RefCell<ResolvedSpecType>>,
+        spec: &NominalRef,
         spec_args: &[Option<ResolvedGenericArg>],
         method_name: &Ident,
         return_type: &Type,
@@ -554,7 +556,7 @@ impl<'r> Analyzer<'r> {
                 node_id,
                 span,
                 AnalysisErrorKind::SpecStaticNeedsExpectedType {
-                    spec: spec.borrow().name.clone(),
+                    spec: spec.name.clone(),
                     function: method_name.clone(),
                 },
             );
@@ -569,7 +571,7 @@ impl<'r> Analyzer<'r> {
                 node_id,
                 span,
                 AnalysisErrorKind::SpecStaticReturnNotSelf {
-                    spec: spec.borrow().name.clone(),
+                    spec: spec.name.clone(),
                     function: method_name.clone(),
                     return_type: crate::error::raw_type_display(return_type),
                 },
@@ -591,7 +593,7 @@ impl<'r> Analyzer<'r> {
                 node_id,
                 span,
                 AnalysisErrorKind::NoSuchSpecFunction {
-                    spec: spec.borrow().name.clone(),
+                    spec: spec.name.clone(),
                     function: method_name.clone(),
                 },
             );
@@ -669,7 +671,7 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         call: &HirFunctionCall,
-        spec: &Rc<RefCell<ResolvedSpecType>>,
+        spec: &NominalRef,
         spec_args: &[Option<ResolvedGenericArg>],
         method_name: &Ident,
         target_override: Option<&ResolvedType>,
@@ -707,7 +709,7 @@ impl<'r> Analyzer<'r> {
                 node_id,
                 span,
                 AnalysisErrorKind::NoSuchSpecFunction {
-                    spec: spec.borrow().name.clone(),
+                    spec: spec.name.clone(),
                     function: method_name.clone(),
                 },
             );
@@ -817,7 +819,7 @@ fn spec_displays(applications: &[crate::resolved_type::ResolvedSpecApplication])
         .zip(&plain)
         .map(|(application, display)| {
             if plain.iter().filter(|other| *other == display).count() > 1 {
-                let spec = application.spec.borrow();
+                let spec = &*application.spec;
                 let mut qualified = spec.module_path.join(spec.name.clone()).to_string();
                 if !application.spec_args.is_empty() {
                     let args = application
@@ -844,39 +846,31 @@ fn spec_displays(applications: &[crate::resolved_type::ResolvedSpecApplication])
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::resolved_type::{ResolvedSpecApplication, ResolvedStructType};
+    use crate::resolved_type::ResolvedSpecApplication;
+    use crate::type_store::{NominalKind, SpecFacts, testing};
 
     #[test]
     fn ambiguous_spec_displays_qualify_generic_arguments() {
-        let spec = Rc::new(RefCell::new(ResolvedSpecType {
-            id: HirId {
-                module: omega_hir::ModuleId(0),
-                local: 0,
-            },
-            name: Ident("P".into()),
-            module_path: omega_hir::ModulePath::from(vec![Ident("pkg".into())]),
-            visibility: omega_parser::prelude::Visibility::Exposed,
-            generics: vec![],
-            generic_args: vec![],
-            is_object_safe: true,
-            functions: vec![],
-            suppress: vec![],
-        }));
-        let application = |module: &str, local| {
-            let ty = ResolvedType::Struct(Rc::new(RefCell::new(ResolvedStructType {
-                id: HirId {
-                    module: omega_hir::ModuleId(0),
-                    local,
-                },
-                name: Ident("X".into()),
-                module_path: omega_hir::ModulePath::from(vec![Ident(module.into())]),
-                generic_args: vec![],
-                fields: vec![],
+        let spec = testing::define_spec(
+            testing::identity(0, NominalKind::Spec, "P", &["pkg"], vec![]),
+            SpecFacts {
+                visibility: omega_parser::prelude::Visibility::Exposed,
+                generics: vec![],
+                is_object_safe: true,
                 functions: vec![],
-                layout: crate::annotations::Layout::default(),
                 suppress: vec![],
-                is_marker: true,
-            })));
+            },
+        );
+        let application = |module: &str, local| {
+            let ty = testing::define_struct(
+                testing::identity(local, NominalKind::Struct, "X", &[module], vec![]),
+                StructFacts {
+                    fields: vec![],
+                    layout: crate::annotations::Layout::default(),
+                    suppress: vec![],
+                    is_marker: true,
+                },
+            );
             ResolvedSpecApplication::new(spec.clone(), vec![ResolvedGenericArg::Type(ty)])
         };
         let a = application("a", 1);

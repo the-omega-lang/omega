@@ -79,7 +79,7 @@ fn has_analysis_error(
 
 fn mir_functions(program: omega_driver::CompiledProgram) -> Vec<omega_mir::MirFunctionDef> {
     let entry = program.entry.clone();
-    let mir = omega_mir::lower_program(program.modules, &entry);
+    let mir = omega_mir::lower_program(program.modules, &entry, &program.types);
     mir.into_iter()
         .flat_map(|(_, module)| module.items)
         .filter_map(|item| match item {
@@ -340,7 +340,7 @@ fn codegen_ir(
     let extern_globals = program.extern_globals.clone();
     let entry = program.entry.clone();
     let sources = emission_sources(&program);
-    let modules = omega_mir::lower_program(program.modules, &entry);
+    let modules = omega_mir::lower_program(program.modules, &entry, &program.types);
     single_artifact_text(omega_codegen::CodegenRequest {
         target: Target::DEFAULT,
         opt_level,
@@ -349,6 +349,7 @@ fn codegen_ir(
         entry: entry.segments().to_vec(),
         extern_functions,
         extern_globals,
+        types: program.types,
     })
 }
 
@@ -426,7 +427,7 @@ fn naked_function_x86_64_asm_has_no_compiler_generated_frame_setup() {
         let extern_globals = program.extern_globals.clone();
         let entry = program.entry.clone();
         let sources = emission_sources(&program);
-        let modules = omega_mir::lower_program(program.modules, &entry);
+        let modules = omega_mir::lower_program(program.modules, &entry, &program.types);
         let asm = single_artifact_text(omega_codegen::CodegenRequest {
             target: Target::DEFAULT,
             opt_level,
@@ -435,6 +436,7 @@ fn naked_function_x86_64_asm_has_no_compiler_generated_frame_setup() {
             entry: entry.segments().to_vec(),
             extern_functions,
             extern_globals,
+            types: program.types,
         });
 
         // This package defines exactly one function, so a whole-module scan

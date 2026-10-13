@@ -1,6 +1,7 @@
 use super::*;
 use omega_analyzer::generics::GenericSubstitution;
 use omega_analyzer::resolved_type::ResolvedGenericArg;
+use omega_analyzer::type_store::SpecFacts;
 
 enum DefaultFailure {
     Missing,
@@ -65,7 +66,7 @@ impl Driver {
                 item: key.name.clone(),
             });
         }
-        match self.items.cells.resolved_type(key) {
+        match self.items.nominals.resolved_type(key) {
             Some(r#type) => Ok(ResolvedItem::Type(r#type)),
             None => Err(ResolveError::Cycle(self.items.cycle_path(key))),
         }
@@ -504,29 +505,30 @@ impl Driver {
 
             HirItem::Struct(s) => {
                 let id = self.items.identity_for(key, s.id);
-                let cell = self.items.cells.struct_cell(key, id);
+                let nominal = self.intern_nominal(key, id, NominalKind::Struct, Vec::new());
                 let method_ids = self
                     .items
                     .method_identities(key, s.functions.iter().map(|f| f.id));
-                let self_type = ResolvedType::Struct(cell.clone());
+                let self_type = ResolvedType::Struct(nominal.clone());
                 self.compute_aggregate(
                     key,
                     AnalysisSite::new(s.id, s.span),
                     &substitution,
                     self_type,
                     method_ids,
-                    |a, ids| a.signature_of_struct(s, &cell, ids),
+                    |a, ids| a.signature_of_struct(s, &nominal, ids),
                 )
             }
 
             HirItem::Enum(e) => {
                 let id = self.items.identity_for(key, e.id);
-                let cell = self.items.cells.enum_cell(key, id);
+                let variant_names = e.variants.iter().map(|v| v.name.clone()).collect();
+                let nominal = self.intern_nominal(key, id, NominalKind::Enum, variant_names);
                 let method_ids = self
                     .items
                     .method_identities(key, e.functions.iter().map(|f| f.id));
                 let self_type = ResolvedType::Enum {
-                    cell: cell.clone(),
+                    nominal: nominal.clone(),
                     variant: None,
                 };
                 self.compute_aggregate(
@@ -535,24 +537,24 @@ impl Driver {
                     &substitution,
                     self_type,
                     method_ids,
-                    |a, ids| a.signature_of_enum(e, &cell, ids),
+                    |a, ids| a.signature_of_enum(e, &nominal, ids),
                 )
             }
 
             HirItem::Union(u) => {
                 let id = self.items.identity_for(key, u.id);
-                let cell = self.items.cells.union_cell(key, id);
+                let nominal = self.intern_nominal(key, id, NominalKind::Union, Vec::new());
                 let method_ids = self
                     .items
                     .method_identities(key, u.functions.iter().map(|f| f.id));
-                let self_type = ResolvedType::Union(cell.clone());
+                let self_type = ResolvedType::Union(nominal.clone());
                 self.compute_aggregate(
                     key,
                     AnalysisSite::new(u.id, u.span),
                     &substitution,
                     self_type,
                     method_ids,
-                    |a, ids| a.signature_of_union(u, &cell, ids),
+                    |a, ids| a.signature_of_union(u, &nominal, ids),
                 )
             }
 
@@ -575,7 +577,7 @@ impl Driver {
             HirItem::Spec(_) => {
                 let absolute = module.join(key.name.clone());
                 self.resolve_spec_declaration(&absolute)?
-                    .map(|cell| ResolvedItem::Type(ResolvedType::Spec(cell)))
+                    .map(|spec| ResolvedItem::Type(ResolvedType::Spec(spec)))
             }
 
             HirItem::Glue(_) | HirItem::Conform(_) | HirItem::Primitive(_) => {
@@ -588,6 +590,19 @@ impl Driver {
         };
 
         resolved.ok_or_else(|| key.failed())
+    }
+
+    fn intern_nominal(
+        &mut self,
+        key: &ItemKey,
+        decl_id: HirId,
+        kind: NominalKind,
+        variant_names: Vec<Ident>,
+    ) -> NominalRef {
+        let items = &mut self.items;
+        items
+            .nominals
+            .intern(&mut items.types, key, decl_id, kind, variant_names)
     }
 
     fn compute_aggregate(
@@ -610,11 +625,11 @@ impl Driver {
     pub(crate) fn resolve_spec_declaration(
         &mut self,
         absolute_path: &ItemPath,
-    ) -> Result<Option<Rc<RefCell<ResolvedSpecType>>>, ResolveError> {
+    ) -> Result<Option<NominalRef>, ResolveError> {
         let (name, module_path) = (&absolute_path.name, &absolute_path.module);
         let key: SpecKey = (module_path.clone(), name.clone());
         match self.items.spec_states.get(&key) {
-            Some(SpecQueryState::Resolved(cell)) => return Ok(Some(cell.clone())),
+            Some(SpecQueryState::Resolved(spec)) => return Ok(Some(spec.clone())),
             Some(SpecQueryState::Failed(_)) => {
                 return Err(ResolveError::ItemFailed {
                     module: key.0,
@@ -658,18 +673,24 @@ impl Driver {
         let is_object_safe = functions.iter().all(|(_, raw)| {
             raw.generics.is_empty() && !matches!(raw.return_type, Type::SpecStatic(_))
         });
-        let cell = Rc::new(RefCell::new(ResolvedSpecType {
-            id: sp.id,
-            name: sp.name.clone(),
-            visibility: sp.visibility,
-            generics: GenericParam::declared(sp.id, &sp.generics),
-            module_path: module_path.clone(),
-            generic_args: vec![],
-            is_object_safe,
-            functions,
-            suppress: annotations.suppress,
-        }));
-        self.items.finish_spec(&key, Ok(cell.clone()));
-        Ok(Some(cell))
+        let spec = self.items.types.intern_spec(
+            NominalIdentity {
+                decl_id: sp.id,
+                kind: NominalKind::Spec,
+                name: sp.name.clone(),
+                module_path: module_path.clone(),
+                generic_args: vec![],
+                variant_names: vec![],
+            },
+            SpecFacts {
+                visibility: sp.visibility,
+                generics: GenericParam::declared(sp.id, &sp.generics),
+                is_object_safe,
+                functions,
+                suppress: annotations.suppress,
+            },
+        );
+        self.items.finish_spec(&key, Ok(spec.clone()));
+        Ok(Some(spec))
     }
 }

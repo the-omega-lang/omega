@@ -51,7 +51,7 @@ A future expression-normalization/optimization IR can be added deliberately; it 
 
 `omega_mir::lower_program` is the crate entry point.
 
-It receives the checked modules and package entry path and returns corresponding `MirModule`s. Semantic monomorphization is already complete; lowering does not resolve new cross-module semantic facts.
+It receives the checked modules, the package entry path, and the program's `TypeStore` (for place alignment) and returns corresponding `MirModule`s. Semantic monomorphization is already complete; lowering does not resolve new cross-module semantic facts.
 
 Modules lower independently.
 
@@ -251,7 +251,7 @@ EmittedArtifact
 generate(...)
 ```
 
-`CodegenRequest` contains the compilation-wide configuration -- target, optimization level, requested output kind, entry path, extern-function references -- plus the ordered list of emission units. `generate` returns one `EmittedArtifact` per unit, each tagged with the relative source path that owns it, so the caller reproduces the source tree by replacing the `.omg` extension. Entry-point identity is consumed while lowering checked modules to MIR; the field remains in the public request shape for compatibility but is not interpreted by LLVM emission.
+`CodegenRequest` contains the compilation-wide configuration -- target, optimization level, requested output kind, entry path, extern-function references, and the program's frozen `TypeStore` for layout and reflection -- plus the ordered list of emission units. `generate` returns one `EmittedArtifact` per unit, each tagged with the relative source path that owns it, so the caller reproduces the source tree by replacing the `.omg` extension. Entry-point identity is consumed while lowering checked modules to MIR; the field remains in the public request shape for compatibility but is not interpreted by LLVM emission.
 
 ### Declaration catalog
 

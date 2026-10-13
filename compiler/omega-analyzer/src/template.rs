@@ -344,31 +344,25 @@ fn convert_fixed(ty: &ResolvedType) -> TemplateType {
             function.calling_convention,
             function.is_variadic,
         ),
-        ResolvedType::Struct(cell) => {
-            let cell = cell.borrow();
-            convert_nominal(&cell.module_path, &cell.name, &cell.generic_args)
+        ResolvedType::Struct(nominal) => {
+            convert_nominal(&nominal.module_path, &nominal.name, &nominal.generic_args)
         }
-        ResolvedType::Union(cell) => {
-            let cell = cell.borrow();
-            convert_nominal(&cell.module_path, &cell.name, &cell.generic_args)
+        ResolvedType::Union(nominal) => {
+            convert_nominal(&nominal.module_path, &nominal.name, &nominal.generic_args)
         }
         ResolvedType::Enum {
-            cell,
+            nominal,
             variant: None,
-        } => {
-            let cell = cell.borrow();
-            convert_nominal(&cell.module_path, &cell.name, &cell.generic_args)
-        }
-        ResolvedType::Spec(cell) => {
-            let cell = cell.borrow();
-            convert_nominal(&cell.module_path, &cell.name, &cell.generic_args)
+        } => convert_nominal(&nominal.module_path, &nominal.name, &nominal.generic_args),
+        ResolvedType::Spec(nominal) => {
+            convert_nominal(&nominal.module_path, &nominal.name, &nominal.generic_args)
         }
         ResolvedType::SpecObject { shape, mutable } => {
             let mut bounds = shape
                 .members
                 .iter()
                 .map(|member| {
-                    let spec = member.spec.borrow();
+                    let spec = &*member.spec;
                     TemplateBound {
                         module_path: spec.module_path.clone(),
                         name: spec.name.clone(),

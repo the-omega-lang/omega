@@ -315,7 +315,7 @@ impl TypePattern {
                     && members.len() == shape.members.len()
                     && members.iter().all(|spec| {
                         shape.members.iter().any(|member| {
-                            member.spec.borrow().id == spec.spec
+                            member.spec.decl_id == spec.spec
                                 && spec.args.len() == member.spec_args.len()
                                 && spec
                                     .args
@@ -408,7 +408,7 @@ impl TypePattern {
                     && members.len() == shape.members.len()
                     && members.iter().all(|spec| {
                         shape.members.iter().any(|member| {
-                            member.spec.borrow().id == spec.spec
+                            member.spec.decl_id == spec.spec
                                 && spec.args.len() == member.spec_args.len()
                                 && spec
                                     .args
@@ -581,24 +581,24 @@ impl ArgumentPattern {
 
 fn nominal(ty: &ResolvedType) -> Option<(ItemPath, Vec<ResolvedGenericArg>)> {
     let (module, name, args) = match ty {
-        ResolvedType::Struct(cell) => {
-            let t = cell.borrow();
+        ResolvedType::Struct(nominal) => {
+            let t = &**nominal;
             (
                 t.module_path.clone(),
                 t.name.clone(),
                 t.generic_args.clone(),
             )
         }
-        ResolvedType::Union(cell) => {
-            let t = cell.borrow();
+        ResolvedType::Union(nominal) => {
+            let t = &**nominal;
             (
                 t.module_path.clone(),
                 t.name.clone(),
                 t.generic_args.clone(),
             )
         }
-        ResolvedType::Enum { cell, .. } => {
-            let t = cell.borrow();
+        ResolvedType::Enum { nominal, .. } => {
+            let t = &**nominal;
             (
                 t.module_path.clone(),
                 t.name.clone(),

@@ -363,7 +363,7 @@ impl<'r> Analyzer<'r> {
                         node_id,
                         span,
                         base_shape,
-                        target_member.spec.borrow().id,
+                        target_member.spec.decl_id,
                     ) else {
                         self.error(
                             node_id,

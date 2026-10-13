@@ -26,7 +26,7 @@ enum EnumHeaderMember {
 }
 
 impl<'a> EnumHeader<'a> {
-    fn named(r#enum: &'a ResolvedEnumType) -> Self {
+    fn named(r#enum: &'a EnumFacts) -> Self {
         Self {
             tag_type: &r#enum.tag_type,
             fields: &r#enum.header,
@@ -137,23 +137,31 @@ impl<'r> Analyzer<'r> {
             ResolvedType::SpecObject { mutable, .. } => {
                 self.project_spec_object_field(node_id, span, projections, &base, field, *mutable)
             }
-            ResolvedType::Enum { cell, variant } => self.project_enum_field(
+            ResolvedType::Enum { nominal, variant } => self.project_enum_field(
                 node_id,
                 span,
                 projections,
-                cell,
+                nominal,
                 *variant,
                 &base,
                 field,
                 origin,
             ),
-            ResolvedType::Union(cell) => {
-                let cell = cell.clone();
-                self.project_union_field(node_id, span, projections, &cell, &base, field, origin)
+            ResolvedType::Union(nominal) => {
+                let nominal = nominal.clone();
+                self.project_union_field(node_id, span, projections, &nominal, &base, field, origin)
             }
-            ResolvedType::Struct(cell) => {
-                let cell = cell.clone();
-                self.project_struct_field(node_id, span, projections, &cell, &base, field, origin)
+            ResolvedType::Struct(nominal) => {
+                let nominal = nominal.clone();
+                self.project_struct_field(
+                    node_id,
+                    span,
+                    projections,
+                    &nominal,
+                    &base,
+                    field,
+                    origin,
+                )
             }
             ResolvedType::AnonymousEnum { .. } => {
                 self.error(
@@ -255,16 +263,16 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         projections: &mut Vec<CheckedProjection>,
-        cell: &Rc<RefCell<ResolvedEnumType>>,
+        nominal: &NominalRef,
         variant: Option<usize>,
         base: &ResolvedType,
         field: &Ident,
         origin: Origin,
     ) -> Option<ResolvedType> {
-        // Borrow released before the `&mut self` call below.
-        let member = Self::find_enum_member(&cell.borrow(), variant, field);
+        let facts = self.type_facts(node_id, span, |types| types.enum_facts(nominal).cloned())?;
+        let member = Self::find_enum_member(nominal, &facts, variant, field);
         let Some(member) = member else {
-            let kind = Self::no_such_enum_field(&cell.borrow(), variant, field);
+            let kind = Self::no_such_enum_field(nominal, &facts, variant, field);
             self.error(node_id, span, kind);
             return None;
         };
@@ -276,13 +284,14 @@ impl<'r> Analyzer<'r> {
     }
 
     fn find_enum_member(
-        e: &ResolvedEnumType,
+        nominal: &NominalRef,
+        e: &EnumFacts,
         variant: Option<usize>,
         field: &Ident,
     ) -> Option<EnumMember> {
         let owner = |visibility| MemberOwner {
             visibility,
-            module_path: e.module_path.clone(),
+            module_path: nominal.module_path.clone(),
         };
 
         if let Some(member) = EnumHeader::named(e).find_member(field) {
@@ -337,7 +346,8 @@ impl<'r> Analyzer<'r> {
     }
 
     fn no_such_enum_field(
-        e: &ResolvedEnumType,
+        nominal: &NominalRef,
+        e: &EnumFacts,
         variant: Option<usize>,
         field: &Ident,
     ) -> AnalysisErrorKind {
@@ -353,7 +363,7 @@ impl<'r> Analyzer<'r> {
             },
             (Some(declaring), None) => AnalysisErrorKind::EnumFieldVariantUnknown {
                 field: field.clone(),
-                r#enum: e.name.clone(),
+                r#enum: nominal.name.clone(),
                 owner: declaring.name.clone(),
             },
             (None, _) => {
@@ -368,7 +378,7 @@ impl<'r> Analyzer<'r> {
                     );
                 AnalysisErrorKind::NoSuchEnumField {
                     field: field.clone(),
-                    r#enum: e.name.clone(),
+                    r#enum: nominal.name.clone(),
                     similar: best_match(field, candidates),
                 }
             }
@@ -380,15 +390,16 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         projections: &mut Vec<CheckedProjection>,
-        cell: &Rc<RefCell<ResolvedUnionType>>,
+        nominal: &NominalRef,
         base: &ResolvedType,
         field: &Ident,
         origin: Origin,
     ) -> Option<ResolvedType> {
-        let (found, owner_module) = {
-            let u = cell.borrow();
-            (Self::find_field(&u.fields, field), u.module_path.clone())
-        };
+        let facts = self.type_facts(node_id, span, |types| types.union_facts(nominal).cloned())?;
+        let (found, owner_module) = (
+            Self::find_field(&facts.fields, field),
+            nominal.module_path.clone(),
+        );
         let Some((index, r#type, visibility)) = found else {
             self.no_such_field(node_id, span, field, base);
             return None;
@@ -411,15 +422,16 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         projections: &mut Vec<CheckedProjection>,
-        cell: &Rc<RefCell<ResolvedStructType>>,
+        nominal: &NominalRef,
         base: &ResolvedType,
         field: &Ident,
         origin: Origin,
     ) -> Option<ResolvedType> {
-        let (found, owner_module) = {
-            let s = cell.borrow();
-            (Self::find_field(&s.fields, field), s.module_path.clone())
-        };
+        let facts = self.type_facts(node_id, span, |types| types.struct_facts(nominal).cloned())?;
+        let (found, owner_module) = (
+            Self::find_field(&facts.fields, field),
+            nominal.module_path.clone(),
+        );
         let Some((index, r#type, visibility)) = found else {
             self.no_such_field(node_id, span, field, base);
             return None;

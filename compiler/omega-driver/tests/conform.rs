@@ -1725,7 +1725,7 @@ fn a_spec_return_type_on_a_method_is_rejected_not_inferred() {
             kind,
             AnalysisErrorKind::NoSuchField { .. }
         )),
-        "must not fail by observing a partially-populated cell"
+        "must not fail by observing a partially-defined type"
     );
 }
 
@@ -2344,7 +2344,7 @@ fn lowered_mir_carries_symbols_and_linkage() {
         .expect("construct driver")
         .compile(&omega_hir::ModulePath::new([Ident("main".to_string())]))
         .expect("compiles");
-    let mir = omega_mir::lower_program(program.modules, &program.entry);
+    let mir = omega_mir::lower_program(program.modules, &program.entry, &program.types);
     let functions: Vec<&omega_mir::MirFunctionDef> = mir
         .iter()
         .flat_map(|(_, module)| module.items.iter())

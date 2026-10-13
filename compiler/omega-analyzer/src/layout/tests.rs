@@ -1,6 +1,50 @@
 use super::*;
 use crate::resolved_type::ResolvedAnonymousEnum;
+use crate::type_store::testing;
 use std::rc::Rc;
+
+fn leaves_of(ty: &ResolvedType, pointer_bytes: u32) -> Vec<Leaf> {
+    testing::with(|types| super::leaves_of(types, ty, pointer_bytes))
+}
+
+fn total_bytes(ty: &ResolvedType, pointer_bytes: u32) -> u32 {
+    testing::with(|types| super::total_bytes(types, ty, pointer_bytes))
+}
+
+fn is_zero_sized(ty: &ResolvedType) -> bool {
+    testing::with(|types| super::is_zero_sized(types, ty))
+}
+
+fn type_alignment(ty: &ResolvedType) -> u32 {
+    testing::with(|types| super::type_alignment(types, ty))
+}
+
+fn volatile_alignment(ty: &ResolvedType, pointer_bytes: u32) -> u32 {
+    testing::with(|types| super::volatile_alignment(types, ty, pointer_bytes))
+}
+
+fn enum_view(ty: &ResolvedType) -> Option<EnumView> {
+    testing::with(|types| EnumView::of(types, ty))
+}
+
+fn enum_payload_offset(view: &EnumView, pointer_bytes: u32) -> u32 {
+    testing::with(|types| super::enum_payload_offset(types, view, pointer_bytes))
+}
+
+fn enum_payload_bytes(view: &EnumView, pointer_bytes: u32) -> u32 {
+    testing::with(|types| super::enum_payload_bytes(types, view, pointer_bytes))
+}
+
+fn enum_body_field_offset(
+    view: &EnumView,
+    variant_index: usize,
+    field_index: usize,
+    pointer_bytes: u32,
+) -> u32 {
+    testing::with(|types| {
+        super::enum_body_field_offset(types, view, variant_index, field_index, pointer_bytes)
+    })
+}
 
 const POINTER_BYTES: u32 = 8;
 
@@ -24,7 +68,7 @@ fn refined(parent: &ResolvedType, index: usize) -> ResolvedType {
 #[test]
 fn anonymous_enum_is_a_u32_tag_followed_by_the_largest_member() {
     let ty = anonymous(vec![ResolvedType::I32, ResolvedType::Bool]);
-    let view = EnumView::of(&ty).expect("an anonymous enum is enum-like");
+    let view = enum_view(&ty).expect("an anonymous enum is enum-like");
 
     assert_eq!(view.tag_type, ResolvedType::U32);
     assert!(view.header.is_empty());
@@ -48,7 +92,7 @@ fn anonymous_enum_payload_fits_its_largest_member() {
         ResolvedType::Str { mutable: false },
         ResolvedType::I32,
     ]);
-    let view = EnumView::of(&ty).expect("an anonymous enum is enum-like");
+    let view = enum_view(&ty).expect("an anonymous enum is enum-like");
     let widest = total_bytes(&ResolvedType::Str { mutable: false }, POINTER_BYTES);
 
     assert_eq!(enum_payload_bytes(&view, POINTER_BYTES), widest);
@@ -65,7 +109,7 @@ fn anonymous_enum_member_bodies_all_start_at_the_payload() {
         ResolvedType::I32,
         ResolvedType::Bool,
     ]);
-    let view = EnumView::of(&ty).expect("an anonymous enum is enum-like");
+    let view = enum_view(&ty).expect("an anonymous enum is enum-like");
     let payload = enum_payload_offset(&view, POINTER_BYTES);
 
     for index in 0..view.variants.len() {
@@ -79,7 +123,7 @@ fn anonymous_enum_member_bodies_all_start_at_the_payload() {
 #[test]
 fn anonymous_enum_tolerates_a_zero_sized_member() {
     let ty = anonymous(vec![ResolvedType::Void, ResolvedType::I32]);
-    let view = EnumView::of(&ty).expect("an anonymous enum is enum-like");
+    let view = enum_view(&ty).expect("an anonymous enum is enum-like");
 
     assert_eq!(view.variants.len(), 2);
     assert_eq!(enum_payload_bytes(&view, POINTER_BYTES), 4);
@@ -103,8 +147,8 @@ fn anonymous_enum_layout_ignores_how_the_members_were_spelled() {
     );
     assert_eq!(type_alignment(&one), type_alignment(&other));
 
-    let one_view = EnumView::of(&one).expect("an anonymous enum is enum-like");
-    let other_view = EnumView::of(&other).expect("an anonymous enum is enum-like");
+    let one_view = enum_view(&one).expect("an anonymous enum is enum-like");
+    let other_view = enum_view(&other).expect("an anonymous enum is enum-like");
     for index in 0..one_view.variants.len() {
         assert_eq!(
             one_view.variants[index].fields,
@@ -144,7 +188,7 @@ fn refinement_never_changes_an_anonymous_enum_value() {
 fn a_nested_anonymous_member_lays_out_as_its_flattened_leaves() {
     let inner = anonymous(vec![ResolvedType::I32, ResolvedType::Bool]);
     let nested = anonymous(vec![inner.clone(), ResolvedType::Bool]);
-    let view = EnumView::of(&nested).expect("an anonymous enum is enum-like");
+    let view = enum_view(&nested).expect("an anonymous enum is enum-like");
 
     assert_eq!(view.variants.len(), 2);
     assert_eq!(
@@ -158,7 +202,7 @@ fn a_member_merely_containing_an_anonymous_enum_lays_out_as_one_member() {
     let inner = anonymous(vec![ResolvedType::I32, ResolvedType::Bool]);
     let wrapper = ResolvedType::SizedArray(Box::new(inner.clone()), 1);
     let outer = anonymous(vec![wrapper.clone(), ResolvedType::Bool]);
-    let view = EnumView::of(&outer).expect("an anonymous enum is enum-like");
+    let view = enum_view(&outer).expect("an anonymous enum is enum-like");
 
     assert_eq!(view.variants.len(), 2);
     assert_eq!(
@@ -193,48 +237,34 @@ fn a_function_value_is_one_pointer_width_code_pointer() {
 }
 
 use crate::annotations::Layout;
-use crate::resolved_type::{
-    ResolvedEnumType, ResolvedEnumVariant, ResolvedField, ResolvedStructType, ResolvedUnionType,
-};
-use omega_hir::ids::{HirId, ModuleId};
+use crate::resolved_type::{ResolvedEnumVariant, ResolvedField};
+use crate::type_store::{EnumFacts, NominalKind, StructFacts, UnionFacts};
 use omega_parser::prelude::{Ident, Visibility};
-use std::cell::RefCell;
-
-fn hir_id(n: u32) -> HirId {
-    HirId {
-        module: ModuleId(0),
-        local: n,
-    }
-}
 
 fn field(name: &str, r#type: ResolvedType) -> ResolvedField {
     ResolvedField::new(Ident(name.into()), r#type, Visibility::Exposed)
 }
 
 fn structure(fields: Vec<ResolvedField>, layout: Layout) -> ResolvedType {
-    ResolvedType::Struct(Rc::new(RefCell::new(ResolvedStructType {
-        id: hir_id(1),
-        name: Ident("S".into()),
-        module_path: omega_hir::ModulePath::default(),
-        generic_args: vec![],
-        fields,
-        functions: vec![],
-        layout,
-        suppress: vec![],
-        is_marker: false,
-    })))
+    testing::define_struct(
+        testing::identity(1, NominalKind::Struct, "S", &[], vec![]),
+        StructFacts {
+            fields,
+            layout,
+            suppress: vec![],
+            is_marker: false,
+        },
+    )
 }
 
 fn union(fields: Vec<ResolvedField>) -> ResolvedType {
-    ResolvedType::Union(Rc::new(RefCell::new(ResolvedUnionType {
-        id: hir_id(2),
-        name: Ident("U".into()),
-        module_path: omega_hir::ModulePath::default(),
-        generic_args: vec![],
-        fields,
-        functions: vec![],
-        suppress: vec![],
-    })))
+    testing::define_union(
+        testing::identity(2, NominalKind::Union, "U", &[], vec![]),
+        UnionFacts {
+            fields,
+            suppress: vec![],
+        },
+    )
 }
 
 fn named_enum(
@@ -243,12 +273,9 @@ fn named_enum(
     variants: Vec<Vec<ResolvedField>>,
     layout: Layout,
 ) -> ResolvedType {
-    ResolvedType::Enum {
-        cell: Rc::new(RefCell::new(ResolvedEnumType {
-            id: hir_id(3),
-            name: Ident("E".into()),
-            module_path: omega_hir::ModulePath::default(),
-            generic_args: vec![],
+    testing::define_enum(
+        testing::identity(3, NominalKind::Enum, "E", &[], vec![]),
+        EnumFacts {
             tag_type: ResolvedType::U32,
             header,
             dynamic_fields,
@@ -256,18 +283,16 @@ fn named_enum(
                 .into_iter()
                 .enumerate()
                 .map(|(index, fields)| ResolvedEnumVariant {
-                    name: Ident(format!("V{index}").into()),
+                    name: Ident(format!("V{index}")),
                     tag: NumberValue::Unsigned(index as u64),
                     header_values: vec![],
                     fields,
                 })
                 .collect(),
-            functions: vec![],
             layout,
             suppress: vec![],
-        })),
-        variant: None,
-    }
+        },
+    )
 }
 
 fn aligned(align: u32) -> Layout {
@@ -290,10 +315,12 @@ fn a_struct_inherits_its_fields_alignment() {
     assert_eq!(type_alignment(&inner), 16);
     assert_eq!(type_alignment(&outer), 16);
 
-    let ResolvedType::Struct(cell) = &outer else {
+    let ResolvedType::Struct(nominal) = &outer else {
         unreachable!()
     };
-    let layout = struct_layout(&cell.borrow(), POINTER_BYTES);
+    let layout = testing::with(|types| {
+        struct_layout(types, types.frozen().struct_facts(nominal), POINTER_BYTES)
+    });
     assert_eq!(layout.byte_offsets, vec![0, 16]);
     assert_eq!(layout.packed_end, 32);
     assert_eq!(total_bytes(&outer, POINTER_BYTES), 32);
@@ -314,27 +341,27 @@ fn a_weaker_container_annotation_never_lowers_a_member_requirement() {
 #[test]
 fn pack_places_fields_without_weakening_alignment() {
     let inner = structure(vec![field("v", ResolvedType::I64)], aligned(16));
-    let outer = ResolvedType::Struct(Rc::new(RefCell::new(ResolvedStructType {
-        id: hir_id(1),
-        name: Ident("S".into()),
-        module_path: omega_hir::ModulePath::default(),
-        generic_args: vec![],
-        fields: vec![field("pad", ResolvedType::U8), field("inner", inner)],
-        functions: vec![],
-        layout: Layout { pack: 4, align: 1 },
-        suppress: vec![],
-        is_marker: false,
-    })));
+    let outer = structure(
+        vec![field("pad", ResolvedType::U8), field("inner", inner)],
+        Layout { pack: 4, align: 1 },
+    );
 
     assert_eq!(type_alignment(&outer), 16);
     assert_eq!(field_byte_offset_of(&outer, 1), 16);
 }
 
 fn field_byte_offset_of(ty: &ResolvedType, index: usize) -> u32 {
-    let ResolvedType::Struct(cell) = ty else {
+    let ResolvedType::Struct(nominal) = ty else {
         panic!("not a struct")
     };
-    field_byte_offset(&cell.borrow(), index, POINTER_BYTES)
+    testing::with(|types| {
+        field_byte_offset(
+            types,
+            types.frozen().struct_facts(nominal),
+            index,
+            POINTER_BYTES,
+        )
+    })
 }
 
 #[test]
@@ -432,7 +459,7 @@ fn a_named_enum_inherits_prefix_and_payload_alignment() {
         Layout::default(),
     );
     assert_eq!(type_alignment(&from_body), 32);
-    let view = EnumView::of(&from_body).expect("an enum is enum-like");
+    let view = enum_view(&from_body).expect("an enum is enum-like");
     assert_eq!(enum_payload_offset(&view, POINTER_BYTES) % 32, 0);
 }
 

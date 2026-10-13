@@ -4,6 +4,7 @@ use omega_analyzer::checked::{CheckedModule, ExternFunctionRef, ExternGlobalRef}
 use omega_analyzer::error::{AnalysisError, AnalysisWarning};
 use omega_analyzer::resolver::ResolveError;
 use omega_analyzer::source_annotations::{SourceAnnotationError, SourceAnnotationErrorKind};
+use omega_analyzer::type_store::TypeStore;
 use omega_diagnostics::{Diagnostic, SourceSpan, Span};
 use omega_hir::ModulePath;
 use omega_parser::macros::MacroError;
@@ -208,4 +209,7 @@ pub struct CompiledProgram {
     /// Every physical source file of the local package, sorted by relative
     /// path. Each one owns exactly one emitted artifact.
     pub sources: Vec<LocalSource>,
+    /// The facts of every nominal type the checked modules name, complete
+    /// for each one of them.
+    pub types: TypeStore,
 }

@@ -3,13 +3,13 @@ use crate::generics::GenericParam;
 use crate::generics::pattern::TypePattern;
 use crate::resolved_type::{
     ConstValue, ResolvedConformance, ResolvedFunctionType, ResolvedGap, ResolvedGenericArg,
-    ResolvedMethod, ResolvedSpecType, ResolvedType,
+    ResolvedMethod, ResolvedType,
 };
+use crate::type_store::NominalRef;
 use omega_diagnostics::SourceId;
 use omega_hir::{HirGenericParam, HirId, ItemPath, ModulePath};
 use omega_parser::macros::MacroAuthorship;
 use omega_parser::prelude::{Ident, Origin, Path, Type, Visibility};
-use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
 
@@ -393,6 +393,13 @@ impl ResolveItemOptions {
 pub trait ModuleResolver {
     fn macro_origin_module(&self, origin: Origin) -> Option<ModulePath>;
 
+    /// The facts of every nominal type interned so far. Reads hand out
+    /// `Rc`'d records, so no borrow of the store outlives a single read.
+    fn types(&self) -> &crate::type_store::TypeStore;
+
+    /// Where signature analysis writes each nominal type's staged facts.
+    fn types_mut(&mut self) -> &mut crate::type_store::TypeStore;
+
     /// The retained source file of a module, when one has been read. Findings
     /// use it to name the file their spans index, so a diagnostic can still
     /// be rendered once it leaves the module it was produced in.
@@ -648,7 +655,7 @@ pub trait ModuleResolver {
         namespace: crate::resolved_type::FunctionNamespace,
     ) -> Result<OverloadCandidates, ResolveError> {
         Ok(owner
-            .candidates_in(namespace, name)
+            .candidates_in(self.types(), namespace, name)?
             .unwrap_or_default()
             .into_iter()
             .map(|method| OverloadCandidate {
@@ -672,7 +679,7 @@ pub trait ModuleResolver {
     fn spec_declaration(
         &mut self,
         absolute_path: &ItemPath,
-    ) -> Result<Option<Rc<RefCell<ResolvedSpecType>>>, ResolveError>;
+    ) -> Result<Option<NominalRef>, ResolveError>;
 
     fn primitive_methods(
         &mut self,
@@ -682,7 +689,7 @@ pub trait ModuleResolver {
     fn conformance_for(
         &mut self,
         target: &ResolvedType,
-        spec: &Rc<RefCell<ResolvedSpecType>>,
+        spec: &NominalRef,
         spec_args: &[ResolvedGenericArg],
     ) -> Result<Option<ResolvedConformance>, ResolveError>;
 

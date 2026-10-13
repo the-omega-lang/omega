@@ -663,8 +663,10 @@ impl<'r> Analyzer<'r> {
                 }
             };
 
-        let method = owner_type
-            .candidates_in(namespace, member)
+        let candidates = self.type_facts(node_id, span, |types| {
+            owner_type.candidates_in(types, namespace, member)
+        })?;
+        let method = candidates
             .expect("generic owner signatures only come from aggregate types")
             .into_iter()
             .next()

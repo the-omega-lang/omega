@@ -16,11 +16,10 @@ use omega_analyzer::error::{
 use omega_analyzer::generics::GenericParam;
 use omega_analyzer::resolved_type::{ResolvedFunctionType, ResolvedType};
 use omega_analyzer::resolver::{ModuleResolver, ResolveError, ResolveItemOptions, ResolvedItem};
+use omega_analyzer::type_store::NominalKind;
 use omega_hir::ModulePath;
 use omega_hir::{HirEnumDef, HirField, HirGlueDef, HirId, HirItem, HirStructDef, HirUnionDef};
 use omega_parser::prelude::Ident;
-use std::cell::RefCell;
-use std::rc::Rc;
 
 pub(super) type TaggedWarnings = Vec<(ModulePath, AnalysisWarning)>;
 
@@ -152,6 +151,7 @@ impl Driver {
             extern_functions,
             extern_globals,
             sources: self.roots.local_sources(),
+            types: self.items.types.clone(),
         })
     }
 

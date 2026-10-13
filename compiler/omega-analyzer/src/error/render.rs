@@ -107,11 +107,11 @@ impl AnalysisErrorKind {
                     ));
                 match (target, value) {
                     (
-                        ResolvedType::Enum { cell: expected, variant: Some(_) },
-                        ResolvedType::Enum { cell: found, variant: Some(_) },
-                    ) if expected.borrow().id == found.borrow().id => d.with_help(format!(
+                        ResolvedType::Enum { nominal: expected, variant: Some(_) },
+                        ResolvedType::Enum { nominal: found, variant: Some(_) },
+                    ) if expected.decl_id == found.decl_id => d.with_help(format!(
                         "declare the variable with the plain enum type to hold any variant: `name : {} = ...;`",
-                        expected.borrow().name.as_ref()
+                        expected.name.as_ref()
                     )),
                     _ => d,
                 }

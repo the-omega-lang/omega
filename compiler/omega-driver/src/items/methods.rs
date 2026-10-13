@@ -27,7 +27,7 @@ impl Driver {
         namespace: FunctionNamespace,
     ) -> Result<OverloadCandidates, ResolveError> {
         let mut candidates: Vec<_> = owner
-            .candidates_in(namespace, name)
+            .candidates_in(&self.items.types, namespace, name)?
             .unwrap_or_default()
             .into_iter()
             .map(|method| OverloadCandidate {
@@ -313,7 +313,7 @@ impl Driver {
 
     fn method_template_for_key(&mut self, key: &ItemKey) -> MethodTemplate {
         let owner = key.owner().expect("a method query has an owner");
-        let (target, namespace) = if let Some(target) = self.items.cells.resolved_type(owner) {
+        let (target, namespace) = if let Some(target) = self.items.nominals.resolved_type(owner) {
             let hir = self.modules.hir(owner.module());
             let functions = match &hir.items[owner.disambiguator] {
                 HirItem::Struct(s) => &s.functions,
@@ -415,7 +415,7 @@ impl Driver {
     ) -> Result<Vec<MethodTemplate>, ResolveError> {
         let inherent = self.find_inherent_generic_methods(owner, name, namespace)?;
         let has_concrete = owner
-            .candidates_in(namespace, name)
+            .candidates_in(&self.items.types, namespace, name)?
             .is_some_and(|candidates| !candidates.is_empty());
         if inherent.is_empty() && !has_concrete {
             return self.find_generic_conformance_methods(owner, name, namespace);
@@ -514,9 +514,10 @@ impl Driver {
         }
         let mut templates = Vec::new();
         for (entry, index, mut function) in candidates {
-            if let Some((_, requirement)) = entry
-                .spec
-                .borrow()
+            if let Some((_, requirement)) = self
+                .items
+                .types
+                .spec_facts(&entry.spec)
                 .functions
                 .iter()
                 .find(|(requirement, _)| *requirement == function.name)
@@ -545,44 +546,19 @@ impl Driver {
     /// The item query a resolved aggregate type came from, which is also the
     /// context its own declarations are analyzed in.
     fn owner_item_key(&mut self, owner: &ResolvedType) -> Option<(ItemKey, ResolvedType)> {
-        let key = match owner {
-            ResolvedType::Struct(cell) => {
-                let owner = cell.borrow();
-                ItemKey::new(
-                    &owner.module_path,
-                    &owner.name,
-                    self.local_item_index(&owner.module_path, &owner.name)
-                        .ok()?,
-                    &owner.generic_args,
-                )
-            }
-            ResolvedType::Union(cell) => {
-                let owner = cell.borrow();
-                ItemKey::new(
-                    &owner.module_path,
-                    &owner.name,
-                    self.local_item_index(&owner.module_path, &owner.name)
-                        .ok()?,
-                    &owner.generic_args,
-                )
-            }
-            ResolvedType::Enum { cell, .. } => {
-                let owner = cell.borrow();
-                ItemKey::new(
-                    &owner.module_path,
-                    &owner.name,
-                    self.local_item_index(&owner.module_path, &owner.name)
-                        .ok()?,
-                    &owner.generic_args,
-                )
-            }
-            _ => return None,
-        };
+        let nominal = owner.aggregate()?;
+        let key = ItemKey::new(
+            &nominal.module_path,
+            &nominal.name,
+            self.local_item_index(&nominal.module_path, &nominal.name)
+                .ok()?,
+            &nominal.generic_args,
+        );
         // A refined enum receiver still declares its functions on the enum
         // itself, so the owner type is the unrefined one.
         let self_type = match owner {
-            ResolvedType::Enum { cell, .. } => ResolvedType::Enum {
-                cell: cell.clone(),
+            ResolvedType::Enum { nominal, .. } => ResolvedType::Enum {
+                nominal: nominal.clone(),
                 variant: None,
             },
             other => other.clone(),

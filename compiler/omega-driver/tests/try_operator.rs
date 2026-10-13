@@ -192,7 +192,7 @@ fn mir_lowers_a_try_into_ordinary_branching_control_flow() {
         .iter()
         .map(|(path, module)| (path.clone(), module.clone()))
         .collect();
-    let mir = omega_mir::lower_program(modules, &program.entry);
+    let mir = omega_mir::lower_program(modules, &program.entry, &program.types);
 
     let body = mir
         .iter()

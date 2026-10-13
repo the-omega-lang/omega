@@ -685,7 +685,13 @@ impl<'r> Analyzer<'r> {
                     | ResolvedType::Enum { .. }
                     | ResolvedType::AnonymousEnum { .. }
             ) {
-                let size = crate::layout::total_bytes(r#type, self.target.pointer_bytes());
+                let types = self.resolver.types();
+                // A parameter may name a type whose definition is still being
+                // analyzed; it has no size yet, so there is nothing to lint.
+                if crate::layout::require_complete(types, r#type).is_err() {
+                    continue;
+                }
+                let size = crate::layout::total_bytes(types, r#type, self.target.pointer_bytes());
                 if size > crate::annotations::LARGE_STRUCT_BY_VALUE_THRESHOLD {
                     self.warn(
                         p.id,
@@ -927,20 +933,25 @@ impl<'r> Analyzer<'r> {
     pub fn signature_of_struct(
         &mut self,
         s: &HirStructDef,
-        cell: &Rc<RefCell<ResolvedStructType>>,
+        nominal: &NominalRef,
         method_ids: &[HirId],
     ) -> Option<()> {
         self.check_redundant_hidden(s.id, s.explicit_hidden_span);
         let annotations =
             self.item_annotations(s.id, &s.annotations, crate::annotations::ItemKind::Struct);
-        cell.borrow_mut().layout = annotations.layout;
-        cell.borrow_mut().suppress = annotations.suppress;
-        cell.borrow_mut().is_marker = s.is_marker;
+        let fields = self.resolve_declared_fields(&s.fields)?;
+        self.resolver.types_mut().define_struct(
+            nominal,
+            StructFacts {
+                fields,
+                layout: annotations.layout,
+                suppress: annotations.suppress,
+                is_marker: s.is_marker,
+            },
+        );
 
-        cell.borrow_mut().fields = self.resolve_declared_fields(&s.fields)?;
-
-        let self_type = ResolvedType::Struct(cell.clone());
-        if !s.is_marker && crate::layout::is_zero_sized(&self_type) {
+        let self_type = ResolvedType::Struct(nominal.clone());
+        if !s.is_marker && self.is_zero_sized(s.id, s.span, &self_type)? {
             self.error(
                 s.id,
                 s.span,
@@ -953,25 +964,32 @@ impl<'r> Analyzer<'r> {
         }
 
         let functions = self.collect_methods(&s.functions, method_ids, !s.generics.is_empty())?;
-        cell.borrow_mut().functions = functions;
+        self.resolver
+            .types_mut()
+            .define_functions(nominal, functions);
         Some(())
     }
 
     pub fn signature_of_union(
         &mut self,
         u: &HirUnionDef,
-        cell: &Rc<RefCell<ResolvedUnionType>>,
+        nominal: &NominalRef,
         method_ids: &[HirId],
     ) -> Option<()> {
         self.check_redundant_hidden(u.id, u.explicit_hidden_span);
         let annotations =
             self.item_annotations(u.id, &u.annotations, crate::annotations::ItemKind::Union);
-        cell.borrow_mut().suppress = annotations.suppress;
+        let fields = self.resolve_declared_fields(&u.fields)?;
+        self.resolver.types_mut().define_union(
+            nominal,
+            UnionFacts {
+                fields,
+                suppress: annotations.suppress,
+            },
+        );
 
-        cell.borrow_mut().fields = self.resolve_declared_fields(&u.fields)?;
-
-        let self_type = ResolvedType::Union(cell.clone());
-        if crate::layout::is_zero_sized(&self_type) {
+        let self_type = ResolvedType::Union(nominal.clone());
+        if self.is_zero_sized(u.id, u.span, &self_type)? {
             self.error(
                 u.id,
                 u.span,
@@ -984,7 +1002,9 @@ impl<'r> Analyzer<'r> {
         }
 
         let functions = self.collect_methods(&u.functions, method_ids, !u.generics.is_empty())?;
-        cell.borrow_mut().functions = functions;
+        self.resolver
+            .types_mut()
+            .define_functions(nominal, functions);
         Some(())
     }
 
@@ -1332,14 +1352,12 @@ impl<'r> Analyzer<'r> {
     pub fn signature_of_enum(
         &mut self,
         e: &HirEnumDef,
-        cell: &Rc<RefCell<ResolvedEnumType>>,
+        nominal: &NominalRef,
         method_ids: &[HirId],
     ) -> Option<()> {
         self.check_redundant_hidden(e.id, e.explicit_hidden_span);
         let annotations =
             self.item_annotations(e.id, &e.annotations, crate::annotations::ItemKind::Enum);
-        cell.borrow_mut().layout = annotations.layout;
-        cell.borrow_mut().suppress = annotations.suppress;
 
         let header = self.resolve_enum_header(e)?;
         let dynamic_fields = self.resolve_enum_dynamic_fields(e, &header)?;
@@ -1347,16 +1365,22 @@ impl<'r> Analyzer<'r> {
         let names_ok = self.check_variant_name_collisions(e);
         let variants = variants.filter(|_| names_ok)?;
 
-        {
-            let mut resolved = cell.borrow_mut();
-            resolved.tag_type = header.tag_type;
-            resolved.header = header.fields;
-            resolved.dynamic_fields = dynamic_fields;
-            resolved.variants = variants;
-        }
+        self.resolver.types_mut().define_enum(
+            nominal,
+            EnumFacts {
+                tag_type: header.tag_type,
+                header: header.fields,
+                dynamic_fields,
+                variants,
+                layout: annotations.layout,
+                suppress: annotations.suppress,
+            },
+        );
 
         let functions = self.collect_methods(&e.functions, method_ids, !e.generics.is_empty())?;
-        cell.borrow_mut().functions = functions;
+        self.resolver
+            .types_mut()
+            .define_functions(nominal, functions);
         Some(())
     }
 }

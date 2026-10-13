@@ -8,12 +8,12 @@ impl Driver {
     pub(crate) fn conformance_for(
         &mut self,
         target: &ResolvedType,
-        spec: &Rc<RefCell<ResolvedSpecType>>,
+        spec: &NominalRef,
         spec_args: &[ResolvedGenericArg],
     ) -> Option<ConformanceEntry> {
         let matches = |entry: &&ConformanceEntry| {
             entry.target == target.lookup_key()
-                && entry.spec.borrow().id == spec.borrow().id
+                && entry.spec.decl_id == spec.decl_id
                 && entry.spec_args == spec_args
         };
         if let Some(entry) = self.conformances.entries.iter().find(matches) {
@@ -22,7 +22,7 @@ impl Driver {
         // Goal-directed: instantiate only the templates that can produce
         // this spec, then look again. A goal still on the stack after that
         // is a genuine cycle, reported with the chain that closes it.
-        self.solve(target, Some(&spec.borrow().id));
+        self.solve(target, Some(&spec.decl_id));
         if let Some(entry) = self.conformances.entries.iter().find(matches) {
             return Some(entry.clone());
         }
@@ -30,19 +30,19 @@ impl Driver {
             .conformances
             .goals
             .iter()
-            .find(|goal| goal.target == target.lookup_key() && goal.spec == spec.borrow().id)
+            .find(|goal| goal.target == target.lookup_key() && goal.spec == spec.decl_id)
         {
             if self
                 .conformances
                 .reported_cycles
                 .iter()
-                .any(|(t, id)| *t == target.lookup_key() && *id == spec.borrow().id)
+                .any(|(t, id)| *t == target.lookup_key() && *id == spec.decl_id)
             {
                 return None;
             }
             self.conformances
                 .reported_cycles
-                .push((target.lookup_key(), spec.borrow().id));
+                .push((target.lookup_key(), spec.decl_id));
             let goals: Vec<(String, Ident, ModulePath, Span)> = self
                 .conformances
                 .goals
@@ -65,7 +65,7 @@ impl Driver {
                 .collect();
             chain.push((
                 target.to_string(),
-                spec.borrow().name.clone(),
+                spec.name.clone(),
                 self.site(&active_module, active_span),
             ));
             self.diagnostics.error(
@@ -81,7 +81,7 @@ impl Driver {
                     active_span,
                     AnalysisErrorKind::ConformanceCycle {
                         target: target.to_string(),
-                        spec: spec.borrow().name.clone(),
+                        spec: spec.name.clone(),
                         chain,
                     },
                 ),
@@ -93,15 +93,15 @@ impl Driver {
     pub(crate) fn bound_context_for(
         &mut self,
         concrete: &ResolvedType,
-        spec: Rc<RefCell<ResolvedSpecType>>,
+        spec: NominalRef,
         spec_args: Vec<ResolvedGenericArg>,
         declared_keys: &[(HirId, Vec<ResolvedGenericArg>)],
     ) -> Vec<ResolvedBound> {
         let mut permitted = HashSet::new();
-        permitted.insert(spec.borrow().id);
+        permitted.insert(spec.decl_id);
         let mut seeds = vec![ResolvedBound::new(concrete.clone(), spec, spec_args)];
         for entry in self.conformances_for_type(concrete) {
-            if permitted.contains(&entry.spec.borrow().id) {
+            if permitted.contains(&entry.spec.decl_id) {
                 seeds.push(ResolvedBound::new(
                     entry.target.clone(),
                     entry.spec.clone(),
@@ -209,8 +209,8 @@ impl Driver {
                 );
                 continue;
             };
-            let spec_id = produced.borrow().id;
-            let spec_name = produced.borrow().name.clone();
+            let spec_id = produced.decl_id;
+            let spec_name = produced.name.clone();
             if let Some(wanted) = spec
                 && spec_id != *wanted
             {
@@ -249,7 +249,7 @@ impl Driver {
         &mut self,
         template: &ConformanceTemplate,
         substitution: &GenericSubstitution,
-    ) -> Option<(Rc<RefCell<ResolvedSpecType>>, Vec<ResolvedGenericArg>)> {
+    ) -> Option<(NominalRef, Vec<ResolvedGenericArg>)> {
         self.with_analyzer(
             &template.module,
             substitution,
@@ -327,21 +327,8 @@ impl Driver {
             );
             return Some(substitution);
         }
-        let (actual_name, actual_args) = match actual {
-            ResolvedType::Struct(cell) => {
-                let cell = cell.borrow();
-                (cell.name.clone(), cell.generic_args.clone())
-            }
-            ResolvedType::Enum { cell, .. } => {
-                let cell = cell.borrow();
-                (cell.name.clone(), cell.generic_args.clone())
-            }
-            ResolvedType::Union(cell) => {
-                let cell = cell.borrow();
-                (cell.name.clone(), cell.generic_args.clone())
-            }
-            _ => return None,
-        };
+        let nominal = actual.aggregate()?;
+        let (actual_name, actual_args) = (nominal.name.clone(), nominal.generic_args.clone());
         let (path, args) = match &conform.target {
             Type::Generic(path, args) => (path, args),
             _ => return None,

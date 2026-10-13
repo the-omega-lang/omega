@@ -16,6 +16,7 @@ use omega_analyzer::checked::{
 };
 use omega_analyzer::resolved_type::ResolvedType;
 use omega_analyzer::runtime_checks::FunctionRuntimeChecks;
+use omega_analyzer::type_store::TypeStore;
 use omega_hir::HirId;
 use omega_parser::prelude::Span;
 use std::collections::HashMap;
@@ -59,7 +60,8 @@ struct DeferSite {
     run_block: BlockId,
 }
 
-pub(crate) struct FunctionLowerer {
+pub(crate) struct FunctionLowerer<'t> {
+    pub(super) types: &'t TypeStore,
     locals: Vec<MirLocalDecl>,
     local_of: HashMap<HirId, LocalId>,
     blocks: Vec<BuilderBlock>,
@@ -72,8 +74,9 @@ pub(crate) struct FunctionLowerer {
     runtime_checks: Option<FunctionRuntimeChecks>,
 }
 
-impl FunctionLowerer {
+impl<'t> FunctionLowerer<'t> {
     pub(crate) fn lower(
+        types: &'t TypeStore,
         params: &[CheckedParam],
         body: CheckedBlock,
         return_type: &ResolvedType,
@@ -81,7 +84,7 @@ impl FunctionLowerer {
         fn_span: Span,
         runtime_checks: Option<FunctionRuntimeChecks>,
     ) -> MirBody {
-        let mut lowerer = Self::new();
+        let mut lowerer = Self::new(types);
         lowerer.runtime_checks = runtime_checks;
 
         for param in params {
@@ -167,8 +170,9 @@ impl FunctionLowerer {
         lowerer.finish(arg_count)
     }
 
-    fn new() -> Self {
+    fn new(types: &'t TypeStore) -> Self {
         Self {
+            types,
             locals: Vec::new(),
             local_of: HashMap::new(),
             blocks: vec![BuilderBlock::default()],
@@ -207,7 +211,7 @@ impl FunctionLowerer {
                 r#type: r#type.clone(),
             },
             projections: Vec::new(),
-            align: place_align(&r#type),
+            align: place_align(self.types, &r#type),
             r#type,
         }
     }
@@ -731,6 +735,7 @@ mod tests {
 
     fn lower_void_body(body: CheckedBlock) -> MirBody {
         FunctionLowerer::lower(
+            &TypeStore::default(),
             &[],
             body,
             &ResolvedType::Void,

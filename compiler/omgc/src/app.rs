@@ -133,7 +133,7 @@ fn compile(args: Args) -> Result<(), AppError> {
         verbose_step(colors, "Lowering", "checked tree to MIR");
     }
 
-    let mir_modules = omega_mir::lower_program(program.modules, &program.entry);
+    let mir_modules = omega_mir::lower_program(program.modules, &program.entry, &program.types);
     let sources: Vec<EmissionSource> = program
         .sources
         .into_iter()
@@ -160,6 +160,7 @@ fn compile(args: Args) -> Result<(), AppError> {
         entry: program.entry.segments().to_vec(),
         extern_functions: program.extern_functions,
         extern_globals: program.extern_globals,
+        types: program.types,
     };
     let artifacts = omega_codegen::generate(request)?;
 

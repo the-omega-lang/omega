@@ -30,7 +30,7 @@ fn owner_params(names: &[&str]) -> Vec<GenericParam> {
 /// position, and `Self` is the owner applied to the owner's positions only.
 #[test]
 fn an_owner_and_member_signature_keeps_shadowed_parameters_distinct() {
-    let mut resolver = NoResolver;
+    let mut resolver = NoResolver::default();
     let mut a = analyzer(&mut resolver);
     let f = function("name<T>(owner: Self, value: T) => T { value }");
     let normalized = normalize_function(a.resolver, &ModulePath::default(), &f).unwrap();
@@ -62,7 +62,7 @@ fn an_owner_and_member_signature_keeps_shadowed_parameters_distinct() {
 /// identity rather than by any name.
 #[test]
 fn a_static_spec_parameter_is_its_own_unnamed_position() {
-    let mut resolver = NoResolver;
+    let mut resolver = NoResolver::default();
     let mut a = analyzer(&mut resolver);
     let f = function("take<A>(first: A, second: spec Show) => A { first }");
     let normalized = normalize_function(a.resolver, &ModulePath::default(), &f).unwrap();

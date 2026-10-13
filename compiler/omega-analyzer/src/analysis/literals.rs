@@ -9,7 +9,7 @@ struct LiteralTargetFields {
 
 pub(super) enum AggregateTarget {
     Struct(ResolvedType),
-    EnumVariant(Rc<RefCell<ResolvedEnumType>>, usize),
+    EnumVariant(NominalRef, usize),
     Union(ResolvedType),
 }
 
@@ -17,8 +17,8 @@ impl AggregateTarget {
     pub(super) fn r#type(&self) -> ResolvedType {
         match self {
             Self::Struct(r#type) | Self::Union(r#type) => r#type.clone(),
-            Self::EnumVariant(cell, _) => ResolvedType::Enum {
-                cell: cell.clone(),
+            Self::EnumVariant(nominal, _) => ResolvedType::Enum {
+                nominal: nominal.clone(),
                 variant: None,
             },
         }
@@ -97,15 +97,14 @@ impl<'r> Analyzer<'r> {
     ) -> Option<CheckedExprNode> {
         match self.resolve_aggregate_path(node_id, span, &lit.path, &lit.fields, expected)? {
             AggregateTarget::Struct(resolved) => {
-                let ResolvedType::Struct(cell) = &resolved else {
+                let ResolvedType::Struct(nominal) = &resolved else {
                     unreachable!("AggregateTarget::Struct always wraps ResolvedType::Struct");
                 };
-                // Snapshot the declared fields so `cell` isn't borrowed
-                // across the value analysis below -- a nested literal of
-                // the same struct type needs to borrow it again.
-                let declared = cell.borrow().fields.clone();
-                let struct_name = cell.borrow().name.clone();
-                let declaring_module = cell.borrow().module_path.clone();
+                let declared = self.type_facts(node_id, span, |types| {
+                    types.fields(nominal).map(<[_]>::to_vec)
+                })?;
+                let struct_name = nominal.name.clone();
+                let declaring_module = nominal.module_path.clone();
                 let base = resolved.clone();
                 let target = LiteralTargetFields {
                     owner: struct_name,
@@ -127,9 +126,10 @@ impl<'r> Analyzer<'r> {
                     kind: CheckedExpr::StructLiteral(CheckedStructLiteral { fields }),
                 })
             }
-            AggregateTarget::EnumVariant(cell, variant_index) => {
+            AggregateTarget::EnumVariant(nominal, variant_index) => {
+                let e =
+                    self.type_facts(node_id, span, |types| types.enum_facts(&nominal).cloned())?;
                 let (enum_name, variant_name, declared, header_names, declaring_module) = {
-                    let e = cell.borrow();
                     let v = &e.variants[variant_index];
                     let header_names: Vec<Ident> =
                         e.header.iter().map(|field| field.name.clone()).collect();
@@ -140,11 +140,11 @@ impl<'r> Analyzer<'r> {
                         .cloned()
                         .collect();
                     (
-                        e.name.clone(),
+                        nominal.name.clone(),
                         v.name.clone(),
                         declared,
                         header_names,
-                        e.module_path.clone(),
+                        nominal.module_path.clone(),
                     )
                 };
                 if declared.is_empty() {
@@ -162,7 +162,7 @@ impl<'r> Analyzer<'r> {
                     declared.iter().map(|field| field.name.clone()).collect();
                 let unknown_enum = enum_name.clone();
                 let base = ResolvedType::Enum {
-                    cell: cell.clone(),
+                    nominal: nominal.clone(),
                     variant: Some(variant_index),
                 };
                 let target = LiteralTargetFields {
@@ -194,7 +194,7 @@ impl<'r> Analyzer<'r> {
                     id: node_id,
                     span,
                     r#type: ResolvedType::Enum {
-                        cell,
+                        nominal,
                         variant: Some(variant_index),
                     },
                     kind: CheckedExpr::EnumConstruct(CheckedEnumConstruct {
@@ -204,12 +204,14 @@ impl<'r> Analyzer<'r> {
                 })
             }
             AggregateTarget::Union(resolved) => {
-                let ResolvedType::Union(cell) = &resolved else {
+                let ResolvedType::Union(nominal) = &resolved else {
                     unreachable!("AggregateTarget::Union always wraps ResolvedType::Union");
                 };
-                let declared = cell.borrow().fields.clone();
-                let union_name = cell.borrow().name.clone();
-                let declaring_module = cell.borrow().module_path.clone();
+                let declared = self.type_facts(node_id, span, |types| {
+                    types.fields(nominal).map(<[_]>::to_vec)
+                })?;
+                let union_name = nominal.name.clone();
+                let declaring_module = nominal.module_path.clone();
 
                 if lit.fields.is_empty() {
                     self.error(
@@ -810,35 +812,9 @@ impl<'r> Analyzer<'r> {
         expected: Option<&ResolvedType>,
         absolute: &ItemPath,
     ) -> Option<Vec<ResolvedGenericArg>> {
-        let expected = expected?;
-        let (cell_module, cell_name, generic_args) = match expected {
-            ResolvedType::Struct(cell) => {
-                let c = cell.borrow();
-                (
-                    c.module_path.clone(),
-                    c.name.clone(),
-                    c.generic_args.clone(),
-                )
-            }
-            ResolvedType::Union(cell) => {
-                let c = cell.borrow();
-                (
-                    c.module_path.clone(),
-                    c.name.clone(),
-                    c.generic_args.clone(),
-                )
-            }
-            ResolvedType::Enum { cell, .. } => {
-                let c = cell.borrow();
-                (
-                    c.module_path.clone(),
-                    c.name.clone(),
-                    c.generic_args.clone(),
-                )
-            }
-            _ => return None,
-        };
-        (cell_module == absolute.module && cell_name == absolute.name).then_some(generic_args)
+        let nominal = expected?.aggregate()?;
+        (nominal.module_path == absolute.module && nominal.name == absolute.name)
+            .then(|| nominal.generic_args.clone())
     }
 
     /// Binds what the written fields determine. The fields are analyzed
@@ -880,25 +856,26 @@ impl<'r> Analyzer<'r> {
         rest: &[Ident],
     ) -> Option<AggregateTarget> {
         let kind = match &r#type {
-            ResolvedType::Struct(cell) => match rest.first() {
+            ResolvedType::Struct(nominal) => match rest.first() {
                 None => return Some(AggregateTarget::Struct(r#type.clone())),
                 Some(name) => AnalysisErrorKind::StructLiteralPathTooDeep {
-                    r#struct: cell.borrow().name.clone(),
+                    r#struct: nominal.name.clone(),
                     name: name.clone(),
                 },
             },
-            ResolvedType::Union(cell) => match rest.first() {
+            ResolvedType::Union(nominal) => match rest.first() {
                 None => return Some(AggregateTarget::Union(r#type.clone())),
                 Some(name) => AnalysisErrorKind::StructLiteralPathTooDeep {
-                    r#struct: cell.borrow().name.clone(),
+                    r#struct: nominal.name.clone(),
                     name: name.clone(),
                 },
             },
-            ResolvedType::Enum { cell, .. } => match rest {
+            ResolvedType::Enum { nominal, .. } => match rest {
                 [] => {
-                    let e = cell.borrow();
+                    let e =
+                        self.type_facts(node_id, span, |types| types.enum_facts(nominal).cloned())?;
                     AnalysisErrorKind::EnumLiteralWithoutVariant {
-                        r#enum: e.name.clone(),
+                        r#enum: nominal.name.clone(),
                         example: e
                             .variants
                             .first()
@@ -907,15 +884,18 @@ impl<'r> Analyzer<'r> {
                     }
                 }
                 [variant_name] => {
-                    let found = cell.borrow().variant(variant_name).map(|(index, _)| index);
-                    match found {
-                        Some(index) => {
-                            return Some(AggregateTarget::EnumVariant(cell.clone(), index));
+                    let e =
+                        self.type_facts(node_id, span, |types| types.enum_facts(nominal).cloned())?;
+                    match e.variant(variant_name) {
+                        Some((index, _)) => {
+                            return Some(AggregateTarget::EnumVariant(nominal.clone(), index));
                         }
                         None => {
-                            let e = cell.borrow();
+                            let functions = self.type_facts(node_id, span, |types| {
+                                types.functions(nominal).cloned()
+                            })?;
                             AnalysisErrorKind::NoSuchEnumMember {
-                                r#enum: e.name.clone(),
+                                r#enum: nominal.name.clone(),
                                 name: variant_name.clone(),
                                 similar_variant: best_match(
                                     variant_name,
@@ -926,14 +906,14 @@ impl<'r> Analyzer<'r> {
                                 // near miss here.
                                 similar_function: best_match(
                                     variant_name,
-                                    FunctionNamespace::Static.names(&e.functions).into_iter(),
+                                    FunctionNamespace::Static.names(&functions).into_iter(),
                                 ),
                             }
                         }
                     }
                 }
                 _ => AnalysisErrorKind::GenericPathTooDeep {
-                    r#type: cell.borrow().name.clone(),
+                    r#type: nominal.name.clone(),
                 },
             },
             _ if rest.is_empty() => AnalysisErrorKind::StructLiteralNotAStruct {

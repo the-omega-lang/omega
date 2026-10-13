@@ -87,7 +87,7 @@ fn generate_at(
             path: source.relative_path.clone(),
         })
         .collect::<Vec<_>>();
-    let modules = omega_mir::lower_program(program.modules, &entry);
+    let modules = omega_mir::lower_program(program.modules, &entry, &program.types);
     let request = omega_codegen::CodegenRequest {
         target: Target::DEFAULT,
         opt_level,
@@ -96,6 +96,7 @@ fn generate_at(
         entry: entry.segments().to_vec(),
         extern_functions,
         extern_globals,
+        types: program.types,
     };
     Ok(omega_codegen::generate(request)?
         .into_iter()

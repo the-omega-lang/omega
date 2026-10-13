@@ -1,7 +1,7 @@
 //! Driver-owned `alias` query state.
 //!
 //! An alias resolves to the identity its target already has. It never gets an
-//! `ItemKey`, a type cell, or a symbol, so this query deliberately sits beside
+//! `ItemKey`, a nominal type, or a symbol, so this query deliberately sits beside
 //! the item queries rather than inside them.
 
 use crate::Driver;

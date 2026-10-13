@@ -181,8 +181,6 @@ Shape problems in `omega-driver` and `omega-analyzer` that still need a delibera
 
 - **`Driver::compile(&mut self)` looks reusable even though its semantic/query state is one-shot.** The CLI only compiles once per driver today, but a second call can retain failed queries, registrations, diagnostics, and materialized bodies. The future API should either consume the driver or split reusable workspace/module state from a fresh `CompilationSession`.
 
-- **Nominal semantic types use shared `Rc<RefCell<Resolved*Type>>` cells.** They solve recursive declaration identity cleanly today, but make phase completion an interior-mutability convention. Stable interned type IDs backed by an arena/query store would be a better prerequisite for incremental or parallel semantic analysis.
-
 ## Design debt worth watching
 
 - **The contextual-keyword set grows with every feature, with no promotion

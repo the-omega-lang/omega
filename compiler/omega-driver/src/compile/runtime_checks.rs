@@ -93,11 +93,16 @@ impl Driver {
             Ok(_) => return Err(format!("'{}' is not a struct", info_path)),
             Err(error) => return Err(error.to_string()),
         };
-        let ResolvedType::Struct(cell) = &info_type else {
+        let ResolvedType::Struct(nominal) = &info_type else {
             unreachable!("just matched a struct")
         };
         let fields = {
-            let definition = cell.borrow();
+            let definition = self
+                .items
+                .types
+                .struct_facts(nominal)
+                .map_err(|incomplete| ResolveError::from(incomplete).to_string())?
+                .clone();
             let field = |name: &str, expected: ResolvedType| {
                 let index = definition
                     .fields

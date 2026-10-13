@@ -1,17 +1,29 @@
 use super::*;
 use crate::resolved_type::ResolvedConformance;
 use crate::resolver::ResolveError;
+use crate::type_store::NominalKind;
 use omega_hir::ModuleId;
 
 /// A `ModuleResolver` that panics if the analyzer ever consults it. Shared by
 /// the `analysis` unit tests, whose subjects (mangling defaults, ABI
 /// classification, conversion costs) never resolve imports, calls, or
 /// generics, so this stub only needs to satisfy the trait, not implement it.
-pub(crate) struct NoResolver;
+#[derive(Default)]
+pub(crate) struct NoResolver {
+    types: TypeStore,
+}
 
 impl ModuleResolver for NoResolver {
     fn macro_origin_module(&self, _origin: Origin) -> Option<ModulePath> {
         None
+    }
+
+    fn types(&self) -> &TypeStore {
+        &self.types
+    }
+
+    fn types_mut(&mut self) -> &mut TypeStore {
+        &mut self.types
     }
 
     fn resolve_explicit_anchor(
@@ -156,7 +168,7 @@ impl ModuleResolver for NoResolver {
     fn spec_declaration(
         &mut self,
         _absolute_path: &ItemPath,
-    ) -> Result<Option<Rc<RefCell<ResolvedSpecType>>>, ResolveError> {
+    ) -> Result<Option<NominalRef>, ResolveError> {
         unreachable!("test never triggers spec resolution")
     }
 
@@ -170,7 +182,7 @@ impl ModuleResolver for NoResolver {
     fn conformance_for(
         &mut self,
         _target: &ResolvedType,
-        _spec: &Rc<RefCell<ResolvedSpecType>>,
+        _spec: &NominalRef,
         _spec_args: &[crate::resolved_type::ResolvedGenericArg],
     ) -> Result<Option<ResolvedConformance>, ResolveError> {
         unreachable!("test never triggers conformance lookup")
@@ -225,17 +237,15 @@ pub(crate) fn analyzer(resolver: &mut NoResolver) -> Analyzer<'_> {
 }
 
 pub(crate) fn dummy_struct_type() -> ResolvedType {
-    ResolvedType::Struct(Rc::new(RefCell::new(ResolvedStructType {
-        id: id(1),
-        name: Ident("S".into()),
-        module_path: omega_hir::ModulePath::default(),
-        generic_args: vec![],
-        fields: vec![],
-        functions: vec![],
-        layout: crate::annotations::Layout::default(),
-        suppress: vec![],
-        is_marker: false,
-    })))
+    crate::type_store::testing::define_struct(
+        crate::type_store::testing::identity(1, NominalKind::Struct, "S", &[], vec![]),
+        StructFacts {
+            fields: vec![],
+            layout: crate::annotations::Layout::default(),
+            suppress: vec![],
+            is_marker: false,
+        },
+    )
 }
 
 fn anonymous(members: Vec<ResolvedType>) -> ResolvedType {
@@ -317,7 +327,7 @@ fn shape_index(parent: &ResolvedType, member: &ResolvedType) -> usize {
 
 #[test]
 fn divergence_is_value_compatible_without_widening_type_acceptance() {
-    let mut resolver = NoResolver;
+    let mut resolver = NoResolver::default();
     let mut analyzer = analyzer(&mut resolver);
     for expected in [ResolvedType::I32, ResolvedType::Bool, ResolvedType::Void] {
         assert!(

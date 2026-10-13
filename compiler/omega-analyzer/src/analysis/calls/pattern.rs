@@ -91,20 +91,20 @@ impl Analyzer<'_> {
                         return None;
                     }
                 };
-                let spec = spec.borrow();
+                let facts = self.resolver.types().spec_facts(&spec).clone();
                 let args = self.argument_patterns(
                     declaration.id,
                     declaration.span,
                     args,
                     generics,
-                    &spec.generics,
+                    &facts.generics,
                     &spec.module_path,
                     PatternPurpose::Overload { self_pattern },
                 )?;
                 let key = (
                     parameter,
                     SpecPattern {
-                        spec: spec.id,
+                        spec: spec.decl_id,
                         module_path: spec.module_path.clone(),
                         name: spec.name.clone(),
                         args,
@@ -477,18 +477,18 @@ impl Analyzer<'_> {
                                 return None;
                             }
                         };
-                        let spec = spec.borrow();
+                        let facts = self.resolver.types().spec_facts(&spec).clone();
                         let args = self.argument_patterns(
                             id,
                             span,
                             args,
                             generics,
-                            &spec.generics,
+                            &facts.generics,
                             &spec.module_path,
                             purpose,
                         )?;
                         let key = SpecPattern {
-                            spec: spec.id,
+                            spec: spec.decl_id,
                             module_path: spec.module_path.clone(),
                             name: spec.name.clone(),
                             args,

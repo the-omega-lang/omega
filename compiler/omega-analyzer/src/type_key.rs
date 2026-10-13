@@ -113,20 +113,17 @@ fn write_type(out: &mut String, ty: &ResolvedType) {
             write_type(out, item);
         }
         ResolvedType::Function(fn_type) => write_function(out, fn_type),
-        ResolvedType::Struct(cell) => {
-            let cell = cell.borrow();
-            write_nominal(out, 'S', &cell.module_path, &cell.name);
-            write_args(out, &cell.generic_args);
+        ResolvedType::Struct(nominal) => {
+            write_nominal(out, 'S', &nominal.module_path, &nominal.name);
+            write_args(out, &nominal.generic_args);
         }
-        ResolvedType::Union(cell) => {
-            let cell = cell.borrow();
-            write_nominal(out, 'U', &cell.module_path, &cell.name);
-            write_args(out, &cell.generic_args);
+        ResolvedType::Union(nominal) => {
+            write_nominal(out, 'U', &nominal.module_path, &nominal.name);
+            write_args(out, &nominal.generic_args);
         }
-        ResolvedType::Enum { cell, variant } => {
-            let cell = cell.borrow();
-            write_nominal(out, 'E', &cell.module_path, &cell.name);
-            write_args(out, &cell.generic_args);
+        ResolvedType::Enum { nominal, variant } => {
+            write_nominal(out, 'E', &nominal.module_path, &nominal.name);
+            write_args(out, &nominal.generic_args);
             // The refined form is a distinct `ResolvedType` even though it
             // shares the parent's representation, so it must key distinctly.
             match variant {
@@ -137,10 +134,9 @@ fn write_type(out: &mut String, ty: &ResolvedType) {
                 None => out.push('.'),
             }
         }
-        ResolvedType::Spec(cell) => {
-            let cell = cell.borrow();
-            write_nominal(out, 'P', &cell.module_path, &cell.name);
-            write_args(out, &cell.generic_args);
+        ResolvedType::Spec(nominal) => {
+            write_nominal(out, 'P', &nominal.module_path, &nominal.name);
+            write_args(out, &nominal.generic_args);
         }
         ResolvedType::SpecObject { shape, mutable } => {
             out.push('O');
@@ -198,7 +194,7 @@ fn write_function(out: &mut String, fn_type: &ResolvedFunctionType) {
 }
 
 fn write_spec_application(out: &mut String, application: &ResolvedSpecApplication) {
-    let spec = application.spec.borrow();
+    let spec = &*application.spec;
     write_nominal(out, 'P', &spec.module_path, &spec.name);
     write_args(out, &application.spec_args);
 }

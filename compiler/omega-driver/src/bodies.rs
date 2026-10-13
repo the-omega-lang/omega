@@ -187,21 +187,21 @@ impl Driver {
             }
 
             HirItem::Struct(s) => {
-                let cell = self.items.cells.expect_struct(key);
-                let self_type = ResolvedType::Struct(cell.clone());
+                let nominal = self.items.nominals.expect(key);
+                let self_type = ResolvedType::Struct(nominal.clone());
                 self.check_aggregate_body(
                     key,
                     AnalysisSite::new(s.id, s.span),
                     &GenericParam::declared(s.id, &s.generics),
                     self_type,
-                    |a| a.check_struct_body(s, &cell),
+                    |a| a.check_struct_body(s, &nominal),
                 )
             }
 
             HirItem::Enum(e) => {
-                let cell = self.items.cells.expect_enum(key);
+                let nominal = self.items.nominals.expect(key);
                 let self_type = ResolvedType::Enum {
-                    cell: cell.clone(),
+                    nominal: nominal.clone(),
                     variant: None,
                 };
                 self.check_aggregate_body(
@@ -209,19 +209,19 @@ impl Driver {
                     AnalysisSite::new(e.id, e.span),
                     &GenericParam::declared(e.id, &e.generics),
                     self_type,
-                    |a| a.check_enum_body(e, &cell),
+                    |a| a.check_enum_body(e, &nominal),
                 )
             }
 
             HirItem::Union(u) => {
-                let cell = self.items.cells.expect_union(key);
-                let self_type = ResolvedType::Union(cell.clone());
+                let nominal = self.items.nominals.expect(key);
+                let self_type = ResolvedType::Union(nominal.clone());
                 self.check_aggregate_body(
                     key,
                     AnalysisSite::new(u.id, u.span),
                     &GenericParam::declared(u.id, &u.generics),
                     self_type,
-                    |a| a.check_union_body(u, &cell),
+                    |a| a.check_union_body(u, &nominal),
                 )
             }
 

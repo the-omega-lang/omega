@@ -184,7 +184,6 @@ impl Driver {
                         continue;
                     };
                     let spec_package = spec
-                        .borrow()
                         .module_path
                         .root()
                         .cloned()
@@ -425,7 +424,6 @@ impl Driver {
             .unwrap_or_else(|| Ident("core".to_string()));
         let spec_package = entry
             .spec
-            .borrow()
             .module_path
             .root()
             .cloned()
@@ -465,7 +463,7 @@ impl Driver {
     fn registration_decision(&mut self, entry: &ConformanceEntry) -> RegistrationDecision {
         let incumbent = self.conformances.entries.iter().position(|existing| {
             existing.target == entry.target
-                && existing.spec.borrow().id == entry.spec.borrow().id
+                && existing.spec.decl_id == entry.spec.decl_id
                 && existing.spec_args == entry.spec_args
         });
         let Some(index) = incumbent else {
@@ -484,7 +482,7 @@ impl Driver {
                         entry.span,
                         AnalysisErrorKind::DuplicateConformance {
                             target: entry.target.to_string(),
-                            spec: entry.spec.borrow().name.clone(),
+                            spec: entry.spec.name.clone(),
                             previous: existing_site,
                         },
                     ),
@@ -499,7 +497,7 @@ impl Driver {
                         entry.span,
                         AnalysisErrorKind::AmbiguousConformance {
                             target: entry.target.to_string(),
-                            spec: entry.spec.borrow().name.clone(),
+                            spec: entry.spec.name.clone(),
                             first: existing_site,
                         },
                     ),

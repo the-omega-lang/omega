@@ -93,7 +93,7 @@ impl<'ctx> Codegen<'ctx> {
             return *global;
         }
 
-        let stride = layout::total_bytes(item_type, self.pointer_bytes());
+        let stride = layout::total_bytes(self.types, item_type, self.pointer_bytes());
         let mut blob = ConstBlob {
             bytes: vec![0u8; stride as usize * elements.len()],
             relocs: Vec::new(),
@@ -102,7 +102,11 @@ impl<'ctx> Codegen<'ctx> {
         for (i, element) in elements.iter().enumerate() {
             self.write_const_element(&mut blob, i as u32 * stride, element, item_type);
         }
-        let global = self.declare_blob(&symbol, &blob, layout::type_alignment(item_type));
+        let global = self.declare_blob(
+            &symbol,
+            &blob,
+            layout::type_alignment(self.types, item_type),
+        );
         self.const_blobs.insert(symbol, global);
         global
     }
@@ -115,14 +119,14 @@ impl<'ctx> Codegen<'ctx> {
             return *global;
         }
 
-        let total = layout::total_bytes(r#type, self.pointer_bytes());
+        let total = layout::total_bytes(self.types, r#type, self.pointer_bytes());
         let mut blob = ConstBlob {
             bytes: vec![0u8; total as usize],
             relocs: Vec::new(),
             pointer_bytes: self.pointer_bytes(),
         };
         self.write_const_element(&mut blob, 0, value, r#type);
-        let global = self.declare_blob(&symbol, &blob, layout::type_alignment(r#type));
+        let global = self.declare_blob(&symbol, &blob, layout::type_alignment(self.types, r#type));
         self.const_blobs.insert(symbol, global);
         global
     }
@@ -138,8 +142,10 @@ impl<'ctx> Codegen<'ctx> {
         key.extend_from_slice(omega_analyzer::type_key::structural_key(r#type).as_bytes());
         key.push(0);
         key.extend_from_slice(&count.to_le_bytes());
-        key.extend_from_slice(&layout::total_bytes(r#type, self.pointer_bytes()).to_le_bytes());
-        key.extend_from_slice(&layout::type_alignment(r#type).to_le_bytes());
+        key.extend_from_slice(
+            &layout::total_bytes(self.types, r#type, self.pointer_bytes()).to_le_bytes(),
+        );
+        key.extend_from_slice(&layout::type_alignment(self.types, r#type).to_le_bytes());
         key.extend_from_slice(&self.pointer_bytes().to_le_bytes());
         key
     }
@@ -149,7 +155,7 @@ impl<'ctx> Codegen<'ctx> {
         value: &ConstValue,
         r#type: &ResolvedType,
     ) -> ConstBlob<'ctx> {
-        let total = layout::total_bytes(r#type, self.pointer_bytes());
+        let total = layout::total_bytes(self.types, r#type, self.pointer_bytes());
         let mut blob = ConstBlob {
             bytes: vec![0u8; total as usize],
             relocs: Vec::new(),
@@ -235,7 +241,8 @@ impl<'ctx> Codegen<'ctx> {
     ) -> Vec<BasicValueEnum<'ctx>> {
         match value {
             ConstValue::Number(number) => {
-                let raw_leaf = omega_analyzer::layout::leaves_of(r#type, self.pointer_bytes())[0];
+                let raw_leaf =
+                    omega_analyzer::layout::leaves_of(self.types, r#type, self.pointer_bytes())[0];
                 vec![self.scalar_const(raw_leaf, number)]
             }
             ConstValue::Bool(b) => vec![
@@ -275,9 +282,10 @@ impl<'ctx> Codegen<'ctx> {
                     }
                 };
                 let struct_type = struct_type.clone();
-                let field_types: Vec<ResolvedType> = struct_type
-                    .borrow()
-                    .fields
+                let field_types: Vec<ResolvedType> = self
+                    .types
+                    .frozen()
+                    .fields(&struct_type)
                     .iter()
                     .map(|field| field.r#type.clone())
                     .collect();
@@ -286,7 +294,11 @@ impl<'ctx> Codegen<'ctx> {
                     .zip(&field_types)
                     .map(|(value, field_type)| self.emit_const_value(value, field_type))
                     .collect();
-                let layout = layout::struct_layout(&struct_type.borrow(), self.pointer_bytes());
+                let layout = layout::struct_layout(
+                    self.types,
+                    self.types.frozen().struct_facts(&struct_type),
+                    self.pointer_bytes(),
+                );
                 self.assemble_struct_leaves(&layout, &per_field)
             }
             ConstValue::Enum {
@@ -296,7 +308,7 @@ impl<'ctx> Codegen<'ctx> {
                 fields,
                 ..
             } => {
-                let view = enum_view(r#type, "an Enum constant");
+                let view = enum_view(self.types, r#type, "an Enum constant");
                 let pointer_bytes = self.pointer_bytes();
                 let variant = &view.variants[*variant_index];
                 let header: Vec<(ResolvedType, ConstValue)> = view
@@ -311,7 +323,7 @@ impl<'ctx> Codegen<'ctx> {
                     .enumerate()
                     .map(|(i, field_type)| {
                         (
-                            layout::enum_dynamic_field_offset(&view, i, pointer_bytes),
+                            layout::enum_dynamic_field_offset(self.types, &view, i, pointer_bytes),
                             field_type.clone(),
                         )
                     })
@@ -322,25 +334,41 @@ impl<'ctx> Codegen<'ctx> {
                     .enumerate()
                     .map(|(i, field_type)| {
                         (
-                            layout::enum_body_field_offset(&view, *variant_index, i, pointer_bytes),
+                            layout::enum_body_field_offset(
+                                self.types,
+                                &view,
+                                *variant_index,
+                                i,
+                                pointer_bytes,
+                            ),
                             field_type.clone(),
                         )
                     })
                     .collect();
                 let tag_type = view.tag_type.clone();
 
-                let total = layout::total_bytes(r#type, pointer_bytes);
-                let slot = self.entry_alloca(total, Self::slot_alignment(r#type), "enumconst");
+                let total = layout::total_bytes(self.types, r#type, pointer_bytes);
+                let slot = self.entry_alloca(total, self.slot_alignment(r#type), "enumconst");
                 self.zero_fill_slot(slot, r#type);
 
                 let tag_values = self.emit_const_value(&ConstValue::Number(*tag), &tag_type);
-                self.store_scalars(&slot, 0, &tag_values, layout::type_alignment(&tag_type));
+                self.store_scalars(
+                    &slot,
+                    0,
+                    &tag_values,
+                    layout::type_alignment(self.types, &tag_type),
+                );
 
-                let mut offset = layout::total_bytes(&tag_type, pointer_bytes);
+                let mut offset = layout::total_bytes(self.types, &tag_type, pointer_bytes);
                 for (field_type, value) in &header {
                     let values = self.emit_const_value(value, field_type);
-                    self.store_scalars(&slot, offset, &values, layout::type_alignment(field_type));
-                    offset += layout::total_bytes(field_type, pointer_bytes);
+                    self.store_scalars(
+                        &slot,
+                        offset,
+                        &values,
+                        layout::type_alignment(self.types, field_type),
+                    );
+                    offset += layout::total_bytes(self.types, field_type, pointer_bytes);
                 }
 
                 for (value, (field_offset, field_type)) in dynamic_fields.iter().zip(&dynamic) {
@@ -349,7 +377,7 @@ impl<'ctx> Codegen<'ctx> {
                         &slot,
                         *field_offset,
                         &values,
-                        layout::type_alignment(field_type),
+                        layout::type_alignment(self.types, field_type),
                     );
                 }
 
@@ -359,33 +387,38 @@ impl<'ctx> Codegen<'ctx> {
                         &slot,
                         *field_offset,
                         &values,
-                        layout::type_alignment(field_type),
+                        layout::type_alignment(self.types, field_type),
                     );
                 }
 
                 self.load_scalars(
                     &PlaceStorage::Slot { slot, offset: 0 },
                     r#type,
-                    layout::type_alignment(r#type),
+                    layout::type_alignment(self.types, r#type),
                 )
             }
             ConstValue::Union { value, .. } => {
-                let total = layout::total_bytes(r#type, self.pointer_bytes());
-                let slot = self.entry_alloca(total, Self::slot_alignment(r#type), "unionconst");
+                let total = layout::total_bytes(self.types, r#type, self.pointer_bytes());
+                let slot = self.entry_alloca(total, self.slot_alignment(r#type), "unionconst");
                 self.zero_fill_slot(slot, r#type);
 
                 let union_type = match r#type {
                     ResolvedType::Union(union_type) => union_type,
                     _ => unreachable!("a Union constant's own type is always ResolvedType::Union"),
                 };
-                let field_type = union_type.borrow().fields[0].r#type.clone();
+                let field_type = self.types.frozen().fields(union_type)[0].r#type.clone();
                 let values = self.emit_const_value(value, &field_type);
-                self.store_scalars(&slot, 0, &values, layout::type_alignment(&field_type));
+                self.store_scalars(
+                    &slot,
+                    0,
+                    &values,
+                    layout::type_alignment(self.types, &field_type),
+                );
 
                 self.load_scalars(
                     &PlaceStorage::Slot { slot, offset: 0 },
                     r#type,
-                    layout::type_alignment(r#type),
+                    layout::type_alignment(self.types, r#type),
                 )
             }
             ConstValue::Ref(inner) => {
@@ -414,7 +447,7 @@ impl<'ctx> Codegen<'ctx> {
         let pointer_bytes = self.pointer_bytes();
         match value {
             ConstValue::Number(number) => {
-                let leaf = omega_analyzer::layout::leaves_of(r#type, pointer_bytes)[0];
+                let leaf = omega_analyzer::layout::leaves_of(self.types, r#type, pointer_bytes)[0];
                 let leaf_bytes = leaf.bytes(pointer_bytes);
                 let raw: u64 = match number {
                     NumberValue::Signed(v) => *v as u64,
@@ -457,7 +490,7 @@ impl<'ctx> Codegen<'ctx> {
                         "mir body guarantees a nested Array constant's own type is SizedArray"
                     ),
                 };
-                let stride = layout::total_bytes(item, pointer_bytes);
+                let stride = layout::total_bytes(self.types, item, pointer_bytes);
                 for (i, element) in elements.iter().enumerate() {
                     self.write_const_element(blob, offset + i as u32 * stride, element, item);
                 }
@@ -469,15 +502,20 @@ impl<'ctx> Codegen<'ctx> {
                         unreachable!("a Struct constant's own type is always ResolvedType::Struct")
                     }
                 };
-                let field_types: Vec<ResolvedType> = struct_type
-                    .borrow()
-                    .fields
+                let field_types: Vec<ResolvedType> = self
+                    .types
+                    .frozen()
+                    .fields(&struct_type)
                     .iter()
                     .map(|field| field.r#type.clone())
                     .collect();
                 for (i, (value, field_type)) in fields.iter().zip(&field_types).enumerate() {
-                    let field_offset =
-                        layout::field_byte_offset(&struct_type.borrow(), i, pointer_bytes);
+                    let field_offset = layout::field_byte_offset(
+                        self.types,
+                        self.types.frozen().struct_facts(&struct_type),
+                        i,
+                        pointer_bytes,
+                    );
                     self.write_const_element(blob, offset + field_offset, value, field_type);
                 }
             }
@@ -488,7 +526,7 @@ impl<'ctx> Codegen<'ctx> {
                 fields,
                 ..
             } => {
-                let view = enum_view(r#type, "an Enum constant");
+                let view = enum_view(self.types, r#type, "an Enum constant");
                 let variant = &view.variants[*variant_index];
                 let header: Vec<(ResolvedType, ConstValue)> = view
                     .header
@@ -502,7 +540,7 @@ impl<'ctx> Codegen<'ctx> {
                     .enumerate()
                     .map(|(i, field_type)| {
                         (
-                            layout::enum_dynamic_field_offset(&view, i, pointer_bytes),
+                            layout::enum_dynamic_field_offset(self.types, &view, i, pointer_bytes),
                             field_type.clone(),
                         )
                     })
@@ -513,7 +551,13 @@ impl<'ctx> Codegen<'ctx> {
                     .enumerate()
                     .map(|(i, field_type)| {
                         (
-                            layout::enum_body_field_offset(&view, *variant_index, i, pointer_bytes),
+                            layout::enum_body_field_offset(
+                                self.types,
+                                &view,
+                                *variant_index,
+                                i,
+                                pointer_bytes,
+                            ),
                             field_type.clone(),
                         )
                     })
@@ -521,10 +565,11 @@ impl<'ctx> Codegen<'ctx> {
                 let tag_type = view.tag_type.clone();
 
                 self.write_const_element(blob, offset, &ConstValue::Number(*tag), &tag_type);
-                let mut header_offset = offset + layout::total_bytes(&tag_type, pointer_bytes);
+                let mut header_offset =
+                    offset + layout::total_bytes(self.types, &tag_type, pointer_bytes);
                 for (field_type, value) in &header {
                     self.write_const_element(blob, header_offset, value, field_type);
-                    header_offset += layout::total_bytes(field_type, pointer_bytes);
+                    header_offset += layout::total_bytes(self.types, field_type, pointer_bytes);
                 }
                 for (value, (field_offset, field_type)) in dynamic_fields.iter().zip(&dynamic) {
                     self.write_const_element(blob, offset + field_offset, value, field_type);
@@ -538,7 +583,9 @@ impl<'ctx> Codegen<'ctx> {
                     ResolvedType::Union(union_type) => union_type,
                     _ => unreachable!("a Union constant's own type is always ResolvedType::Union"),
                 };
-                let field_type = union_type.borrow().fields[*field_index].r#type.clone();
+                let field_type = self.types.frozen().fields(union_type)[*field_index]
+                    .r#type
+                    .clone();
                 self.write_const_element(blob, offset, value, &field_type);
             }
             ConstValue::Ref(inner) => {
@@ -561,7 +608,7 @@ impl<'ctx> Codegen<'ctx> {
         let pointer_bytes = self.pointer_bytes();
         match value {
             ConstValue::Number(number) => {
-                let leaf = omega_analyzer::layout::leaves_of(r#type, pointer_bytes)[0];
+                let leaf = omega_analyzer::layout::leaves_of(self.types, r#type, pointer_bytes)[0];
                 let leaf_bytes = leaf.bytes(pointer_bytes);
                 let raw: u64 = match number {
                     NumberValue::Signed(v) => *v as u64,
@@ -602,9 +649,10 @@ impl<'ctx> Codegen<'ctx> {
                         unreachable!("a Struct constant's own type is always ResolvedType::Struct")
                     }
                 };
-                let field_types: Vec<ResolvedType> = struct_type
-                    .borrow()
-                    .fields
+                let field_types: Vec<ResolvedType> = self
+                    .types
+                    .frozen()
+                    .fields(&struct_type)
                     .iter()
                     .map(|field| field.r#type.clone())
                     .collect();
@@ -619,7 +667,7 @@ impl<'ctx> Codegen<'ctx> {
                 fields,
                 ..
             } => {
-                let view = enum_view(r#type, "an Enum constant");
+                let view = enum_view(self.types, r#type, "an Enum constant");
                 out.extend_from_slice(&(*variant_index as u32).to_le_bytes());
                 let tag_bits: u64 = match tag {
                     NumberValue::Signed(v) => *v as u64,
@@ -642,7 +690,9 @@ impl<'ctx> Codegen<'ctx> {
                     _ => unreachable!("a Union constant's own type is always ResolvedType::Union"),
                 };
                 out.extend_from_slice(&(*field_index as u32).to_le_bytes());
-                let field_type = union_type.borrow().fields[*field_index].r#type.clone();
+                let field_type = self.types.frozen().fields(union_type)[*field_index]
+                    .r#type
+                    .clone();
                 self.hash_const_element(out, value, &field_type);
             }
             ConstValue::Ref(inner) => {

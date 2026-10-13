@@ -20,6 +20,7 @@ use inkwell::targets::{
 };
 use omega_analyzer::layout::EnumView;
 use omega_analyzer::resolved_type::ResolvedType;
+use omega_analyzer::type_store::TypeStore;
 use omega_analyzer::{Arch, Os, Target as OmegaTarget};
 use omega_hir::HirId;
 use omega_mir::EmissionUnit;
@@ -114,6 +115,7 @@ impl TargetSetup {
 
 pub(crate) struct Codegen<'ctx> {
     context: &'ctx Context,
+    types: &'ctx TypeStore,
     module: Module<'ctx>,
     builder: Builder<'ctx>,
     target_machine: TargetMachine,
@@ -143,6 +145,7 @@ impl<'ctx> Codegen<'ctx> {
     /// later be emitted concurrently.
     fn emit(
         context: &'ctx Context,
+        types: &'ctx TypeStore,
         setup: &TargetSetup,
         catalog: &Catalog,
         emit: EmitKind,
@@ -155,6 +158,7 @@ impl<'ctx> Codegen<'ctx> {
 
         let mut codegen = Self {
             context,
+            types,
             module,
             builder: context.create_builder(),
             target_machine,
@@ -254,7 +258,8 @@ impl<'ctx> Codegen<'ctx> {
         r#type: &ResolvedType,
     ) {
         let mut offset = 0u32;
-        for raw_leaf in omega_analyzer::layout::leaves_of(r#type, self.pointer_bytes()) {
+        for raw_leaf in omega_analyzer::layout::leaves_of(self.types, r#type, self.pointer_bytes())
+        {
             let zero: inkwell::values::BasicValueEnum =
                 match leaf::llvm_type(self.context, raw_leaf, self.target) {
                     inkwell::types::BasicTypeEnum::IntType(it) => it.const_zero().into(),
@@ -272,9 +277,9 @@ impl<'ctx> Codegen<'ctx> {
     /// The alignment a compiler-created slot for `type` must have. Scratch
     /// storage keeps the existing stack-slot floor; a stronger declared
     /// requirement always wins.
-    pub(super) fn slot_alignment(r#type: &ResolvedType) -> u32 {
+    pub(super) fn slot_alignment(&self, r#type: &ResolvedType) -> u32 {
         1u32 << omega_analyzer::layout::stack_align_shift(omega_analyzer::layout::type_alignment(
-            r#type,
+            self.types, r#type,
         ))
     }
 
@@ -375,6 +380,7 @@ pub(crate) fn generate(request: CodegenRequest) -> Result<Vec<EmittedArtifact>, 
         entry: _,
         extern_functions,
         extern_globals,
+        types,
     } = request;
 
     let setup = TargetSetup::resolve(target, opt_level)?;
@@ -387,8 +393,8 @@ pub(crate) fn generate(request: CodegenRequest) -> Result<Vec<EmittedArtifact>, 
             // The context owns every LLVM value of this unit and is dropped
             // once the artifact's bytes have been copied out of it.
             let context = Context::create();
-            let output =
-                Codegen::emit(&context, &setup, &catalog, emit, unit).and_then(Codegen::finish)?;
+            let output = Codegen::emit(&context, &types, &setup, &catalog, emit, unit)
+                .and_then(Codegen::finish)?;
             Ok(EmittedArtifact { source, output })
         })
         .collect()
@@ -397,8 +403,8 @@ pub(crate) fn generate(request: CodegenRequest) -> Result<Vec<EmittedArtifact>, 
 /// Both enum forms reach codegen through the same MIR nodes, and both get
 /// their tag/header/payload facts from the analyzer's shared layout view --
 /// LLVM never re-derives a representation of its own.
-fn enum_view(ty: &ResolvedType, projection: &str) -> EnumView {
-    EnumView::of(ty).unwrap_or_else(|| {
+fn enum_view(types: &TypeStore, ty: &ResolvedType, projection: &str) -> EnumView {
+    EnumView::of(types, ty).unwrap_or_else(|| {
         unreachable!("mir body guarantees {projection} is only built against an enum-like type")
     })
 }

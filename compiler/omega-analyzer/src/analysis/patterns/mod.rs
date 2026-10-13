@@ -420,7 +420,7 @@ impl<'r> Analyzer<'r> {
     /// The scrutinee variants or members that still have uncovered values.
     fn root_alternatives(&self, remaining: &[Pat], matched: &ResolvedType) -> Vec<usize> {
         let count = match matched {
-            ResolvedType::Enum { cell, .. } => cell.borrow().variants.len(),
+            ResolvedType::Enum { nominal, .. } => nominal.variant_names.len(),
             ResolvedType::AnonymousEnum { shape, .. } => shape.members().len(),
             _ => return Vec::new(),
         };
@@ -446,8 +446,8 @@ impl<'r> Analyzer<'r> {
         let mut groups = Vec::with_capacity(alternatives.len());
         for &index in alternatives {
             let condition = match &root.r#type {
-                ResolvedType::Enum { cell, .. } => {
-                    let cell = cell.clone();
+                ResolvedType::Enum { nominal, .. } => {
+                    let nominal = nominal.clone();
                     let mut projections = root.place.projections.clone();
                     let tag_type = self.resolve_field_projection(
                         node_id,
@@ -463,7 +463,10 @@ impl<'r> Analyzer<'r> {
                         projections,
                         r#type: tag_type.clone(),
                     };
-                    self.tag_variant_condition(&tag_place, &tag_type, &cell, index, span)
+                    let tag = self.type_facts(node_id, span, |types| {
+                        Ok(types.enum_facts(&nominal)?.variants[index].tag)
+                    })?;
+                    self.tag_variant_condition(&tag_place, &tag_type, tag, span)
                 }
                 _ => {
                     let tag_type = crate::layout::ANONYMOUS_ENUM_TAG_TYPE;
@@ -490,14 +493,16 @@ impl<'r> Analyzer<'r> {
             Pat::Struct { .. } => false,
         });
         match matched {
-            ResolvedType::Enum { cell, .. } if flat => AnalysisErrorKind::NonExhaustiveMatchEnum {
-                r#enum: cell.borrow().name.clone(),
-                missing: self
-                    .root_alternatives(remaining, matched)
-                    .into_iter()
-                    .map(|index| cell.borrow().variants[index].name.clone())
-                    .collect(),
-            },
+            ResolvedType::Enum { nominal, .. } if flat => {
+                AnalysisErrorKind::NonExhaustiveMatchEnum {
+                    r#enum: nominal.name.clone(),
+                    missing: self
+                        .root_alternatives(remaining, matched)
+                        .into_iter()
+                        .map(|index| nominal.variant_names[index].clone())
+                        .collect(),
+                }
+            }
             ResolvedType::AnonymousEnum { shape, .. } if flat => {
                 AnalysisErrorKind::NonExhaustiveMatchAnonymousEnum {
                     r#enum: matched.clone(),

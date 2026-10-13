@@ -154,7 +154,7 @@ pub fn vtable_symbol(concrete: &ResolvedType, shape: &ResolvedSpecShape) -> Symb
         .members
         .iter()
         .map(|member| {
-            let spec = member.spec.borrow();
+            let spec = &*member.spec;
             nominal_path(&spec.module_path, &spec.name, &member.spec_args)
         })
         .collect();
@@ -321,6 +321,7 @@ mod tests {
     use omega_analyzer::annotations::SymbolPolicy;
     use omega_analyzer::resolved_type::{ResolvedFunctionParam, ResolvedSpecApplication};
     use omega_analyzer::template::{TemplateBound, TemplateParam, TemplateType};
+    use omega_analyzer::type_store::{NominalIdentity, NominalKind, SpecFacts, TypeStore};
 
     fn ident(name: &str) -> Ident {
         Ident(name.to_owned())
@@ -463,25 +464,32 @@ mod tests {
         assert_adapter_round_trip(symbol);
     }
 
-    fn concrete_struct(name: &str) -> ResolvedType {
-        use omega_analyzer::resolved_type::ResolvedStructType;
-        use omega_hir::{HirId, ModuleId};
-        use std::cell::RefCell;
-        use std::rc::Rc;
-        ResolvedType::Struct(Rc::new(RefCell::new(ResolvedStructType {
-            id: HirId {
-                module: ModuleId(0),
-                local: 0,
+    thread_local! {
+        static TYPES: std::cell::RefCell<TypeStore> = Default::default();
+    }
+
+    fn nominal_identity(
+        local: u32,
+        kind: NominalKind,
+        module: &[&str],
+        name: &str,
+    ) -> NominalIdentity {
+        NominalIdentity {
+            decl_id: omega_hir::HirId {
+                module: omega_hir::ModuleId(0),
+                local,
             },
+            kind,
             name: ident(name),
-            module_path: omega_hir::ModulePath::from(vec![ident("mymod")]),
+            module_path: omega_hir::ModulePath::from_names(module),
             generic_args: vec![],
-            fields: vec![],
-            functions: vec![],
-            layout: omega_analyzer::annotations::Layout::default(),
-            suppress: vec![],
-            is_marker: false,
-        })))
+            variant_names: vec![],
+        }
+    }
+
+    fn concrete_struct(name: &str) -> ResolvedType {
+        let identity = nominal_identity(0, NominalKind::Struct, &["mymod"], name);
+        ResolvedType::Struct(TYPES.with(|types| types.borrow_mut().intern(identity)))
     }
 
     // `vtable_symbol` itself nests members in whatever order it is given --
@@ -702,26 +710,16 @@ mod tests {
     }
 
     fn spec_application(id: u32, module: &str, name: &str) -> ResolvedSpecApplication {
-        use omega_analyzer::resolved_type::ResolvedSpecType;
-        use omega_hir::{HirId, ModuleId};
-        use omega_parser::prelude::Visibility;
-        use std::cell::RefCell;
-        use std::rc::Rc;
-        let spec = ResolvedSpecType {
-            id: HirId {
-                module: ModuleId(0),
-                local: id,
-            },
-            name: ident(name),
-            visibility: Visibility::Exposed,
+        let identity = nominal_identity(id, NominalKind::Spec, &["pkg", module], name);
+        let facts = SpecFacts {
+            visibility: omega_parser::prelude::Visibility::Exposed,
             generics: vec![],
-            module_path: omega_hir::ModulePath::from(vec![ident("pkg"), ident(module)]),
-            generic_args: vec![],
             is_object_safe: true,
             functions: vec![],
             suppress: vec![],
         };
-        ResolvedSpecApplication::new(Rc::new(RefCell::new(spec)), vec![])
+        let spec = TYPES.with(|types| types.borrow_mut().intern_spec(identity, facts));
+        ResolvedSpecApplication::new(spec, vec![])
     }
 
     fn shape(members: Vec<ResolvedSpecApplication>) -> ResolvedSpecShape {

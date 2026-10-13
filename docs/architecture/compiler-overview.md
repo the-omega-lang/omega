@@ -131,7 +131,7 @@ Owned by `omega-analyzer` and assembled by `omega-driver`.
 
 Two related structures matter:
 
-- `ResolvedType` and its shared aggregate/spec cells carry canonical semantic type facts used across many checked nodes.
+- `ResolvedType` and the `TypeStore` its nominal types refer to carry canonical semantic type facts used across many checked nodes.
 - `CheckedModule`/`CheckedItem`/`CheckedExprNode` carry the typed, validated tree that later lowering consumes.
 
 Generic templates are not emitted as erased bodies. Concrete instantiations are semantically analyzed and become concrete checked items.

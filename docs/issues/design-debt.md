@@ -135,25 +135,6 @@ target-specific semantic/query state. That second design is also the cleaner pat
 toward incremental compilation. This is a public driver/API change and should be
 done deliberately rather than hidden in a refactor.
 
-### Nominal semantic identity is coupled to pervasive `Rc<RefCell<Resolved*Type>>` cells
-
-Structs, enums, unions, and specs establish recursive identity by allocating a
-shared `Rc<RefCell<...>>` cell before all semantic facts are known and filling that
-cell during signature analysis. This solves declaration-order/recursive-reference
-requirements today, but it makes interior mutability part of the semantic type
-model consumed across analyzer, driver, MIR, layout, and codegen. Correctness then
-depends on phase conventions such as "this cell is complete before this consumer
-borrows it," with violations expressed as runtime borrow failures rather than type-
-or query-level states.
-
-Before Omega pursues parallel or incremental semantic analysis, consider moving
-nominal identity to stable interned IDs backed by an arena/query store. Recursive
-types can refer to an ID immediately; resolved fields/layout/method facts can be
-queried through explicit completion states instead of mutating a cell embedded in
-every `ResolvedType`. This is a deep cross-crate representation change, so the
-existing cells should remain until that architecture is designed as a focused
-project.
-
 ### `reveal` still has no backstop for the "every position must remember" invariant
 
 Reveal activation is now centralized substantially more than it used to be:

@@ -7,7 +7,7 @@ use omega_analyzer::generics::GenericParam;
 use omega_analyzer::generics::GenericSubstitution;
 use omega_analyzer::resolved_type::{
     ConstValue, FunctionNamespace, ResolvedConformance, ResolvedGenericArg, ResolvedMethod,
-    ResolvedSpecType, ResolvedType,
+    ResolvedType,
 };
 use omega_analyzer::resolver::{
     GenericLiteralSignature, GenericOwnerFunctionSignature, ImportTarget, ItemAccess,
@@ -15,12 +15,11 @@ use omega_analyzer::resolver::{
     ResolveError, ResolveItemOptions, ResolvedAlias, ResolvedItem, ResolvedOverloadSet,
 };
 use omega_analyzer::similarity::best_match;
+use omega_analyzer::type_store::{NominalRef, TypeStore};
 use omega_hir::{HirFunctionDef, HirGenericParam, HirId, HirItem};
 use omega_hir::{ItemPath, ModulePath};
 use omega_parser::prelude::{Ident, Type, Visibility};
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
 
 type AliasKey = (ModulePath, Ident);
 
@@ -607,6 +606,14 @@ impl ModuleResolver for Driver {
         self.modules.macro_origin_module(origin)
     }
 
+    fn types(&self) -> &TypeStore {
+        &self.items.types
+    }
+
+    fn types_mut(&mut self) -> &mut TypeStore {
+        &mut self.items.types
+    }
+
     fn module_source(&self, module: &ModulePath) -> Option<omega_diagnostics::SourceId> {
         self.modules.source_id(module)
     }
@@ -1149,7 +1156,7 @@ impl ModuleResolver for Driver {
     fn spec_declaration(
         &mut self,
         absolute_path: &ItemPath,
-    ) -> Result<Option<Rc<RefCell<ResolvedSpecType>>>, ResolveError> {
+    ) -> Result<Option<NominalRef>, ResolveError> {
         let absolute_path = self.canonical_query_path(absolute_path);
         self.resolve_spec_declaration(&absolute_path)
     }
@@ -1256,7 +1263,7 @@ impl ModuleResolver for Driver {
     fn conformance_for(
         &mut self,
         target: &ResolvedType,
-        spec: &Rc<RefCell<ResolvedSpecType>>,
+        spec: &NominalRef,
         spec_args: &[ResolvedGenericArg],
     ) -> Result<Option<ResolvedConformance>, ResolveError> {
         Ok(
@@ -1299,7 +1306,7 @@ impl ModuleResolver for Driver {
             .entries
             .iter()
             .filter(|entry| {
-                entry.target == target.lookup_key() && spec_ids.contains(&entry.spec.borrow().id)
+                entry.target == target.lookup_key() && spec_ids.contains(&entry.spec.decl_id)
             })
             .map(|entry| ResolvedConformance {
                 target: entry.target.clone(),

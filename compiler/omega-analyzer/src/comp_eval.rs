@@ -20,6 +20,8 @@ pub trait CompFunctionResolver {
         decl_id: HirId,
     ) -> Result<Option<CheckedFunctionDef>, ResolveError>;
 
+    fn types(&self) -> &crate::type_store::TypeStore;
+
     /// The file the body of `decl_id` was written in. Evaluation crosses
     /// modules, so a trace entry has to record which source its span indexes.
     fn function_source(&self, _decl_id: HirId) -> Option<SourceId> {
@@ -34,6 +36,10 @@ pub trait CompFunctionResolver {
 }
 
 impl CompFunctionResolver for dyn crate::resolver::ModuleResolver + '_ {
+    fn types(&self) -> &crate::type_store::TypeStore {
+        crate::resolver::ModuleResolver::types(self)
+    }
+
     fn resolve_function_body(
         &mut self,
         decl_id: HirId,
@@ -334,10 +340,14 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
             CheckedExpr::Slice(slice) => self.eval_slice(slice, node.span),
             CheckedExpr::Cast(cast) => self.eval_cast(cast, node.span),
             CheckedExpr::Sizeof(target) => Ok(ConstValue::Number(NumberValue::Unsigned(
-                crate::layout::total_bytes(target, self.target.pointer_bytes()) as u64,
+                crate::layout::total_bytes(
+                    self.resolver.types(),
+                    target,
+                    self.target.pointer_bytes(),
+                ) as u64,
             ))),
             CheckedExpr::Alignof(target) => Ok(ConstValue::Number(NumberValue::Unsigned(
-                u64::from(crate::layout::type_alignment(target)),
+                u64::from(crate::layout::type_alignment(self.resolver.types(), target)),
             ))),
             CheckedExpr::AnonymousEnumWiden(widen) => self.eval_anonymous_enum_widen(node, widen),
             CheckedExpr::Try(r#try) => self.eval_try(r#try, node.span),
@@ -480,7 +490,7 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
         r#type: &ResolvedType,
         variant_index: usize,
     ) -> CompResult<(NumberValue, Vec<ConstValue>, usize)> {
-        let view = crate::layout::EnumView::of(r#type)
+        let view = crate::layout::EnumView::of(self.resolver.types(), r#type)
             .expect("an enum construction's own type is always an enum-like type");
         let variant = &view.variants[variant_index];
         Ok((
@@ -1190,10 +1200,13 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
             }
             CheckedProjection::Deref { r#type } => match value {
                 ConstValue::Ref(inner) => Ok(*inner),
-                ConstValue::Reflected(reflected) => {
-                    crate::reflection::deref(&reflected, r#type, self.target.pointer_bytes())
-                        .map_err(|reason| self.err(span, CompErrorKind::Unsupported(reason)))
-                }
+                ConstValue::Reflected(reflected) => crate::reflection::deref(
+                    self.resolver.types(),
+                    &reflected,
+                    r#type,
+                    self.target.pointer_bytes(),
+                )
+                .map_err(|reason| self.err(span, CompErrorKind::Unsupported(reason))),
                 _ => Err(self.err(span, CompErrorKind::UnresolvableMemory)),
             },
             CheckedProjection::SliceLength => match value {

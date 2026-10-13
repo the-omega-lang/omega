@@ -46,6 +46,10 @@ fn local_place(decl: HirId, r#type: ResolvedType) -> CheckedPlace {
 
 struct NoFunctions;
 impl CompFunctionResolver for NoFunctions {
+    fn types(&self) -> &crate::type_store::TypeStore {
+        crate::type_store::testing::snapshot()
+    }
+
     fn resolve_function_body(
         &mut self,
         _decl_id: HirId,
@@ -317,6 +321,10 @@ fn infinite_loop_exhausts_fuel_instead_of_hanging() {
 fn calling_an_extern_is_rejected_with_a_precise_reason() {
     struct AllExtern;
     impl CompFunctionResolver for AllExtern {
+        fn types(&self) -> &crate::type_store::TypeStore {
+            crate::type_store::testing::snapshot()
+        }
+
         fn resolve_function_body(
             &mut self,
             _decl_id: HirId,
@@ -429,6 +437,10 @@ fn calling_another_function_interprets_its_own_body() {
 
     struct OneFunction(CheckedFunctionDef);
     impl CompFunctionResolver for OneFunction {
+        fn types(&self) -> &crate::type_store::TypeStore {
+            crate::type_store::testing::snapshot()
+        }
+
         fn resolve_function_body(
             &mut self,
             decl_id: HirId,
@@ -493,17 +505,15 @@ fn fallible_enum(
     success_type: ResolvedType,
     error_type: Option<ResolvedType>,
 ) -> ResolvedType {
-    use crate::resolved_type::{ResolvedEnumType, ResolvedEnumVariant, ResolvedField};
+    use crate::resolved_type::{ResolvedEnumVariant, ResolvedField};
+    use crate::type_store::{EnumFacts, NominalKind, testing};
     use omega_parser::prelude::{Ident, Visibility};
     let field = |name: &str, r#type: ResolvedType| {
         ResolvedField::new(Ident(name.to_string()), r#type, Visibility::Exposed)
     };
-    ResolvedType::Enum {
-        cell: std::rc::Rc::new(std::cell::RefCell::new(ResolvedEnumType {
-            id: id(local),
-            name: Ident(name.to_string()),
-            module_path: omega_hir::ModulePath::from(vec![Ident("core".into())]),
-            generic_args: vec![],
+    testing::define_enum(
+        testing::identity(local, NominalKind::Enum, name, &["core"], vec![]),
+        EnumFacts {
             tag_type: ResolvedType::U8,
             header: vec![],
             dynamic_fields: vec![],
@@ -521,12 +531,10 @@ fn fallible_enum(
                     fields: error_type.into_iter().map(|t| field("error", t)).collect(),
                 },
             ],
-            functions: vec![],
             layout: crate::annotations::Layout::default(),
             suppress: vec![],
-        })),
-        variant: None,
-    }
+        },
+    )
 }
 
 fn fallible_const(variant_index: usize, payload: Vec<ConstValue>) -> ConstValue {
@@ -633,6 +641,10 @@ fn call_returning(body: CheckedBlock, return_type: ResolvedType) -> (CheckedExpr
 
 struct TheCallee(CheckedFunctionDef);
 impl CompFunctionResolver for TheCallee {
+    fn types(&self) -> &crate::type_store::TypeStore {
+        crate::type_store::testing::snapshot()
+    }
+
     fn resolve_function_body(
         &mut self,
         decl_id: HirId,
@@ -825,6 +837,10 @@ struct PanicResolver {
 }
 
 impl CompFunctionResolver for PanicResolver {
+    fn types(&self) -> &crate::type_store::TypeStore {
+        crate::type_store::testing::snapshot()
+    }
+
     fn resolve_function_body(
         &mut self,
         decl_id: HirId,

@@ -4,6 +4,29 @@ mod fields;
 mod roots;
 mod slicing;
 
+/// Whether `owner` has a field named `field`, which shadows every function of
+/// that name in both namespaces.
+pub(super) fn shadowing_field(
+    types: &TypeStore,
+    owner: &ResolvedType,
+    field: &Ident,
+) -> Result<bool, Incomplete> {
+    let declares =
+        |fields: &[ResolvedField]| fields.iter().any(|candidate| &candidate.name == field);
+    Ok(match owner {
+        ResolvedType::Struct(nominal) | ResolvedType::Union(nominal) => {
+            declares(types.fields(nominal)?)
+        }
+        ResolvedType::Enum { nominal, variant } => {
+            let e = types.enum_facts(nominal)?;
+            field.as_ref() == "tag"
+                || declares(&e.header)
+                || variant.is_some_and(|i| declares(&e.variants[i].fields))
+        }
+        _ => false,
+    })
+}
+
 impl<'r> Analyzer<'r> {
     /// The functions `current_type` offers under `field` in one namespace.
     ///
@@ -21,42 +44,21 @@ impl<'r> Analyzer<'r> {
     ) -> Vec<ResolvedMethod> {
         let current_type = current_type.autoderef();
         let mut methods = match current_type {
-            ResolvedType::Struct(struct_type) => {
-                let struct_type = struct_type.borrow();
-                if struct_type
-                    .fields
-                    .iter()
-                    .any(|candidate| &candidate.name == field)
-                {
+            ResolvedType::Struct(nominal)
+            | ResolvedType::Union(nominal)
+            | ResolvedType::Enum { nominal, .. } => {
+                let Some((shadowed, functions)) = self.type_facts(id, span, |types| {
+                    Ok((
+                        shadowing_field(types, current_type, field)?,
+                        types.functions(nominal)?.clone(),
+                    ))
+                }) else {
                     return Vec::new();
-                }
-                namespace.select(&struct_type.functions, field)
-            }
-            ResolvedType::Enum { cell, variant } => {
-                let e = cell.borrow();
-                let shadowed = field.as_ref() == "tag"
-                    || e.header.iter().any(|candidate| &candidate.name == field)
-                    || variant.is_some_and(|i| {
-                        e.variants[i]
-                            .fields
-                            .iter()
-                            .any(|candidate| &candidate.name == field)
-                    });
+                };
                 if shadowed {
                     return Vec::new();
                 }
-                namespace.select(&e.functions, field)
-            }
-            ResolvedType::Union(union_type) => {
-                let union_type = union_type.borrow();
-                if union_type
-                    .fields
-                    .iter()
-                    .any(|candidate| &candidate.name == field)
-                {
-                    return Vec::new();
-                }
-                namespace.select(&union_type.functions, field)
+                namespace.select(&functions, field)
             }
             other => match self.resolver.primitive_methods(other) {
                 Ok(methods) => namespace.select(&methods, field),

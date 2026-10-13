@@ -6,15 +6,14 @@ use omega_analyzer::checked::{CheckedItem, Storage};
 use omega_analyzer::error::AnalysisWarning;
 use omega_analyzer::generics::{GenericParam, NormalizedFunction};
 use omega_analyzer::resolved_type::{
-    ResolvedBound, ResolvedEnumType, ResolvedFunctionType, ResolvedGenericArg, ResolvedMethod,
-    ResolvedSpecType, ResolvedStructType, ResolvedType, ResolvedUnionType,
+    ResolvedBound, ResolvedFunctionType, ResolvedGenericArg, ResolvedMethod, ResolvedType,
 };
 use omega_analyzer::resolver::{ResolveError, ResolveItemOptions, ResolvedItem};
+use omega_analyzer::type_store::{NominalIdentity, NominalKind, NominalRef, TypeStore};
 use omega_diagnostics::Span;
 use omega_hir::{HirFunctionDef, HirId, HirItem, SYNTHETIC_MODULE};
 use omega_hir::{ItemPath, ModulePath};
 use omega_parser::prelude::{Ident, Type, Visibility};
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -116,7 +115,7 @@ struct ResolvedEntry {
 
 enum SpecQueryState {
     InProgress,
-    Resolved(Rc<RefCell<ResolvedSpecType>>),
+    Resolved(NominalRef),
     Failed(QueryFailure),
 }
 
@@ -145,133 +144,75 @@ impl CheckedBody {
     }
 }
 
+/// The nominal type of each struct, union and enum query. Two
+/// instantiations are distinct types exactly when their keys differ.
 #[derive(Default)]
-pub(crate) struct TypeCells {
-    structs: IndexMap<ItemKey, Rc<RefCell<ResolvedStructType>>>,
-    enums: IndexMap<ItemKey, Rc<RefCell<ResolvedEnumType>>>,
-    unions: IndexMap<ItemKey, Rc<RefCell<ResolvedUnionType>>>,
+pub(crate) struct Nominals {
+    by_key: IndexMap<ItemKey, NominalRef>,
 }
 
-impl TypeCells {
-    pub fn struct_cell(&mut self, key: &ItemKey, id: HirId) -> Rc<RefCell<ResolvedStructType>> {
-        self.structs
+impl Nominals {
+    pub fn intern(
+        &mut self,
+        types: &mut TypeStore,
+        key: &ItemKey,
+        decl_id: HirId,
+        kind: NominalKind,
+        variant_names: Vec<Ident>,
+    ) -> NominalRef {
+        self.by_key
             .entry(key.clone())
             .or_insert_with(|| {
-                Rc::new(RefCell::new(ResolvedStructType {
-                    id,
+                types.intern(NominalIdentity {
+                    decl_id,
+                    kind,
                     name: key.name.clone(),
                     module_path: key.module().clone(),
                     generic_args: key.generic_args.clone(),
-                    fields: vec![],
-                    functions: vec![],
-                    layout: Default::default(),
-                    suppress: vec![],
-                    is_marker: false,
-                }))
+                    variant_names,
+                })
             })
             .clone()
     }
 
-    pub fn enum_cell(&mut self, key: &ItemKey, id: HirId) -> Rc<RefCell<ResolvedEnumType>> {
-        self.enums
-            .entry(key.clone())
-            .or_insert_with(|| {
-                Rc::new(RefCell::new(ResolvedEnumType {
-                    id,
-                    name: key.name.clone(),
-                    module_path: key.module().clone(),
-                    generic_args: key.generic_args.clone(),
-                    tag_type: ResolvedType::U16,
-                    header: vec![],
-                    dynamic_fields: vec![],
-                    variants: vec![],
-                    functions: vec![],
-                    layout: Default::default(),
-                    suppress: vec![],
-                }))
-            })
-            .clone()
-    }
-
-    pub fn union_cell(&mut self, key: &ItemKey, id: HirId) -> Rc<RefCell<ResolvedUnionType>> {
-        self.unions
-            .entry(key.clone())
-            .or_insert_with(|| {
-                Rc::new(RefCell::new(ResolvedUnionType {
-                    id,
-                    name: key.name.clone(),
-                    module_path: key.module().clone(),
-                    generic_args: key.generic_args.clone(),
-                    fields: vec![],
-                    functions: vec![],
-                    suppress: vec![],
-                }))
-            })
-            .clone()
-    }
-
-    pub fn expect_struct(&self, key: &ItemKey) -> Rc<RefCell<ResolvedStructType>> {
-        self.structs
+    pub fn expect(&self, key: &ItemKey) -> NominalRef {
+        self.by_key
             .get(key)
-            .expect("cell was created when the signature resolved")
-            .clone()
-    }
-
-    pub fn expect_enum(&self, key: &ItemKey) -> Rc<RefCell<ResolvedEnumType>> {
-        self.enums
-            .get(key)
-            .expect("cell was created when the signature resolved")
-            .clone()
-    }
-
-    pub fn expect_union(&self, key: &ItemKey) -> Rc<RefCell<ResolvedUnionType>> {
-        self.unions
-            .get(key)
-            .expect("cell was created when the signature resolved")
+            .expect("the type was interned when its signature resolved")
             .clone()
     }
 
     pub fn resolved_type(&self, key: &ItemKey) -> Option<ResolvedType> {
-        if let Some(cell) = self.structs.get(key) {
-            return Some(ResolvedType::Struct(cell.clone()));
-        }
-        if let Some(cell) = self.enums.get(key) {
-            return Some(ResolvedType::Enum {
-                cell: cell.clone(),
+        let nominal = self.by_key.get(key)?.clone();
+        Some(match nominal.kind {
+            NominalKind::Struct => ResolvedType::Struct(nominal),
+            NominalKind::Union => ResolvedType::Union(nominal),
+            NominalKind::Enum => ResolvedType::Enum {
+                nominal,
                 variant: None,
-            });
-        }
-        self.unions
-            .get(key)
-            .map(|cell| ResolvedType::Union(cell.clone()))
+            },
+            NominalKind::Spec => unreachable!("specs are not keyed by item query"),
+        })
     }
 
-    pub fn structs(&self) -> impl Iterator<Item = (&ItemKey, &Rc<RefCell<ResolvedStructType>>)> {
-        self.structs.iter()
-    }
-
-    pub fn enums(&self) -> impl Iterator<Item = (&ItemKey, &Rc<RefCell<ResolvedEnumType>>)> {
-        self.enums.iter()
-    }
-
-    pub fn unions(&self) -> impl Iterator<Item = (&ItemKey, &Rc<RefCell<ResolvedUnionType>>)> {
-        self.unions.iter()
-    }
-
-    pub fn all_methods(&self) -> impl Iterator<Item = (&ItemKey, Vec<(Ident, ResolvedMethod)>)> {
-        self.structs
+    pub fn of_kind(&self, kind: NominalKind) -> impl Iterator<Item = (&ItemKey, &NominalRef)> {
+        self.by_key
             .iter()
-            .map(|(key, cell)| (key, cell.borrow().functions.clone()))
-            .chain(
-                self.enums
-                    .iter()
-                    .map(|(key, cell)| (key, cell.borrow().functions.clone())),
-            )
-            .chain(
-                self.unions
-                    .iter()
-                    .map(|(key, cell)| (key, cell.borrow().functions.clone())),
-            )
+            .filter(move |(_, nominal)| nominal.kind == kind)
+    }
+
+    /// Every method of every type whose definition completed. A type whose
+    /// signature failed declares nothing.
+    pub fn all_methods<'a>(
+        &'a self,
+        types: &'a TypeStore,
+    ) -> impl Iterator<Item = (&'a ItemKey, &'a [(Ident, ResolvedMethod)])> {
+        self.by_key.iter().filter_map(move |(key, nominal)| {
+            types
+                .functions(nominal)
+                .ok()
+                .map(|functions| (key, functions.as_slice()))
+        })
     }
 }
 
@@ -279,7 +220,8 @@ impl TypeCells {
 pub(crate) struct ItemQueries {
     item_states: IndexMap<ItemKey, ItemQueryState>,
     resolution_stack: Vec<ItemKey>,
-    pub cells: TypeCells,
+    pub nominals: Nominals,
+    pub types: TypeStore,
     pub gaps: HashMap<ItemKey, Rc<omega_analyzer::resolved_type::ResolvedGap>>,
     pub glues: Vec<GlueSignature>,
     spec_states: HashMap<SpecKey, SpecQueryState>,
@@ -406,13 +348,9 @@ impl ItemQueries {
             .insert(key.clone(), SpecQueryState::InProgress);
     }
 
-    fn finish_spec(
-        &mut self,
-        key: &SpecKey,
-        result: Result<Rc<RefCell<ResolvedSpecType>>, QueryFailure>,
-    ) {
+    fn finish_spec(&mut self, key: &SpecKey, result: Result<NominalRef, QueryFailure>) {
         let state = match result {
-            Ok(cell) => SpecQueryState::Resolved(cell),
+            Ok(spec) => SpecQueryState::Resolved(spec),
             Err(failure) => SpecQueryState::Failed(failure),
         };
         self.spec_states.insert(key.clone(), state);

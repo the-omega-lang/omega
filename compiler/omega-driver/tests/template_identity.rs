@@ -39,7 +39,7 @@ impl TestPackage {
             .compile(&omega_hir::ModulePath::new([Ident("main".into())]))
             .unwrap_or_else(|errors| panic!("expected this to compile, got: {errors:#?}"));
         let entry = program.entry.clone();
-        omega_mir::lower_program(program.modules, &entry)
+        omega_mir::lower_program(program.modules, &entry, &program.types)
             .into_iter()
             .flat_map(|(_, module)| module.items)
             .flat_map(|item| match item {

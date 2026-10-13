@@ -133,7 +133,7 @@ fn find_match(block: &CheckedBlock) -> Option<&CheckedMatch> {
 
 fn mir_body(program: omega_driver::CompiledProgram, name: &str) -> MirBody {
     let entry = program.entry.clone();
-    omega_mir::lower_program(program.modules, &entry)
+    omega_mir::lower_program(program.modules, &entry, &program.types)
         .into_iter()
         .flat_map(|(_, module)| module.items)
         .find_map(|item| match item {

@@ -62,17 +62,17 @@ impl<'r> Analyzer<'r> {
             return Some(Pat::Any);
         }
         match &position.r#type {
-            ResolvedType::Enum { cell, .. } => {
-                let cell = cell.clone();
-                self.resolve_enum_subpattern(node_id, position, &cell, pattern, proof)
+            ResolvedType::Enum { nominal, .. } => {
+                let nominal = nominal.clone();
+                self.resolve_enum_subpattern(node_id, position, &nominal, pattern, proof)
             }
             ResolvedType::AnonymousEnum { shape, .. } => {
                 let shape = shape.clone();
                 self.resolve_anonymous_subpattern(node_id, position, &shape, pattern, proof)
             }
-            ResolvedType::Struct(cell) => {
-                let cell = cell.clone();
-                self.resolve_struct_subpattern(node_id, position, &cell, pattern, proof)
+            ResolvedType::Struct(nominal) => {
+                let nominal = nominal.clone();
+                self.resolve_struct_subpattern(node_id, position, &nominal, pattern, proof)
             }
             _ => self.resolve_integral_subpattern(node_id, position, pattern, proof),
         }
@@ -133,14 +133,16 @@ impl<'r> Analyzer<'r> {
         &mut self,
         node_id: HirId,
         position: &Position,
-        cell: &Rc<RefCell<ResolvedEnumType>>,
+        nominal: &NominalRef,
         pattern: &HirPattern,
         proof: &mut Proof,
     ) -> Option<Pat> {
         let (index, fields) = match &pattern.value {
-            Some(HirPatternValue::Value(expr)) => (self.resolve_variant_pattern(cell, expr)?, None),
+            Some(HirPatternValue::Value(expr)) => {
+                (self.resolve_variant_pattern(nominal, expr)?, None)
+            }
             Some(HirPatternValue::Fields(fields)) => (
-                self.resolve_variant_path(node_id, fields.span, cell, &fields.path)?,
+                self.resolve_variant_path(node_id, fields.span, nominal, &fields.path)?,
                 Some(fields),
             ),
             _ => {
@@ -148,7 +150,7 @@ impl<'r> Analyzer<'r> {
                     node_id,
                     pattern.span(),
                     AnalysisErrorKind::PatternNotEnumVariant {
-                        r#enum: cell.borrow().name.clone(),
+                        r#enum: nominal.name.clone(),
                     },
                 );
                 return None;
@@ -170,13 +172,20 @@ impl<'r> Analyzer<'r> {
             projections: tag_projections,
             r#type: tag_type.clone(),
         };
-        let tag_test =
-            self.tag_variant_condition(&tag_place, &tag_type, cell, index, pattern.span());
+        let e = self.type_facts(node_id, pattern.span(), |types| {
+            types.enum_facts(nominal).cloned()
+        })?;
+        let tag_test = self.tag_variant_condition(
+            &tag_place,
+            &tag_type,
+            e.variants[index].tag,
+            pattern.span(),
+        );
         proof.conditions.push(tag_test);
         proof.tests_tag = true;
 
         let refined = ResolvedType::Enum {
-            cell: cell.clone(),
+            nominal: nominal.clone(),
             variant: Some(index),
         };
         proof.refine(&position.path, refined.clone());
@@ -184,7 +193,6 @@ impl<'r> Analyzer<'r> {
         let fields = match fields {
             Some(fields) => {
                 let (declared, header, module_path) = {
-                    let e = cell.borrow();
                     let declared: Vec<ResolvedField> = e
                         .dynamic_fields
                         .iter()
@@ -194,7 +202,7 @@ impl<'r> Analyzer<'r> {
                     let header: Vec<Ident> = std::iter::once(Ident("tag".to_string()))
                         .chain(e.header.iter().map(|field| field.name.clone()))
                         .collect();
-                    (declared, header, e.module_path.clone())
+                    (declared, header, nominal.module_path.clone())
                 };
                 self.resolve_field_subpatterns(
                     node_id,
@@ -209,15 +217,12 @@ impl<'r> Analyzer<'r> {
             }
             None => Product::default(),
         };
-        let sum = {
-            let e = cell.borrow();
-            Sum {
-                names: e
-                    .variants
-                    .iter()
-                    .map(|v| format!("{}::{}", e.name.as_ref(), v.name.as_ref()))
-                    .collect(),
-            }
+        let sum = Sum {
+            names: e
+                .variants
+                .iter()
+                .map(|v| format!("{}::{}", nominal.name.as_ref(), v.name.as_ref()))
+                .collect(),
         };
         Some(Pat::Variant {
             sum: Rc::new(sum),
@@ -412,7 +417,7 @@ impl<'r> Analyzer<'r> {
         &mut self,
         node_id: HirId,
         position: &Position,
-        cell: &Rc<RefCell<ResolvedStructType>>,
+        nominal: &NominalRef,
         pattern: &HirPattern,
         proof: &mut Proof,
     ) -> Option<Pat> {
@@ -448,10 +453,10 @@ impl<'r> Analyzer<'r> {
             );
             return None;
         }
-        let (declared, module_path) = {
-            let s = cell.borrow();
-            (s.fields.clone(), s.module_path.clone())
-        };
+        let declared = self.type_facts(node_id, fields.span, |types| {
+            types.fields(nominal).map(<[_]>::to_vec)
+        })?;
+        let module_path = nominal.module_path.clone();
         let fields = self.resolve_field_subpatterns(
             node_id,
             position,
@@ -463,7 +468,7 @@ impl<'r> Analyzer<'r> {
             proof,
         )?;
         Some(Pat::Struct {
-            name: Rc::from(cell.borrow().name.as_ref()),
+            name: Rc::from(nominal.name.as_ref()),
             fields,
         })
     }
@@ -504,10 +509,10 @@ impl<'r> Analyzer<'r> {
                     AnalysisErrorKind::PatternHeaderField {
                         field: field.name.clone(),
                     }
-                } else if let ResolvedType::Enum { cell, .. } = owner {
+                } else if let ResolvedType::Enum { nominal, .. } = owner {
                     AnalysisErrorKind::NoSuchEnumField {
                         field: field.name.clone(),
-                        r#enum: cell.borrow().name.clone(),
+                        r#enum: nominal.name.clone(),
                         similar: best_match(&field.name, declared.iter().map(|d| &d.name)),
                     }
                 } else {
@@ -660,8 +665,7 @@ impl<'r> Analyzer<'r> {
         &mut self,
         tag_place: &CheckedPlace,
         tag_type: &ResolvedType,
-        cell: &Rc<RefCell<ResolvedEnumType>>,
-        variant_index: usize,
+        tag: NumberValue,
         span: Span,
     ) -> CheckedExprNode {
         let tag_read = CheckedExprNode {
@@ -674,7 +678,7 @@ impl<'r> Analyzer<'r> {
             id: self.resolver.fresh_synthetic_id(),
             span,
             r#type: tag_type.clone(),
-            kind: CheckedExpr::Number(cell.borrow().variants[variant_index].tag),
+            kind: CheckedExpr::Number(tag),
         };
         CheckedExprNode {
             id: self.resolver.fresh_synthetic_id(),
@@ -690,7 +694,7 @@ impl<'r> Analyzer<'r> {
 
     fn resolve_variant_pattern(
         &mut self,
-        cell: &Rc<RefCell<ResolvedEnumType>>,
+        nominal: &NominalRef,
         expr: &HirExprNode,
     ) -> Option<usize> {
         self.with_reveal_operand(expr, |this, expr| {
@@ -699,12 +703,12 @@ impl<'r> Analyzer<'r> {
                     expr.id,
                     expr.span,
                     AnalysisErrorKind::PatternNotEnumVariant {
-                        r#enum: cell.borrow().name.clone(),
+                        r#enum: nominal.name.clone(),
                     },
                 );
                 return None;
             };
-            this.resolve_variant_path(expr.id, expr.span, cell, path)
+            this.resolve_variant_path(expr.id, expr.span, nominal, path)
         })
     }
 
@@ -712,11 +716,11 @@ impl<'r> Analyzer<'r> {
         &mut self,
         node_id: HirId,
         span: Span,
-        cell: &Rc<RefCell<ResolvedEnumType>>,
+        nominal: &NominalRef,
         expr_path: &ExprPath,
     ) -> Option<usize> {
         let expected = ResolvedType::Enum {
-            cell: cell.clone(),
+            nominal: nominal.clone(),
             variant: None,
         };
         let target =
@@ -724,7 +728,7 @@ impl<'r> Analyzer<'r> {
         match target {
             AggregateTarget::EnumVariant(found, index)
                 if ResolvedType::Enum {
-                    cell: found.clone(),
+                    nominal: found.clone(),
                     variant: None,
                 } == expected =>
             {
@@ -737,7 +741,7 @@ impl<'r> Analyzer<'r> {
                     AnalysisErrorKind::PatternTypeMismatch {
                         expected,
                         found: ResolvedType::Enum {
-                            cell: found,
+                            nominal: found,
                             variant: Some(index),
                         },
                     },
@@ -749,7 +753,7 @@ impl<'r> Analyzer<'r> {
                     node_id,
                     span,
                     AnalysisErrorKind::PatternNotEnumVariant {
-                        r#enum: cell.borrow().name.clone(),
+                        r#enum: nominal.name.clone(),
                     },
                 );
                 None

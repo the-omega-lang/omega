@@ -626,7 +626,8 @@ impl<'r> Analyzer<'r> {
                 let next_id = this.resolver.fresh_synthetic_id();
                 let next_type = next.r#type.clone();
                 let ResolvedType::Enum {
-                    cell: option_cell, ..
+                    nominal: option_nominal,
+                    ..
                 } = next_type.clone()
                 else {
                     unreachable!(
@@ -670,12 +671,12 @@ impl<'r> Analyzer<'r> {
                     f,
                     while_id,
                     next_id,
-                    &option_cell,
+                    &option_nominal,
                     &tag_type,
                     &tag_place,
                 )?;
                 let some_arm =
-                    this.for_in_some_arm(f, next_id, &option_cell, &tag_type, &tag_place)?;
+                    this.for_in_some_arm(f, next_id, &option_nominal, &tag_type, &tag_place)?;
 
                 let match_expr = CheckedStmt::Expression(CheckedExprNode {
                     id: this.resolver.fresh_synthetic_id(),
@@ -717,13 +718,13 @@ impl<'r> Analyzer<'r> {
         f: &HirForIn,
         while_id: HirId,
         next_id: HirId,
-        option_cell: &Rc<RefCell<ResolvedEnumType>>,
+        option_nominal: &NominalRef,
         tag_type: &ResolvedType,
         tag_place: &CheckedPlace,
     ) -> Option<CheckedMatchArm> {
         let (body, scope) = self.with_scope(|this| {
             let refined = ResolvedType::Enum {
-                cell: option_cell.clone(),
+                nominal: option_nominal.clone(),
                 variant: Some(0),
             };
             this.declare_narrowed_binding(
@@ -747,12 +748,10 @@ impl<'r> Analyzer<'r> {
         });
         self.warn_unused_bindings(scope, false);
 
-        let condition = self.tag_equals(
-            f.span,
-            tag_type,
-            tag_place,
-            option_cell.borrow().variants[0].tag,
-        );
+        let tag = self.type_facts(f.id, f.span, |types| {
+            Ok(types.enum_facts(option_nominal)?.variants[0].tag)
+        })?;
+        let condition = self.tag_equals(f.span, tag_type, tag_place, tag);
         Some(CheckedMatchArm {
             conditions: vec![vec![condition]],
             body,
@@ -763,12 +762,12 @@ impl<'r> Analyzer<'r> {
         &mut self,
         f: &HirForIn,
         next_id: HirId,
-        option_cell: &Rc<RefCell<ResolvedEnumType>>,
+        option_nominal: &NominalRef,
         tag_type: &ResolvedType,
         tag_place: &CheckedPlace,
     ) -> Option<CheckedMatchArm> {
         let refined = ResolvedType::Enum {
-            cell: option_cell.clone(),
+            nominal: option_nominal.clone(),
             variant: Some(1),
         };
         let (body, scope) = self.with_scope(|this| {
@@ -842,12 +841,10 @@ impl<'r> Analyzer<'r> {
         });
         self.warn_unused_bindings(scope, false);
 
-        let condition = self.tag_equals(
-            f.span,
-            tag_type,
-            tag_place,
-            option_cell.borrow().variants[1].tag,
-        );
+        let tag = self.type_facts(f.id, f.span, |types| {
+            Ok(types.enum_facts(option_nominal)?.variants[1].tag)
+        })?;
+        let condition = self.tag_equals(f.span, tag_type, tag_place, tag);
         Some(CheckedMatchArm {
             conditions: vec![vec![condition]],
             body: body?,

@@ -1,6 +1,7 @@
 use crate::{EmitKind, OptLevel};
 use omega_analyzer::Target;
 use omega_analyzer::checked::{ExternFunctionRef, ExternGlobalRef};
+use omega_analyzer::type_store::TypeStore;
 use omega_mir::EmissionUnit;
 use omega_parser::prelude::Ident;
 use std::path::PathBuf;
@@ -29,4 +30,6 @@ pub struct CodegenRequest {
     pub entry: Vec<Ident>,
     pub extern_functions: Vec<ExternFunctionRef>,
     pub extern_globals: Vec<ExternGlobalRef>,
+    /// The frozen facts of every nominal type the units name.
+    pub types: TypeStore,
 }

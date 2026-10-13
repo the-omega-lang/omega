@@ -307,16 +307,16 @@ impl<'r> Analyzer<'r> {
     pub fn check_struct_body(
         &mut self,
         s: &HirStructDef,
-        cell: &Rc<RefCell<ResolvedStructType>>,
+        nominal: &NominalRef,
     ) -> Option<CheckedStructDef> {
-        let (fields, methods, suppress) = {
-            let resolved = cell.borrow();
-            (
-                Self::checked_fields(&s.fields, &resolved.fields),
-                resolved.functions.clone(),
-                resolved.suppress.clone(),
-            )
-        };
+        let (resolved, methods) = self.type_facts(s.id, s.span, |types| {
+            Ok((
+                types.struct_facts(nominal)?.clone(),
+                types.functions(nominal)?.clone(),
+            ))
+        })?;
+        let fields = Self::checked_fields(&s.fields, &resolved.fields);
+        let suppress = resolved.suppress.clone();
         let functions = self.check_method_bodies(&s.functions, &methods, &suppress)?;
         Some(CheckedStructDef {
             id: s.id,
@@ -331,16 +331,16 @@ impl<'r> Analyzer<'r> {
     pub fn check_union_body(
         &mut self,
         u: &HirUnionDef,
-        cell: &Rc<RefCell<ResolvedUnionType>>,
+        nominal: &NominalRef,
     ) -> Option<CheckedUnionDef> {
-        let (fields, methods, suppress) = {
-            let resolved = cell.borrow();
-            (
-                Self::checked_fields(&u.fields, &resolved.fields),
-                resolved.functions.clone(),
-                resolved.suppress.clone(),
-            )
-        };
+        let (resolved, methods) = self.type_facts(u.id, u.span, |types| {
+            Ok((
+                types.union_facts(nominal)?.clone(),
+                types.functions(nominal)?.clone(),
+            ))
+        })?;
+        let fields = Self::checked_fields(&u.fields, &resolved.fields);
+        let suppress = resolved.suppress.clone();
         let functions = self.check_method_bodies(&u.functions, &methods, &suppress)?;
         Some(CheckedUnionDef {
             id: u.id,
@@ -355,12 +355,15 @@ impl<'r> Analyzer<'r> {
     pub fn check_enum_body(
         &mut self,
         e: &HirEnumDef,
-        cell: &Rc<RefCell<ResolvedEnumType>>,
+        nominal: &NominalRef,
     ) -> Option<CheckedEnumDef> {
-        let (methods, suppress) = {
-            let resolved = cell.borrow();
-            (resolved.functions.clone(), resolved.suppress.clone())
-        };
+        let (resolved, methods) = self.type_facts(e.id, e.span, |types| {
+            Ok((
+                types.enum_facts(nominal)?.clone(),
+                types.functions(nominal)?.clone(),
+            ))
+        })?;
+        let suppress = resolved.suppress.clone();
         let functions = self.check_method_bodies(&e.functions, &methods, &suppress)?;
         Some(CheckedEnumDef {
             id: e.id,

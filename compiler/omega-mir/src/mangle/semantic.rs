@@ -135,26 +135,36 @@ pub(super) fn mangle_type(ty: &ResolvedType) -> MangleType {
                 sig.convention,
             )
         }
-        ResolvedType::Struct(cell) => {
-            let cell = cell.borrow();
-            named_type(&cell.module_path, &cell.name, &cell.generic_args, None)
-        }
-        ResolvedType::Union(cell) => {
-            let cell = cell.borrow();
-            named_type(&cell.module_path, &cell.name, &cell.generic_args, None)
-        }
-        ResolvedType::Enum { cell, variant } => {
-            let cell = cell.borrow();
+        ResolvedType::Struct(nominal) => named_type(
+            &nominal.module_path,
+            &nominal.name,
+            &nominal.generic_args,
+            None,
+        ),
+        ResolvedType::Union(nominal) => named_type(
+            &nominal.module_path,
+            &nominal.name,
+            &nominal.generic_args,
+            None,
+        ),
+        ResolvedType::Enum { nominal, variant } => {
             let variant = (*variant).map(|index| {
                 u32::try_from(index)
                     .expect("omega-mangle cannot represent enum variant indices above u32::MAX")
             });
-            named_type(&cell.module_path, &cell.name, &cell.generic_args, variant)
+            named_type(
+                &nominal.module_path,
+                &nominal.name,
+                &nominal.generic_args,
+                variant,
+            )
         }
-        ResolvedType::Spec(cell) => {
-            let cell = cell.borrow();
-            named_type(&cell.module_path, &cell.name, &cell.generic_args, None)
-        }
+        ResolvedType::Spec(nominal) => named_type(
+            &nominal.module_path,
+            &nominal.name,
+            &nominal.generic_args,
+            None,
+        ),
         ResolvedType::SpecObject { shape, mutable } => {
             // `shape.members` is already in canonical final-name order, so
             // this never needs to re-sort: source permutations already
@@ -163,7 +173,7 @@ pub(super) fn mangle_type(ty: &ResolvedType) -> MangleType {
                 .members
                 .iter()
                 .map(|member| {
-                    let spec = member.spec.borrow();
+                    let spec = &*member.spec;
                     named_type(&spec.module_path, &spec.name, &member.spec_args, None)
                 })
                 .collect();

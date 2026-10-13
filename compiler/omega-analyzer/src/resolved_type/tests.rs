@@ -1,4 +1,5 @@
 use super::*;
+use crate::type_store::{EnumFacts, NominalIdentity, NominalKind, SpecFacts, StructFacts, testing};
 
 fn fn_type(convention: CallingConvention) -> ResolvedFunctionType {
     ResolvedFunctionType {
@@ -91,27 +92,31 @@ fn function_display_keeps_a_variadic_tail_after_self() {
     );
 }
 
-fn spec_cell(id: u32, name: &str) -> Rc<RefCell<ResolvedSpecType>> {
-    Rc::new(RefCell::new(ResolvedSpecType {
-        id: HirId {
-            module: omega_hir::ModuleId(0),
-            local: id,
+fn spec_identity(id: u32, name: &str, generic_args: Vec<ResolvedGenericArg>) -> NominalIdentity {
+    testing::identity(id, NominalKind::Spec, name, &[], generic_args)
+}
+
+fn spec_type(id: u32, name: &str) -> NominalRef {
+    spec_with_args(id, name, vec![])
+}
+
+fn spec_with_args(id: u32, name: &str, generic_args: Vec<ResolvedGenericArg>) -> NominalRef {
+    testing::define_spec(
+        spec_identity(id, name, generic_args),
+        SpecFacts {
+            visibility: Visibility::Exposed,
+            generics: vec![],
+            is_object_safe: true,
+            functions: vec![],
+            suppress: vec![],
         },
-        name: Ident(name.to_string()),
-        visibility: Visibility::Exposed,
-        generics: vec![],
-        module_path: omega_hir::ModulePath::default(),
-        generic_args: vec![],
-        is_object_safe: true,
-        functions: vec![],
-        suppress: vec![],
-    }))
+    )
 }
 
 #[test]
 fn spec_shape_canonicalizes_reordered_members_identically() {
-    let a = spec_cell(1, "A");
-    let b = spec_cell(2, "B");
+    let a = spec_type(1, "A");
+    let b = spec_type(2, "B");
     let ab = ResolvedSpecShape::canonicalize(vec![
         ResolvedSpecApplication::new(a.clone(), vec![]),
         ResolvedSpecApplication::new(b.clone(), vec![]),
@@ -126,8 +131,8 @@ fn spec_shape_canonicalizes_reordered_members_identically() {
 
 #[test]
 fn spec_shape_canonicalizes_duplicate_members_away() {
-    let a1 = spec_cell(1, "A");
-    let a2 = spec_cell(1, "A");
+    let a1 = spec_type(1, "A");
+    let a2 = a1.clone();
     let shape = ResolvedSpecShape::canonicalize(vec![
         ResolvedSpecApplication::new(a1, vec![]),
         ResolvedSpecApplication::new(a2, vec![]),
@@ -135,47 +140,38 @@ fn spec_shape_canonicalizes_duplicate_members_away() {
     assert_eq!(shape.members.len(), 1);
 }
 
-fn struct_cell(id: u32, name: &str, type_args: Vec<ResolvedType>) -> ResolvedType {
-    let generic_args: Vec<ResolvedGenericArg> = type_args
+fn struct_in(module: &[&str], id: u32, name: &str, type_args: Vec<ResolvedType>) -> ResolvedType {
+    let generic_args = type_args
         .into_iter()
         .map(ResolvedGenericArg::Type)
         .collect();
-    ResolvedType::Struct(Rc::new(RefCell::new(ResolvedStructType {
-        id: HirId {
-            module: omega_hir::ModuleId(0),
-            local: id,
+    testing::define_struct(
+        testing::identity(id, NominalKind::Struct, name, module, generic_args),
+        StructFacts {
+            fields: vec![],
+            layout: crate::annotations::Layout::default(),
+            suppress: vec![],
+            is_marker: false,
         },
-        name: Ident(name.to_string()),
-        module_path: omega_hir::ModulePath::from(vec![Ident("pkg".into())]),
-        generic_args,
-        fields: vec![],
-        functions: vec![],
-        layout: crate::annotations::Layout::default(),
-        suppress: vec![],
-        is_marker: false,
-    })))
+    )
 }
 
-fn enum_cell(id: u32, name: &str) -> ResolvedType {
-    ResolvedType::Enum {
-        cell: Rc::new(RefCell::new(ResolvedEnumType {
-            id: HirId {
-                module: omega_hir::ModuleId(0),
-                local: id,
-            },
-            name: Ident(name.to_string()),
-            module_path: omega_hir::ModulePath::from(vec![Ident("pkg".into())]),
-            generic_args: vec![],
+fn struct_type(id: u32, name: &str, type_args: Vec<ResolvedType>) -> ResolvedType {
+    struct_in(&["pkg"], id, name, type_args)
+}
+
+fn enum_type(id: u32, name: &str) -> ResolvedType {
+    testing::define_enum(
+        testing::identity(id, NominalKind::Enum, name, &["pkg"], vec![]),
+        EnumFacts {
             tag_type: ResolvedType::U8,
             header: vec![],
             dynamic_fields: vec![],
             variants: vec![],
-            functions: vec![],
             layout: crate::annotations::Layout::default(),
             suppress: vec![],
-        })),
-        variant: None,
-    }
+        },
+    )
 }
 
 fn anonymous(members: Vec<ResolvedType>) -> ResolvedType {
@@ -302,7 +298,7 @@ fn anonymous_enum_flattening_ignores_a_members_refinement() {
 #[test]
 fn anonymous_enum_flattening_stops_at_every_other_constructor() {
     let inner = anonymous(vec![ResolvedType::I32, ResolvedType::Bool]);
-    let named = enum_cell(7, "Named");
+    let named = enum_type(7, "Named");
 
     // A named enum is nominal, so it is one member whatever its variants are.
     let with_named = anonymous(vec![named.clone(), ResolvedType::Char]);
@@ -315,7 +311,7 @@ fn anonymous_enum_flattening_stops_at_every_other_constructor() {
         mutable: false,
     };
     let array = ResolvedType::SizedArray(Box::new(inner.clone()), 4);
-    let container = struct_cell(9, "Box", vec![inner]);
+    let container = struct_type(9, "Box", vec![inner]);
     let boundaries = anonymous(vec![pointer.clone(), array.clone(), container.clone()]);
     assert_eq!(shape_of(&boundaries).members().len(), 3);
     for member in [pointer, array, container] {
@@ -428,8 +424,8 @@ fn anonymous_enum_tag_domain_is_the_u32_range() {
 fn structural_key_and_display_both_separate_nominal_instantiations() {
     // Two instantiations of one declaration are different types, so neither
     // the canonical key nor the rendering a reader sees may conflate them.
-    let int_pair = struct_cell(1, "Pair", vec![ResolvedType::I32]);
-    let float_pair = struct_cell(2, "Pair", vec![ResolvedType::F64]);
+    let int_pair = struct_type(1, "Pair", vec![ResolvedType::I32]);
+    let float_pair = struct_type(2, "Pair", vec![ResolvedType::F64]);
     assert_eq!(int_pair.to_string(), "Pair<i32>");
     assert_eq!(float_pair.to_string(), "Pair<f64>");
     assert_ne!(
@@ -450,9 +446,9 @@ fn spec_shape_orders_generic_applications_of_one_spec_deterministically() {
     // The old ordering key rendered arguments with `Display`, so
     // `Convert<Pair<i32>>` and `Convert<Pair<f64>>` collided and their
     // relative order fell back to source order.
-    let convert = spec_cell(1, "Convert");
-    let int_pair = struct_cell(2, "Pair", vec![ResolvedType::I32]);
-    let float_pair = struct_cell(3, "Pair", vec![ResolvedType::F64]);
+    let convert = spec_type(1, "Convert");
+    let int_pair = struct_type(2, "Pair", vec![ResolvedType::I32]);
+    let float_pair = struct_type(3, "Pair", vec![ResolvedType::F64]);
     let forwards = ResolvedSpecShape::canonicalize(vec![
         ResolvedSpecApplication::new(
             convert.clone(),
@@ -708,42 +704,36 @@ fn fixed_width_integer_domains_ignore_the_target_width() {
     }
 }
 
-fn variant_enum_cell(
-    id: u32,
-    name: &str,
-    type_args: Vec<ResolvedType>,
-) -> Rc<RefCell<ResolvedEnumType>> {
-    let generic_args: Vec<ResolvedGenericArg> = type_args
+fn variant_enum(id: u32, name: &str, type_args: Vec<ResolvedType>) -> NominalRef {
+    let generic_args = type_args
         .into_iter()
         .map(ResolvedGenericArg::Type)
         .collect();
-    Rc::new(RefCell::new(ResolvedEnumType {
-        id: HirId {
-            module: omega_hir::ModuleId(0),
-            local: id,
+    let ResolvedType::Enum { nominal, .. } = testing::define_enum(
+        testing::identity(id, NominalKind::Enum, name, &["pkg", "inner"], generic_args),
+        EnumFacts {
+            tag_type: ResolvedType::U8,
+            header: vec![],
+            dynamic_fields: vec![],
+            variants: vec![crate::resolved_type::ResolvedEnumVariant {
+                name: Ident("Some".into()),
+                fields: vec![],
+                header_values: vec![],
+                tag: crate::checked::NumberValue::Unsigned(0),
+            }],
+            layout: crate::annotations::Layout::default(),
+            suppress: vec![],
         },
-        name: Ident(name.to_string()),
-        module_path: omega_hir::ModulePath::from(vec![Ident("pkg".into()), Ident("inner".into())]),
-        generic_args,
-        tag_type: ResolvedType::U8,
-        header: vec![],
-        dynamic_fields: vec![],
-        variants: vec![crate::resolved_type::ResolvedEnumVariant {
-            name: Ident("Some".into()),
-            fields: vec![],
-            header_values: vec![],
-            tag: crate::checked::NumberValue::Unsigned(0),
-        }],
-        functions: vec![],
-        layout: crate::annotations::Layout::default(),
-        suppress: vec![],
-    }))
+    ) else {
+        unreachable!()
+    };
+    nominal
 }
 
 #[test]
 fn nested_generic_arguments_render_recursively() {
-    let inner = struct_cell(1, "Holder", vec![ResolvedType::I32]);
-    let outer = struct_cell(2, "Pair", vec![inner, ResolvedType::Str { mutable: false }]);
+    let inner = struct_type(1, "Holder", vec![ResolvedType::I32]);
+    let outer = struct_type(2, "Pair", vec![inner, ResolvedType::Str { mutable: false }]);
     assert_eq!(outer.to_string(), "Pair<Holder<i32>, *str>");
 
     let pointer = ResolvedType::Pointer {
@@ -755,9 +745,9 @@ fn nested_generic_arguments_render_recursively() {
 
 #[test]
 fn an_enum_variant_suffix_follows_the_instantiated_type_name() {
-    let cell = variant_enum_cell(3, "Option", vec![ResolvedType::U8]);
+    let nominal = variant_enum(3, "Option", vec![ResolvedType::U8]);
     let variant = ResolvedType::Enum {
-        cell,
+        nominal,
         variant: Some(0),
     };
     assert_eq!(variant.to_string(), "Option<u8>::Some");
@@ -765,28 +755,14 @@ fn an_enum_variant_suffix_follows_the_instantiated_type_name() {
 
 #[test]
 fn a_spec_renders_its_own_type_arguments() {
-    let cell = spec_cell(4, "Into");
-    cell.borrow_mut().generic_args = vec![ResolvedGenericArg::Type(ResolvedType::U32)];
-    assert_eq!(ResolvedType::Spec(cell).to_string(), "Into<u32>");
+    let spec = spec_with_args(4, "Into", vec![ResolvedGenericArg::Type(ResolvedType::U32)]);
+    assert_eq!(ResolvedType::Spec(spec).to_string(), "Into<u32>");
 }
 
 #[test]
 fn two_same_named_types_from_different_modules_can_be_told_apart() {
-    let local = struct_cell(5, "Buffer", vec![]);
-    let other = ResolvedType::Struct(Rc::new(RefCell::new(ResolvedStructType {
-        id: HirId {
-            module: omega_hir::ModuleId(1),
-            local: 5,
-        },
-        name: Ident("Buffer".into()),
-        module_path: omega_hir::ModulePath::from(vec![Ident("other".into())]),
-        generic_args: vec![],
-        fields: vec![],
-        functions: vec![],
-        layout: crate::annotations::Layout::default(),
-        suppress: vec![],
-        is_marker: false,
-    })));
+    let local = struct_type(5, "Buffer", vec![]);
+    let other = struct_in(&["other"], 5, "Buffer", vec![]);
 
     assert_eq!(local.to_string(), other.to_string());
     let (left, right) = crate::error::render::distinguish(&local, &other);
@@ -798,8 +774,8 @@ fn two_same_named_types_from_different_modules_can_be_told_apart() {
 #[test]
 fn types_that_already_differ_keep_their_short_names() {
     let (left, right) = crate::error::render::distinguish(
-        &struct_cell(6, "Holder", vec![ResolvedType::I32]),
-        &struct_cell(7, "Holder", vec![ResolvedType::U8]),
+        &struct_type(6, "Holder", vec![ResolvedType::I32]),
+        &struct_type(7, "Holder", vec![ResolvedType::U8]),
     );
     assert_eq!(left, "Holder<i32>");
     assert_eq!(right, "Holder<u8>");
@@ -931,18 +907,13 @@ fn comp_usize(value: i128) -> ResolvedGenericArg {
 }
 
 fn struct_with_args(id: u32, name: &str, generic_args: Vec<ResolvedGenericArg>) -> ResolvedType {
-    ResolvedType::Struct(Rc::new(RefCell::new(ResolvedStructType {
-        id: HirId {
-            module: omega_hir::ModuleId(0),
-            local: id,
+    testing::define_struct(
+        testing::identity(id, NominalKind::Struct, name, &["pkg"], generic_args),
+        StructFacts {
+            fields: vec![],
+            layout: crate::annotations::Layout::default(),
+            suppress: vec![],
+            is_marker: false,
         },
-        name: Ident(name.to_string()),
-        module_path: omega_hir::ModulePath::from(vec![Ident("pkg".into())]),
-        generic_args,
-        fields: vec![],
-        functions: vec![],
-        layout: crate::annotations::Layout::default(),
-        suppress: vec![],
-        is_marker: false,
-    })))
+    )
 }

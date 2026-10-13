@@ -555,7 +555,7 @@ impl Context {
             Self::require_value_type(&member)?;
             match member {
                 ResolvedType::Spec(spec) => {
-                    let name = spec.borrow().name.clone();
+                    let name = spec.name.clone();
                     return Err(TypeResolutionError::SpecUsedAsValueType(name));
                 }
                 member => resolved.push(member),
@@ -1106,13 +1106,14 @@ impl Context {
                 reveals,
             )? {
                 ResolvedType::Spec(spec) => {
-                    if !spec.borrow().is_object_safe {
+                    let facts = resolver.types().spec_facts(&spec).clone();
+                    if !facts.is_object_safe {
                         return Err(TypeResolutionError::SpecNotObjectSafe(member_name));
                     }
-                    let params = spec.borrow().generics.clone();
+                    let params = &facts.generics;
                     let resolved_args = self.resolve_generic_args(
                         &written_args,
-                        &params,
+                        params,
                         resolver,
                         module_path,
                         options.through_indirection(),
@@ -1150,23 +1151,25 @@ impl Context {
             origin: path.origin,
         });
         let Ok(ResolvedType::Enum {
-            cell,
+            nominal,
             variant: None,
         }) = self.resolve_type(prefix, resolver, module_path, options, reveals)
         else {
             return Ok(None);
         };
-        let found = cell.borrow().variant(variant_name).map(|(idx, _)| idx);
-        match found {
-            Some(idx) => Ok(Some(ResolvedType::Enum {
-                cell: cell.clone(),
+        let facts = resolver
+            .types()
+            .enum_facts(&nominal)
+            .map_err(|incomplete| TypeResolutionError::ModuleResolution(incomplete.into()))?;
+        match facts.variant(variant_name) {
+            Some((idx, _)) => Ok(Some(ResolvedType::Enum {
+                nominal: nominal.clone(),
                 variant: Some(idx),
             })),
             None => {
-                let similar =
-                    best_match(variant_name, cell.borrow().variants.iter().map(|v| &v.name));
+                let similar = best_match(variant_name, facts.variants.iter().map(|v| &v.name));
                 Err(TypeResolutionError::NoSuchVariantForType {
-                    r#enum: cell.borrow().name.clone(),
+                    r#enum: nominal.name.clone(),
                     name: variant_name.clone(),
                     similar,
                 })

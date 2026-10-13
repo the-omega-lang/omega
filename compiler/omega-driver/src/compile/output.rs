@@ -66,7 +66,7 @@ impl Driver {
             });
         }
 
-        for (key, methods) in self.items.cells.all_methods() {
+        for (key, methods) in self.items.nominals.all_methods(&self.items.types) {
             if key.is_instantiation() || !self.roots.is_extern(key.module()) {
                 continue;
             }
@@ -76,10 +76,10 @@ impl Driver {
                     module_path: key.module().clone(),
                     kind: ExternFunctionKind::Method {
                         type_name: key.name.clone(),
-                        method_name,
+                        method_name: method_name.clone(),
                     },
-                    symbol: method.annotations.symbol,
-                    fn_type: method.fn_type,
+                    symbol: method.annotations.symbol.clone(),
+                    fn_type: method.fn_type.clone(),
                 });
             }
         }
@@ -134,8 +134,8 @@ impl Driver {
                     module_path: entry.module.clone(),
                     kind: ExternFunctionKind::Conform {
                         target: entry.target.clone(),
-                        spec_module_path: entry.spec.borrow().module_path.clone(),
-                        spec_name: entry.spec.borrow().name.clone(),
+                        spec_module_path: entry.spec.module_path.clone(),
+                        spec_name: entry.spec.name.clone(),
                         spec_args: entry.spec_args.clone(),
                         method_name: method_name.clone(),
                     },
@@ -206,8 +206,7 @@ impl Driver {
             )
         };
 
-        for decl in group_by_declaration(self.items.cells.structs(), |c| (c.id, c.suppress.clone()))
-        {
+        for decl in self.declarations(NominalKind::Struct) {
             let Some(def) = self.hir_struct(decl.module, decl.name) else {
                 continue;
             };
@@ -221,8 +220,7 @@ impl Driver {
             }
         }
 
-        for decl in group_by_declaration(self.items.cells.unions(), |c| (c.id, c.suppress.clone()))
-        {
+        for decl in self.declarations(NominalKind::Union) {
             let Some(def) = self.hir_union(decl.module, decl.name) else {
                 continue;
             };
@@ -236,7 +234,7 @@ impl Driver {
             }
         }
 
-        for decl in group_by_declaration(self.items.cells.enums(), |c| (c.id, c.suppress.clone())) {
+        for decl in self.declarations(NominalKind::Enum) {
             let Some(def) = self.hir_enum(decl.module, decl.name) else {
                 continue;
             };
@@ -284,7 +282,7 @@ impl Driver {
         }
 
         // Each of the three loops above is already deterministic on its own
-        // (the cell caches preserve creation order). This sort is for
+        // (the nominal table preserves intern order). This sort is for
         // something they can't give separately: one chronological ordering
         // across all three kinds together, instead of every struct warning,
         // then every union warning, then every enum warning.
@@ -323,6 +321,33 @@ struct Declaration<'a> {
     suppress: Vec<Ident>,
 }
 
+impl Driver {
+    /// Every declaration of `kind`, with all of its instantiations grouped
+    /// under it. A declaration whose definition failed suppresses nothing.
+    fn declarations(&self, kind: NominalKind) -> Vec<Declaration<'_>> {
+        let mut grouped: IndexMap<(&ModulePath, &Ident), Declaration<'_>> = IndexMap::new();
+        for (key, nominal) in self.items.nominals.of_kind(kind) {
+            let suppress = self
+                .items
+                .types
+                .suppress(nominal)
+                .map(<[Ident]>::to_vec)
+                .unwrap_or_default();
+            grouped
+                .entry((key.module(), &key.name))
+                .or_insert_with(|| Declaration {
+                    module: key.module(),
+                    name: &key.name,
+                    ids: vec![],
+                    suppress,
+                })
+                .ids
+                .push(nominal.decl_id);
+        }
+        grouped.into_values().collect()
+    }
+}
+
 impl Declaration<'_> {
     fn suppresses(&self, warning: &str) -> bool {
         self.suppress.iter().any(|s| s.as_ref() == warning)
@@ -331,28 +356,4 @@ impl Declaration<'_> {
     fn any(&self, used: impl Fn(HirId) -> bool) -> bool {
         self.ids.iter().copied().any(used)
     }
-}
-
-fn group_by_declaration<'a, T>(
-    cells: impl Iterator<Item = (&'a ItemKey, &'a Rc<RefCell<T>>)>,
-    facts: impl Fn(&T) -> (HirId, Vec<Ident>),
-) -> Vec<Declaration<'a>>
-where
-    T: 'a,
-{
-    let mut grouped: IndexMap<(&ModulePath, &Ident), Declaration<'a>> = IndexMap::new();
-    for (key, cell) in cells {
-        let (id, suppress) = facts(&cell.borrow());
-        grouped
-            .entry((key.module(), &key.name))
-            .or_insert_with(|| Declaration {
-                module: key.module(),
-                name: &key.name,
-                ids: vec![],
-                suppress,
-            })
-            .ids
-            .push(id);
-    }
-    grouped.into_values().collect()
 }

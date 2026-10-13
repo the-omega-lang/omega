@@ -3,6 +3,7 @@ use omega_analyzer::layout::{self, Leaf};
 use omega_analyzer::resolved_type::{
     CallingConvention, NumericKind, ResolvedFunctionType, ResolvedType,
 };
+use omega_analyzer::type_store::TypeStore;
 
 /// LLVM's numeric calling-convention IDs (`llvm/IR/CallingConv.h`), centralized
 /// here so no other module hardcodes a raw convention number. Both `Omega`
@@ -36,23 +37,27 @@ pub struct AbiSignature {
 }
 
 impl AbiSignature {
-    pub fn build(target: Target, fn_type: &ResolvedFunctionType) -> AbiSignature {
+    pub fn build(
+        target: Target,
+        types: &TypeStore,
+        fn_type: &ResolvedFunctionType,
+    ) -> AbiSignature {
         AbiSignature {
             params: fn_type
                 .param_types()
-                .flat_map(|ty| layout::leaves_of(ty, target.pointer_bytes()))
+                .flat_map(|ty| layout::leaves_of(types, ty, target.pointer_bytes()))
                 .collect(),
-            ret: AbiReturn::for_type(target, &fn_type.return_type),
+            ret: AbiReturn::for_type(target, types, &fn_type.return_type),
         }
     }
 }
 
 impl AbiReturn {
-    pub fn for_type(target: Target, return_type: &ResolvedType) -> AbiReturn {
+    pub fn for_type(target: Target, types: &TypeStore, return_type: &ResolvedType) -> AbiReturn {
         if *return_type == ResolvedType::Void || *return_type == ResolvedType::Never {
             return AbiReturn::Void;
         }
-        let leaves = layout::leaves_of(return_type, target.pointer_bytes());
+        let leaves = layout::leaves_of(types, return_type, target.pointer_bytes());
         match leaves.len() {
             // A zero-sized result has no leaves to transfer, so it is returned
             // exactly like `void`. `Direct(vec![])` would instead ask the
@@ -103,7 +108,7 @@ mod tests {
     fn void_and_never_have_no_return_value() {
         for ret in [ResolvedType::Void, ResolvedType::Never] {
             assert_eq!(
-                AbiSignature::build(Target::DEFAULT, &fn_type(&[], ret)).ret,
+                AbiSignature::build(Target::DEFAULT, &TypeStore::default(), &fn_type(&[], ret)).ret,
                 AbiReturn::Void
             );
         }
@@ -112,12 +117,18 @@ mod tests {
     #[test]
     fn one_and_two_leaves_return_directly() {
         assert_eq!(
-            AbiSignature::build(Target::DEFAULT, &fn_type(&[], ResolvedType::I32)).ret,
+            AbiSignature::build(
+                Target::DEFAULT,
+                &TypeStore::default(),
+                &fn_type(&[], ResolvedType::I32)
+            )
+            .ret,
             AbiReturn::Direct(vec![Leaf::I32])
         );
         assert_eq!(
             AbiReturn::for_type(
                 Target::DEFAULT,
+                &TypeStore::default(),
                 &ResolvedType::Slice {
                     item: Box::new(ResolvedType::U8),
                     mutable: false
@@ -130,19 +141,25 @@ mod tests {
     #[test]
     fn a_zero_sized_result_returns_like_void() {
         let ret = ResolvedType::SizedArray(Box::new(ResolvedType::I64), 0);
-        assert!(layout::leaves_of(&ret, Target::DEFAULT.pointer_bytes()).is_empty());
-        assert_eq!(AbiReturn::for_type(Target::DEFAULT, &ret), AbiReturn::Void);
+        assert!(
+            layout::leaves_of(&TypeStore::default(), &ret, Target::DEFAULT.pointer_bytes())
+                .is_empty()
+        );
+        assert_eq!(
+            AbiReturn::for_type(Target::DEFAULT, &TypeStore::default(), &ret),
+            AbiReturn::Void
+        );
     }
 
     #[test]
     fn three_leaves_return_indirectly() {
         let ret = ResolvedType::SizedArray(Box::new(ResolvedType::I64), 3);
         assert_eq!(
-            AbiReturn::for_type(Target::DEFAULT, &ret),
+            AbiReturn::for_type(Target::DEFAULT, &TypeStore::default(), &ret),
             AbiReturn::Indirect
         );
         assert_eq!(
-            AbiSignature::build(Target::DEFAULT, &fn_type(&[], ret)).ret,
+            AbiSignature::build(Target::DEFAULT, &TypeStore::default(), &fn_type(&[], ret)).ret,
             AbiReturn::Indirect
         );
     }
@@ -158,7 +175,12 @@ mod tests {
             ResolvedType::I64,
         ];
         assert_eq!(
-            AbiSignature::build(Target::DEFAULT, &fn_type(&params, ResolvedType::Void)).params,
+            AbiSignature::build(
+                Target::DEFAULT,
+                &TypeStore::default(),
+                &fn_type(&params, ResolvedType::Void)
+            )
+            .params,
             vec![Leaf::I8, Leaf::Ptr, Leaf::I32, Leaf::I64]
         );
     }

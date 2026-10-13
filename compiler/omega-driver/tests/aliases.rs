@@ -663,7 +663,7 @@ fn a_direct_alias_cycle_is_rejected() {
 
 #[test]
 fn a_cycle_behind_a_pointer_is_still_a_cycle() {
-    // An alias has no nominal cell, so the ordinary recursive-type indirection
+    // An alias has no nominal identity, so the ordinary recursive-type indirection
     // exception does not apply: there is nothing for `*Loop` to point at.
     let errors = TestPackage::new(
         r#"

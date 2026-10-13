@@ -24,5 +24,6 @@ pub mod similarity;
 pub mod target;
 pub mod template;
 pub mod type_key;
+pub mod type_store;
 
 pub use target::{Arch, Os, Target, TargetParseError};

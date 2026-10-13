@@ -117,18 +117,26 @@ impl<'ctx> Codegen<'ctx> {
     /// A data symbol this object does not own: correct type and alignment so
     /// uses type-check and relocate, but no storage, section, or initializer.
     fn declare_global_reference(&mut self, global: &GlobalDecl) {
-        let total = omega_analyzer::layout::total_bytes(&global.r#type, self.pointer_bytes());
+        let total =
+            omega_analyzer::layout::total_bytes(self.types, &global.r#type, self.pointer_bytes());
         let byte_array = self.context.i8_type().array_type(total.max(1));
         let value = self.module.add_global(byte_array, None, &global.symbol);
         value.set_linkage(Linkage::External);
         value.set_visibility(visibility_of(global.visibility));
-        value.set_alignment(omega_analyzer::layout::type_alignment(&global.r#type));
+        value.set_alignment(omega_analyzer::layout::type_alignment(
+            self.types,
+            &global.r#type,
+        ));
         self.globals.insert(global.id, value);
     }
 
     fn define_global(&mut self, declaration: &MirDeclaration) {
         let symbol = &declaration.symbol;
-        let total = omega_analyzer::layout::total_bytes(&declaration.r#type, self.pointer_bytes());
+        let total = omega_analyzer::layout::total_bytes(
+            self.types,
+            &declaration.r#type,
+            self.pointer_bytes(),
+        );
         let blob = declaration
             .initial_value
             .as_ref()
@@ -146,7 +154,10 @@ impl<'ctx> Codegen<'ctx> {
         let global = self.module.add_global(r#type, None, symbol);
         global.set_linkage(Linkage::External);
         global.set_visibility(visibility_of(declaration.visibility));
-        global.set_alignment(omega_analyzer::layout::type_alignment(&declaration.r#type));
+        global.set_alignment(omega_analyzer::layout::type_alignment(
+            self.types,
+            &declaration.r#type,
+        ));
         if self.target.os != omega_analyzer::Os::MacOs {
             global.set_section(Some(&format!(".data.{symbol}")));
         }

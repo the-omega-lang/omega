@@ -42,7 +42,7 @@ disagrees with the trees it is about to read.
 ModuleRoots     filesystem inventory + package identities
 ModuleStore     source / AST / HIR / module index caches
 Diagnostics     accumulated structured findings
-ItemQueries     explicit item/spec query state + type cells + checked bodies
+ItemQueries     explicit item/spec query state + nominal types + checked bodies
 ImportState     lazy import-alias resolution + ordered resolution stack + usage
 AliasState      declared-`alias` resolution + ordered resolution stack
 Primitives      primitive declarations/templates/instantiations
@@ -226,7 +226,7 @@ pass the import gate and then fail at the alias gate.
 
 `AliasState` is a separate query with the same `InProgress / Resolved / Failed`
 discipline and ordered resolution stack as the item queries, because an alias
-chain can cycle. An alias never gets an `ItemKey`, a type cell, or a symbol.
+chain can cycle. An alias never gets an `ItemKey`, a nominal type, or a symbol.
 
 `Driver::declared_alias` is the **raw** query: it exists to build and cache the
 alias graph and to detect cycles, and it answers *what* an alias names.
@@ -367,7 +367,7 @@ arguments as well as the method's own, so `Pair<i32>::self::map<u8>` and
 An ordinary item has empty `generic_args`. A concrete generic instantiation is
 the same query shape with concrete arguments. A `ResolvedGenericArg` is either a
 resolved type or a canonical compile-time scalar value (`CompScalar`), so
-`Buffer<10, i32>` and `Buffer<11, i32>` have different keys, cells, and symbols.
+`Buffer<10, i32>` and `Buffer<11, i32>` have different keys, nominal types, and symbols.
 Values are canonicalized to the parameter's declared type, and defaults are
 filled before constructing the key, so equivalent spellings share one entry.
 
@@ -402,7 +402,7 @@ Each instantiation is emitted as a standalone checked function carrying its owne
 
 Generic conformance methods share this cache/materialization path, retaining their `ConformanceOwner` so emission uses conformance linkage and identity rather than treating the implementation as an inherent method.
 
-Implementation ownership is split under `items/`: `items/mod.rs` owns query keys, cells, state transitions, checked-body caching, and type cells; `items/resolution.rs` owns the driver-side resolution algorithms that populate those states; `items/methods.rs` owns owner-scoped template lookup and signature/body analysis through the shared query state machine. Keeping cache lifetime/state separate from resolution logic makes query invariants visible without turning one file into both the database and every query implementation.
+Implementation ownership is split under `items/`: `items/mod.rs` owns query keys, state transitions, checked-body caching, and the nominal-type table; `items/resolution.rs` owns the driver-side resolution algorithms that populate those states; `items/methods.rs` owns owner-scoped template lookup and signature/body analysis through the shared query state machine. Keeping cache lifetime/state separate from resolution logic makes query invariants visible without turning one file into both the database and every query implementation.
 
 ## Query states and cycles
 
@@ -415,19 +415,19 @@ Resolved(ResolvedEntry) -> memoized result + visibility
 Failed                  -> this query already produced its primary failure
 ```
 
-The result is not stored in a second parallel map. This makes `InProgress`, successful completion, and failed completion mutually explicit and prevents an implicit “done but missing means failed” protocol. Spec declaration queries use the same `InProgress / Resolved / Failed` shape around their canonical declaration cell.
+The result is not stored in a second parallel map. This makes `InProgress`, successful completion, and failed completion mutually explicit and prevents an implicit “done but missing means failed” protocol. Spec declaration queries use the same `InProgress / Resolved / Failed` shape around their canonical interned declaration.
 
 `ItemQueries` and `ImportState` also keep an ordered resolution stack beside their memoized states. Re-entering an active query therefore reconstructs the actual dependency suffix (`a::X -> b::Y -> a::X`) instead of merely knowing that *some* cycle exists.
 
 If item resolution requests an item already `InProgress`, the driver still decides whether the reference is safely indirect or forms an illegal by-value recursive type cycle. `ModuleResolver::resolve_item` receives a `ResolveItemOptions` policy. Its indirection bit records this exact recursive-type distinction, while the visibility-bypass bit makes deliberate `reveal` access explicit at the query boundary. Pointers/function type positions can refer through an in-progress type identity without embedding its unfinished layout, while by-value fields/array elements cannot.
 
-## Shared type cells
+## Nominal types
 
-Struct/enum/union identities use `Rc<RefCell<Resolved*Type>>` cells stored in `TypeCells`.
+`ItemQueries` owns the `TypeStore` and a `Nominals` table mapping each struct/enum/union `ItemKey` to its `NominalRef`. A type is interned once per key when its item query starts, so two instantiations are distinct types exactly when their keys differ, and one instantiation reached twice is one type. Specs are interned by their declaration query.
 
-A cell can be created before all fields/methods/layout facts are populated. This allows recursive **indirect** references to point at stable nominal identity while the signature is still being built.
+Interning precedes the definition, so recursive **indirect** references can name the type while its signature is still being built. The owning signature analysis writes the definition and functions stages through `ModuleResolver::types_mut`, and every later reader shares those facts instead of reconstructing an aggregate definition. The stage model is described in [`types-layout-and-const-eval.md`](types-layout-and-const-eval.md#nominal-identity-and-the-type-store).
 
-The cell is then filled by the owning signature analysis and reused everywhere. Downstream references do not copy/reconstruct an aggregate definition independently.
+Output sweeps over every nominal type (unused fields, the extern method catalog) skip a type whose definition never completed: a failed declaration declares nothing. A successful `compile` hands a copy of the store to the program for MIR lowering and codegen.
 
 The caches that have output-affecting iteration use deterministic insertion-order maps.
 
@@ -529,7 +529,7 @@ Body assembly attaches the same kind of fact: a function with generic parameters
 
 ## Specs, conformances, and primitives
 
-Specs have a canonical args-independent declaration cell because their raw member/dependency declarations are substituted later against a concrete use.
+Specs have one canonical args-independent interned declaration because their raw member/dependency declarations are substituted later against a concrete use.
 
 Conformance and primitive declarations sit beside the ordinary named-item query model because they are relationship/declaration blocks rather than ordinary top-level names. They are separate driver subsystems: `conformances/registration.rs` owns registration, precedence, and template instantiation; `conformances/solver.rs` owns lookup, proof context, materialization, and goal solving; `conformances/mod.rs` owns their shared state/model. `primitives.rs` owns primitive registration/template matching/materialization. Primitive entries record explicitly whether they are monomorphized rather than inferring that fact from substitution-vector shape.
 

@@ -22,25 +22,30 @@ Compile-time values (`ConstValue`, `comp_eval.rs`) are built against the same ty
 
 This is intentional: later stages should not translate semantic types into codegen-private competing definitions before common layout/ABI facts are decided.
 
-### Nominal aggregate cells
+### Nominal identity and the type store
 
-Structs, enums, unions, and specs use shared reference-counted cells.
+Structs, enums, unions, and specs are **nominal**: `ResolvedType::{Struct, Union, Enum, Spec}` carry a `NominalRef` (`type_store.rs`). A `NominalRef` is a `Copy` `NominalId` plus an immutable `NominalIdentity`:
 
-For aggregates the cell holds facts such as:
+- the declaration `HirId`, or the synthetic identity of one generic instantiation;
+- kind, name, declaring `ModulePath`, and generic arguments;
+- for an enum, its variant names in declaration order, so a refined variant spells as `Name::Variant`.
 
-- stable HIR/synthetic identity;
-- declared name/module/type args;
-- resolved fields/methods/variants;
-- resolved layout annotation data;
-- suppression/marker metadata.
+Equality and hashing are by `NominalId`. `Display`, `type_key`, templates, and mangling read only the identity, so none of them needs the store.
 
-The driver can create the cell before collection completes, allowing safe recursive indirection to reference stable nominal identity. The owning signature analysis fills it exactly once.
+The semantic facts arrive later and live in a `TypeStore`, owned by the driver, as **write-once stages**:
 
-Consumers should keep/reference the cell rather than copy a second aggregate definition into every expression.
+1. **definition** — fields, layout annotation data, suppressions and the marker flag for a struct; fields and suppressions for a union; tag type, header, shared dynamic fields, variants, layout and suppressions for an enum;
+2. **functions** — the resolved inherent methods of a struct, union, or enum.
+
+The driver interns a nominal type when its item query starts, so a recursive **indirect** reference can name it before either stage is written. The owning signature analysis writes the definition and then the functions, each exactly once; a second write is an internal error. A spec is interned only after its declaration resolves, so its single stage (visibility, generics, object safety, requirements, suppressions) is written at intern time and is never incomplete.
+
+Reading a stage that is not written is the explicit `Incomplete` state, not a default value. Within analysis it means the type's own definition depends on it, and it is reported as a resolution cycle (`ResolveError::Cycle`) naming the type. Layout queries in analysis (`sizeof`, `alignof`, `typeinfo`, zero-size checks) first require every type contained inline to have its definition (`layout::require_complete`). Store reads hand out `Rc`'d fact records, so no borrow of the store is held across further resolver calls.
+
+After a successful analysis every reachable type is complete. `CompiledProgram` carries a copy of the store into MIR lowering, and `CodegenRequest` carries it into codegen; layout and reflection take `&TypeStore` explicitly and read through `TypeStore::frozen`, where an incomplete type is an internal error.
 
 ### Structural shapes
 
-Not every aggregate is nominal. A dynamic spec object and an anonymous enum are **structural**: they have no declaration, no `HirId`, no module, and no driver-owned cell, so their identity is the shape itself.
+Not every aggregate is nominal. A dynamic spec object and an anonymous enum are **structural**: they have no declaration, no `HirId`, no module, and no `NominalRef`, so their identity is the shape itself.
 
 Both are canonicalized once — a deterministically ordered, exact-duplicate-free member list — before any equality, hash, layout, or mangling question is asked. For an anonymous enum that canonical list is a **leaf** list: `ResolvedAnonymousEnum::canonicalize` first replaces every immediate `ResolvedType::AnonymousEnum` member by its own members, recursively, so no stored member is itself an anonymous enum. Type resolution is the sole producer of the shape, so an alias or generic substitution that lands one anonymous enum inside another normalizes there and downstream phases — layout, tags, const values, pattern coverage, mangling — consume the already-flattened list and must not re-sort or re-flatten it. Ordering comes from `omega-analyzer::type_key`, the single structural identity key for a `ResolvedType`:
 
@@ -134,7 +139,7 @@ For a struct, field types are passed through `layout_fields` using the resolved 
 3. field size from its leaf representation;
 4. explicit padding leaves where needed.
 
-The struct's resolved alignment/packing annotation data lives on the resolved struct cell, not in codegen.
+The struct's resolved alignment/packing annotation data lives in its stored definition, not in codegen.
 
 ## Local stack-frame layout
 
@@ -168,7 +173,7 @@ The payload can be represented as opaque integer leaves for flattened transfer; 
 
 Those helpers do not take a declared enum. They take `layout::EnumView`, the layout-relevant shape shared by **named and anonymous enums** — tag type, header field types, shared dynamic field types, per-variant tag/header values/body field types, and pack/align. An anonymous enum is the degenerate case of that view: a `u32` tag holding the canonical member index, no header, no shared dynamic fields, and exactly one body field per variant holding that member.
 
-This is the only place the two enum forms are reconciled. Codegen reads tag/header/payload facts through the same view rather than destructuring a nominal enum cell, so neither form can acquire a second representation rule.
+This is the only place the two enum forms are reconciled. Codegen reads tag/header/payload facts through the same view rather than destructuring a named enum's stored facts, so neither form can acquire a second representation rule.
 
 Implicit enum tags are checked against the resolved tag type's integer domain before they become `NumberValue`s. This mirrors explicit-tag range checking and keeps the “every variant receives a representable, unique tag” invariant true even for extremely large enums. Pointer-sized integer domains use the active target's pointer width.
 

@@ -13,10 +13,11 @@ use omega_analyzer::checked::{
 use omega_analyzer::layout::ANONYMOUS_ENUM_TAG_TYPE;
 use omega_analyzer::resolved_type::ResolvedType;
 use omega_analyzer::runtime_checks::RuntimeCheck;
+use omega_analyzer::type_store::TypeStore;
 use omega_hir::HirId;
 use omega_parser::prelude::{BinaryOp, Span};
 
-impl FunctionLowerer {
+impl FunctionLowerer<'_> {
     pub(super) fn lower_control_flow_into(
         &mut self,
         expr: CheckedExprNode,
@@ -445,6 +446,7 @@ impl FunctionLowerer {
             span,
             r#type: ANONYMOUS_ENUM_TAG_TYPE,
             kind: MirExpr::Place(projected(
+                self.types,
                 &source_place,
                 MirProjection::EnumTag {
                     r#type: ANONYMOUS_ENUM_TAG_TYPE,
@@ -463,6 +465,7 @@ impl FunctionLowerer {
                 span,
                 r#type: member.clone(),
                 kind: MirExpr::Place(projected(
+                    self.types,
                     &source_place,
                     MirProjection::EnumBody {
                         variant_index: source_index,
@@ -561,6 +564,7 @@ impl FunctionLowerer {
             span,
             r#type: tag_type.clone(),
             kind: MirExpr::Place(projected(
+                self.types,
                 &operand_place,
                 MirProjection::EnumTag {
                     r#type: tag_type.clone(),
@@ -616,6 +620,7 @@ impl FunctionLowerer {
             span,
             r#type: success_type.clone(),
             kind: MirExpr::Place(projected(
+                self.types,
                 &operand_place,
                 MirProjection::EnumBody {
                     variant_index: source.success_variant,
@@ -648,6 +653,7 @@ impl FunctionLowerer {
                     span,
                     r#type: error_type.clone(),
                     kind: MirExpr::Place(projected(
+                        self.types,
                         operand_place,
                         MirProjection::EnumBody {
                             variant_index: source.failure_variant,
@@ -708,6 +714,7 @@ impl FunctionLowerer {
                         span,
                         r#type: member_type.clone(),
                         kind: MirExpr::Place(projected(
+                            self.types,
                             &base,
                             MirProjection::EnumBody {
                                 variant_index: *variant_index,
@@ -773,13 +780,18 @@ impl FunctionLowerer {
     }
 }
 
-fn projected(base: &MirPlace, projection: MirProjection, r#type: ResolvedType) -> MirPlace {
+fn projected(
+    types: &TypeStore,
+    base: &MirPlace,
+    projection: MirProjection,
+    r#type: ResolvedType,
+) -> MirPlace {
     let mut projections = base.projections.clone();
     projections.push(projection);
     MirPlace {
         root: base.root.clone(),
         projections,
-        align: place_align(&r#type),
+        align: place_align(types, &r#type),
         r#type,
     }
 }

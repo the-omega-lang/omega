@@ -1,10 +1,9 @@
 use super::*;
 use omega_analyzer::analysis::AnalysisSite;
 use omega_analyzer::generics::{GenericParam, GenericSubstitution, NormalizedFunction};
-use omega_analyzer::resolved_type::{ResolvedGenericArg, ResolvedSpecType};
+use omega_analyzer::resolved_type::ResolvedGenericArg;
 use omega_analyzer::resolver::{DeclaredBound, GenericCallTarget, PreparedCall, UnmetBound};
-use std::cell::RefCell;
-use std::rc::Rc;
+use omega_analyzer::type_store::NominalRef;
 
 /// One generic function declaration, together with everything the context it
 /// was reached through already binds for it.
@@ -18,7 +17,7 @@ pub(crate) struct GenericDeclaration {
 
 /// A declared bound, paired with the spec it names so that proving it needs
 /// no second lookup.
-type Bound = (Rc<RefCell<ResolvedSpecType>>, DeclaredBound);
+type Bound = (NominalRef, DeclaredBound);
 
 impl Driver {
     pub(crate) fn prepare_generic_call(

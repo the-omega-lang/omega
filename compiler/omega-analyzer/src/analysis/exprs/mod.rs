@@ -55,16 +55,19 @@ impl<'r> Analyzer<'r> {
 
             HirExpr::Sizeof(target) => {
                 let target_type = self.resolve_type_or_error(id, span, target, true)?;
+                self.layout_of(id, span, &target_type, |_| ())?;
                 literal(ResolvedType::USize, CheckedExpr::Sizeof(target_type))
             }
 
             HirExpr::Alignof(target) => {
                 let target_type = self.resolve_type_or_error(id, span, target, true)?;
+                self.layout_of(id, span, &target_type, |_| ())?;
                 literal(ResolvedType::USize, CheckedExpr::Alignof(target_type))
             }
 
             HirExpr::Typeinfo(target) => {
                 let described = self.resolve_type_or_error(id, span, target, true)?;
+                self.layout_of(id, span, &described, |_| ())?;
                 let Ok(ResolvedItem::Type(table)) = self.resolver.resolve_item(
                     &self.module_path,
                     &crate::reflection::type_info_path(),
@@ -274,7 +277,12 @@ impl<'r> Analyzer<'r> {
             },
             CheckedProjection::Deref { r#type } => match value {
                 ConstValue::Reflected(reflected) => {
-                    match crate::reflection::deref(&reflected, r#type, self.pointer_bytes()) {
+                    match crate::reflection::deref(
+                        self.resolver.types(),
+                        &reflected,
+                        r#type,
+                        self.pointer_bytes(),
+                    ) {
                         Ok(value) => Some(value),
                         Err(reason) => unsupported(self, reason),
                     }

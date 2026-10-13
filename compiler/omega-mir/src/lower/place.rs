@@ -5,9 +5,10 @@ use omega_analyzer::checked::{
 };
 use omega_analyzer::layout;
 use omega_analyzer::resolved_type::ResolvedType;
+use omega_analyzer::type_store::TypeStore;
 
-pub(super) fn place_align(r#type: &ResolvedType) -> u32 {
-    layout::type_alignment(r#type)
+pub(super) fn place_align(types: &TypeStore, r#type: &ResolvedType) -> u32 {
+    layout::type_alignment(types, r#type)
 }
 
 pub(super) fn lower_place(lowerer: &mut FunctionLowerer, place: CheckedPlace) -> MirPlace {
@@ -68,7 +69,7 @@ fn lower_place_with(
         .into_iter()
         .map(|p| lower_projection_with(lowerer, p, &mut lower_dynamic))
         .collect();
-    let align = place_align(&place.r#type);
+    let align = place_align(lowerer.types, &place.r#type);
     MirPlace {
         root,
         projections,

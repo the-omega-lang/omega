@@ -1,5 +1,6 @@
 use super::*;
 use crate::analysis::tests::{NoResolver, analyzer, dummy_struct_type, id, sp};
+use crate::type_store::{NominalKind, testing};
 
 fn fn_type(convention: CallingConvention, params: Vec<ResolvedType>) -> ResolvedFunctionType {
     ResolvedFunctionType {
@@ -16,34 +17,27 @@ fn fn_type(convention: CallingConvention, params: Vec<ResolvedType>) -> Resolved
 }
 
 fn dummy_union_type() -> ResolvedType {
-    ResolvedType::Union(Rc::new(RefCell::new(ResolvedUnionType {
-        id: id(1),
-        name: Ident("U".into()),
-        module_path: omega_hir::ModulePath::default(),
-        generic_args: vec![],
-        fields: vec![],
-        functions: vec![],
-        suppress: vec![],
-    })))
+    testing::define_union(
+        testing::identity(1, NominalKind::Union, "U", &[], vec![]),
+        UnionFacts {
+            fields: vec![],
+            suppress: vec![],
+        },
+    )
 }
 
 fn dummy_enum_type() -> ResolvedType {
-    ResolvedType::Enum {
-        cell: Rc::new(RefCell::new(ResolvedEnumType {
-            id: id(1),
-            name: Ident("E".into()),
-            module_path: omega_hir::ModulePath::default(),
-            generic_args: vec![],
+    testing::define_enum(
+        testing::identity(1, NominalKind::Enum, "E", &[], vec![]),
+        EnumFacts {
             tag_type: ResolvedType::U16,
             header: vec![],
             dynamic_fields: vec![],
             variants: vec![],
-            functions: vec![],
             layout: crate::annotations::Layout::default(),
             suppress: vec![],
-        })),
-        variant: None,
-    }
+        },
+    )
 }
 
 fn dummy_anonymous_enum_type() -> ResolvedType {
@@ -104,7 +98,7 @@ fn unsupported_shapes() -> Vec<ResolvedType> {
 /// so nothing here may be rejected for its shape.
 #[test]
 fn omega_convention_accepts_every_by_value_shape() {
-    let mut resolver = NoResolver;
+    let mut resolver = NoResolver::default();
     let mut a = analyzer(&mut resolver);
 
     for shape in supported_shapes().into_iter().chain(unsupported_shapes()) {
@@ -130,7 +124,7 @@ fn omega_convention_accepts_every_by_value_shape() {
 
 #[test]
 fn non_omega_conventions_accept_scalar_and_pointer_shapes() {
-    let mut resolver = NoResolver;
+    let mut resolver = NoResolver::default();
     let mut a = analyzer(&mut resolver);
 
     for convention in [CallingConvention::C, CallingConvention::SysV64] {
@@ -151,7 +145,7 @@ fn non_omega_conventions_accept_scalar_and_pointer_shapes() {
 fn non_omega_conventions_reject_composite_shapes_in_either_position() {
     for convention in [CallingConvention::C, CallingConvention::SysV64] {
         for shape in unsupported_shapes() {
-            let mut resolver = NoResolver;
+            let mut resolver = NoResolver::default();
             let mut a = analyzer(&mut resolver);
 
             let mut returns = fn_type(convention, vec![]);
@@ -180,7 +174,7 @@ fn non_omega_conventions_reject_composite_shapes_in_either_position() {
 /// own promotion rules and is validated at the call site.
 #[test]
 fn variadic_tail_is_not_classified_by_the_signature_check() {
-    let mut resolver = NoResolver;
+    let mut resolver = NoResolver::default();
     let mut a = analyzer(&mut resolver);
 
     let mut variadic = fn_type(CallingConvention::C, vec![ResolvedType::I32]);

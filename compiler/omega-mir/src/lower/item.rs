@@ -12,10 +12,12 @@ use omega_analyzer::checked::{
     CheckedModule, CheckedStmt, CheckedStructDef, CheckedUnionDef,
 };
 use omega_analyzer::resolved_type::{ResolvedGenericArg, ResolvedType};
+use omega_analyzer::type_store::TypeStore;
 use omega_hir::ModulePath;
 use omega_parser::prelude::Ident;
 
 pub(crate) fn lower_module(
+    types: &TypeStore,
     module: CheckedModule,
     path: &ModulePath,
     entry: &ModulePath,
@@ -25,12 +27,17 @@ pub(crate) fn lower_module(
         items: module
             .items
             .into_iter()
-            .map(|item| lower_item(item, path, entry))
+            .map(|item| lower_item(types, item, path, entry))
             .collect(),
     }
 }
 
-fn lower_item(item: CheckedItem, path: &ModulePath, entry: &ModulePath) -> MirItem {
+fn lower_item(
+    types: &TypeStore,
+    item: CheckedItem,
+    path: &ModulePath,
+    entry: &ModulePath,
+) -> MirItem {
     match item {
         CheckedItem::Declaration(declaration) => {
             MirItem::Declaration(lower_declaration(declaration, path))
@@ -39,14 +46,16 @@ fn lower_item(item: CheckedItem, path: &ModulePath, entry: &ModulePath) -> MirIt
             MirItem::ForeignBinding(lower_foreign_binding(binding, path))
         }
         CheckedItem::ForeignFunction(function) => {
-            MirItem::ForeignFunction(lower_foreign_function(function, path))
+            MirItem::ForeignFunction(lower_foreign_function(types, function, path))
         }
         CheckedItem::FunctionDefinition(function) => {
-            MirItem::FunctionDefinition(lower_free_function(function, path, entry))
+            MirItem::FunctionDefinition(lower_free_function(types, function, path, entry))
         }
-        CheckedItem::Struct(definition) => MirItem::Struct(lower_struct_def(definition, path)),
-        CheckedItem::Enum(definition) => MirItem::Enum(lower_enum_def(definition, path)),
-        CheckedItem::Union(definition) => MirItem::Union(lower_union_def(definition, path)),
+        CheckedItem::Struct(definition) => {
+            MirItem::Struct(lower_struct_def(types, definition, path))
+        }
+        CheckedItem::Enum(definition) => MirItem::Enum(lower_enum_def(types, definition, path)),
+        CheckedItem::Union(definition) => MirItem::Union(lower_union_def(types, definition, path)),
     }
 }
 
@@ -107,6 +116,7 @@ fn foreign_binding_symbol(declaration: &CheckedForeignBinding, path: &ModulePath
 }
 
 fn lower_foreign_function(
+    types: &TypeStore,
     function: CheckedForeignFunctionDef,
     path: &ModulePath,
 ) -> MirForeignFunctionDef {
@@ -125,6 +135,7 @@ fn lower_foreign_function(
     } = function;
     let body = body.map(|body| {
         MirFunctionBody::Normal(FunctionLowerer::lower(
+            types,
             &params,
             body,
             &return_type,
@@ -173,16 +184,18 @@ fn foreign_function_symbol(function: &CheckedForeignFunctionDef, path: &ModulePa
 }
 
 fn lower_free_function(
+    types: &TypeStore,
     function: CheckedFunctionDef,
     path: &ModulePath,
     entry: &ModulePath,
 ) -> MirFunctionDef {
     let symbol = free_function_symbol(&function, path, entry);
     let linkage = function_linkage(&function);
-    lower_function(function, symbol, linkage)
+    lower_function(types, function, symbol, linkage)
 }
 
 fn lower_method(
+    types: &TypeStore,
     function: CheckedFunctionDef,
     path: &ModulePath,
     owner_name: &Ident,
@@ -194,10 +207,11 @@ fn lower_method(
     } else {
         MirLinkage::Weak
     };
-    lower_function(function, symbol, linkage)
+    lower_function(types, function, symbol, linkage)
 }
 
 fn lower_function(
+    types: &TypeStore,
     function: CheckedFunctionDef,
     symbol: String,
     linkage: MirLinkage,
@@ -225,6 +239,7 @@ fn lower_function(
         MirFunctionBody::Naked(lower_naked_body(body))
     } else {
         MirFunctionBody::Normal(FunctionLowerer::lower(
+            types,
             &params,
             body,
             &return_type,
@@ -418,6 +433,7 @@ fn is_root_main(function: &CheckedFunctionDef, path: &ModulePath, entry: &Module
 }
 
 fn lower_methods(
+    types: &TypeStore,
     functions: Vec<CheckedFunctionDef>,
     path: &ModulePath,
     owner_name: &Ident,
@@ -425,11 +441,15 @@ fn lower_methods(
 ) -> Vec<MirFunctionDef> {
     functions
         .into_iter()
-        .map(|function| lower_method(function, path, owner_name, owner_generic_args))
+        .map(|function| lower_method(types, function, path, owner_name, owner_generic_args))
         .collect()
 }
 
-fn lower_struct_def(definition: CheckedStructDef, path: &ModulePath) -> MirStructDef {
+fn lower_struct_def(
+    types: &TypeStore,
+    definition: CheckedStructDef,
+    path: &ModulePath,
+) -> MirStructDef {
     let CheckedStructDef {
         id,
         span,
@@ -438,7 +458,7 @@ fn lower_struct_def(definition: CheckedStructDef, path: &ModulePath) -> MirStruc
         fields,
         functions,
     } = definition;
-    let functions = lower_methods(functions, path, &name, &generic_args);
+    let functions = lower_methods(types, functions, path, &name, &generic_args);
 
     MirStructDef {
         id,
@@ -450,7 +470,11 @@ fn lower_struct_def(definition: CheckedStructDef, path: &ModulePath) -> MirStruc
     }
 }
 
-fn lower_union_def(definition: CheckedUnionDef, path: &ModulePath) -> MirUnionDef {
+fn lower_union_def(
+    types: &TypeStore,
+    definition: CheckedUnionDef,
+    path: &ModulePath,
+) -> MirUnionDef {
     let CheckedUnionDef {
         id,
         span,
@@ -459,7 +483,7 @@ fn lower_union_def(definition: CheckedUnionDef, path: &ModulePath) -> MirUnionDe
         fields,
         functions,
     } = definition;
-    let functions = lower_methods(functions, path, &name, &generic_args);
+    let functions = lower_methods(types, functions, path, &name, &generic_args);
 
     MirUnionDef {
         id,
@@ -471,7 +495,7 @@ fn lower_union_def(definition: CheckedUnionDef, path: &ModulePath) -> MirUnionDe
     }
 }
 
-fn lower_enum_def(definition: CheckedEnumDef, path: &ModulePath) -> MirEnumDef {
+fn lower_enum_def(types: &TypeStore, definition: CheckedEnumDef, path: &ModulePath) -> MirEnumDef {
     let CheckedEnumDef {
         id,
         span,
@@ -479,7 +503,7 @@ fn lower_enum_def(definition: CheckedEnumDef, path: &ModulePath) -> MirEnumDef {
         generic_args,
         functions,
     } = definition;
-    let functions = lower_methods(functions, path, &name, &generic_args);
+    let functions = lower_methods(types, functions, path, &name, &generic_args);
 
     MirEnumDef {
         id,

@@ -1,10 +1,7 @@
 use super::*;
 use crate::generics::GenericSubstitution;
-use crate::resolved_type::ResolvedSpecType;
 use crate::resolver::{DeclaredBound, GenericCallTarget};
 use omega_parser::prelude::ExprGenericArg;
-use std::cell::RefCell;
-use std::rc::Rc;
 
 /// The exact bound set one written position requires of the declaration it
 /// selects, resolved in the caller's own visibility context.
@@ -349,7 +346,7 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         bound: &Type,
-    ) -> Option<(Rc<RefCell<ResolvedSpecType>>, DeclaredBound)> {
+    ) -> Option<(NominalRef, DeclaredBound)> {
         let module = self.module_path.clone();
         if !self.check_alias_generic_bounds(node_id, span, bound, &module) {
             return None;
@@ -367,7 +364,7 @@ impl<'r> Analyzer<'r> {
         node_id: HirId,
         span: Span,
         bound: &Type,
-    ) -> Option<(Rc<RefCell<ResolvedSpecType>>, DeclaredBound)> {
+    ) -> Option<(NominalRef, DeclaredBound)> {
         let module = self.module_path.clone();
         let expanded =
             match crate::aliases::expand_type_alias(self.resolver, &module, bound.clone()) {
@@ -378,15 +375,12 @@ impl<'r> Analyzer<'r> {
                 }
             };
         let (spec, mut args) = self.resolve_spec_reference(node_id, span, &expanded)?;
-        let (id, name, params, module) = {
-            let cell = spec.borrow();
-            (
-                cell.id,
-                cell.name.clone(),
-                cell.generics.clone(),
-                cell.module_path.clone(),
-            )
-        };
+        let (id, name, params, module) = (
+            spec.decl_id,
+            spec.name.clone(),
+            self.resolver.types().spec_facts(&spec).generics.clone(),
+            spec.module_path.clone(),
+        );
         if args.len() < params.len() {
             // A spec's defaults belong to the spec's own module, not to whichever
             // site is naming the bound.

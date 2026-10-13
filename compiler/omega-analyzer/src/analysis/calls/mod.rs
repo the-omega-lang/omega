@@ -258,7 +258,8 @@ impl<'r> Analyzer<'r> {
                 receiver
                     .r#type
                     .autoderef()
-                    .candidates_in(FunctionNamespace::Member, field)?
+                    .candidates_in(self.resolver.types(), FunctionNamespace::Member, field)
+                    .ok()??
                     .into_iter()
                     .find(|m| m.decl_id == overloads[winner].decl_id)
             })?;
@@ -294,30 +295,9 @@ impl<'r> Analyzer<'r> {
                 return resolution;
             }
             let receiver_type = receiver.r#type.autoderef();
-            let field_shadows = match receiver_type {
-                ResolvedType::Struct(cell) => cell
-                    .borrow()
-                    .fields
-                    .iter()
-                    .any(|candidate| &candidate.name == field),
-                ResolvedType::Union(cell) => cell
-                    .borrow()
-                    .fields
-                    .iter()
-                    .any(|candidate| &candidate.name == field),
-                ResolvedType::Enum { cell, variant } => {
-                    let e = cell.borrow();
-                    field.as_ref() == "tag"
-                        || e.header.iter().any(|candidate| &candidate.name == field)
-                        || variant.is_some_and(|i| {
-                            e.variants[i]
-                                .fields
-                                .iter()
-                                .any(|candidate| &candidate.name == field)
-                        })
-                }
-                _ => false,
-            };
+            // An incomplete owner was already reported by `find_functions`.
+            let field_shadows =
+                places::shadowing_field(self.resolver.types(), receiver_type, field).ok()?;
             if !field_shadows {
                 // The type's own receiverless declaration is the precise
                 // diagnosis for `value.name(...)`; it is probed only here,
@@ -354,7 +334,7 @@ impl<'r> Analyzer<'r> {
                                 callee.span,
                                 AnalysisErrorKind::MethodNotInScope {
                                     method: field.clone(),
-                                    spec: conform.spec.borrow().name.clone(),
+                                    spec: conform.spec.name.clone(),
                                     r#type: receiver_type.clone(),
                                 },
                             );
@@ -576,9 +556,9 @@ impl<'r> Analyzer<'r> {
 
     fn owner_name(receiver_type: &ResolvedType) -> Ident {
         match receiver_type.autoderef() {
-            ResolvedType::Struct(cell) => cell.borrow().name.clone(),
-            ResolvedType::Union(cell) => cell.borrow().name.clone(),
-            ResolvedType::Enum { cell, .. } => cell.borrow().name.clone(),
+            ResolvedType::Struct(nominal) => nominal.name.clone(),
+            ResolvedType::Union(nominal) => nominal.name.clone(),
+            ResolvedType::Enum { nominal, .. } => nominal.name.clone(),
             other => Ident(other.to_string()),
         }
     }
@@ -761,7 +741,12 @@ impl<'r> Analyzer<'r> {
                 let inner = match value {
                     ConstValue::Ref(inner) => *inner,
                     ConstValue::Reflected(reflected) => {
-                        match crate::reflection::deref(&reflected, pointee, self.pointer_bytes()) {
+                        match crate::reflection::deref(
+                            self.resolver.types(),
+                            &reflected,
+                            pointee,
+                            self.pointer_bytes(),
+                        ) {
                             Ok(inner) => inner,
                             Err(reason) => {
                                 self.error(
@@ -942,7 +927,7 @@ impl<'r> Analyzer<'r> {
             }
         };
         let slot = &flattened[slot_index];
-        let declaring_module = slot.spec.borrow().module_path.clone();
+        let declaring_module = slot.spec.module_path.clone();
         if !self.check_visibility(slot.visibility, &declaring_module, field_origin) {
             self.error(
                 id,

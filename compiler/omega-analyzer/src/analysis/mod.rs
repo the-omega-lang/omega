@@ -51,9 +51,8 @@ use crate::{
     resolved_type::{
         CallingConvention, CastClass, CompScalar, CompScalarType, ConformanceSource, ConstValue,
         FunctionNamespace, NumericKind, RawSpecFunctionSig, ResolvedAnonymousEnum, ResolvedBound,
-        ResolvedEnumType, ResolvedEnumVariant, ResolvedField, ResolvedFunctionParam,
-        ResolvedFunctionType, ResolvedGenericArg, ResolvedMethod, ResolvedSpecType,
-        ResolvedStructType, ResolvedType, ResolvedUnionType,
+        ResolvedEnumVariant, ResolvedField, ResolvedFunctionParam, ResolvedFunctionType,
+        ResolvedGenericArg, ResolvedMethod, ResolvedType,
     },
     resolver::{
         GenericLiteralSignature, GenericMethodTemplate, GenericOwnerFunctionSignature,
@@ -62,6 +61,7 @@ use crate::{
         ResolvedOverloadSet,
     },
     similarity::best_match,
+    type_store::{EnumFacts, Incomplete, NominalRef, StructFacts, TypeStore, UnionFacts},
 };
 use omega_diagnostics::{SourceId, SourceSpan};
 use omega_hir::{
@@ -77,7 +77,6 @@ use omega_parser::prelude::{
     ArrayLength, ExprGenericArg, ExprPath, GenericArg, Ident, NumberBase, NumberExpr, Origin, Path,
     QualifiedSpecPath, SelfMode, Span, Type, Visibility,
 };
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -505,6 +504,53 @@ impl<'r> Analyzer<'r> {
 
     pub(crate) fn error(&mut self, node_id: HirId, span: Span, kind: AnalysisErrorKind) {
         self.error_from(node_id, span, Origin::default(), kind);
+    }
+
+    /// What `read` takes from the type store. A stage that is not written
+    /// yet means the type's own definition depends on it: a cycle.
+    pub(crate) fn type_facts<T>(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        read: impl FnOnce(&TypeStore) -> Result<T, Incomplete>,
+    ) -> Option<T> {
+        match read(self.resolver.types()) {
+            Ok(facts) => Some(facts),
+            Err(incomplete) => {
+                self.error(
+                    node_id,
+                    span,
+                    AnalysisErrorKind::ModuleResolution(incomplete.into()),
+                );
+                None
+            }
+        }
+    }
+
+    /// A layout query on `ty`. A type `ty` contains inline whose definition
+    /// is not written yet has no layout: that is a cycle.
+    pub(crate) fn layout_of<T>(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        ty: &ResolvedType,
+        query: impl FnOnce(&TypeStore) -> T,
+    ) -> Option<T> {
+        self.type_facts(node_id, span, |types| {
+            crate::layout::require_complete(types, ty)?;
+            Ok(query(types))
+        })
+    }
+
+    pub(crate) fn is_zero_sized(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        ty: &ResolvedType,
+    ) -> Option<bool> {
+        self.layout_of(node_id, span, ty, |types| {
+            crate::layout::is_zero_sized(types, ty)
+        })
     }
 
     pub(crate) fn warn(&mut self, node_id: HirId, span: Span, kind: AnalysisWarningKind) {
@@ -1281,7 +1327,7 @@ impl<'r> Analyzer<'r> {
     ) -> Option<ResolvedType> {
         let resolved = self.resolve_type_or_error_in(id, span, typ, indirect, module)?;
         if let ResolvedType::Spec(spec) = &resolved {
-            let name = spec.borrow().name.clone();
+            let name = spec.name.clone();
             self.error(
                 id,
                 span,
@@ -1310,7 +1356,7 @@ impl<'r> Analyzer<'r> {
     ) -> Option<ResolvedType> {
         let resolved = self.resolve_type_or_error_raw(id, span, typ, indirect)?;
         if let ResolvedType::Spec(spec) = &resolved {
-            let name = spec.borrow().name.clone();
+            let name = spec.name.clone();
             self.error(
                 id,
                 span,

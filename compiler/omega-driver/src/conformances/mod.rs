@@ -8,17 +8,16 @@ use omega_analyzer::error::{AnalysisError, AnalysisErrorKind, AnalysisWarning};
 use omega_analyzer::generics::GenericParam;
 use omega_analyzer::generics::GenericSubstitution;
 use omega_analyzer::resolved_type::{
-    ResolvedBound, ResolvedGenericArg, ResolvedMethod, ResolvedSpecType, ResolvedType,
+    ResolvedBound, ResolvedGenericArg, ResolvedMethod, ResolvedType,
 };
 use omega_analyzer::resolver::ResolveError;
+use omega_analyzer::type_store::NominalRef;
 use omega_diagnostics::Span;
 use omega_hir::ModulePath;
 use omega_hir::{AliasTarget, HirConformDef, HirFunctionDef, HirId, HirItem};
 use omega_parser::prelude::{Ident, Type};
-use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum ConformanceOrigin {
@@ -40,7 +39,7 @@ pub(crate) struct ConformanceEntry {
     pub id: HirId,
     pub span: Span,
     pub target: ResolvedType,
-    pub spec: Rc<RefCell<ResolvedSpecType>>,
+    pub spec: NominalRef,
     pub spec_args: Vec<ResolvedGenericArg>,
     pub methods: Vec<(Ident, ResolvedMethod)>,
     /// Declarations selected to satisfy generic spec requirements. They are
@@ -246,7 +245,7 @@ impl Driver {
                     .pending
                     .iter()
                     .find(|pending| pending.id == method_id)?;
-                let spec_module = entry.spec.borrow().module_path.clone();
+                let spec_module = entry.spec.module_path.clone();
                 let run = self.with_analyzer_in(
                     &spec_module,
                     &pending.substitution,
@@ -303,7 +302,7 @@ impl Driver {
     }
 
     pub(crate) fn conformance_owner(entry: &ConformanceEntry) -> ConformanceOwner {
-        let spec = entry.spec.borrow();
+        let spec = &*entry.spec;
         ConformanceOwner {
             target: entry.target.clone(),
             spec_module_path: spec.module_path.clone(),

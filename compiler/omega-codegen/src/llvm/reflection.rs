@@ -38,11 +38,20 @@ impl<'ctx> Codegen<'ctx> {
         );
         self.reflected.insert(symbol.clone(), placeholder);
 
-        let value =
-            omega_analyzer::reflection::type_info_value(described, info_type, self.pointer_bytes());
+        let value = omega_analyzer::reflection::type_info_value(
+            self.types,
+            described,
+            info_type,
+            self.pointer_bytes(),
+        );
         let blob = self.build_const_blob(&value, info_type);
         let (ty, init) = self.materialize_blob(&blob);
-        let global = self.declare_reflected(&symbol, ty, init, layout::type_alignment(info_type));
+        let global = self.declare_reflected(
+            &symbol,
+            ty,
+            init,
+            layout::type_alignment(self.types, info_type),
+        );
 
         placeholder
             .as_pointer_value()
@@ -67,17 +76,26 @@ impl<'ctx> Codegen<'ctx> {
         }
 
         let pointer_bytes = self.pointer_bytes();
-        let view = EnumView::of(r#type).expect("a variant prototype describes an enum-like type");
+        let view = EnumView::of(self.types, r#type)
+            .expect("a variant prototype describes an enum-like type");
         let facts = &view.variants[variant];
-        let mut blob = ConstBlob::zeroed(layout::total_bytes(r#type, pointer_bytes), pointer_bytes);
+        let mut blob = ConstBlob::zeroed(
+            layout::total_bytes(self.types, r#type, pointer_bytes),
+            pointer_bytes,
+        );
         self.write_const_element(&mut blob, 0, &ConstValue::Number(facts.tag), &view.tag_type);
         for (index, (field_type, value)) in view.header.iter().zip(&facts.header_values).enumerate()
         {
-            let offset = layout::enum_header_offset(&view, index, pointer_bytes);
+            let offset = layout::enum_header_offset(self.types, &view, index, pointer_bytes);
             self.write_const_element(&mut blob, offset, value, field_type);
         }
         let (ty, init) = self.materialize_blob(&blob);
-        let global = self.declare_reflected(&symbol, ty, init, layout::type_alignment(r#type));
+        let global = self.declare_reflected(
+            &symbol,
+            ty,
+            init,
+            layout::type_alignment(self.types, r#type),
+        );
         self.reflected.insert(symbol, global);
         global
     }

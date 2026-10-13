@@ -64,7 +64,7 @@ impl<'r> Analyzer<'r> {
         // into it.
         let operand = self.analyze_expr(&r#try.base, Expected::None)?;
 
-        let Some((kind, source_cell)) = canonical_fallible(&operand.r#type) else {
+        let Some((kind, source_nominal)) = canonical_fallible(&operand.r#type) else {
             self.error(
                 id,
                 operator_span,
@@ -76,7 +76,7 @@ impl<'r> Analyzer<'r> {
         };
 
         let return_type = self.current_return_type.clone();
-        let Some((return_kind, destination_cell)) = canonical_fallible(&return_type) else {
+        let Some((return_kind, destination_nominal)) = canonical_fallible(&return_type) else {
             self.error(
                 id,
                 operator_span,
@@ -101,9 +101,15 @@ impl<'r> Analyzer<'r> {
         }
 
         let names = kind.names();
+        let (source_enum, destination_enum) = self.type_facts(id, operator_span, |types| {
+            Ok((
+                types.enum_facts(&source_nominal)?.clone(),
+                types.enum_facts(&destination_nominal)?.clone(),
+            ))
+        })?;
         let (Some(source), Some(destination)) = (
-            fallible_facts(&source_cell, &names),
-            fallible_facts(&destination_cell, &names),
+            fallible_facts(&source_enum, &names),
+            fallible_facts(&destination_enum, &names),
         ) else {
             self.error(
                 id,
@@ -166,14 +172,12 @@ impl<'r> Analyzer<'r> {
 /// try behavior and a user-defined lookalike never gains it. Refinement is
 /// ignored: a value already proven to be one variant is still a value of the
 /// enum.
-fn canonical_fallible(
-    r#type: &ResolvedType,
-) -> Option<(CheckedTryKind, Rc<RefCell<ResolvedEnumType>>)> {
-    let ResolvedType::Enum { cell, .. } = r#type else {
+fn canonical_fallible(r#type: &ResolvedType) -> Option<(CheckedTryKind, NominalRef)> {
+    let ResolvedType::Enum { nominal, .. } = r#type else {
         return None;
     };
     let kind = {
-        let definition = cell.borrow();
+        let definition = &**nominal;
         let module: Vec<&str> = definition
             .module_path
             .segments()
@@ -186,14 +190,10 @@ fn canonical_fallible(
             _ => return None,
         }
     };
-    Some((kind, cell.clone()))
+    Some((kind, nominal.clone()))
 }
 
-fn fallible_facts(
-    cell: &Rc<RefCell<ResolvedEnumType>>,
-    names: &FallibleNames,
-) -> Option<FallibleFacts> {
-    let definition = cell.borrow();
+fn fallible_facts(definition: &EnumFacts, names: &FallibleNames) -> Option<FallibleFacts> {
     let (success_variant, success) = definition.variant(&Ident(names.success.to_string()))?;
     let (failure_variant, failure) = definition.variant(&Ident(names.failure.to_string()))?;
     let (success_field, success_type) = field_of(success, names.success_payload)?;

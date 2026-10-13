@@ -47,7 +47,7 @@ impl<'ctx> Codegen<'ctx> {
         for operand in &asm.operands {
             let resolution = match &operand.kind {
                 MirAsmOperandKind::Reg { value, physical } => {
-                    let leaf = layout::leaves_of(&value.r#type, pointer_bytes)
+                    let leaf = layout::leaves_of(self.types, &value.r#type, pointer_bytes)
                         .into_iter()
                         .next()
                         .expect(
