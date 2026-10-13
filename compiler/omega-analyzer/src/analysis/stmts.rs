@@ -6,6 +6,13 @@ enum ForInSource {
     DirectIterator(CheckedExprNode),
 }
 
+/// How a loop reaches its cursor, and the `core::iterator::Iterator` spec it
+/// calls `next` through.
+struct ForInPlan {
+    source: ForInSource,
+    iterator: NominalRef,
+}
+
 enum ForInElement {
     Exact(ResolvedType),
     Holed(HoledAnnotation, TypePattern),
@@ -459,19 +466,23 @@ impl<'r> Analyzer<'r> {
 
     fn analyze_for_in(&mut self, f: &HirForIn) -> Option<Vec<CheckedStmt>> {
         let (result, scope) = self.with_scope(|this| {
-            let iter_init = match this.classify_for_in_source(f) {
-                Some(ForInSource::ToIterator(selected)) => {
-                    this.with_bounds(std::iter::once(selected), |this| {
-                        this.synthesize_method_call(
-                            HirPlaceRoot::Expr(Box::new(f.iterator.clone())),
-                            "to_iterator",
-                            f.span,
-                        )
-                    })
+            let plan = this.classify_for_in_source(f)?;
+            // A `ToIterator<T>` cursor is an `Iterator<T>`; a direct cursor
+            // may conform at any element type.
+            let (iter_init, element) = match plan.source {
+                ForInSource::ToIterator(selected) => {
+                    let element: Vec<_> = selected.spec_args.into_iter().map(Some).collect();
+                    let cursor = this.call_spec_requirement(
+                        f.span,
+                        f.iterator.clone(),
+                        &selected.spec,
+                        &element,
+                        "to_iterator",
+                    )?;
+                    (cursor, element)
                 }
-                Some(ForInSource::DirectIterator(checked)) => Some(checked),
-                None => None,
-            }?;
+                ForInSource::DirectIterator(checked) => (checked, vec![None]),
+            };
 
             let iter_id = this.resolver.fresh_synthetic_id();
             let iter_type = iter_init.r#type.clone();
@@ -488,20 +499,14 @@ impl<'r> Analyzer<'r> {
             let (iter_decl, iter_assign) =
                 this.synthetic_declaration(iter_id, f.span, "$iter", iter_type.clone(), iter_init);
 
-            let bounds = this
-                .resolver
-                .conformances_for_type(&iter_type)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|conform| ResolvedBound::new(conform.target, conform.spec, conform.spec_args));
-            let while_stmt = this.with_bounds(bounds, |this| this.analyze_for_in_loop(f))?;
+            let while_stmt = this.analyze_for_in_loop(f, &plan.iterator, &element)?;
             Some(vec![iter_decl, iter_assign, while_stmt])
         });
         self.warn_unused_bindings(scope, false);
         result
     }
 
-    fn classify_for_in_source(&mut self, f: &HirForIn) -> Option<ForInSource> {
+    fn classify_for_in_source(&mut self, f: &HirForIn) -> Option<ForInPlan> {
         let errors_before = self.errors.len();
         let warnings_before = self.warnings.len();
         let Some(checked) = self.analyze_expr(&f.iterator, Expected::None) else {
@@ -558,11 +563,14 @@ impl<'r> Analyzer<'r> {
                 // its diagnostics twice.
                 self.errors.truncate(errors_before);
                 self.warnings.truncate(warnings_before);
-                return Some(ForInSource::ToIterator(ResolvedBound {
-                    target: conform.target,
-                    spec: conform.spec,
-                    spec_args: conform.spec_args,
-                }));
+                return Some(ForInPlan {
+                    source: ForInSource::ToIterator(ResolvedBound {
+                        target: conform.target,
+                        spec: conform.spec,
+                        spec_args: conform.spec_args,
+                    }),
+                    iterator: iterator_spec,
+                });
             }
             let kind = match element {
                 Some(element) if candidates.is_empty() => {
@@ -590,7 +598,10 @@ impl<'r> Analyzer<'r> {
             .for_in_conformances(&checked.r#type, &iterator_spec)
             .is_empty()
         {
-            return Some(ForInSource::DirectIterator(checked));
+            return Some(ForInPlan {
+                source: ForInSource::DirectIterator(checked),
+                iterator: iterator_spec,
+            });
         }
         self.error(
             f.id,
@@ -636,12 +647,26 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    fn analyze_for_in_loop(&mut self, f: &HirForIn) -> Option<CheckedStmt> {
+    fn analyze_for_in_loop(
+        &mut self,
+        f: &HirForIn,
+        iterator: &NominalRef,
+        element: &[Option<ResolvedGenericArg>],
+    ) -> Option<CheckedStmt> {
         let while_id = self.resolver.fresh_synthetic_id();
         let body = self.with_loop(while_id, |this| {
             this.with_scope(|this| {
-                let iter_read = HirPlaceRoot::Path(ExprPath::from(Ident("$iter".to_string())));
-                let next = this.synthesize_method_call(iter_read, "next", f.span)?;
+                let cursor = HirExprNode {
+                    id: this.resolver.fresh_synthetic_id(),
+                    span: f.span,
+                    origin: Origin::default(),
+                    expr: HirExpr::Place(HirPlace {
+                        root: HirPlaceRoot::Path(ExprPath::from(Ident("$iter".to_string()))),
+                        projections: vec![],
+                        reveals: vec![],
+                    }),
+                };
+                let next = this.call_spec_requirement(f.span, cursor, iterator, element, "next")?;
 
                 let next_id = this.resolver.fresh_synthetic_id();
                 let next_type = next.r#type.clone();
@@ -902,38 +927,6 @@ impl<'r> Analyzer<'r> {
     // `Iterator`/`ToIterator` and `Option`'s `value`. Narrowing one would
     // make a macro-authored `for` lose its definition-site rights and
     // inherit the invocation site's owner privilege for a hidden member.
-    fn synthesize_method_call(
-        &mut self,
-        root: HirPlaceRoot,
-        method: &str,
-        span: Span,
-    ) -> Option<CheckedExprNode> {
-        let callee = HirExprNode {
-            id: self.resolver.fresh_synthetic_id(),
-            span,
-            origin: Origin::default(),
-            expr: HirExpr::Place(HirPlace {
-                root,
-                projections: vec![HirProjection::FieldAccess(
-                    Ident(method.to_string()),
-                    Origin::default(),
-                    Vec::new(),
-                )],
-                reveals: Vec::new(),
-            }),
-        };
-        let call = HirExprNode {
-            id: self.resolver.fresh_synthetic_id(),
-            span,
-            origin: Origin::default(),
-            expr: HirExpr::FunctionCall(HirFunctionCall {
-                callee: Box::new(callee),
-                args: vec![],
-            }),
-        };
-        self.analyze_expr(&call, Expected::None)
-    }
-
     fn synthetic_declaration(
         &mut self,
         id: HirId,

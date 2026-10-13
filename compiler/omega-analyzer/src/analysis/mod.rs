@@ -702,18 +702,6 @@ impl<'r> Analyzer<'r> {
         self.generic_env.get(param.id)
     }
 
-    fn with_bounds<T>(
-        &mut self,
-        added: impl IntoIterator<Item = ResolvedBound>,
-        f: impl FnOnce(&mut Self) -> T,
-    ) -> T {
-        let original_len = self.bounds.len();
-        self.bounds.extend(added);
-        let result = f(self);
-        self.bounds.truncate(original_len);
-        result
-    }
-
     fn with_loop<T>(&mut self, loop_id: HirId, f: impl FnOnce(&mut Self) -> T) -> T {
         self.loop_stack.push(loop_id);
         let result = f(self);

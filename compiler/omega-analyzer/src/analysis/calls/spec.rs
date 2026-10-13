@@ -666,6 +666,40 @@ impl<'r> Analyzer<'r> {
         )))
     }
 
+    /// Calls the requirement `method` of `spec<spec_args>` on `receiver`
+    /// through the receiver type's conformance, so a same-named inherent
+    /// function never takes part. A hole in `spec_args` matches any
+    /// conformance at that position.
+    pub(in crate::analysis) fn call_spec_requirement(
+        &mut self,
+        span: Span,
+        receiver: HirExprNode,
+        spec: &NominalRef,
+        spec_args: &[Option<ResolvedGenericArg>],
+        method: &str,
+    ) -> Option<CheckedExprNode> {
+        let method = Ident(method.to_string());
+        let callee = HirExprNode {
+            id: self.resolver.fresh_synthetic_id(),
+            span,
+            origin: Origin::default(),
+            expr: HirExpr::Place(HirPlace {
+                root: HirPlaceRoot::Path(ExprPath::from(method.clone())),
+                projections: vec![],
+                reveals: vec![],
+            }),
+        };
+        let call = HirFunctionCall {
+            callee: Box::new(callee),
+            args: vec![receiver],
+        };
+        let id = self.resolver.fresh_synthetic_id();
+        match self.resolve_instance_spec_call(id, span, &call, spec, spec_args, &method, None) {
+            Intercepted::Claimed(checked) => checked,
+            Intercepted::Declined => unreachable!("an instance spec call always claims its call"),
+        }
+    }
+
     fn resolve_instance_spec_call(
         &mut self,
         node_id: HirId,

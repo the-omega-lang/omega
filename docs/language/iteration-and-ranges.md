@@ -107,9 +107,9 @@ A protocol-driven loop behaves as if it repeatedly calls the iterator and matche
 
 ```omega
 {
-    mut $iter := source.to_iterator();
+    mut $iter := <_ : core::iterator::ToIterator<T>>::to_iterator(source);
     while true {
-        $next := $iter.next();
+        $next := <_ : core::iterator::Iterator<T>>::next($iter);
         match $next {
             Option::None => { break; }
             Option::Some => {
@@ -122,6 +122,8 @@ A protocol-driven loop behaves as if it repeatedly calls the iterator and matche
 ```
 
 When `source` is already an `Iterator<T>`, `$iter` is initialized directly from `source` instead of calling `to_iterator`.
+
+Both calls are [fully qualified spec calls](specs-and-conformance.md#calling-conforming-functions): they reach `to_iterator` and `next` through the conformance, so an inherent function of the same name takes no part, and the loop body gains no bound context from the conformance.
 
 The user loop binding is freshly assigned each iteration. If written `mut`, mutating it does not mutate the iterator's internal cursor unless the loop body separately accesses the source.
 

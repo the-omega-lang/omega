@@ -1,0 +1,9 @@
+error: method 'next' comes from spec 'Iterator' but is not in this bound context
+  --> tests/t72b_for_in_body_scope/t72b_for_in_body_scope.omg:13:15
+   |
+13 |         <void>other.next();
+   |               ^^^^^^^^^^ 'next' is supplied by 'Iterator'
+   |
+   = help: call '<Countdown : Iterator>::next(value, ...)', or add a generic bound that includes 'Iterator'
+
+error: could not compile the program due to 1 previous error

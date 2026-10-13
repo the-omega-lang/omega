@@ -1,0 +1,37 @@
+# A loop calls `core::iterator`'s `next` and `to_iterator` through the
+# source's conformance, so a same-named inherent function neither shadows nor
+# clashes with them, and stays callable on its own.
+import std::io::println;
+
+struct Countdown {
+	exposed left: i32;
+
+	exposed next(*mut self) => i32 { 99 }
+}
+
+meet Iterator<i32> for Countdown {
+	next(*mut self) => Option<i32> {
+		if self.left == 0 { return Option<i32>::None; }
+		self.left = self.left - 1;
+		Option<i32>::Some { value = self.left; }
+	}
+}
+
+struct Launch {
+	exposed from: i32;
+
+	exposed to_iterator(*self) => i32 { 77 }
+}
+
+meet ToIterator<i32> for Launch {
+	to_iterator(*self) => Countdown { Countdown { left = self.from; } }
+}
+
+main() => void {
+	mut c := Countdown { left = 3; };
+	for item in c { println$(item); }
+	println$(c.next());
+	launch := Launch { from = 2; };
+	for item in launch { println$(item); }
+	println$(launch.to_iterator());
+}
