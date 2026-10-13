@@ -63,7 +63,7 @@ fn an_owner_and_member_signature_keeps_shadowed_parameters_distinct() {
 #[test]
 fn a_static_spec_parameter_is_its_own_unnamed_position() {
     let mut resolver = NoResolver::default();
-    let mut a = analyzer(&mut resolver);
+    let a = analyzer(&mut resolver);
     let f = function("take<A>(first: A, second: spec Show) => A { first }");
     let normalized = normalize_function(a.resolver, &ModulePath::default(), &f).unwrap();
 

@@ -77,7 +77,7 @@ visibility modifier and nothing about them is revealed; see
 
 The bypass applies only to the syntactic use wrapped by `reveal`; it does not change the declaration itself or grant permanent visibility to later code.
 
-An implementation may warn when a `reveal` was unnecessary. Known current edge cases in propagation through complex place expressions are tracked in [`../issues/design-debt.md`](../issues/design-debt.md).
+An implementation may warn when a `reveal` was unnecessary.
 
 ## Aliases and re-export
 
