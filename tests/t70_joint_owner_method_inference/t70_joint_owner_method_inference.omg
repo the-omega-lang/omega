@@ -1,0 +1,42 @@
+# An owner's omitted or holed argument list is inferred jointly with a generic
+# member's own arguments, from one call.
+import std::io::println;
+import self::m;
+
+struct Owner<A> {
+	exposed value: A;
+
+	exposed name<B>(a: A, b: B) => i64 {
+		<i64>a * 10 + <i64>b + <i64>sizeof<A> * 100 + <i64>sizeof<B> * 1000
+	}
+}
+
+# An argument outranks the owner's default.
+struct Defaulted<A = i32> {
+	exposed value: A;
+
+	exposed name<B>(a: A, b: B) => i64 {
+		<i64>a + <i64>b + <i64>sizeof<A> * 10 + <i64>sizeof<B> * 100
+	}
+}
+
+# The member's `T` shadows the owner's, so no argument mentions the owner's
+# `T`: its default fixes it.
+struct Shadow<T = u16> {
+	exposed value: T;
+
+	exposed name<T>(x: T) => i64 {
+		<i64>x + <i64>sizeof<T> * 100 + <i64>sizeof<Self> * 1000
+	}
+}
+
+main() => void {
+	println$(Owner::name(7i64, 2u8));
+	println$(Owner::name<u16>(3i8, 4));
+	println$(Owner<_>::name<u8>(7i64, 2));
+	p := m::Pair<i32> { first = 5; };
+	println$(m::Pair::self::scaled(&p, 3u8));
+	println$(m::Pair<_>::self::scaled<u32>(&p, 3));
+	println$(Shadow::name(7i64));
+	println$(Defaulted::name(7i64, 2u8));
+}

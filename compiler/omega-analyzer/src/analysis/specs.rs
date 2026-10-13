@@ -16,9 +16,7 @@ pub(crate) enum RequirementSignature {
         fn_type: ResolvedFunctionType,
         return_type_bound: Vec<(NominalRef, Vec<ResolvedGenericArg>)>,
     },
-    Template {
-        generics: Vec<HirGenericParam>,
-    },
+    Template,
 }
 
 impl FlattenedSpecFn {
@@ -152,9 +150,14 @@ impl<'r> Analyzer<'r> {
     )> {
         let (spec, spec_args) = spec.clone();
         let requirements = self.flatten_spec(id, span, &spec, &spec_args, target)?;
-        let concrete_functions: Vec<_> = functions
+        let normalized: Vec<_> = functions
+            .iter()
+            .map(|function| self.normalized_function(function))
+            .collect::<Option<_>>()?;
+        let concrete_functions: Vec<_> = normalized
             .iter()
             .filter(|function| function.generics.is_empty())
+            .map(|function| &function.function)
             .collect();
         let (signatures, _) = self.with_scope(|this| {
             this.analyze_all(&concrete_functions, |this, function| {
@@ -238,18 +241,13 @@ impl<'r> Analyzer<'r> {
                         );
                     }
                 }
-                RequirementSignature::Template { generics } => {
-                    let matching = functions.iter().zip(method_ids).find(|(function, _)| {
-                        function.name == requirement.name
-                            && Self::generic_requirement_shape_matches(
-                                &requirement.raw,
-                                function,
-                                generics,
-                            )
+                RequirementSignature::Template => {
+                    let matching = normalized.iter().zip(method_ids).find(|(function, _)| {
+                        function.function.name == requirement.name
+                            && Self::generic_requirement_shape_matches(&requirement.raw, function)
                     });
-                    if let Some((function, method_id)) = matching {
+                    if let Some((_, method_id)) = matching {
                         templates.push(*method_id);
-                        let _ = function;
                     } else {
                         self.error(
                             id,
@@ -393,6 +391,19 @@ impl<'r> Analyzer<'r> {
                     },
                 );
             }
+            let generics = match crate::generics::normalize_generics(
+                &mut *self.resolver,
+                &self.module_path,
+                f.id,
+                &f.generics,
+                &f.params,
+            ) {
+                Ok(generics) => generics,
+                Err(error) => {
+                    self.error(f.id, f.span, AnalysisErrorKind::ModuleResolution(error));
+                    continue;
+                }
+            };
             functions.push((
                 f.name.clone(),
                 RawSpecFunctionSig {
@@ -403,7 +414,7 @@ impl<'r> Analyzer<'r> {
                     signature_span: f.signature_span,
                     return_type_span: f.return_type_span,
                     visibility: f.visibility,
-                    generics: f.generics.clone(),
+                    generics,
                     self_mode: f.self_mode,
                     is_variadic: f.is_variadic,
                     params: f.params.clone(),
@@ -655,9 +666,7 @@ impl<'r> Analyzer<'r> {
                     return_type_bound,
                 }
             } else {
-                RequirementSignature::Template {
-                    generics: raw.generics.clone(),
-                }
+                RequirementSignature::Template
             };
             // Identity dedup only -- same spec, same type args, same name.
             if out.iter().any(|existing| {
@@ -701,45 +710,54 @@ impl<'r> Analyzer<'r> {
             })
     }
 
+    /// Compares the declaration shapes of a generic requirement and a
+    /// conformance function by generic position, so a `spec S` parameter and
+    /// an explicit bounded parameter it stands for are the same shape.
     fn generic_requirement_shape_matches(
         requirement: &RawSpecFunctionSig,
-        implementation: &HirFunctionDef,
-        generics: &[HirGenericParam],
+        implementation: &NormalizedFunction,
     ) -> bool {
-        if implementation.generics.len() != generics.len()
-            || implementation.self_mode != requirement.self_mode
-            || implementation.params.len() != requirement.params.len()
+        let function = &implementation.function;
+        if implementation.generics.len() != requirement.generics.len()
+            || function.self_mode != requirement.self_mode
+            || function.params.len() != requirement.params.len()
         {
             return false;
         }
-        let req_names: Vec<_> = generics.iter().map(|param| &param.ident).collect();
-        let impl_names: Vec<_> = implementation
+        let generic_kinds_match = requirement
             .generics
-            .iter()
-            .map(|param| &param.ident)
-            .collect();
-        let generic_kinds_match = generics
             .iter()
             .zip(&implementation.generics)
             .all(|(required, implemented)| required.is_comp() == implemented.is_comp());
-        let params_match =
-            requirement
-                .params
-                .iter()
-                .zip(&implementation.params)
-                .all(|(required, implemented)| {
-                    Self::same_template_type(
-                        &required.r#type,
-                        &implemented.r#type,
-                        &req_names,
-                        &impl_names,
-                    )
-                });
+        let required = TemplateNames::of(&requirement.generics);
+        let implemented = TemplateNames::of(&implementation.generics);
+        let params_match = requirement
+            .params
+            .iter()
+            .zip(&function.params)
+            .enumerate()
+            .all(|(index, (required_param, implemented_param))| {
+                let required_sugar = static_spec_position(&requirement.generics, index);
+                let implemented_sugar = static_spec_position(&implementation.generics, index);
+                if required_sugar.is_none() && implemented_sugar.is_none() {
+                    return Self::same_template_type(
+                        &required_param.r#type,
+                        &implemented_param.r#type,
+                        &required,
+                        &implemented,
+                    );
+                }
+                let required_position =
+                    required_sugar.or_else(|| required.position_of(&required_param.r#type));
+                let implemented_position = implemented_sugar
+                    .or_else(|| implemented.position_of(&implemented_param.r#type));
+                required_position.is_some() && required_position == implemented_position
+            });
         let return_match = Self::same_template_type(
             &requirement.return_type,
-            &implementation.return_type,
-            &req_names,
-            &impl_names,
+            &function.return_type,
+            &required,
+            &implemented,
         );
         generic_kinds_match && params_match && return_match
     }
@@ -747,18 +765,15 @@ impl<'r> Analyzer<'r> {
     fn same_template_type(
         required: &Type,
         implemented: &Type,
-        requirement_names: &[&Ident],
-        implementation_names: &[&Ident],
+        requirement_names: &TemplateNames<'_>,
+        implementation_names: &TemplateNames<'_>,
     ) -> bool {
         match (required, implemented) {
             (Type::Named(required), Type::Named(implemented)) => {
-                let required_index = requirement_names
-                    .iter()
-                    .position(|name| **name == required.head);
-                let implemented_index = implementation_names
-                    .iter()
-                    .position(|name| **name == implemented.head);
-                match (required_index, implemented_index) {
+                match (
+                    requirement_names.position(&required.head),
+                    implementation_names.position(&implemented.head),
+                ) {
                     (Some(required), Some(implemented)) => required == implemented,
                     (None, None) => required == implemented,
                     _ => false,
@@ -985,4 +1000,32 @@ impl<'r> Analyzer<'r> {
             }
         }
     }
+}
+
+/// The written names of a declaration's generic positions. An anonymous
+/// `spec S` position has none, so no written type can name it.
+struct TemplateNames<'g>(Vec<Option<&'g Ident>>);
+
+impl<'g> TemplateNames<'g> {
+    fn of(generics: &'g [GenericParam]) -> Self {
+        Self(generics.iter().map(|param| param.name.as_ref()).collect())
+    }
+
+    fn position(&self, name: &Ident) -> Option<usize> {
+        self.0.iter().position(|written| *written == Some(name))
+    }
+
+    /// The position a type written as a bare parameter name denotes.
+    fn position_of(&self, written: &Type) -> Option<usize> {
+        match written {
+            Type::Named(path) if path.is_unqualified() => self.position(&path.head),
+            _ => None,
+        }
+    }
+}
+
+fn static_spec_position(generics: &[GenericParam], param_index: usize) -> Option<usize> {
+    generics.iter().position(|generic| {
+        generic.origin == crate::generics::GenericParamOrigin::StaticSpecParameter { param_index }
+    })
 }

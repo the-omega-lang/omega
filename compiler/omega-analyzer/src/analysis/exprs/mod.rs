@@ -503,9 +503,12 @@ impl<'r> Analyzer<'r> {
             Self::resolve_spec_qualified_call,
             Self::resolve_overloaded_call,
             Self::resolve_type_qualified_overload_call,
+            // Before the concrete-owner reading: an owner whose list is left
+            // open has its arguments inferred from the call, even when its
+            // defaults alone would already make it a type.
+            Self::resolve_generic_owner_function_call,
             Self::resolve_generic_method_call,
             Self::resolve_generic_call,
-            Self::resolve_generic_owner_function_call,
         ];
         for intercept in interceptors {
             if let Intercepted::Claimed(result) = intercept(self, node_id, span, call, expected) {

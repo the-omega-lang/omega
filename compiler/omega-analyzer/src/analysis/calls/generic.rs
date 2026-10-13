@@ -308,10 +308,9 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    /// The owner of `Owner<A>::name<B>`, reported when it does not resolve.
-    /// Both lists are written, so the owner list must be complete: a `_` in
-    /// it would need joint owner-and-member inference, which is not yet
-    /// supported (`docs/issues/language-limitations.md`).
+    /// The owner of the function value `Owner<A>::name<B>`, reported when it
+    /// does not resolve. Only a call's arguments solve an owner hole, so as a
+    /// value the owner list must be complete.
     pub(crate) fn owner_type_with_generics(
         &mut self,
         node_id: HirId,
@@ -464,7 +463,10 @@ impl<'r> Analyzer<'r> {
     /// where the owner's type arguments are inferred from the call. A member
     /// call infers them from its explicit receiver argument like any other.
     /// An owner list written with `_` holes (`Pair<_, u8>::new(...)`) binds
-    /// what it writes and leaves the holes to the same inference.
+    /// what it writes and leaves the holes to the same inference. A generic
+    /// `name`'s own arguments are inferred jointly with the owner's, over one
+    /// positional signature; a list written on `name` fixes its leading
+    /// positions.
     pub(crate) fn resolve_generic_owner_function_call(
         &mut self,
         node_id: HirId,
@@ -486,19 +488,15 @@ impl<'r> Analyzer<'r> {
             [.., member] => (FunctionNamespace::Static, member, 1),
             [] => return Intercepted::Declined,
         };
-        let written = match Self::member_generics(expr_path, member_segments) {
-            Some(MemberGenerics {
-                owner: None,
-                function: None,
-            }) => Vec::new(),
-            Some(MemberGenerics {
-                owner: Some(owner),
-                function: None,
-            }) => match Self::plain_generic_args(owner) {
+        let Some(lists) = Self::member_generics(expr_path, member_segments) else {
+            return Intercepted::Declined;
+        };
+        let written = match lists.owner {
+            None => Vec::new(),
+            Some(owner) => match Self::plain_generic_args(owner) {
                 Some(written) if written.contains(&GenericArg::Infer) => written,
                 _ => return Intercepted::Declined,
             },
-            _ => return Intercepted::Declined,
         };
         let mut owner_path = path.clone();
         owner_path.tail.truncate(path.tail.len() - member_segments);
@@ -531,7 +529,7 @@ impl<'r> Analyzer<'r> {
         ) else {
             return Intercepted::Declined;
         };
-        if !sig.function_params().is_empty() {
+        if lists.function.is_some() && sig.function_params().is_empty() {
             return Intercepted::Declined;
         }
 
@@ -553,6 +551,7 @@ impl<'r> Analyzer<'r> {
             namespace,
             &sig,
             &written,
+            lists.function,
             expected,
             path.origin,
         ))
@@ -599,6 +598,7 @@ impl<'r> Analyzer<'r> {
         namespace: FunctionNamespace,
         sig: &GenericOwnerFunctionSignature,
         written: &[GenericArg],
+        function_written: Option<&[ExprGenericArg]>,
         expected: Expected<'_>,
         origin: Origin,
     ) -> Option<CheckedExprNode> {
@@ -609,16 +609,30 @@ impl<'r> Analyzer<'r> {
             sig.owner_params(),
             written.len(),
         )?;
-        let seed = self.written_hole_seed(node_id, span, written, sig.owner_params())?;
+        let explicit = match function_written {
+            Some(function_written) => self.resolve_written_generics(
+                node_id,
+                span,
+                function_written,
+                &owner.absolute.as_module().join(member.clone()),
+                sig.function_params(),
+            )?,
+            None => WrittenGenerics::default(),
+        };
+        let mut seed = self.written_hole_seed(node_id, span, written, sig.owner_params())?;
+        seed.extend(explicit.bindings.iter().cloned());
         let template = &sig.template;
         let enclosing = GenericSubstitution::new();
         let mut inference = Inference::of_template(template, &enclosing, seed);
         inference.seed_from_expected(&template.return_type, expected);
         let checked_args = self.infer_arguments(&mut inference, &template.params, &call.args)?;
 
-        let generic_args = match Self::solved_generic_args(&inference) {
-            Ok(generic_args) => generic_args[..sig.owner_generics].to_vec(),
-            Err(_) => {
+        let (generic_args, function_args) = match Self::solved_generic_args(&inference) {
+            Ok(mut generic_args) => {
+                let function_args = generic_args.split_off(sig.owner_generics);
+                (generic_args, function_args)
+            }
+            Err(position) => {
                 if let Some((parameter, found)) =
                     inference.fat_pointer_mismatch(&template.params, &checked_args)
                 {
@@ -626,6 +640,15 @@ impl<'r> Analyzer<'r> {
                         node_id,
                         span,
                         AnalysisErrorKind::GenericParamFromFatPointer { parameter, found },
+                    );
+                } else if position >= sig.owner_generics {
+                    self.undetermined_generic_param(
+                        node_id,
+                        span,
+                        member,
+                        sig.function_params(),
+                        &explicit,
+                        position - sig.owner_generics,
                     );
                 } else {
                     let missing = sig
@@ -663,14 +686,38 @@ impl<'r> Analyzer<'r> {
                 }
             };
 
-        let candidates = self.type_facts(node_id, span, |types| {
-            owner_type.candidates_in(types, namespace, member)
-        })?;
-        let method = candidates
-            .expect("generic owner signatures only come from aggregate types")
-            .into_iter()
-            .next()
-            .expect("generic_owner_function_signature confirmed this function exists");
+        let method = if sig.function_params().is_empty() {
+            let candidates = self.type_facts(node_id, span, |types| {
+                owner_type.candidates_in(types, namespace, member)
+            })?;
+            candidates
+                .expect("generic owner signatures only come from aggregate types")
+                .into_iter()
+                .next()
+                .expect("generic_owner_function_signature confirmed this function exists")
+        } else {
+            let target = crate::resolver::GenericCallTarget::Method {
+                owner: &owner_type,
+                name: member,
+                namespace,
+            };
+            let function_args =
+                self.complete_call_generic_args(node_id, span, target, function_args)?;
+            self.check_written_selectors(node_id, span, member, target, &explicit, &function_args)?;
+            match self.resolver.instantiate_generic_method(
+                &owner_type,
+                member,
+                namespace,
+                &function_args,
+            ) {
+                Ok(Some(method)) => method,
+                Ok(None) => return None,
+                Err(error) => {
+                    self.error(node_id, span, AnalysisErrorKind::ModuleResolution(error));
+                    return None;
+                }
+            }
+        };
 
         if !self.check_visibility(method.visibility, &method.declaring_module, origin) {
             self.error(

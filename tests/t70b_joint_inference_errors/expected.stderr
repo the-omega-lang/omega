@@ -1,0 +1,25 @@
+error: cannot infer type argument(s) 'T' of 'Shadow' here
+  --> tests/t70b_joint_inference_errors/t70b_joint_inference_errors.omg:20:10
+   |
+20 |     a := Shadow::name(7i64);
+   |          ^^^^^^^^^^^^^^^^^^ cannot infer type argument(s) `T` of `Shadow` here
+   |
+   = help: write them explicitly, e.g. `Shadow<...>`
+
+error: cannot infer generic parameter 'B' from this call's arguments
+  --> tests/t70b_joint_inference_errors/t70b_joint_inference_errors.omg:21:10
+   |
+21 |     b := Owner::make(1i32);
+   |          ^^^^^^^^^^^^^^^^^ cannot deduce `B` from this call's arguments
+   |
+   = note: a generic function's parameters are deduced from its argument types only; a `comp` parameter is deduced only from compile-time structure such as a fixed array's length
+
+error: 'make' cannot be instantiated here: 'B' is not determined
+  --> tests/t70b_joint_inference_errors/t70b_joint_inference_errors.omg:22:10
+   |
+22 |     c := Owner::make<_>(1i32);
+   |          ^^^^^^^^^^^^^^^^^^^^ `B` is not determined here
+   |
+   = help: `_` leaves `B` to inference -- write it out, or give this call an argument or expected type that determines it
+
+error: could not compile the program due to 3 previous errors

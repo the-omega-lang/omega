@@ -67,11 +67,11 @@ use omega_diagnostics::{SourceId, SourceSpan};
 use omega_hir::{
     BinaryOp, HirAddressOf, HirAsmDescriptor, HirAsmDescriptorKind, HirBlock, HirCast,
     HirCompoundAssign, HirDeclaration, HirEnumDef, HirExpr, HirExprNode, HirField, HirFor,
-    HirForIn, HirFunctionCall, HirFunctionDef, HirGenericParam, HirId, HirIf, HirInlineAsm,
-    HirItem, HirMatch, HirMatchArm, HirParam, HirPattern, HirPatternValue, HirPlace,
-    HirPlaceReveal, HirPlaceRoot, HirProjection, HirRange, HirRangeEnd, HirReveal, HirSlice,
-    HirSpecDef, HirStmt, HirStructDef, HirStructLiteral, HirStructLiteralField, HirUnionDef,
-    HirWalrusDeclaration, ItemPath, LogicalOp, ModulePath,
+    HirForIn, HirFunctionCall, HirFunctionDef, HirId, HirIf, HirInlineAsm, HirItem, HirMatch,
+    HirMatchArm, HirParam, HirPattern, HirPatternValue, HirPlace, HirPlaceReveal, HirPlaceRoot,
+    HirProjection, HirRange, HirRangeEnd, HirReveal, HirSlice, HirSpecDef, HirStmt, HirStructDef,
+    HirStructLiteral, HirStructLiteralField, HirUnionDef, HirWalrusDeclaration, ItemPath,
+    LogicalOp, ModulePath,
 };
 use omega_parser::prelude::{
     ArrayLength, ExprGenericArg, ExprPath, GenericArg, Ident, NumberBase, NumberExpr, Origin, Path,

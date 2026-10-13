@@ -1,6 +1,6 @@
 use crate::resolved_type::{CompScalar, ResolvedGenericArg, ResolvedType};
 use crate::resolver::{Names, ResolveError};
-use omega_hir::{HirFunctionDef, HirGenericParam, HirId, ItemPath, ModulePath};
+use omega_hir::{HirFunctionDef, HirGenericParam, HirId, HirParam, ItemPath, ModulePath};
 use omega_parser::prelude::{GenericArg, GenericParamKind, Ident, Type};
 
 pub mod pattern;
@@ -148,8 +148,24 @@ pub fn normalize_function<R: Names + ?Sized>(
     module_path: &ModulePath,
     f: &HirFunctionDef,
 ) -> Result<NormalizedFunction, ResolveError> {
-    let mut generics = GenericParam::declared(f.id, &f.generics);
-    for (param_index, param) in f.params.iter().enumerate() {
+    Ok(NormalizedFunction {
+        function: f.clone(),
+        generics: normalize_generics(resolver, module_path, f.id, &f.generics, &f.params)?,
+    })
+}
+
+/// The generics of a declaration owned by `owner`: its written parameters,
+/// then one anonymous parameter per outermost static `spec ...` parameter
+/// type, as [`normalize_function`] describes.
+pub fn normalize_generics<R: Names + ?Sized>(
+    resolver: &mut R,
+    module_path: &ModulePath,
+    owner: HirId,
+    written: &[HirGenericParam],
+    params: &[HirParam],
+) -> Result<Vec<GenericParam>, ResolveError> {
+    let mut generics = GenericParam::declared(owner, written);
+    for (param_index, param) in params.iter().enumerate() {
         let expanded =
             crate::aliases::expand_type_alias(resolver, module_path, param.r#type.clone())?;
         let Type::SpecStatic(members) = expanded else {
@@ -157,7 +173,7 @@ pub fn normalize_function<R: Names + ?Sized>(
         };
         generics.push(GenericParam {
             id: GenericParamId {
-                owner: f.id,
+                owner,
                 index: generics.len() as u32,
             },
             name: None,
@@ -166,10 +182,7 @@ pub fn normalize_function<R: Names + ?Sized>(
             default: None,
         });
     }
-    Ok(NormalizedFunction {
-        function: f.clone(),
-        generics,
-    })
+    Ok(generics)
 }
 
 /// One parameter bound by an instantiation. The name is how the binding

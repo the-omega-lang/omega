@@ -1,5 +1,5 @@
 use crate::type_store::{Incomplete, Methods, NominalRef, TypeStore};
-use omega_hir::{HirBlock, HirGenericParam, HirId, HirParam, ModulePath};
+use omega_hir::{HirBlock, HirId, HirParam, ModulePath};
 use omega_parser::prelude::{Ident, SelfMode, Span, Type, Visibility};
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
@@ -499,7 +499,8 @@ pub struct RawSpecFunctionSig {
     pub signature_span: Span,
     pub return_type_span: Span,
     pub visibility: Visibility,
-    pub generics: Vec<HirGenericParam>,
+    /// Normalized: a `spec S` parameter is an anonymous generic here.
+    pub generics: Vec<crate::generics::GenericParam>,
     pub self_mode: Option<SelfMode>,
     pub params: Vec<HirParam>,
     pub is_variadic: bool,

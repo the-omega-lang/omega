@@ -35,7 +35,7 @@ meet Runner for Direct {
 }
 ```
 
-The `meet` block checks the declaration shape immediately: generic parameter kinds/count, receiver, arity, and parameter/return shapes must agree (parameter names need not). A concrete call then infers and checks the requirement's particular arguments. A spec with any generic requirement is not object-safe, so it cannot form a `*spec Runner` object; use a generic spec such as `spec Runner<T>` when the caller's type belongs to the spec identity instead.
+The `meet` block checks the declaration shape immediately: generic parameter kinds/count, receiver, arity, and parameter/return shapes must agree (parameter names need not). Shapes are compared by generic position, and a [`spec S` parameter](generics.md#spec-s-parameter-sugar) is a position of its own, so the sugar and an explicit bounded parameter are interchangeable: `take(*self, x: spec Show) => i32` satisfies `take<T: Show>(*self, x: T) => i32`, and the reverse. A requirement written with the sugar is therefore a generic requirement. A concrete call then infers and checks the requirement's particular arguments. A spec with any generic requirement is not object-safe, so it cannot form a `*spec Runner` object; use a generic spec such as `spec Runner<T>` when the caller's type belongs to the spec identity instead.
 
 `Self` denotes the concrete implementing type. Spec receiver parameters must use `*self` or `*mut self`; by-value `self`/`mut self` is invalid in a spec declaration.
 

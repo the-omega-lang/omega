@@ -1,0 +1,23 @@
+# Joint owner-and-member inference reports each position nothing determines
+# by its declared name.
+struct Shadow<T> {
+	exposed value: T;
+
+	exposed name<T>(x: T) => i64 {
+		<i64>x
+	}
+}
+
+struct Owner<A> {
+	exposed value: A;
+
+	exposed make<B>(a: A) => i64 {
+		<i64>a + <i64>sizeof<B>
+	}
+}
+
+main() => void {
+	a := Shadow::name(7i64);
+	b := Owner::make(1i32);
+	c := Owner::make<_>(1i32);
+}

@@ -1,0 +1,7 @@
+exposed struct Pair<A> {
+	exposed first: A;
+
+	exposed scaled<B>(*self, factor: B) => i64 {
+		<i64>self.first * <i64>factor + <i64>sizeof<B>
+	}
+}

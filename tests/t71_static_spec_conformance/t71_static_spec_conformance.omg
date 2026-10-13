@@ -1,0 +1,58 @@
+# `spec S` parameter sugar and an explicit bounded generic parameter are the
+# same declaration shape, so either spelling satisfies the other in a
+# conformance.
+import std::io::println;
+
+spec Show {
+	show(*self) => i32;
+}
+
+struct Num {
+	exposed n: i32;
+}
+
+meet Show for Num {
+	show(*self) => i32 { self.n }
+}
+
+spec TakeExplicit {
+	take<T: Show>(*self, x: T) => i32;
+}
+
+spec TakeSugar {
+	take(*self, x: spec Show) => i32;
+}
+
+struct Sugared {
+	exposed base: i32;
+}
+
+meet TakeExplicit for Sugared {
+	take(*self, x: spec Show) => i32 { self.base + x.show() }
+}
+
+struct Explicit {
+	exposed base: i32;
+}
+
+meet TakeSugar for Explicit {
+	take<T: Show>(*self, x: T) => i32 { self.base * x.show() }
+}
+
+total<S: TakeExplicit>(s: *S, n: Num) => i32 {
+	s.take(n)
+}
+
+product<S: TakeSugar>(s: *S, n: Num) => i32 {
+	s.take(n)
+}
+
+main() => void {
+	n := Num { n = 5; };
+	s := Sugared { base = 10; };
+	e := Explicit { base = 4; };
+	println$(s.take(n));
+	println$(e.take(n));
+	println$(total(&s, n));
+	println$(product(&e, n));
+}
