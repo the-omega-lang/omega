@@ -44,20 +44,9 @@ impl<'r> Analyzer<'r> {
             None => self.synthesize_bounded_call(id, span, &element, "max")?,
         };
 
-        let ResolvedItem::Type(ResolvedType::Struct(nominal)) = self
-            .resolve_item_checked(
-                &ItemAccess::gated(Self::core_range_path("Range")),
-                &[ResolvedGenericArg::Type(element)],
-                true,
-                Origin::default(),
-            )
-            .ok()?
-        else {
-            return None;
-        };
-        // Field indices, not names: `runtime/core/range.omg` declares
-        // `start`, `end`, `inclusive` in exactly this order. Reordering them
-        // there without changing these silently builds the wrong range.
+        let nominal = self.core_range(id, span, element)?;
+        // Field indices, not names: `core_range` checked that `start`, `end`,
+        // `inclusive` are declared in exactly this order.
         Some(CheckedExprNode {
             id,
             span,
@@ -86,17 +75,13 @@ impl<'r> Analyzer<'r> {
         })
     }
 
-    fn core_range_path(name: &str) -> ItemPath {
-        ModulePath::from_names(&["core", "range"]).join(Ident(name.to_string()))
-    }
-
     fn expected_range_element(expected: Option<&ResolvedType>) -> Option<ResolvedType> {
         let ResolvedType::Struct(nominal) = expected? else {
             return None;
         };
         let definition = &**nominal;
         let is_core_range =
-            definition.name.as_ref() == "Range" && definition.module_path.is(&["core", "range"]);
+            crate::core_contract::is_range(&definition.module_path, &definition.name);
         is_core_range
             .then(|| {
                 definition
@@ -114,17 +99,13 @@ impl<'r> Analyzer<'r> {
         target: &ResolvedType,
         name: &str,
     ) -> Option<CheckedExprNode> {
-        let ResolvedItem::Type(ResolvedType::Spec(spec)) = self
-            .resolve_item_checked(
-                &ItemAccess::gated(Self::core_range_path("Bounded")),
-                &[],
-                true,
-                Origin::default(),
-            )
-            .ok()?
-        else {
-            return None;
-        };
+        let spec = self.core_spec(
+            id,
+            span,
+            crate::core_contract::CoreFeature::Ranges,
+            &crate::core_contract::bounded_path(),
+            crate::core_contract::check_bounded,
+        )?;
         let Some(conform) = self
             .resolver
             .conformance_for(target, &spec, &[])
@@ -146,7 +127,8 @@ impl<'r> Analyzer<'r> {
             .find(|(method_name, method)| {
                 method_name.as_ref() == name && method.fn_type.self_mode.is_none()
             })
-            .map(|(_, method)| method)?;
+            .map(|(_, method)| method)
+            .expect("a conformance provides every requirement 'check_bounded' accepted");
         let fn_type = method.fn_type.clone();
         let function = ResolvedType::Function(fn_type.clone());
         let call_id = self.resolver.fresh_synthetic_id();

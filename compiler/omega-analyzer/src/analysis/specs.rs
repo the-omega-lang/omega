@@ -510,40 +510,16 @@ impl<'r> Analyzer<'r> {
         Some((nominal, raw_args))
     }
 
-    fn resolve_ambient_iterator_spec(&mut self, name: &str) -> Option<NominalRef> {
-        let name = Ident(name.to_string());
-        let path = Path::from(name.clone());
-        if let Ok(access) =
-            self.context
-                .resolve_absolute_item_path(&mut *self.resolver, &path, &self.module_path)
-            && let Ok(Some(nominal)) = self.resolver.spec_declaration(&access.absolute)
-        {
-            return Some(nominal);
-        }
-        let ambient = self
-            .resolver
-            .ambient_core_candidates(&self.module_path, &name)
-            .ok()
-            .flatten()?;
-        self.resolver.spec_declaration(&ambient).ok().flatten()
-    }
-
-    pub(super) fn for_in_source_declares(&mut self, ty: &ResolvedType, name: &str) -> bool {
-        !self.for_in_conformances(ty, name).is_empty()
-    }
-
+    /// The conformances of `ty` to the `core::iterator` spec `spec`.
     pub(super) fn for_in_conformances(
         &mut self,
         ty: &ResolvedType,
-        name: &str,
+        spec: &NominalRef,
     ) -> Vec<crate::resolved_type::ResolvedConformance> {
-        let Some(target_spec) = self.resolve_ambient_iterator_spec(name) else {
-            return vec![];
-        };
         match self.resolver.conformances_for_type(ty) {
             Ok(conformances) => conformances
                 .into_iter()
-                .filter(|conform| conform.spec.decl_id == target_spec.decl_id)
+                .filter(|conform| conform.spec.decl_id == spec.decl_id)
                 .collect(),
             Err(_) => vec![],
         }

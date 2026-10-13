@@ -77,7 +77,7 @@ for init; condition; post { ... }
 
 ## Iterator protocol
 
-The standard protocol is defined by core specs equivalent to:
+The protocol is `core::iterator`'s two specs, equivalent to:
 
 ```omega
 spec Iterator<T> {
@@ -89,7 +89,7 @@ spec ToIterator<T> {
 }
 ```
 
-A value used in `for x in value` must nominally conform to an applicable `ToIterator<T>` or `Iterator<T>`; merely having same-named methods is insufficient.
+A value used in `for x in value` must nominally conform to an applicable `core::iterator::ToIterator<T>` or `core::iterator::Iterator<T>`; merely having same-named methods is insufficient. A loop always uses these `core` specs, never a spec of the same name a program declares or imports.
 
 If `ToIterator<T>` is available, it is preferred and `to_iterator()` supplies the cursor. Otherwise a value that already conforms to `Iterator<T>` is itself the cursor.
 

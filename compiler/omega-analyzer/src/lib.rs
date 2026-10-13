@@ -9,6 +9,7 @@ pub mod comp_eval;
 pub mod compiler_definitions;
 pub mod compiler_functions;
 mod context;
+pub mod core_contract;
 pub mod source_annotations;
 pub use context::{DeclarationPolicy, is_reserved_type_name};
 pub mod dead_code;

@@ -2,6 +2,7 @@ mod abi;
 mod asm;
 mod calls;
 mod consts;
+mod core_support;
 mod expected;
 mod exprs;
 mod items;

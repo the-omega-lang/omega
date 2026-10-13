@@ -107,18 +107,27 @@ impl<'r> Analyzer<'r> {
                 types.enum_facts(&destination_nominal)?.clone(),
             ))
         })?;
+        let shape = match kind {
+            CheckedTryKind::Option => crate::core_contract::check_option(&source_enum),
+            CheckedTryKind::Result => crate::core_contract::check_result(&source_enum),
+        };
+        if let Err(detail) = shape {
+            self.error(
+                id,
+                operator_span,
+                AnalysisErrorKind::CoreSupportUnavailable {
+                    feature: crate::core_contract::CoreFeature::TryOperator,
+                    detail,
+                },
+            );
+            return None;
+        }
+        // Both are the same declaration, so one checked shape covers both.
         let (Some(source), Some(destination)) = (
             fallible_facts(&source_enum, &names),
             fallible_facts(&destination_enum, &names),
         ) else {
-            self.error(
-                id,
-                operator_span,
-                AnalysisErrorKind::TryOperandNotFallible {
-                    found: operand.r#type.clone(),
-                },
-            );
-            return None;
+            unreachable!("'core_contract' checked the variants and fields '?' reads");
         };
 
         let error_coercion = match (&source.failure_payload, &destination.failure_payload) {
@@ -178,16 +187,12 @@ fn canonical_fallible(r#type: &ResolvedType) -> Option<(CheckedTryKind, NominalR
     };
     let kind = {
         let definition = &**nominal;
-        let module: Vec<&str> = definition
-            .module_path
-            .segments()
-            .iter()
-            .map(Ident::as_ref)
-            .collect();
-        match (module.as_slice(), definition.name.as_ref()) {
-            (["core", "option"], "Option") => CheckedTryKind::Option,
-            (["core", "result"], "Result") => CheckedTryKind::Result,
-            _ => return None,
+        if crate::core_contract::is_option(&definition.module_path, &definition.name) {
+            CheckedTryKind::Option
+        } else if crate::core_contract::is_result(&definition.module_path, &definition.name) {
+            CheckedTryKind::Result
+        } else {
+            return None;
         }
     };
     Some((kind, nominal.clone()))

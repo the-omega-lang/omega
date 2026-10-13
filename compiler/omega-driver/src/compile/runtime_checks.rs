@@ -9,19 +9,12 @@
 
 use super::*;
 use omega_analyzer::checked::{CheckedBlock, CheckedFunctionDef};
-use omega_analyzer::runtime_checks::{self, FunctionRuntimeChecks, PanicInfoField, PanicSupport};
+use omega_analyzer::core_contract::{self, CoreFeature};
+use omega_analyzer::runtime_checks::{self, FunctionRuntimeChecks, PanicSupport};
 use omega_diagnostics::SourceFile;
 use omega_hir::HirId;
 use omega_parser::prelude::Span;
 use std::rc::Rc;
-
-/// The panic contract `core` is required to declare. Resolving the members by
-/// these names, against these declarations, is what keeps a compiler-generated
-/// panic off anything a program merely spelled the same way.
-const PANIC_MODULE: [&str; 2] = ["core", "panic"];
-const HANDLER: &str = "PanicHandler";
-const HANDLER_FUNCTION: &str = "panic";
-const INFO: &str = "PanicInfo";
 
 impl Driver {
     /// Attaches panic support to every emitted body that reaches a checked
@@ -42,7 +35,10 @@ impl Driver {
                     AnalysisError::new(
                         decl_id,
                         span,
-                        AnalysisErrorKind::RuntimeCheckSupportUnavailable { detail },
+                        AnalysisErrorKind::CoreSupportUnavailable {
+                            feature: CoreFeature::RuntimeChecks,
+                            detail,
+                        },
                     ),
                 );
                 return;
@@ -80,14 +76,14 @@ impl Driver {
         Ok(support)
     }
 
-    /// Resolves and validates `core`'s panic contract. The gap
+    /// Resolves `core`'s panic contract; `core_contract` validates it. The gap
     /// member is `shared`, so the compiler's own reference to it bypasses
     /// visibility; nothing about what source may name changes.
     fn resolve_panic_support(&mut self) -> Result<PanicSupport, String> {
-        let module = ModulePath::from_names(&PANIC_MODULE);
+        let module = ModulePath::from_names(&core_contract::PANIC_MODULE);
         let options = ResolveItemOptions::DIRECT.bypassing_visibility(true);
 
-        let info_path = module.join(Ident(INFO.to_string()));
+        let info_path = module.join(Ident(core_contract::PANIC_INFO.to_string()));
         let info_type = match self.resolve_item(&module, &info_path, &[], options) {
             Ok(ResolvedItem::Type(r#type @ ResolvedType::Struct(_))) => r#type,
             Ok(_) => return Err(format!("'{}' is not a struct", info_path)),
@@ -96,87 +92,25 @@ impl Driver {
         let ResolvedType::Struct(nominal) = &info_type else {
             unreachable!("just matched a struct")
         };
-        let fields = {
-            let definition = self
-                .items
-                .types
-                .struct_facts(nominal)
-                .map_err(|incomplete| ResolveError::from(incomplete).to_string())?
-                .clone();
-            let field = |name: &str, expected: ResolvedType| {
-                let index = definition
-                    .fields
-                    .iter()
-                    .position(|f| f.name.as_ref() == name)
-                    .ok_or_else(|| format!("'{}' declares no '{name}' field", info_path))?;
-                let found = definition.fields[index].r#type.clone();
-                if found != expected {
-                    return Err(format!(
-                        "'{}::{name}' must be '{expected}', found '{found}'",
-                        info_path
-                    ));
-                }
-                Ok(PanicInfoField {
-                    index,
-                    r#type: found,
-                })
-            };
-            let str_pointer = ResolvedType::Str { mutable: false };
-            (
-                field("source_file", str_pointer.clone())?,
-                field("line", ResolvedType::U32)?,
-                field("column", ResolvedType::U32)?,
-                field("message", str_pointer)?,
-            )
-        };
+        let info = self
+            .items
+            .types
+            .struct_facts(nominal)
+            .map_err(|incomplete| ResolveError::from(incomplete).to_string())?
+            .clone();
 
-        let handler_path = module.join(Ident(HANDLER.to_string()));
+        let handler_path = module.join(Ident(core_contract::PANIC_HANDLER.to_string()));
         let gap = match self.resolve_item(&module, &handler_path, &[], options) {
             Ok(ResolvedItem::Gap(gap)) => gap,
             Ok(_) => return Err(format!("'{}' is not a gap", handler_path)),
             Err(error) => return Err(error.to_string()),
         };
-        let Some((_, handler)) = gap
+        let handler = gap
             .functions
             .iter()
-            .find(|(name, _)| name.as_ref() == HANDLER_FUNCTION)
-        else {
-            return Err(format!(
-                "gap '{}' declares no '{HANDLER_FUNCTION}' function",
-                handler_path
-            ));
-        };
-        let signature = &handler.fn_type;
-        let expected_param = ResolvedType::Pointer {
-            pointee: Box::new(info_type.clone()),
-            mutable: false,
-        };
-        match signature.params.as_slice() {
-            [param] if param.r#type == expected_param => {}
-            _ => {
-                return Err(format!(
-                    "'{}::{HANDLER_FUNCTION}' must take exactly one '*{INFO}' parameter",
-                    handler_path
-                ));
-            }
-        }
-        if *signature.return_type != ResolvedType::Never || signature.is_variadic {
-            return Err(format!(
-                "'{}::{HANDLER_FUNCTION}' must be a non-variadic '=> never' function",
-                handler_path
-            ));
-        }
-
-        let (source_file, line, column, message) = fields;
-        Ok(PanicSupport {
-            handler_decl_id: handler.decl_id,
-            handler_fn_type: signature.clone(),
-            info_type,
-            source_file,
-            line,
-            column,
-            message,
-        })
+            .find(|(name, _)| name.as_ref() == core_contract::PANIC_HANDLER_FUNCTION)
+            .map(|(_, handler)| handler);
+        core_contract::panic_support(info_type.clone(), &info, handler)
     }
 }
 

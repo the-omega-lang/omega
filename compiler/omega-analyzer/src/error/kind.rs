@@ -693,10 +693,10 @@ pub enum AnalysisErrorKind {
     NakedInlineConflict,
     InvalidNakedBody,
     AsmRegInNakedFunction,
-    /// A body reaches an operation whose runtime invariant is checked, but
-    /// `core`'s panic contract is missing or does not match what the
-    /// generated call needs.
-    RuntimeCheckSupportUnavailable {
+    /// A program uses a feature the compiler builds on `core` declarations,
+    /// and `core` does not declare them in the shape the feature needs.
+    CoreSupportUnavailable {
+        feature: crate::core_contract::CoreFeature,
         detail: String,
     },
     FunctionWithoutBody {
@@ -707,7 +707,6 @@ pub enum AnalysisErrorKind {
     MalformedCompilerFunction {
         name: Ident,
     },
-    TypeinfoUnavailable,
 }
 
 impl fmt::Display for AnalysisErrorKind {
@@ -1696,14 +1695,11 @@ impl fmt::Display for AnalysisErrorKind {
             Self::AsmRegInNakedFunction => {
                 write!(f, "'reg' is not allowed in a '@naked' function's 'asm'")
             }
-            Self::RuntimeCheckSupportUnavailable { detail } => {
-                write!(f, "cannot emit this function's runtime checks: {detail}")
+            Self::CoreSupportUnavailable { feature, detail } => {
+                write!(f, "'core' does not support {feature}: {detail}")
             }
             Self::FunctionWithoutBody { name } => {
                 write!(f, "function '{}' has no body", name.as_ref())
-            }
-            Self::TypeinfoUnavailable => {
-                write!(f, "'typeinfo' requires 'core::reflection::TypeInfo'")
             }
             Self::MalformedCompilerFunction { name } => write!(
                 f,

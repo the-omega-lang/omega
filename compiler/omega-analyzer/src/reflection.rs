@@ -3,8 +3,9 @@
 //! never mean one thing at compile time and another at run time. The table
 //! semantics live in `docs/language/reflection.md`.
 //!
-//! Field order and nested shapes are read by name from the trusted `core`
-//! declarations rather than assumed, so a missing name is an internal error.
+//! Field order and nested shapes are read by name from the `core`
+//! declarations, which `core_contract::check_reflection` validated where the
+//! program wrote `typeinfo`, so a missing name is an internal error.
 
 use crate::checked::NumberValue;
 use crate::layout::{self, EnumView};
@@ -13,16 +14,8 @@ use crate::resolved_type::{
     ResolvedGenericArg, ResolvedSpecApplication, ResolvedType,
 };
 use crate::type_store::{NominalRef, TypeStore};
-use omega_hir::{ItemPath, ModulePath};
+use omega_hir::ModulePath;
 use omega_parser::prelude::{Ident, Visibility};
-
-/// The absolute path of the table type `typeinfo<T>` addresses.
-pub const TYPE_INFO_PATH: [&str; 3] = ["core", "reflection", "TypeInfo"];
-
-pub fn type_info_path() -> ItemPath {
-    let [module @ .., name] = TYPE_INFO_PATH;
-    ModulePath::from_names(&module).join(Ident(name.to_string()))
-}
 
 /// The address of `described`'s table, stored as `table`. Refinement never
 /// changes storage, so a refined enum is described by its parent type.

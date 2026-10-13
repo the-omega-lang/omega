@@ -1,10 +1,9 @@
 # `core::range` -- tangible, inert range values and their independent
 # iteration cursor.
 #
-# `Range`'s field order (`start`, `end`, `inclusive`) is load-bearing:
-# `Analyzer::core_range_path` builds the struct literal by field index.
-# Reordering these three (adding one after `inclusive` is safe) silently
-# miscompiles every range in the language.
+# `Range`'s field list (`start`, `end`, `inclusive`, in that order) is
+# load-bearing: a range literal is built by field index, and
+# `core_contract::check_range` rejects any other declaration.
 #
 # A range is never its own cursor: Omega values copy, so a `Range` carrying
 # iteration state would lose progress on assignment with nothing to catch

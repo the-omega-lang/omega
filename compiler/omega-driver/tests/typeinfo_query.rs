@@ -1,8 +1,9 @@
 //! Driver-level behavior of `typeinfo<Type>`: its result type is
 //! `core::reflection::TypeInfo` by absolute path, so a program's own
-//! `TypeInfo` never takes its place, and a compilation without `core` gets a
+//! `TypeInfo` never takes its place, and a `core` without reflection gets a
 //! diagnostic rather than a compiler panic.
 
+use omega_analyzer::core_contract::CoreFeature;
 use omega_analyzer::error::AnalysisErrorKind;
 use omega_analyzer::{Arch, Os, Target};
 use omega_driver::{CompileError, Driver, ExternRoot};
@@ -88,9 +89,13 @@ fn typeinfo_without_core_reflection_is_a_diagnostic() {
         Err(errors) => errors,
     };
     assert!(
-        analysis_errors(&errors)
-            .iter()
-            .any(|kind| matches!(kind, AnalysisErrorKind::TypeinfoUnavailable)),
+        analysis_errors(&errors).iter().any(|kind| matches!(
+            kind,
+            AnalysisErrorKind::CoreSupportUnavailable {
+                feature: CoreFeature::Reflection,
+                ..
+            }
+        )),
         "{errors:#?}"
     );
 }

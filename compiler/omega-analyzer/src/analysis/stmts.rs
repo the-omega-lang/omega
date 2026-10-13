@@ -1,4 +1,5 @@
 use super::*;
+use crate::core_contract::{self, CoreFeature};
 
 enum ForInSource {
     ToIterator(ResolvedBound),
@@ -507,7 +508,22 @@ impl<'r> Analyzer<'r> {
             return None;
         };
 
-        let to_iterator = self.for_in_conformances(&checked.r#type, "ToIterator");
+        let iteration = CoreFeature::Iteration;
+        let to_iterator_spec = self.core_spec(
+            f.id,
+            f.span,
+            iteration,
+            &core_contract::to_iterator_path(),
+            core_contract::check_to_iterator,
+        )?;
+        let iterator_spec = self.core_spec(
+            f.id,
+            f.span,
+            iteration,
+            &core_contract::iterator_path(),
+            core_contract::check_iterator,
+        )?;
+        let to_iterator = self.for_in_conformances(&checked.r#type, &to_iterator_spec);
         if !to_iterator.is_empty() {
             let element = match &f.binding_type {
                 None => None,
@@ -570,7 +586,10 @@ impl<'r> Analyzer<'r> {
             self.error(f.id, f.span, kind);
             return None;
         }
-        if self.for_in_source_declares(&checked.r#type, "Iterator") {
+        if !self
+            .for_in_conformances(&checked.r#type, &iterator_spec)
+            .is_empty()
+        {
             return Some(ForInSource::DirectIterator(checked));
         }
         self.error(
@@ -626,15 +645,8 @@ impl<'r> Analyzer<'r> {
 
                 let next_id = this.resolver.fresh_synthetic_id();
                 let next_type = next.r#type.clone();
-                let ResolvedType::Enum {
-                    nominal: option_nominal,
-                    ..
-                } = next_type.clone()
-                else {
-                    unreachable!(
-                        "Iterator::next's declared return type is always an Option<T> enum"
-                    );
-                };
+                let option_nominal =
+                    this.core_option(f.id, f.span, CoreFeature::Iteration, &next_type)?;
                 this.declare_binding(
                     next_id,
                     f.span,

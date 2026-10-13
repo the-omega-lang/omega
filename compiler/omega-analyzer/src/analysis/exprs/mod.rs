@@ -68,15 +68,7 @@ impl<'r> Analyzer<'r> {
             HirExpr::Typeinfo(target) => {
                 let described = self.resolve_type_or_error(id, span, target, true)?;
                 self.layout_of(id, span, &described, |_| ())?;
-                let Ok(ResolvedItem::Type(table)) = self.resolver.resolve_item(
-                    &self.module_path,
-                    &crate::reflection::type_info_path(),
-                    &[],
-                    ResolveItemOptions::DIRECT,
-                ) else {
-                    self.error(id, span, AnalysisErrorKind::TypeinfoUnavailable);
-                    return None;
-                };
+                let table = self.core_type_info(id, span)?;
                 literal(
                     ResolvedType::Pointer {
                         pointee: Box::new(table.clone()),

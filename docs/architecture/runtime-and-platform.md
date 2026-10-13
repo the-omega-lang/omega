@@ -40,6 +40,19 @@ Compiler privilege is narrow and explicit:
 
 `core` is still compiled to an ordinary separate object and linked when its definitions are used.
 
+### What the compiler expects from `core`
+
+Every compilation registers a `core` (see [`module-driver-and-linkage.md`](module-driver-and-linkage.md#entry-point)), and some language features are built on its declarations. The compiler reaches each one by absolute path, never through a program's scope, and checks its shape where a program first uses the feature, so a `core` that omits a feature still compiles every program that does not use it. A missing or differently shaped declaration is `CoreSupportUnavailable`, naming the feature and what is wrong. `omega_analyzer::core_contract` owns every path and shape rule below:
+
+| Feature | Declarations | Shape the compiler relies on |
+|---|---|---|
+| Runtime checks | `core::panic::PanicInfo`, the `PanicHandler` gap | `PanicInfo` fields `source_file: *str`, `line: u32`, `column: u32`, `message: *str`; `PanicHandler::panic(*PanicInfo) => never`, not variadic |
+| Range expressions | `core::range::Range`, `core::range::Bounded` | `Range<T>` declares exactly `start: T`, `end: T`, `inclusive: bool`, in that order (a range literal is built by field index); `Bounded` declares `min() => Self` and `max() => Self`, needed only for an inferred bound |
+| `for` loops | `core::iterator::Iterator`, `core::iterator::ToIterator`, `core::option::Option` | one type parameter each; `Iterator` declares `next(*mut self)`, `ToIterator` declares `to_iterator(*self)`; `next` returns `Option`, declared as exactly `None` and then `Some { value }` (the loop reads the variants by position) |
+| `?` | `core::option::Option`, `core::result::Result` | `Option` as above; `Result` declares exactly `Ok { value }` and `Err { error }` |
+| `typeinfo<T>` | every `core::reflection` declaration the table builder fills | each struct and variant declares exactly the fields the builder fills, with the field types it writes (`core_contract::REFLECTION`); an enum may declare extra variants the builder never builds |
+| Volatile access | `core::volatile::read_volatile`, `write_volatile` | checked at the declaration instead, by `compiler_functions` |
+
 ### `runtime/std`
 
 `std` is an ordinary portable external package above core. It owns higher-level facilities such as:

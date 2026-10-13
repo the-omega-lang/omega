@@ -12,6 +12,7 @@ use omega_analyzer::checked::{
     CheckedBlock, CheckedExpr, CheckedExprNode, CheckedFunctionDef, CheckedItem, CheckedMatch,
     CheckedMatchRemainder, CheckedStmt,
 };
+use omega_analyzer::core_contract::CoreFeature;
 use omega_analyzer::error::{AnalysisErrorKind, AnalysisWarningKind};
 use omega_analyzer::runtime_checks::RuntimeCheck;
 use omega_driver::{CompileError, Driver, ExternRoot};
@@ -740,7 +741,10 @@ fn a_check_without_panic_support_is_a_source_located_diagnostic() {
     assert!(
         has_analysis_error(&errors, |kind| matches!(
             kind,
-            AnalysisErrorKind::RuntimeCheckSupportUnavailable { .. }
+            AnalysisErrorKind::CoreSupportUnavailable {
+                feature: CoreFeature::RuntimeChecks,
+                ..
+            }
         )),
         "expected a normal diagnostic rather than a compiler panic: {errors:#?}"
     );
@@ -748,7 +752,10 @@ fn a_check_without_panic_support_is_a_source_located_diagnostic() {
         CompileError::Analysis { errors, .. } => errors.iter().any(|error| {
             matches!(
                 error.kind,
-                AnalysisErrorKind::RuntimeCheckSupportUnavailable { .. }
+                AnalysisErrorKind::CoreSupportUnavailable {
+                    feature: CoreFeature::RuntimeChecks,
+                    ..
+                }
             ) && error.span.end > error.span.start
         }),
         _ => false,

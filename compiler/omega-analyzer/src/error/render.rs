@@ -1,4 +1,5 @@
 use super::*;
+use crate::core_contract::CoreFeature;
 
 /// Renderings of two types that a reader can tell apart. Short names are used
 /// whenever they already differ; when they do not -- the same declaration name
@@ -1007,11 +1008,14 @@ impl AnalysisErrorKind {
             Self::AsmRegInNakedFunction => d
                 .with_label(span, "'reg' materializes a runtime value, which is not allowed here")
                 .with_help("use 'comp(...)' for compile-time text or 'clobber(...)' for register metadata instead"),
-            Self::RuntimeCheckSupportUnavailable { .. } => d
-                .with_label(span, "this body dispatches on an enum tag or calls a 'never' function")
-                .with_help("register the 'core' package this compilation was built against -- an invalid tag or an unexpected return is reported through 'core::panic::PanicHandler'"),
-            Self::TypeinfoUnavailable => d
-                .with_label(span, "the table this describes is a 'core::reflection::TypeInfo'")
+            Self::CoreSupportUnavailable { feature, .. } => d
+                .with_label(span, match feature {
+                    CoreFeature::RuntimeChecks => "this body dispatches on an enum tag or calls a 'never' function",
+                    CoreFeature::Ranges => "this range is a 'core::range::Range'",
+                    CoreFeature::Iteration => "this loop is driven by 'core::iterator'",
+                    CoreFeature::TryOperator => "this operator unwraps a 'core' 'Option' or 'Result'",
+                    CoreFeature::Reflection => "the table this describes is a 'core::reflection::TypeInfo'",
+                })
                 .with_help("register the 'core' package this compilation was built against"),
             Self::FunctionWithoutBody { .. } => d
                 .with_label(span, "expected a '{ ... }' body instead of ';'")
