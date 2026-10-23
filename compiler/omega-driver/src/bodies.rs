@@ -1,13 +1,13 @@
 use crate::Driver;
 use crate::items::{CheckedBody, ItemKey};
-use omega_analyzer::analysis::{AnalysisSite, Analyzer};
+use omega_analyzer::analysis::{AnalysisSite, Analyzer, MemberBodies};
 use omega_analyzer::checked::{CheckedEnumDef, CheckedItem, CheckedStructDef, CheckedUnionDef};
 use omega_analyzer::error::{AnalysisError, AnalysisErrorKind};
 use omega_analyzer::generics::GenericParam;
 use omega_analyzer::generics::GenericSubstitution;
 use omega_analyzer::resolved_type::{ResolvedFunctionType, ResolvedGenericArg, ResolvedType};
 use omega_analyzer::resolver::ResolvedItem;
-use omega_hir::{HirItem, ModulePath};
+use omega_hir::{HirId, HirItem, ModulePath};
 use omega_parser::prelude::Ident;
 
 trait CheckedAggregate: Sized {
@@ -186,6 +186,32 @@ impl Driver {
                 })
             }
 
+            HirItem::Struct(_) | HirItem::Enum(_) | HirItem::Union(_) => {
+                let members = if key.is_instantiation() {
+                    MemberBodies::Only(&[])
+                } else {
+                    MemberBodies::All
+                };
+                self.check_aggregate_item(key, item, members)
+            }
+
+            HirItem::Spec(_) => None,
+            HirItem::Gap(_) | HirItem::Glue(_) | HirItem::Conform(_) | HirItem::Primitive(_) => {
+                None
+            }
+            HirItem::Import(_) => unreachable!("imports are filtered out before this is called"),
+            HirItem::Alias(_) => unreachable!("aliases never get an item key, so never a body"),
+        }
+    }
+
+    /// An aggregate's body, covering the member bodies `members` selects.
+    fn check_aggregate_item(
+        &mut self,
+        key: &ItemKey,
+        item: &HirItem,
+        members: MemberBodies<'_>,
+    ) -> Option<CheckedBody> {
+        match item {
             HirItem::Struct(s) => {
                 let nominal = self.items.nominals.expect(key);
                 let self_type = ResolvedType::Struct(nominal.clone());
@@ -194,7 +220,7 @@ impl Driver {
                     AnalysisSite::new(s.id, s.span),
                     &GenericParam::declared(s.id, &s.generics),
                     self_type,
-                    |a| a.check_struct_body(s, &nominal),
+                    |a| a.check_struct_body(s, &nominal, members),
                 )
             }
 
@@ -209,7 +235,7 @@ impl Driver {
                     AnalysisSite::new(e.id, e.span),
                     &GenericParam::declared(e.id, &e.generics),
                     self_type,
-                    |a| a.check_enum_body(e, &nominal),
+                    |a| a.check_enum_body(e, &nominal, members),
                 )
             }
 
@@ -221,17 +247,71 @@ impl Driver {
                     AnalysisSite::new(u.id, u.span),
                     &GenericParam::declared(u.id, &u.generics),
                     self_type,
-                    |a| a.check_union_body(u, &nominal),
+                    |a| a.check_union_body(u, &nominal, members),
                 )
             }
 
-            HirItem::Spec(_) => None,
-            HirItem::Gap(_) | HirItem::Glue(_) | HirItem::Conform(_) | HirItem::Primitive(_) => {
-                None
-            }
-            HirItem::Import(_) => unreachable!("imports are filtered out before this is called"),
-            HirItem::Alias(_) => unreachable!("aliases never get an item key, so never a body"),
+            _ => unreachable!("only an aggregate declaration has member bodies"),
         }
+    }
+
+    /// The instantiated generic owner that declares `decl_id` as one of its
+    /// concrete members. Such a member's body is checked only when used.
+    pub(crate) fn instance_member_owner(&self, decl_id: HirId) -> Option<ItemKey> {
+        let owner = self.items.decl_id_owner.get(&decl_id)?;
+        if !owner.is_instantiation() || owner.owner().is_some() || !self.items.is_resolved(owner) {
+            return None;
+        }
+        let hir = self.modules.hir(owner.module());
+        if !matches!(
+            hir.items[owner.disambiguator],
+            HirItem::Struct(_) | HirItem::Enum(_) | HirItem::Union(_)
+        ) {
+            return None;
+        }
+        let nominal = self.items.nominals.expect(owner);
+        let methods = self.items.types.functions(&nominal).ok()?;
+        methods
+            .iter()
+            .any(|(_, method)| method.decl_id == decl_id)
+            .then(|| owner.clone())
+    }
+
+    /// One concrete member of an instantiated generic owner, checked under
+    /// the owner's substitution and bounds, as a `FunctionDefinition` body.
+    pub(crate) fn ensure_instance_member_body(&mut self, decl_id: HirId) -> Option<CheckedBody> {
+        if let Some(body) = self.items.instance_member_bodies.get(&decl_id) {
+            return body.as_ref().map(CheckedBody::clone_of);
+        }
+        let owner = self.instance_member_owner(decl_id)?;
+        if !self.items.begin_member_body(decl_id) {
+            return None;
+        }
+        let hir = self.modules.hir(owner.module());
+        let body = self
+            .check_aggregate_item(
+                &owner,
+                &hir.items[owner.disambiguator],
+                MemberBodies::Only(&[decl_id]),
+            )
+            .and_then(|body| {
+                let functions = match body.item {
+                    CheckedItem::Struct(s) => s.functions,
+                    CheckedItem::Enum(e) => e.functions,
+                    CheckedItem::Union(u) => u.functions,
+                    _ => unreachable!("an aggregate body check yields an aggregate"),
+                };
+                let function = functions.into_iter().next()?;
+                Some(CheckedBody {
+                    item: CheckedItem::FunctionDefinition(function),
+                    warnings: body.warnings,
+                })
+            });
+        self.items.finish_member_body(decl_id);
+        self.items
+            .instance_member_bodies
+            .insert(decl_id, body.as_ref().map(CheckedBody::clone_of));
+        body
     }
 
     /// The declaration identity an instantiation's symbol carries.

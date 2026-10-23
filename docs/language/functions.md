@@ -41,6 +41,21 @@ Every function-bearing type has **two independent associated-function namespaces
 | `Type::name` | receiverless (static) functions only |
 | `Type::self::name` | receiver-bearing (member) functions only |
 | `value.name(...)` | member functions only, with the receiver supplied implicitly |
+| `value.name` | fields only |
+| `(value.name)(...)` | the function value a field holds, called like any other value |
+
+A call written directly on a member, `value.name(...)` with optional generic arguments before `(`, never calls a field, and an uncalled `value.name` never names a member function; its value spelling is `Type::self::name`. Parentheses make the member an ordinary expression, so `(value.name)(...)` reads the field and calls its value. A field and a member function may therefore share a name, each reached by its own spelling:
+
+```omega
+struct Thing {
+    exposed scale: (i32) => i32;
+
+    exposed scale(*self, x: i32) => i32 { x + 1 }   # t.scale(x)
+}
+
+field_result := (t.scale)(2);   # calls the function stored in the field
+member_result := t.scale(2);    # calls the member function
+```
 
 `Type::name` never resolves a member function and `Type::self::name` never resolves a static one; each reports the other spelling instead of silently crossing over. A static and a member may therefore share a name *and* an effective signature:
 
@@ -251,7 +266,7 @@ An ordinary Omega-convention function type can never be variadic -- neither a fu
 
 ## `defer`
 
-`defer statement` schedules the statement to execute when the enclosing function exits. It is function-scoped rather than block-scoped. See [`control-flow-and-operators.md`](control-flow-and-operators.md).
+`defer statement` schedules the statement to execute when its innermost enclosing block is left — for a `defer` directly in a function body, when the function returns. A function's return value is fixed before the defers run. Defers are block-scoped, run last-registered first, and may appear in loops and inside other defers; see [`control-flow-and-operators.md`](control-flow-and-operators.md#break-continue-and-defer).
 
 ## Naked functions
 

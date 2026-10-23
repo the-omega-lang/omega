@@ -166,9 +166,8 @@ comp-parameter = "comp", identifier, ":", type,
 spec-bound = type-path ;
 ```
 
-`comp` is contextual here: it introduces a compile-time value parameter only
-when an identifier follows it, so `<comp>` still declares a type parameter
-named `comp`. A `comp-parameter`'s value type is mandatory and it takes no
+`comp` is a reserved keyword, so it always introduces a compile-time value
+parameter. A `comp-parameter`'s value type is mandatory and it takes no
 bounds.
 
 A parameter's default is written as the kind that parameter binds. Once a
@@ -474,6 +473,8 @@ for-init = local-declaration | inferred-binding | expression ;
 
 for-in = "for", [ "mut" ], identifier, [ ":", type ], "in", expression-no-leading-struct-literal, code-block ;
 ```
+
+A `{` right after a classic `for`'s second `;` begins its `code-block`, never a block-expression post clause; parenthesize such a post.
 
 The parser can represent an omitted classic-`for` condition for recovery, but semantic analysis requires one. Thus `for ;; { ... }` is not a valid Omega program; use `loop { ... }` for an unconditional loop.
 

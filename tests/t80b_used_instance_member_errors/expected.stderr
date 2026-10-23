@@ -1,0 +1,7 @@
+error: cannot apply '+' to a value of type 'bool'
+ --> tests/t80b_used_instance_member_errors/t80b_used_instance_member_errors.omg:6:35
+  |
+6 |     exposed doubled(*self) => T { self.v + self.v }
+  |                                   ^^^^^^^^^^^^^^^ `+` requires numeric operands, but this is `bool`
+
+error: could not compile the program due to 1 previous error

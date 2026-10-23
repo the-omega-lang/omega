@@ -25,7 +25,7 @@ asm-descriptor = "reg", "(", expression, [ ",", string-literal ], ")"
                 | "clobber", "(", string-literal, ")" ;
 ```
 
-`asm`, `reg`, `comp`, and `clobber` are contextual: they are ordinary identifiers everywhere else and only acquire meaning as the head of an asm statement or descriptor. See [`lexical-structure.md`](lexical-structure.md#contextual-keywords).
+`asm`, `reg`, and `clobber` are contextual: they are ordinary identifiers everywhere else and only acquire meaning as the head of an asm statement or descriptor. `comp` is a reserved keyword. See [`lexical-structure.md`](lexical-structure.md#contextual-keywords).
 
 `asm-body` is **not Omega syntax**. Once the outer `asm(...) => {` shape is recognized, everything up to the matching outer `}` is captured as raw text for the target assembler, using structural brace-depth tracking only (nested `{`/`}` — for example ARM register lists or LLVM-style `${...}` forms — stay balanced and do not end the block early). Omega comment syntax (`#`, `##`) does not exist inside the body; `#`, `;`, `//`, register names, mnemonics, and all other punctuation belong exclusively to the target assembler's own syntax and are forwarded unchanged.
 

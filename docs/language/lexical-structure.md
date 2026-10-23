@@ -26,7 +26,7 @@ These words are always tokenized as keywords:
 true false if else match foreign import return
 struct enum union spec
 while loop for break continue defer
-macro alias _
+macro alias comp reveal _
 ```
 
 ### Contextual keywords
@@ -34,17 +34,17 @@ macro alias _
 The following are lexed as ordinary identifiers and acquire special meaning only in grammar-defined positions:
 
 ```text
-mut comp self reveal sizeof alignof typeinfo in as exposed shared hidden
+mut self sizeof alignof typeinfo in as exposed shared hidden
 marker gap glue meet primitive root super
 expr type ident path
-asm reg comp clobber
+asm reg clobber
 ```
 
 An implementation must therefore not globally reserve contextual keywords; they remain usable as identifiers where the grammar does not consume them contextually.
 
 `as` is recognized only as the rename connector of an import tree; see [`modules-and-imports.md`](modules-and-imports.md). It remains an ordinary identifier everywhere else, including as a path segment or an item name.
 
-`asm`, `reg`, `comp`, and `clobber` are recognized only as the head of an inline-assembly statement/descriptor; see [`inline-assembly.md`](inline-assembly.md). The raw text inside an `asm` body is not tokenized by this chapter's rules at all — see that chapter for its opaque capture behavior.
+`asm`, `reg`, and `clobber` are recognized only as the head of an inline-assembly statement/descriptor (as is the reserved `comp`, in a descriptor); see [`inline-assembly.md`](inline-assembly.md). The raw text inside an `asm` body is not tokenized by this chapter's rules at all — see that chapter for its opaque capture behavior.
 
 ## Comments
 

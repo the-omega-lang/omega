@@ -1,0 +1,37 @@
+# Fields and member functions live in separate namespaces
+# (functions.md "Associated-function namespaces"): `value.name(...)` selects
+# member functions only, an uncalled `value.name` is field access only, and
+# `(value.name)(...)` calls the function a field holds.
+import std::io::println;
+
+double(x: i32) => i32 { x * 2 }
+triple(x: i32) => i32 { x * 3 }
+
+struct Thing {
+    exposed scale: (i32) => i32;
+    exposed base: i32;
+
+    # Shares its name with the field above.
+    exposed scale(*self, x: i32) => i32 { x + self.base }
+    exposed apply(*self, x: i32) => i32 { (self.scale)(x) }
+}
+
+struct Holder {
+    exposed thing: Thing;
+}
+
+main() => void {
+    t := Thing { scale = double; base = 100; };
+    println$("member: ", t.scale(5));
+    println$("field: ", (t.scale)(5));
+    println$("through-member: ", t.apply(7));
+
+    stored := t.scale;
+    println$("field-value: ", stored(4));
+
+    h := Holder { thing = Thing { scale = triple; base = 1; }; };
+    println$("nested: ", h.thing.scale(5), " ", (h.thing.scale)(5));
+
+    member : (target: *Thing, x: i32) => i32 = Thing::self::apply;
+    println$("method-value: ", member(&t, 3), " ", Thing::self::scale(&t, 2));
+}

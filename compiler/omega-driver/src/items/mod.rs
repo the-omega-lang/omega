@@ -175,6 +175,13 @@ impl Nominals {
             .clone()
     }
 
+    pub fn key_of(&self, nominal: &NominalRef) -> Option<ItemKey> {
+        self.by_key
+            .iter()
+            .find(|(_, interned)| *interned == nominal)
+            .map(|(key, _)| key.clone())
+    }
+
     pub fn expect(&self, key: &ItemKey) -> NominalRef {
         self.by_key
             .get(key)
@@ -237,6 +244,12 @@ pub(crate) struct ItemQueries {
     /// initializer instead of rebuilding a declaration without them.
     checked_globals: HashMap<HirId, omega_analyzer::checked::CheckedDeclaration>,
     body_in_progress: std::collections::HashSet<ItemKey>,
+    /// Concrete members of instantiated generic owners, by member identity,
+    /// each checked when first used; `None` records a body that failed.
+    pub instance_member_bodies: IndexMap<HirId, Option<CheckedBody>>,
+    member_body_in_progress: std::collections::HashSet<HirId>,
+    pub member_signatures_in_progress: std::collections::HashSet<ItemKey>,
+    pub member_signatures_failed: std::collections::HashSet<ItemKey>,
 }
 
 impl ItemQueries {
@@ -371,6 +384,15 @@ impl ItemQueries {
     pub fn finish_body(&mut self, key: &ItemKey) {
         let removed = self.body_in_progress.remove(key);
         assert!(removed, "body query must be active when it finishes");
+    }
+
+    pub fn begin_member_body(&mut self, decl_id: HirId) -> bool {
+        self.member_body_in_progress.insert(decl_id)
+    }
+
+    pub fn finish_member_body(&mut self, decl_id: HirId) {
+        let removed = self.member_body_in_progress.remove(&decl_id);
+        assert!(removed, "member body query must be active when it finishes");
     }
 
     pub fn cache_checked_body(&mut self, key: &ItemKey, body: CheckedBody) {

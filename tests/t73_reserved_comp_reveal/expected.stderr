@@ -1,0 +1,19 @@
+error: expected a name, found keyword 'comp'
+ --> tests/t73_reserved_comp_reveal/t73_reserved_comp_reveal.omg:4:5
+  |
+4 |     comp := 5;
+  |     ^^^^ `comp` is a reserved keyword
+  |
+  = note: a reserved keyword cannot name a binding, parameter, field, or item
+  = help: choose a different name
+
+error: expected a name, found keyword 'reveal'
+ --> tests/t73_reserved_comp_reveal/t73_reserved_comp_reveal.omg:5:5
+  |
+5 |     reveal := 6;
+  |     ^^^^^^ `reveal` is a reserved keyword
+  |
+  = note: a reserved keyword cannot name a binding, parameter, field, or item
+  = help: choose a different name
+
+error: could not compile the program due to 2 previous errors

@@ -70,16 +70,51 @@ impl FunctionLowerer<'_> {
         }
     }
 
-    fn lower_block_into(&mut self, block: CheckedBlock, destination: BlockDestination) -> bool {
+    /// Lowers `block` as its own cleanup scope into `destination`. Its
+    /// result is fixed before the defers it registered run, on the way out.
+    pub(super) fn lower_block_into(
+        &mut self,
+        block: CheckedBlock,
+        destination: BlockDestination,
+    ) -> bool {
         if self.is_current_terminated() {
             return false;
         }
+        self.cleanup.push(Vec::new());
+        let reached = self.lower_block_contents_into(block, destination);
+        self.cleanup.pop();
+        reached
+    }
+
+    fn lower_block_contents_into(
+        &mut self,
+        block: CheckedBlock,
+        destination: BlockDestination,
+    ) -> bool {
         self.lower_stmts(block.stmts);
         if self.is_current_terminated() {
             return false;
         }
+        if self.innermost_cleanup_is_empty() {
+            return self.lower_block_tail_into(block.tail, destination);
+        }
+        let leave = self.new_block();
+        let reached = self
+            .lower_block_tail_into(block.tail, BlockDestination::new(leave, destination.result));
+        self.current = leave;
+        if !reached {
+            self.terminate(MirTerminator::Unreachable);
+            return false;
+        }
+        self.exit_to(self.cleanup.len() - 1, destination.merge)
+    }
 
-        if let Some(tail) = block.tail {
+    fn lower_block_tail_into(
+        &mut self,
+        tail: Option<Box<CheckedExprNode>>,
+        destination: BlockDestination,
+    ) -> bool {
+        if let Some(tail) = tail {
             if is_control_flow_expr(&tail.kind) {
                 return self.lower_control_flow_into(*tail, destination);
             }
@@ -536,8 +571,7 @@ impl FunctionLowerer<'_> {
     /// Turns `operand?` into ordinary control flow. The operand is stored
     /// once and its tag read once; the success variant's payload continues
     /// into `destination`, the failure variant builds the enclosing
-    /// function's failure value and enters the existing return/defer exit
-    /// chain, and a tag that is neither reports the violated invariant before
+    /// function's failure value and returns it like a `return` does, and a tag that is neither reports the violated invariant before
     /// either payload is projected. Every semantic fact used here was already
     /// resolved by the analyzer.
     fn lower_try_into(

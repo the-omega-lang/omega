@@ -19,7 +19,7 @@ Omega has three declaration visibility levels plus a use-site bypass:
 - `hidden`, or no modifier: visible throughout the exact declaring module (one source file), for top-level items and members alike.
 - `reveal`: explicitly bypasses an otherwise-applicable visibility restriction at a particular use site.
 
-`exposed`, `shared`, `hidden`, and `reveal` are contextual syntax rather than globally reserved words.
+`exposed`, `shared`, and `hidden` are contextual syntax rather than globally reserved words; `reveal` is a reserved keyword (see [`lexical-structure.md`](lexical-structure.md#reserved-keywords)).
 
 `hidden` is written out only where it changes something -- most declarations already default to hidden, so writing it there is redundant and an implementation may warn (see "Spec member visibility" below for the one case where it is not redundant).
 

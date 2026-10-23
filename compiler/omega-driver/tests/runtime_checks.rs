@@ -13,7 +13,7 @@ use omega_analyzer::checked::{
     CheckedMatchRemainder, CheckedStmt,
 };
 use omega_analyzer::core_contract::CoreFeature;
-use omega_analyzer::error::{AnalysisErrorKind, AnalysisWarningKind};
+use omega_analyzer::error::{AnalysisErrorKind, AnalysisWarningKind, UnreachableCause};
 use omega_analyzer::runtime_checks::RuntimeCheck;
 use omega_driver::{CompileError, Driver, ExternRoot};
 use omega_mir::body::{MirBody, MirTerminator};
@@ -256,8 +256,17 @@ fn unreachable_else_span(
     program
         .warnings
         .iter()
-        .find(|(_, warning)| matches!(warning.kind, AnalysisWarningKind::UnreachableCode))
-        .map(|(_, warning)| warning.span)
+        .find_map(|(_, warning)| match warning.kind {
+            AnalysisWarningKind::UnreachableCode { cause } => {
+                assert_eq!(
+                    cause,
+                    UnreachableCause::ArmsCoverEverything,
+                    "a dead `else` follows no divergence"
+                );
+                Some(warning.span)
+            }
+            _ => None,
+        })
 }
 
 #[test]
@@ -866,6 +875,57 @@ fn never_calls_are_guarded_in_expected_value_positions() {
                 RuntimeCheck::NeverCallReturned
             ),
             "{statement}"
+        );
+    }
+}
+
+// -- How often dispatch reads the tag -------------------------------------
+
+/// Every `EnumTag` projection in the lowered body. Rendering the body keeps
+/// this from becoming a second hand-written MIR walker.
+fn tag_reads(body: &MirBody) -> usize {
+    format!("{body:?}").matches("EnumTag").count()
+}
+
+#[test]
+fn an_enum_match_reads_its_tag_once_for_every_arm_and_else() {
+    let package = TestPackage::new(
+        "enum Sparse(tag: u8) {\n\
+             A(3),\n\
+             B(40),\n\
+             C(200),\n\
+             D(7),\n\
+         }\n\
+         by_value(s: Sparse) => i32 {\n\
+             match s {\n\
+                 Sparse::A => 1,\n\
+                 Sparse::B => 2,\n\
+             } else {\n\
+                 3\n\
+             }\n\
+         }\n\
+         through_pointer(s: *Sparse) => i32 {\n\
+             match s {\n\
+                 Sparse::A => 1,\n\
+                 .. => 2,\n\
+             }\n\
+         }\n\
+         alias Either = enum i32 | bool | u8;\n\
+         anonymous(e: Either) => i32 {\n\
+             match e {\n\
+                 i32 => 1,\n\
+                 bool => 2,\n\
+                 u8 => 3,\n\
+             }\n\
+         }\n\
+         main() => void { }",
+    );
+    for name in ["by_value", "through_pointer", "anonymous"] {
+        let body = mir_body(package.expect_ok(), name);
+        assert_eq!(
+            tag_reads(&body),
+            1,
+            "`{name}` reads its tag once: {body:#?}"
         );
     }
 }

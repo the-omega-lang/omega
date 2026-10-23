@@ -1,0 +1,18 @@
+warning: this match on an enum's '.tag' is checked against every 'u8' value
+  --> tests/t76_tag_match_warning/t76_tag_match_warning.omg:11:11
+   |
+11 |     match c.tag {
+   |           ^^^^^ this is an ordinary `u8`
+   |
+   = help: match the enum value itself to have its variants checked for exhaustiveness
+   = note: suppress this with '@suppress(tag_match)'
+
+warning: this match on an enum's '.tag' is checked against every 'u32' value
+  --> tests/t76_tag_match_warning/t76_tag_match_warning.omg:22:11
+   |
+22 |     match e.tag {
+   |           ^^^^^ this is an ordinary `u32`
+   |
+   = help: match the enum value itself to have its variants checked for exhaustiveness
+   = note: suppress this with '@suppress(tag_match)'
+

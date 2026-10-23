@@ -101,6 +101,10 @@ impl Items for NoResolver {
         &mut self.types
     }
 
+    fn ensure_member_signatures(&mut self, _nominal: &NominalRef) -> Result<(), ResolveError> {
+        Ok(())
+    }
+
     fn resolve_item(
         &mut self,
         _accessor_module_path: &ModulePath,
@@ -202,6 +206,15 @@ impl Conformances for NoResolver {
         _spec: &NominalRef,
         _spec_args: &[crate::resolved_type::ResolvedGenericArg],
     ) -> Result<Option<ResolvedConformance>, ResolveError> {
+        unreachable!("test never triggers conformance lookup")
+    }
+
+    fn conformance_being_checked(
+        &mut self,
+        _target: &ResolvedType,
+        _spec: &NominalRef,
+        _spec_args: &[ResolvedGenericArg],
+    ) -> Result<bool, ResolveError> {
         unreachable!("test never triggers conformance lookup")
     }
 

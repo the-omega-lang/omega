@@ -1,0 +1,27 @@
+# An `else` after arms that cover every variant is dead for a different reason
+# than code after a divergence, and the note says which
+# (enums-and-pattern-matching.md).
+import std::io::println;
+
+enum Signal {
+    Ready,
+    Busy,
+}
+
+classify(signal: Signal) => i32 {
+    match signal {
+        Signal::Ready => 1,
+        Signal::Busy => 2,
+    } else {
+        3
+    }
+}
+
+first() => i32 {
+    return 4;
+    5
+}
+
+main() => void {
+    println$("unreachable: ", classify(Signal::Ready), " ", classify(Signal::Busy), " ", first());
+}

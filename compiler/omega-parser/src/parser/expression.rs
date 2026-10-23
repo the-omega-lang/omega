@@ -3,12 +3,12 @@ use crate::ast::expression::{
     BitNotExpr, BoolExpr, ByteStringExpr, CastExpr, CharExpr, CodeblockExpr, CompExpr,
     CompoundAssignExpr, DecrementExpr, DerefExpr, Expression, ExpressionNode, FieldAccessExpr,
     FieldSubpattern, FieldsPattern, FunctionCallExpr, IfExpr, IncrementExpr, IndexExpr,
-    LogicalExpr, LogicalOp, MatchArm, MatchExpr, NegateExpr, NotExpr, Pattern, PatternValue,
-    RevealExpr, SizeofExpr, SliceExpr, StringExpr, StructLiteralExpr, StructLiteralField, TryExpr,
-    TypeinfoExpr,
+    LogicalExpr, LogicalOp, MatchArm, MatchExpr, MemberCallExpr, NegateExpr, NotExpr, Pattern,
+    PatternValue, RevealExpr, SizeofExpr, SliceExpr, StringExpr, StructLiteralExpr,
+    StructLiteralField, TryExpr, TypeinfoExpr,
 };
 use crate::ast::generics::{ExprGenericArg, Selector};
-use crate::ast::identifier::Origin;
+use crate::ast::identifier::{Ident, Origin};
 use crate::ast::range::{RangeEnd, RangeExpr};
 use crate::ast::statement::{Statement, StatementNode};
 use crate::ast::r#type::{GenericArg, Type};
@@ -184,7 +184,7 @@ fn binary_op_expr(left: ExpressionNode, op: BinaryOp, right: ExpressionNode) -> 
 }
 
 fn parse_unary(p: &mut Parser) -> Option<ExpressionNode> {
-    use crate::parser::contextual::{COMP, MUT, REVEAL};
+    use crate::parser::contextual::MUT;
     let start = p.peek_span();
     // A leading `<` uniquely starts cast syntax here; comparison `<` is infix.
     if p.check(&TokenKind::Lt) {
@@ -210,8 +210,8 @@ fn parse_unary(p: &mut Parser) -> Option<ExpressionNode> {
         TokenKind::Minus => Prefix::Negate,
         TokenKind::Tilde => Prefix::BitNot,
         TokenKind::Not => Prefix::Not,
-        TokenKind::Ident(_) if p.at_contextual(REVEAL) && operand_follows(p) => Prefix::Reveal,
-        TokenKind::Ident(_) if p.at_contextual(COMP) && operand_follows(p) => Prefix::Comp,
+        TokenKind::Reveal => Prefix::Reveal,
+        TokenKind::Comp => Prefix::Comp,
         _ => return parse_postfix(p),
     };
     let prefix_origin = p.advance().origin;
@@ -302,13 +302,17 @@ fn parse_postfix_loop(p: &mut Parser, mut expr: ExpressionNode) -> Option<Expres
                 } else {
                     Vec::new()
                 };
+                if p.check(&TokenKind::LParen) {
+                    expr =
+                        parse_member_call(p, expr, field, field_origin, field_span, generic_args)?;
+                    continue;
+                }
                 let span = expr.span.to(field_span);
                 expr = ExpressionNode {
                     expression: Expression::FieldAccess(Box::new(FieldAccessExpr {
                         base: expr,
                         field,
                         field_origin,
-                        generic_args,
                     })),
                     span,
                     origin: field_origin,
@@ -443,19 +447,11 @@ pub(crate) fn parse_range_or_expression(p: &mut Parser) -> Option<ExpressionNode
 }
 
 fn expression_starts_here(p: &Parser) -> bool {
-    expression_starts_at(p, 0)
-}
-
-fn operand_follows(p: &Parser) -> bool {
-    expression_starts_at(p, 1) || matches!(p.peek_at(1), TokenKind::Lt)
-}
-
-fn expression_starts_at(p: &Parser, offset: usize) -> bool {
-    if matches!(p.peek_at(offset), TokenKind::LBrace) {
+    if p.check(&TokenKind::LBrace) {
         return p.struct_literals_allowed();
     }
     matches!(
-        p.peek_at(offset),
+        p.peek(),
         TokenKind::Ident(_)
             | TokenKind::Number(_)
             | TokenKind::Str(_)
@@ -475,6 +471,8 @@ fn expression_starts_at(p: &Parser, offset: usize) -> bool {
             | TokenKind::Not
             | TokenKind::PlusPlus
             | TokenKind::MinusMinus
+            | TokenKind::Comp
+            | TokenKind::Reveal
     )
 }
 
@@ -496,6 +494,45 @@ fn finish_slice(
 
 fn parse_call(p: &mut Parser, callee: ExpressionNode) -> Option<ExpressionNode> {
     let origin = p.peek_origin();
+    let (args, close_span) = parse_call_args(p)?;
+    let span = callee.span.to(close_span);
+    Some(ExpressionNode {
+        expression: Expression::FunctionCall(FunctionCallExpr {
+            callee: Box::new(callee),
+            args,
+        }),
+        span,
+        origin,
+    })
+}
+
+fn parse_member_call(
+    p: &mut Parser,
+    base: ExpressionNode,
+    member: Ident,
+    member_origin: Origin,
+    member_span: Span,
+    generic_args: Vec<ExprGenericArg>,
+) -> Option<ExpressionNode> {
+    let origin = p.peek_origin();
+    let (args, close_span) = parse_call_args(p)?;
+    let span = base.span.to(close_span);
+    Some(ExpressionNode {
+        expression: Expression::MemberCall(Box::new(MemberCallExpr {
+            base,
+            member,
+            member_origin,
+            member_span,
+            generic_args,
+            args,
+        })),
+        span,
+        origin,
+    })
+}
+
+/// A parenthesized argument list, and the span of its closing `)`.
+fn parse_call_args(p: &mut Parser) -> Option<(Vec<ExpressionNode>, Span)> {
     p.advance(); // '('
     let mut args = Vec::new();
     if !p.check(&TokenKind::RParen) {
@@ -508,15 +545,7 @@ fn parse_call(p: &mut Parser, callee: ExpressionNode) -> Option<ExpressionNode> 
     }
     let close_span = p.peek_span();
     p.expect(&TokenKind::RParen, "')'");
-    let span = callee.span.to(close_span);
-    Some(ExpressionNode {
-        expression: Expression::FunctionCall(FunctionCallExpr {
-            callee: Box::new(callee),
-            args,
-        }),
-        span,
-        origin,
-    })
+    Some((args, close_span))
 }
 
 fn parse_block_shaped_primary(p: &mut Parser, start: Span) -> Option<ExpressionNode> {

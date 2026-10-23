@@ -1,0 +1,68 @@
+# A `=> spec S` requirement holds when the chosen return type satisfies `S`
+# (specs-and-conformance.md), whichever order the conformances are declared
+# in, and two conformances may each satisfy the other's requirement.
+import std::io::println;
+
+spec MakesIter<T> {
+    make(*self) => spec Iterator<T>;
+}
+
+struct Countdown {
+    left: i32;
+}
+
+meet MakesIter<i32> for i32 {
+    make(*self) => Countdown {
+        Countdown { left = *self; }
+    }
+}
+
+meet Iterator<i32> for Countdown {
+    next(*mut self) => Option<i32> {
+        if self.left == 0 {
+            return Option<i32>::none();
+        }
+        self.left -= 1;
+        Option<i32>::some(self.left)
+    }
+}
+
+spec Ping {
+    ping(*self) => spec Pong;
+}
+
+spec Pong {
+    pong(*self) => spec Ping;
+}
+
+struct Ball {
+    hits: i32;
+}
+
+struct Paddle {
+    hits: i32;
+}
+
+meet Ping for Ball {
+    ping(*self) => Paddle {
+        Paddle { hits = self.hits + 1; }
+    }
+}
+
+meet Pong for Paddle {
+    pong(*self) => Ball {
+        Ball { hits = self.hits + 1; }
+    }
+}
+
+main() => void {
+    start : i32 = 3;
+    mut total := 0;
+    for value in <i32 : MakesIter<i32>>::make(&start) {
+        total += value;
+    }
+    ball := Ball { hits = 0; };
+    paddle := <Ball : Ping>::ping(&ball);
+    back := <Paddle : Pong>::pong(&paddle);
+    println$("order: ", total, " ", back.hits);
+}

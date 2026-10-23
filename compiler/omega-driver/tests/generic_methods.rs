@@ -653,3 +653,167 @@ fn core_extern() -> ExternRoot {
             .expect("runtime/core exists"),
     }
 }
+
+// -- Concrete members of an instantiated owner ------------------------------
+
+/// The demangled paths of every function this package defines.
+fn defined_paths(workspace: &TestWorkspace) -> Vec<String> {
+    workspace
+        .definitions()
+        .into_iter()
+        .map(|(symbol, _)| omega_mangle::demangle(&symbol).unwrap_or(symbol))
+        .collect()
+}
+
+fn count_defining(paths: &[String], member: &str) -> usize {
+    paths.iter().filter(|path| path.contains(member)).count()
+}
+
+const WRAP: &str = "
+        enum Choice { First, Second, }
+        struct Wrap<T> {
+            exposed v: T;
+            exposed get(*self) => T { self.v }
+            exposed pick(*self, c: Choice) => T {
+                match c { Choice::First => self.v, Choice::Second => self.v, }
+            }
+            exposed through(*self) => T { self.get() }
+            exposed constant(*self) => i32 { 7 }
+        }
+";
+
+#[test]
+fn an_instantiated_owner_emits_only_the_members_used() {
+    let workspace = TestWorkspace::new(&format!(
+        "{WRAP}
+        main() => void {{
+            w := Wrap<u8> {{ v = 1; }};
+            <void>w.get();
+            <void>w.get();
+        }}"
+    ));
+    let paths = defined_paths(&workspace);
+    assert_eq!(
+        count_defining(&paths, "Wrap<u8>::self::get("),
+        1,
+        "{paths:#?}"
+    );
+    for unused in ["::pick(", "::through(", "::constant("] {
+        assert_eq!(
+            count_defining(&paths, unused),
+            0,
+            "{unused} is unused: {paths:#?}"
+        );
+    }
+    let program = workspace.compile().expect("compiles");
+    let entry = program.entry.clone();
+    let mir = omega_mir::lower_program(program.modules, &entry, &program.types);
+    let check = omega_analyzer::runtime_checks::RuntimeCheck::EnumTagInMatch.message();
+    assert!(
+        !format!("{mir:?}").contains(check),
+        "the unused member's invalid-tag check must not be emitted"
+    );
+}
+
+#[test]
+fn a_member_reached_only_through_another_member_is_emitted() {
+    let workspace = TestWorkspace::new(&format!(
+        "{WRAP}
+        main() => void {{
+            w := Wrap<u8> {{ v = 1; }};
+            <void>w.through();
+        }}"
+    ));
+    let paths = defined_paths(&workspace);
+    assert_eq!(
+        count_defining(&paths, "Wrap<u8>::self::through("),
+        1,
+        "{paths:#?}"
+    );
+    assert_eq!(
+        count_defining(&paths, "Wrap<u8>::self::get("),
+        1,
+        "{paths:#?}"
+    );
+}
+
+#[test]
+fn a_member_only_comp_evaluates_is_not_emitted() {
+    let workspace = TestWorkspace::new(&format!(
+        "{WRAP}
+        comp SEVEN := comp Wrap<u8> {{ v = 1; }}.constant();
+        main() => void {{
+            n : [SEVEN]u8 = [0, 0, 0, 0, 0, 0, 0];
+            <void>n;
+        }}"
+    ));
+    let paths = defined_paths(&workspace);
+    assert_eq!(count_defining(&paths, "::constant("), 0, "{paths:#?}");
+}
+
+// -- Member signatures of an instantiated owner -----------------------------
+
+#[test]
+fn a_member_signature_may_name_the_owner_at_a_derived_argument() {
+    let workspace = TestWorkspace::new(
+        "struct Cell<T> {
+            exposed v: T;
+            exposed get(*self) => T { self.v }
+            exposed pointing(*self) => Cell<*T> { Cell<*T> { v = &self.v; } }
+        }
+        main() => void {
+            c := Cell<u8> { v = 1; };
+            p := c.pointing();
+            <void>*p.get();
+        }",
+    );
+    let paths = defined_paths(&workspace);
+    assert_eq!(
+        count_defining(&paths, "Cell<u8>::self::pointing("),
+        1,
+        "{paths:#?}"
+    );
+}
+
+const NEEDS_TAG: &str = "
+        spec Tag {}
+        struct Need<T: Tag> { exposed v: T; }
+        struct Wrap<T> {
+            exposed v: T;
+            exposed get(*self) => T { self.v }
+            exposed tagged(*self, n: Need<T>) => T { self.v }
+        }
+";
+
+#[test]
+fn an_owner_whose_members_are_unused_resolves_no_member_signature() {
+    TestWorkspace::new(&format!(
+        "{NEEDS_TAG}
+        main() => void {{
+            w := Wrap<u8> {{ v = 1; }};
+            <void>w.v;
+        }}"
+    ))
+    .compile()
+    .expect("`tagged`'s signature is never resolved for `Wrap<u8>`");
+}
+
+#[test]
+fn using_one_member_resolves_every_member_signature() {
+    let errors = resolve_errors(
+        &TestWorkspace::new(&format!(
+            "{NEEDS_TAG}
+            main() => void {{
+                w := Wrap<u8> {{ v = 1; }};
+                <void>w.get();
+            }}"
+        ))
+        .expect_errors(),
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.contains("'u8' does not implement spec 'Tag'")),
+        "{errors:#?}"
+    );
+}

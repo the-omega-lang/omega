@@ -18,6 +18,16 @@ pub enum AnalysisErrorKind {
     NoSuchField {
         field: Ident,
         base: ResolvedType,
+        /// The owner, when it declares a member function of this name.
+        member_function: Option<ResolvedType>,
+    },
+    NoSuchMemberFunction {
+        function: Ident,
+        owner: ResolvedType,
+        /// Whether the owner has a visible field of this name holding a
+        /// function, and the receiver as written when it is simple to show.
+        callable_field: bool,
+        receiver: Option<String>,
     },
     FieldNotVisible {
         field: Ident,
@@ -162,8 +172,10 @@ pub enum AnalysisErrorKind {
         r#type: Ident,
         generics: Vec<String>,
     },
-    DeferInsideLoopNotSupported,
     ReturnInsideDefer,
+    LoopExitInsideDefer {
+        keyword: &'static str,
+    },
     TryInsideDefer,
     TryOperandNotFallible {
         found: ResolvedType,
@@ -181,7 +193,6 @@ pub enum AnalysisErrorKind {
         found: ResolvedType,
         expected: ResolvedType,
     },
-    NestedDeferNotSupported,
     StructLiteralNotAStruct {
         found: ResolvedType,
     },
@@ -311,6 +322,8 @@ pub enum AnalysisErrorKind {
         field: Ident,
         r#enum: Ident,
         similar: Option<Ident>,
+        /// The enum, when it declares a member function of this name.
+        member_function: Option<ResolvedType>,
     },
     GenericPathTooDeep {
         r#type: Ident,
@@ -610,6 +623,12 @@ pub enum AnalysisErrorKind {
         spec: Ident,
         function: Ident,
     },
+    ConformanceSignatureMismatch {
+        spec: Ident,
+        function: Ident,
+        required: String,
+        found: String,
+    },
     UnconstrainedConformanceParameter {
         parameter: Ident,
     },
@@ -722,8 +741,13 @@ impl fmt::Display for AnalysisErrorKind {
             Self::NotAStruct { found } => {
                 write!(f, "field access on '{found}', which is not a struct")
             }
-            Self::NoSuchField { field, base } => {
+            Self::NoSuchField { field, base, .. } => {
                 write!(f, "no field '{}' on '{base}'", field.as_ref())
+            }
+            Self::NoSuchMemberFunction {
+                function, owner, ..
+            } => {
+                write!(f, "no member function '{}' on '{owner}'", function.as_ref())
             }
             Self::FieldNotVisible { field, base } => {
                 write!(f, "'{}' on '{base}' is not visible here", field.as_ref())
@@ -926,10 +950,10 @@ impl fmt::Display for AnalysisErrorKind {
                     .join(", "),
                 r#type.as_ref()
             ),
-            Self::DeferInsideLoopNotSupported => {
-                write!(f, "'defer' is not supported inside a loop")
-            }
             Self::ReturnInsideDefer => write!(f, "'return' is not supported inside a 'defer' body"),
+            Self::LoopExitInsideDefer { keyword } => {
+                write!(f, "'{keyword}' cannot leave a 'defer' body")
+            }
             Self::TryInsideDefer => write!(f, "'?' is not supported inside a 'defer' body"),
             Self::TryOperandNotFallible { found } => {
                 write!(f, "'?' cannot be applied to a value of type '{found}'")
@@ -950,9 +974,6 @@ impl fmt::Display for AnalysisErrorKind {
                     f,
                     "the error type '{found}' cannot be propagated as '{expected}'"
                 )
-            }
-            Self::NestedDeferNotSupported => {
-                write!(f, "'defer' is not supported inside another 'defer' body")
             }
             Self::StructLiteralNotAStruct { found } => {
                 write!(
@@ -1583,6 +1604,12 @@ impl fmt::Display for AnalysisErrorKind {
                     spec.as_ref()
                 )
             }
+            Self::ConformanceSignatureMismatch { spec, function, .. } => write!(
+                f,
+                "'{}' does not match its requirement in spec '{}'",
+                function.as_ref(),
+                spec.as_ref()
+            ),
             Self::UnconstrainedConformanceParameter { parameter } => {
                 write!(
                     f,

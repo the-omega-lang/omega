@@ -49,12 +49,17 @@ impl AnalysisWarning {
     fn build_diagnostic(&self) -> Diagnostic {
         let d = Diagnostic::warning(self.kind.to_string());
         let d = match &self.kind {
-            AnalysisWarningKind::UnreachableCode => d
-                .with_label(self.span, "this can never run")
-                .with_note(
-                    "it follows something that always diverges (`return`, `break`, `continue`, \
-                     a `loop` with no way out, or a call to a `never`-returning function)",
-                ),
+            AnalysisWarningKind::UnreachableCode { cause } => {
+                d.with_label(self.span, "this can never run").with_note(match cause {
+                    UnreachableCause::AfterDivergence => {
+                        "it follows something that always diverges (`return`, `break`, `continue`, \
+                         a `loop` with no way out, or a call to a `never`-returning function)"
+                    }
+                    UnreachableCause::ArmsCoverEverything => {
+                        "the arms above already match every value the scrutinee can have"
+                    }
+                })
+            }
             AnalysisWarningKind::PreferLoop => d
                 .with_label(self.span, "this condition is always true")
                 .with_help("use `loop { }` instead -- it also lets the compiler prove this always diverges"),
@@ -116,6 +121,9 @@ impl AnalysisWarning {
                     functions.iter().map(|f| format!("'{}'", f.as_ref())).collect::<Vec<_>>().join(", ")
                 ))
                 .with_help("this only matters if something actually calls this gap -- an unglued, uncalled gap links fine"),
+            AnalysisWarningKind::TagMatch { tag_type } => d
+                .with_label(self.span, format!("this is an ordinary `{tag_type}`"))
+                .with_help("match the enum value itself to have its variants checked for exhaustiveness"),
         };
         if self.kind.is_suppressible() {
             d.with_note(format!(
@@ -134,9 +142,15 @@ impl fmt::Display for AnalysisWarning {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnreachableCause {
+    AfterDivergence,
+    ArmsCoverEverything,
+}
+
 #[derive(Debug, Clone)]
 pub enum AnalysisWarningKind {
-    UnreachableCode,
+    UnreachableCode { cause: UnreachableCause },
     PreferLoop,
     InlineNotEnforced,
     UnusedVariable { name: Ident },
@@ -155,6 +169,7 @@ pub enum AnalysisWarningKind {
     RedundantHiddenModifier,
     LargeStructByValue { r#type: ResolvedType, size: u32 },
     UnfilledGap { gap: Ident, functions: Vec<Ident> },
+    TagMatch { tag_type: ResolvedType },
 }
 
 impl AnalysisWarningKind {
@@ -176,7 +191,7 @@ impl AnalysisWarningKind {
 
     pub fn name(&self) -> &'static str {
         match self {
-            Self::UnreachableCode => "unreachable_code",
+            Self::UnreachableCode { .. } => "unreachable_code",
             Self::PreferLoop => "prefer_loop",
             Self::InlineNotEnforced => "inline_not_enforced",
             Self::UnusedVariable { .. } => "unused_variable",
@@ -195,6 +210,7 @@ impl AnalysisWarningKind {
             Self::RedundantHiddenModifier => "redundant_hidden_modifier",
             Self::LargeStructByValue { .. } => "large_struct_by_value",
             Self::UnfilledGap { .. } => "unfilled_gap",
+            Self::TagMatch { .. } => "tag_match",
         }
     }
 }
@@ -202,7 +218,7 @@ impl AnalysisWarningKind {
 impl fmt::Display for AnalysisWarningKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UnreachableCode => write!(f, "unreachable code"),
+            Self::UnreachableCode { .. } => write!(f, "unreachable code"),
             Self::PreferLoop => write!(f, "this `while` condition is always true"),
             Self::InlineNotEnforced => write!(f, "'@inline' is not enforced by this backend yet"),
             Self::UnusedVariable { name } => write!(f, "unused variable '{}'", name.as_ref()),
@@ -243,6 +259,10 @@ impl fmt::Display for AnalysisWarningKind {
             Self::UnfilledGap { gap, .. } => {
                 write!(f, "gap '{}' has no glue implementation", gap.as_ref())
             }
+            Self::TagMatch { tag_type } => write!(
+                f,
+                "this match on an enum's '.tag' is checked against every '{tag_type}' value"
+            ),
         }
     }
 }

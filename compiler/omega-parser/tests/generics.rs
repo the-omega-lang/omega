@@ -166,11 +166,8 @@ fn comp_generic_param_requires_a_value_type() {
 }
 
 #[test]
-fn comp_is_still_usable_as_a_type_parameter_name() {
-    let function = function("f<comp>(x: comp) => void {}");
-    assert_eq!(function.generics.len(), 1);
-    assert!(!function.generics[0].is_comp());
-    assert_eq!(function.generics[0].ident.as_ref(), "comp");
+fn comp_is_not_a_type_parameter_name() {
+    assert!(SourceModule::parse("f<comp>(x: comp) => void {}").is_err());
 }
 
 #[test]
@@ -295,16 +292,13 @@ fn body_expression(source: &str) -> omega_parser::prelude::Expression {
 
 #[test]
 fn a_member_call_takes_generic_arguments() {
-    let omega_parser::prelude::Expression::FunctionCall(call) =
+    let omega_parser::prelude::Expression::MemberCall(call) =
         body_expression("f() => void { x.method<i32>(1); }")
     else {
-        panic!("expected a call");
+        panic!("expected a member call");
     };
-    let omega_parser::prelude::Expression::FieldAccess(access) = &call.callee.expression else {
-        panic!("expected a member callee");
-    };
-    assert_eq!(access.field.as_ref(), "method");
-    assert_eq!(access.generic_args.len(), 1);
+    assert_eq!(call.member.as_ref(), "method");
+    assert_eq!(call.generic_args.len(), 1);
 }
 
 #[test]
@@ -316,16 +310,26 @@ fn a_member_without_a_call_keeps_its_comparisons() {
 }
 
 #[test]
-fn an_ordinary_member_access_carries_no_generic_arguments() {
-    let omega_parser::prelude::Expression::FunctionCall(call) =
+fn an_ordinary_member_call_carries_no_generic_arguments() {
+    let omega_parser::prelude::Expression::MemberCall(call) =
         body_expression("f() => void { x.method(1); }")
     else {
-        panic!("expected a call");
+        panic!("expected a member call");
     };
-    let omega_parser::prelude::Expression::FieldAccess(access) = &call.callee.expression else {
-        panic!("expected a member callee");
+    assert!(call.generic_args.is_empty());
+}
+
+#[test]
+fn a_parenthesized_member_is_an_ordinary_call_of_its_value() {
+    let omega_parser::prelude::Expression::FunctionCall(call) =
+        body_expression("f() => void { (x.f)(1); }")
+    else {
+        panic!("expected an ordinary call");
     };
-    assert!(access.generic_args.is_empty());
+    assert!(matches!(
+        call.callee.expression,
+        omega_parser::prelude::Expression::FieldAccess(_)
+    ));
 }
 
 #[test]
@@ -349,16 +353,13 @@ fn a_bound_selector_survives_a_nested_closing_angle() {
 #[test]
 fn a_member_call_takes_a_bound_selector() {
     use omega_parser::prelude::ExprGenericArg;
-    let omega_parser::prelude::Expression::FunctionCall(call) =
+    let omega_parser::prelude::Expression::MemberCall(call) =
         body_expression("f() => void { x.method<_ : A>(1); }")
     else {
-        panic!("expected a call");
-    };
-    let omega_parser::prelude::Expression::FieldAccess(access) = &call.callee.expression else {
-        panic!("expected a member callee");
+        panic!("expected a member call");
     };
     assert!(matches!(
-        access.generic_args.as_slice(),
+        call.generic_args.as_slice(),
         [ExprGenericArg::Bounded { .. }]
     ));
 }

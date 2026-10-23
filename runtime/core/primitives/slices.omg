@@ -8,6 +8,10 @@
 # layer (nothing to call on a target with no libc). `false` leaves `*out`
 # untouched.
 
+import root::iterator::Iterator;
+import root::iterator::ToIterator;
+import root::option::Option;
+
 primitive<T> []T {
     exposed is_empty(*self) => bool {
         self.length == 0
@@ -30,5 +34,29 @@ primitive<T> []T {
 
     exposed last(*self, out: *mut T) => bool {
         self.get(self.length - 1, out)
+    }
+}
+
+# `for x in slice` yields each element by value, in order. The cursor holds
+# the slice it walks, so the loop source is read once.
+exposed struct SliceIterator<T> {
+    shared items: *[]T;
+    shared index: i32;
+}
+
+meet<T> ToIterator<T> for []T {
+    to_iterator(*self) => SliceIterator<T> {
+        SliceIterator<T> { items = self; index = 0; }
+    }
+}
+
+meet<T> Iterator<T> for SliceIterator<T> {
+    next(*mut self) => Option<T> {
+        if self.index >= self.items.length {
+            return Option<T>::None;
+        }
+        item := self.items[self.index];
+        self.index += 1;
+        Option<T>::Some { value = item; }
     }
 }

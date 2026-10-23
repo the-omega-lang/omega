@@ -1,0 +1,31 @@
+# A `defer` in a block expression belongs to that block (control-flow-and-
+# operators.md "defer"), so one in a `while` condition or a C-style `for`
+# condition or in a block inside its post runs each time that block is left
+# -- once per evaluation, after the block's own value is fixed.
+import std::io::println;
+
+in_while_condition() => void {
+	mut n := 0;
+	while { defer { println$("while condition left at ", n); } n < 2 } {
+		println$("while body ", n);
+		n += 1;
+	}
+}
+
+in_for_condition() => void {
+	for mut i := 0; { defer { println$("for condition left at ", i); } i < 2 }; ++i {
+		println$("for body ", i);
+	}
+}
+
+in_for_post() => void {
+	for mut i := 0; i < 2; i = { defer { println$("post left at ", i); } i + 1 } {
+		println$("post body ", i);
+	}
+}
+
+main() => void {
+	in_while_condition();
+	in_for_condition();
+	in_for_post();
+}

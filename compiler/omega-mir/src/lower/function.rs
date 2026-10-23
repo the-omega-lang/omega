@@ -1,5 +1,4 @@
 mod control_flow;
-mod defer;
 mod expr;
 mod panic;
 
@@ -37,6 +36,9 @@ struct LoopTargets {
 struct LoopScope {
     id: HirId,
     targets: LoopTargets,
+    /// The cleanup depth outside the loop body, which `break` and
+    /// `continue` leave everything above.
+    cleanup_depth: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -51,15 +53,6 @@ impl BlockDestination {
     }
 }
 
-#[derive(Clone, Copy)]
-struct DeferSite {
-    id: HirId,
-    span: Span,
-    flag: LocalId,
-    check_block: BlockId,
-    run_block: BlockId,
-}
-
 pub(crate) struct FunctionLowerer<'t> {
     pub(super) types: &'t TypeStore,
     locals: Vec<MirLocalDecl>,
@@ -68,9 +61,14 @@ pub(crate) struct FunctionLowerer<'t> {
     current: BlockId,
     loop_stack: Vec<LoopScope>,
     return_slot: Option<LocalId>,
-    exit_chain_start: BlockId,
-    defer_bodies: HashMap<HirId, CheckedBlock>,
-    defer_flag_of: HashMap<HirId, LocalId>,
+    return_block: BlockId,
+    /// One frame per block being lowered, holding the defers it has
+    /// registered so far, in order. Registration is sequential within a
+    /// block, so every exit edge knows statically which ones to run.
+    cleanup: Vec<Vec<CheckedBlock>>,
+    /// How many defer bodies are being emitted. Each exit edge emits its own
+    /// copy of a body, so the declarations inside it are lowered again.
+    defer_copies: usize,
     runtime_checks: Option<FunctionRuntimeChecks>,
 }
 
@@ -93,75 +91,15 @@ impl<'t> FunctionLowerer<'t> {
         let arg_count = lowerer.locals.len();
 
         let entry = lowerer.current;
-        let defers = defer::collect_defer_ids(&body)
-            .into_iter()
-            .map(|(id, span)| {
-                let site = DeferSite {
-                    id,
-                    span,
-                    flag: lowerer.declare_local(None, ResolvedType::Bool),
-                    check_block: lowerer.new_block(),
-                    run_block: lowerer.new_block(),
-                };
-                let previous = lowerer.defer_flag_of.insert(id, site.flag);
-                assert!(
-                    previous.is_none(),
-                    "omega-mir lowering bug: duplicate defer HirId in one function"
-                );
-                site
-            })
-            .collect::<Vec<_>>();
-
         lowerer.return_slot = (!matches!(return_type, ResolvedType::Void))
             .then(|| lowerer.declare_local(None, return_type.clone()));
-
-        let final_block = lowerer.new_block();
-        lowerer.exit_chain_start = defers
-            .last()
-            .map(|site| site.check_block)
-            .unwrap_or(final_block);
+        lowerer.return_block = lowerer.new_block();
 
         lowerer.current = entry;
-        for site in &defers {
-            lowerer.assign_local(
-                site.id,
-                site.span,
-                site.flag,
-                bool_literal(site.id, site.span, false),
-            );
-        }
+        let destination = BlockDestination::new(lowerer.return_block, lowerer.return_slot);
+        lowerer.lower_block_into(body, destination);
 
-        if lowerer.lower_function_body(body) {
-            lowerer.terminate(MirTerminator::Goto(lowerer.exit_chain_start));
-        }
-
-        let mut next_block = final_block;
-        for site in &defers {
-            lowerer.current = site.check_block;
-            let condition = lowerer.local_expr(site.flag, site.id, site.span);
-            lowerer.terminate(MirTerminator::Branch {
-                condition,
-                then_block: site.run_block,
-                else_block: next_block,
-            });
-
-            lowerer.current = site.run_block;
-            let defer_body = lowerer
-                .defer_bodies
-                .remove(&site.id)
-                .expect("every collected defer must be lowered and registered");
-            let fell_through = lowerer.lower_block_as_stmt(defer_body);
-            if fell_through {
-                lowerer.terminate(MirTerminator::Goto(next_block));
-            }
-            next_block = site.check_block;
-        }
-        assert_eq!(
-            next_block, lowerer.exit_chain_start,
-            "omega-mir lowering bug: defer exit chain was assembled out of order"
-        );
-
-        lowerer.current = final_block;
+        lowerer.current = lowerer.return_block;
         let return_value = lowerer
             .return_slot
             .map(|slot| lowerer.local_expr(slot, fn_id, fn_span));
@@ -179,9 +117,9 @@ impl<'t> FunctionLowerer<'t> {
             current: BlockId::from_index(0),
             loop_stack: Vec::new(),
             return_slot: None,
-            exit_chain_start: BlockId::from_index(0),
-            defer_bodies: HashMap::new(),
-            defer_flag_of: HashMap::new(),
+            return_block: BlockId::from_index(0),
+            cleanup: Vec::new(),
+            defer_copies: 0,
             runtime_checks: None,
         }
     }
@@ -191,7 +129,7 @@ impl<'t> FunctionLowerer<'t> {
         if let Some(hir_id) = source {
             let previous = self.local_of.insert(hir_id, id);
             assert!(
-                previous.is_none(),
+                previous.is_none() || self.defer_copies > 0,
                 "omega-mir lowering bug: one HIR declaration was assigned two MIR locals"
             );
         }
@@ -327,7 +265,60 @@ impl<'t> FunctionLowerer<'t> {
     }
 
     fn push_loop(&mut self, id: HirId, targets: LoopTargets) {
-        self.loop_stack.push(LoopScope { id, targets });
+        self.loop_stack.push(LoopScope {
+            id,
+            targets,
+            cleanup_depth: self.cleanup.len(),
+        });
+    }
+
+    fn loop_cleanup_depth(&self, loop_id: HirId) -> usize {
+        self.loop_stack
+            .iter()
+            .rev()
+            .find(|scope| scope.id == loop_id)
+            .map(|scope| scope.cleanup_depth)
+            .expect("checked module guarantees break/continue targets a currently-enclosing loop")
+    }
+
+    /// Emits, innermost first and last-registered first within a block, the
+    /// defers of every block above `depth` -- the blocks an exit edge leaves.
+    /// `false` when one of them diverges, leaving the edge unreachable.
+    fn leave_blocks(&mut self, depth: usize) -> bool {
+        let bodies: Vec<CheckedBlock> = self.cleanup[depth..]
+            .iter()
+            .rev()
+            .flat_map(|frame| frame.iter().rev().cloned())
+            .collect();
+        for body in bodies {
+            if self.is_current_terminated() {
+                return false;
+            }
+            self.defer_copies += 1;
+            let fell_through = self.lower_block_as_stmt(body);
+            self.defer_copies -= 1;
+            if !fell_through {
+                return false;
+            }
+        }
+        !self.is_current_terminated()
+    }
+
+    /// Leaves the blocks above `depth` and jumps to `target`; `false` when a
+    /// defer on the way diverges instead.
+    fn exit_to(&mut self, depth: usize, target: BlockId) -> bool {
+        let reached = self.leave_blocks(depth);
+        if reached {
+            self.terminate(MirTerminator::Goto(target));
+        }
+        reached
+    }
+
+    fn innermost_cleanup_is_empty(&self) -> bool {
+        self.cleanup
+            .last()
+            .expect("omega-mir lowering bug: a statement was lowered outside any block")
+            .is_empty()
     }
 
     fn pop_loop(&mut self, id: HirId) {
@@ -351,8 +342,8 @@ impl<'t> FunctionLowerer<'t> {
             "omega-mir lowering bug: loop scope leaked past function lowering"
         );
         assert!(
-            self.defer_bodies.is_empty(),
-            "omega-mir lowering bug: a defer body was registered but never emitted"
+            self.cleanup.is_empty(),
+            "omega-mir lowering bug: a block's cleanup frame leaked past function lowering"
         );
 
         let blocks = self
@@ -414,23 +405,17 @@ impl<'t> FunctionLowerer<'t> {
             }
             CheckedStmt::Break(CheckedBreak { loop_id, .. }) => {
                 let target = self.loop_target(loop_id).break_block;
-                self.terminate(MirTerminator::Goto(target));
+                self.exit_to(self.loop_cleanup_depth(loop_id), target);
             }
             CheckedStmt::Continue(CheckedContinue { loop_id, .. }) => {
                 let target = self.loop_target(loop_id).continue_block;
-                self.terminate(MirTerminator::Goto(target));
+                self.exit_to(self.loop_cleanup_depth(loop_id), target);
             }
-            CheckedStmt::Defer(CheckedDefer { id, span, body }) => {
-                let flag = *self
-                    .defer_flag_of
-                    .get(&id)
-                    .expect("every checked defer has a flag allocated by the MIR defer pre-pass");
-                self.assign_local(id, span, flag, bool_literal(id, span, true));
-                let previous = self.defer_bodies.insert(id, body);
-                assert!(
-                    previous.is_none(),
-                    "omega-mir lowering bug: duplicate defer HirId in one function"
-                );
+            CheckedStmt::Defer(CheckedDefer { body, .. }) => {
+                self.cleanup
+                    .last_mut()
+                    .expect("omega-mir lowering bug: a defer was lowered outside any block")
+                    .push(body);
             }
             CheckedStmt::InlineAsm(asm) => self.lower_inline_asm(asm),
         }
@@ -480,10 +465,15 @@ impl<'t> FunctionLowerer<'t> {
 
     fn lower_return(&mut self, expr: CheckedExprNode) {
         if is_control_flow_expr(&expr.kind) {
-            self.lower_control_flow_into(
-                expr,
-                BlockDestination::new(self.exit_chain_start, self.return_slot),
-            );
+            let leave = self.new_block();
+            let reached =
+                self.lower_control_flow_into(expr, BlockDestination::new(leave, self.return_slot));
+            self.current = leave;
+            if reached {
+                self.exit_to(0, self.return_block);
+            } else {
+                self.terminate(MirTerminator::Unreachable);
+            }
             return;
         }
 
@@ -500,15 +490,15 @@ impl<'t> FunctionLowerer<'t> {
         self.return_value(value);
     }
 
-    /// Stores a function result and enters the exit chain, so any registered
-    /// `defer` still runs before the function actually returns. Every path
-    /// that leaves a function with a value goes through here.
+    /// Stores a function result, then leaves every enclosing block, running
+    /// its defers, before the function returns. Every path that leaves a
+    /// function with a value goes through here.
     pub(super) fn return_value(&mut self, value: MirExprNode) {
         match self.return_slot {
             Some(slot) => self.assign_local(value.id, value.span, slot, value),
             None => self.push_stmt(value),
         }
-        self.terminate(MirTerminator::Goto(self.exit_chain_start));
+        self.exit_to(0, self.return_block);
     }
 
     fn lower_expr_stmt(&mut self, expr: CheckedExprNode) {
@@ -586,41 +576,18 @@ impl<'t> FunctionLowerer<'t> {
         }
     }
 
-    fn lower_function_body(&mut self, block: CheckedBlock) -> bool {
-        self.lower_stmts(block.stmts);
-        if self.is_current_terminated() {
-            return false;
-        }
-        let Some(tail) = block.tail else {
-            return true;
-        };
-
-        if is_control_flow_expr(&tail.kind) {
-            self.lower_control_flow_into(
-                *tail,
-                BlockDestination::new(self.exit_chain_start, self.return_slot),
-            );
-            return false;
-        }
-
-        let diverges = tail.r#type == ResolvedType::Never;
-        let value = self.lower_expr(*tail);
-        if self.is_current_terminated() {
-            return false;
-        }
-        if diverges {
-            self.push_stmt(value);
-            self.terminate(MirTerminator::Unreachable);
-            return false;
-        }
-        match self.return_slot {
-            Some(slot) => self.assign_local(value.id, value.span, slot, value),
-            None => self.push_stmt(value),
-        }
-        true
+    /// Lowers `block` for its effects, as its own cleanup scope: falling off
+    /// its end runs the defers it registered. `true` when control falls
+    /// through to whatever follows.
+    fn lower_block_as_stmt(&mut self, block: CheckedBlock) -> bool {
+        self.cleanup.push(Vec::new());
+        let fell_through =
+            self.lower_block_contents_as_stmt(block) && self.leave_blocks(self.cleanup.len() - 1);
+        self.cleanup.pop();
+        fell_through
     }
 
-    fn lower_block_as_stmt(&mut self, block: CheckedBlock) -> bool {
+    fn lower_block_contents_as_stmt(&mut self, block: CheckedBlock) -> bool {
         self.lower_stmts(block.stmts);
         if self.is_current_terminated() {
             return false;
@@ -647,15 +614,6 @@ impl<'t> FunctionLowerer<'t> {
 
     pub(super) fn lower_place_evaluated_once(&mut self, place: CheckedPlace) -> MirPlace {
         super::place::lower_place_evaluated_once(self, place)
-    }
-}
-
-fn bool_literal(id: HirId, span: Span, value: bool) -> MirExprNode {
-    MirExprNode {
-        id,
-        span,
-        r#type: ResolvedType::Bool,
-        kind: MirExpr::Bool(value),
     }
 }
 

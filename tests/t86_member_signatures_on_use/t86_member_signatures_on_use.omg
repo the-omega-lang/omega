@@ -1,0 +1,32 @@
+# Forming a generic owner instantiates none of its members, and a member's
+# signature may name the owner at a type built from its parameters
+# (generics.md). `tagged`'s signature does not hold for `Wrap<u8>`, but no
+# member of `Wrap<u8>` is used.
+import std::io::println;
+
+spec Tag {}
+
+struct Need<T: Tag> {
+    exposed v: T;
+}
+
+struct Wrap<T> {
+    exposed v: T;
+
+    exposed get(*self) => T { self.v }
+    exposed tagged(*self, n: Need<T>) => T { self.v }
+}
+
+struct Cell<T> {
+    exposed v: T;
+
+    exposed get(*self) => T { self.v }
+    exposed pointing(*self) => Cell<*T> { Cell<*T> { v = &self.v; } }
+}
+
+main() => void {
+    plain := Wrap<u8> { v = 3; };
+    cell := Cell<i32> { v = 9; };
+    pointer := cell.pointing();
+    println$("on-use: ", plain.v, " ", *pointer.get(), " ", **pointer.pointing().get());
+}

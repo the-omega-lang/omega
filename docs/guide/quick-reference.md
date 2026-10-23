@@ -310,11 +310,11 @@ expected. Full rules: [`../language/control-flow-and-operators.md`](../language/
 
 ```omega
 defer {
-    println$("leaving function");
+    println$("leaving this block");
 }
 ```
 
-`defer` is function-exit cleanup; exact behavior is specified in [`../language/functions.md`](../language/functions.md).
+`defer` is block-exit cleanup, like Zig's: it runs when its innermost enclosing block is left — by falling off the end, `break`, `continue`, `return`, or a failing `?` — with a block's defers running last-registered first. In a loop body it runs once per iteration. Exact behavior is specified in [`../language/control-flow-and-operators.md`](../language/control-flow-and-operators.md#break-continue-and-defer).
 
 ## Volatile access
 

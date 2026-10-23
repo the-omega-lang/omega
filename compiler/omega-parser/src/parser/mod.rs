@@ -237,12 +237,34 @@ impl<'a> Parser<'a> {
             let name = name.clone();
             let origin = self.advance().origin;
             Some((crate::ast::identifier::Ident(name), origin))
+        } else if let Some(keyword) = self.peek().reserved_word() {
+            // Taken as the name so the rest of the declaration still parses:
+            // the error already fails the compilation.
+            self.error(ParseErrorKind::KeywordAsName { keyword });
+            let origin = self.advance().origin;
+            Some((crate::ast::identifier::Ident(keyword.into()), origin))
         } else {
             self.error(ParseErrorKind::Expected {
                 expected: "an identifier",
                 found: self.peek().describe(),
             });
             None
+        }
+    }
+
+    /// Whether a declared name begins at `offset`: an identifier, or a
+    /// reserved keyword directly before a declaration's `:`/`:=`, which
+    /// `expect_ident` then reports as a keyword used as a name.
+    pub fn declared_name_at(&self, offset: usize) -> bool {
+        match self.peek_at(offset) {
+            TokenKind::Ident(_) => true,
+            kind => {
+                kind.reserved_word().is_some()
+                    && matches!(
+                        self.peek_at(offset + 1),
+                        TokenKind::Colon | TokenKind::ColonEq
+                    )
+            }
         }
     }
 
@@ -270,48 +292,32 @@ pub type BindingModifiers = BindingPrefix;
 /// Whether a `name := ...` / `name : T` binding (with optional `mut`/`comp`)
 /// begins here, without consuming the modifiers.
 pub fn binding_modifiers_follow(p: &Parser) -> bool {
-    if matches!(p.peek(), TokenKind::Ident(_))
-        && matches!(p.peek_at(1), TokenKind::ColonEq | TokenKind::Colon)
-    {
-        return true;
-    }
-    let mutable = p.at_contextual(contextual::MUT);
-    let comp_offset = usize::from(mutable);
-    let comp = p.at_contextual_at(comp_offset, contextual::COMP);
-    let modifier_count = usize::from(mutable) + usize::from(comp);
-    modifier_count > 0
-        && matches!(p.peek_at(modifier_count), TokenKind::Ident(_))
-        && matches!(
-            p.peek_at(modifier_count + 1),
-            TokenKind::ColonEq | TokenKind::Colon
-        )
+    binding_prefix_here(p).is_some()
 }
 
 pub fn parse_binding_modifiers(p: &mut Parser) -> Option<BindingModifiers> {
-    if matches!(p.peek(), TokenKind::Ident(_))
-        && matches!(p.peek_at(1), TokenKind::ColonEq | TokenKind::Colon)
-    {
-        return Some(BindingPrefix::default());
-    }
-
-    let mutable = p.at_contextual(contextual::MUT);
-    let comp_offset = usize::from(mutable);
-    let comp = p.at_contextual_at(comp_offset, contextual::COMP);
-    let modifier_count = usize::from(mutable) + usize::from(comp);
-
-    if !matches!(p.peek_at(modifier_count), TokenKind::Ident(_))
-        || !matches!(
-            p.peek_at(modifier_count + 1),
-            TokenKind::ColonEq | TokenKind::Colon
-        )
-    {
-        return None;
-    }
-
-    for _ in 0..modifier_count {
+    let prefix = binding_prefix_here(p)?;
+    for _ in 0..usize::from(prefix.mutable) + usize::from(prefix.comp) {
         p.advance();
     }
-    Some(BindingPrefix { mutable, comp })
+    Some(prefix)
+}
+
+/// The modifiers of a binding that begins here, if one does. A `comp` with no
+/// name after it is the name itself (`comp := 5`), so that it is reported as a
+/// keyword used as a name rather than as a malformed `comp` expression.
+fn binding_prefix_here(p: &Parser) -> Option<BindingPrefix> {
+    let mutable = p.at_contextual(contextual::MUT) && !declaration_follows(p, 0);
+    let comp_offset = usize::from(mutable);
+    let comp =
+        matches!(p.peek_at(comp_offset), TokenKind::Comp) && !declaration_follows(p, comp_offset);
+    let name_offset = comp_offset + usize::from(comp);
+    declaration_follows(p, name_offset).then_some(BindingPrefix { mutable, comp })
+}
+
+fn declaration_follows(p: &Parser, offset: usize) -> bool {
+    p.declared_name_at(offset)
+        && matches!(p.peek_at(offset + 1), TokenKind::ColonEq | TokenKind::Colon)
 }
 
 pub fn parse_binding_prefix(p: &mut Parser) -> Option<BindingPrefix> {
@@ -366,12 +372,12 @@ pub fn parse_path(p: &mut Parser) -> Option<crate::ast::identifier::Path> {
 
 pub fn parse_param_decls(p: &mut Parser) -> Vec<crate::ast::r#type::Param> {
     let mut params = Vec::new();
-    if !matches!(p.peek(), TokenKind::Ident(_)) {
+    if !p.declared_name_at(0) {
         return params;
     }
     while let Some(param) = parse_param_decl(p) {
         params.push(param);
-        if matches!(p.peek(), TokenKind::Comma) && matches!(p.peek_at(1), TokenKind::Ident(_)) {
+        if matches!(p.peek(), TokenKind::Comma) && p.declared_name_at(1) {
             p.advance();
         } else {
             break;

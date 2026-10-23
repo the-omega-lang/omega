@@ -13,6 +13,8 @@ struct ResolvedArm<'a> {
 
 /// One analyzed `match`, before it becomes an expression node.
 struct MatchShape {
+    /// Statements dispatch reads from, run after the scrutinee is evaluated.
+    prelude: Vec<CheckedStmt>,
     arms: Vec<CheckedMatchArm>,
     else_branch: Option<CheckedBlock>,
     remainder: CheckedMatchRemainder,
@@ -23,7 +25,8 @@ impl<'r> Analyzer<'r> {
     /// `expected` is the surrounding expected type of the whole `match`, and
     /// it reaches every arm body, catch-all, and `else` exactly as it reaches
     /// an `if` branch: arms are *checked* against a type that already exists,
-    /// never joined into a new one.
+    /// never joined into a new one. Without one, the first arm whose result
+    /// participates anchors the later arms, as an `if`'s first branch does.
     pub(super) fn analyze_match(
         &mut self,
         node_id: HirId,
@@ -34,8 +37,19 @@ impl<'r> Analyzer<'r> {
         let narrow_target = self.narrowable_scrutinee(&m.scrutinee);
         let checked_scrutinee = self.analyze_expr(&m.scrutinee, Expected::None)?;
         let scrutinee_type = checked_scrutinee.r#type.clone();
+        if let CheckedExpr::Place(place) = &checked_scrutinee.kind
+            && let Some(CheckedProjection::EnumTag { r#type }) = place.projections.last()
+        {
+            self.warn(
+                m.scrutinee.id,
+                m.scrutinee.span,
+                AnalysisWarningKind::TagMatch {
+                    tag_type: r#type.clone(),
+                },
+            );
+        }
 
-        let (scrutinee_place, prelude_stmts, narrow_binding) =
+        let (scrutinee_place, mut prelude_stmts, narrow_binding) =
             if let Some((ident, origin, decl_id, storage, mutable)) = narrow_target {
                 let CheckedExpr::Place(place) = checked_scrutinee.kind else {
                     unreachable!("a narrowable scrutinee is always analyzed as a place")
@@ -107,11 +121,13 @@ impl<'r> Analyzer<'r> {
         )?;
 
         let MatchShape {
+            prelude,
             arms,
             else_branch,
             remainder,
             result_type,
         } = shape;
+        prelude_stmts.extend(prelude);
         let checked_match = CheckedMatch {
             arms,
             else_branch,
@@ -222,15 +238,22 @@ impl<'r> Analyzer<'r> {
             });
             root_place.r#type = matched.clone();
         }
-        let root = Position {
+        let mut root = Position {
             place: root_place,
             r#type: matched.clone(),
             path: Vec::new(),
+            sampled_tag: None,
         };
         let tagged_root = matches!(
             matched,
             ResolvedType::Enum { .. } | ResolvedType::AnonymousEnum { .. }
         );
+        let mut prelude = Vec::new();
+        if tagged_root {
+            let (sample, stmts) = self.sample_tag(node_id, span, &root)?;
+            root.sampled_tag = Some(sample);
+            prelude = stmts;
+        }
 
         let mut catch_all: Option<&HirMatchArm> = None;
         for arm in &m.arms {
@@ -301,6 +324,7 @@ impl<'r> Analyzer<'r> {
 
         let tests_tag = arms.iter().any(|arm| arm.proof.tests_tag);
         let mut checked_arms = Vec::with_capacity(arms.len() + 1);
+        let mut anchor = expected.exact().cloned();
         for arm in arms {
             // A top-level `..` on an enum still tests the scrutinee's tag, so
             // an invalid tag reaches the remainder instead of this body.
@@ -327,13 +351,18 @@ impl<'r> Analyzer<'r> {
                         arm.arm.span,
                     );
                 }
-                this.analyze_match_arm_body(&arm.arm.body, expected)
+                this.analyze_match_arm_body(
+                    &arm.arm.body,
+                    Self::later_branch_expected(expected, anchor.as_ref()),
+                )
             });
-            checked_arms.push(CheckedMatchArm {
-                conditions,
-                body: body?,
-            });
+            let body = body?;
+            if anchor.is_none() {
+                anchor = Self::block_type(&body).map(|r#type| r#type.widened());
+            }
+            checked_arms.push(CheckedMatchArm { conditions, body });
         }
+        let later_expected = Self::later_branch_expected(expected, anchor.as_ref());
 
         if tagged_root {
             match &m.else_branch {
@@ -341,9 +370,12 @@ impl<'r> Analyzer<'r> {
                     let uncovered = self.root_alternatives(&remaining, &matched);
                     let conditions =
                         self.root_tag_groups(node_id, &root, &uncovered, block.span)?;
-                    if let Some(body) =
-                        self.analyze_else_arm(node_id, block, expected, !conditions.is_empty())
-                    {
+                    if let Some(body) = self.analyze_else_arm(
+                        node_id,
+                        block,
+                        later_expected,
+                        !conditions.is_empty(),
+                    ) {
                         checked_arms.push(CheckedMatchArm { conditions, body });
                     }
                 }
@@ -356,6 +388,7 @@ impl<'r> Analyzer<'r> {
             }
             let result_type = self.unify_match_arm_types(node_id, span, &checked_arms, &None)?;
             return Some(MatchShape {
+                prelude,
                 arms: checked_arms,
                 else_branch: None,
                 remainder: CheckedMatchRemainder::IllegalEnumTag,
@@ -364,7 +397,7 @@ impl<'r> Analyzer<'r> {
         }
 
         let else_branch = match &m.else_branch {
-            Some(block) => Some(self.analyze_block(block, expected)?),
+            Some(block) => Some(self.analyze_block(block, later_expected)?),
             None if !remaining.is_empty() => {
                 let kind = self.non_exhaustive(&matched, &remaining);
                 self.error(node_id, span, kind);
@@ -374,6 +407,7 @@ impl<'r> Analyzer<'r> {
         };
         let result_type = self.unify_match_arm_types(node_id, span, &checked_arms, &else_branch)?;
         Some(MatchShape {
+            prelude,
             arms: checked_arms,
             else_branch,
             remainder: if tests_tag {
@@ -436,6 +470,53 @@ impl<'r> Analyzer<'r> {
         alternatives
     }
 
+    /// Copies the scrutinee's tag into a local, so dispatch reads it once
+    /// however many conditions test it.
+    fn sample_tag(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        root: &Position,
+    ) -> Option<(CheckedPlace, Vec<CheckedStmt>)> {
+        let tag_place = self.tag_place(node_id, span, root)?;
+        let tag_type = tag_place.r#type.clone();
+        let sample_id = self.resolver.fresh_synthetic_id();
+        let sample = CheckedPlace {
+            root: CheckedPlaceRoot::Variable {
+                decl_id: sample_id,
+                storage: Storage::Local,
+                r#type: tag_type.clone(),
+            },
+            projections: vec![],
+            r#type: tag_type.clone(),
+        };
+        let decl = CheckedStmt::Declaration(CheckedDeclaration {
+            id: sample_id,
+            span,
+            ident: Ident("$tag".to_string()),
+            r#type: tag_type.clone(),
+            mutable: true,
+            initial_value: None,
+            symbol: crate::annotations::SymbolPolicy::ordinary(),
+        });
+        let tag_read = CheckedExprNode {
+            id: self.resolver.fresh_synthetic_id(),
+            span,
+            r#type: tag_type.clone(),
+            kind: CheckedExpr::Place(tag_place),
+        };
+        let assign = CheckedStmt::Expression(CheckedExprNode {
+            id: self.resolver.fresh_synthetic_id(),
+            span,
+            r#type: tag_type,
+            kind: CheckedExpr::Assignment(CheckedAssignment {
+                target: sample.clone(),
+                value: Box::new(tag_read),
+            }),
+        });
+        Some((sample, vec![decl, assign]))
+    }
+
     fn root_tag_groups(
         &mut self,
         node_id: HirId,
@@ -443,40 +524,18 @@ impl<'r> Analyzer<'r> {
         alternatives: &[usize],
         span: Span,
     ) -> Option<Vec<Vec<CheckedExprNode>>> {
+        let tag_place = self.tag_place(node_id, span, root)?;
         let mut groups = Vec::with_capacity(alternatives.len());
         for &index in alternatives {
             let condition = match &root.r#type {
                 ResolvedType::Enum { nominal, .. } => {
                     let nominal = nominal.clone();
-                    let mut projections = root.place.projections.clone();
-                    let tag_type = self.resolve_field_projection(
-                        node_id,
-                        span,
-                        &mut projections,
-                        &root.r#type,
-                        &Ident("tag".to_string()),
-                        Origin::default(),
-                        &mut false,
-                    )?;
-                    let tag_place = CheckedPlace {
-                        root: root.place.root.clone(),
-                        projections,
-                        r#type: tag_type.clone(),
-                    };
                     let tag = self.type_facts(node_id, span, |types| {
                         Ok(types.enum_facts(&nominal)?.variants[index].tag)
                     })?;
-                    self.tag_variant_condition(&tag_place, &tag_type, tag, span)
+                    self.tag_variant_condition(&tag_place, tag, span)
                 }
-                _ => {
-                    let tag_type = crate::layout::ANONYMOUS_ENUM_TAG_TYPE;
-                    let mut tag_place = root.place.clone();
-                    tag_place.projections.push(CheckedProjection::EnumTag {
-                        r#type: tag_type.clone(),
-                    });
-                    tag_place.r#type = tag_type.clone();
-                    self.member_tag_condition(&tag_place, &tag_type, index, span)
-                }
+                _ => self.member_tag_condition(&tag_place, index, span),
             };
             groups.push(vec![condition]);
         }
@@ -609,7 +668,13 @@ impl<'r> Analyzer<'r> {
     ) -> Option<CheckedBlock> {
         let checked = self.analyze_block(block, if reachable { expected } else { Expected::None });
         if !reachable {
-            self.warn(node_id, block.span, AnalysisWarningKind::UnreachableCode);
+            self.warn(
+                node_id,
+                block.span,
+                AnalysisWarningKind::UnreachableCode {
+                    cause: UnreachableCause::ArmsCoverEverything,
+                },
+            );
             return None;
         }
         checked

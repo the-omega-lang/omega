@@ -1,0 +1,33 @@
+error: 'return' is not supported inside a 'defer' body
+ --> tests/t77b_defer_exit_errors/t77b_defer_exit_errors.omg:8:13
+  |
+8 |     defer { return; }
+  |             ^^^^^^^ cannot `return` from inside a `defer` body
+  |
+  = note: deferred code runs while its block is already being left
+
+error: '?' is not supported inside a 'defer' body
+  --> tests/t77b_defer_exit_errors/t77b_defer_exit_errors.omg:12:14
+   |
+12 |     defer { o?; }
+   |              ^ `?` cannot appear inside a `defer` body
+   |
+   = note: a failing `?` exits the enclosing function, which deferred code cannot do
+
+error: 'break' cannot leave a 'defer' body
+  --> tests/t77b_defer_exit_errors/t77b_defer_exit_errors.omg:18:17
+   |
+18 |         defer { break; }
+   |                 ^^^^^^ this `break` would leave the `defer` body
+   |
+   = note: deferred code runs while its block is already being left; only a loop inside the `defer` body can be exited
+
+error: 'continue' cannot leave a 'defer' body
+  --> tests/t77b_defer_exit_errors/t77b_defer_exit_errors.omg:24:17
+   |
+24 |         defer { continue; }
+   |                 ^^^^^^^^^ this `continue` would leave the `defer` body
+   |
+   = note: deferred code runs while its block is already being left; only a loop inside the `defer` body can be exited
+
+error: could not compile the program due to 4 previous errors

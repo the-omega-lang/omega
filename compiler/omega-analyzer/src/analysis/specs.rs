@@ -174,6 +174,7 @@ impl<'r> Analyzer<'r> {
         let mut methods = Vec::with_capacity(requirements.len());
         let mut pending = Vec::new();
         let mut templates = Vec::new();
+        let mut mismatched = Vec::new();
         for requirement in requirements {
             match &requirement.signature {
                 RequirementSignature::Concrete {
@@ -208,6 +209,26 @@ impl<'r> Analyzer<'r> {
                                 source: Some(source.clone()),
                             },
                         ));
+                    } else if let Some((function, (signature, _))) = concrete_functions
+                        .iter()
+                        .zip(&signatures)
+                        .find(|(function, _)| function.name == requirement.name)
+                    {
+                        let index = functions
+                            .iter()
+                            .position(|candidate| candidate.id == function.id)
+                            .expect("conformance function was selected from its declaration list");
+                        mismatched.push(method_ids[index]);
+                        self.error(
+                            function.id,
+                            function.signature_span,
+                            AnalysisErrorKind::ConformanceSignatureMismatch {
+                                spec: requirement.spec_name.clone(),
+                                function: requirement.name.clone(),
+                                required: requirement_display(fn_type, return_type_bound),
+                                found: ResolvedType::Function(signature.clone()).to_string(),
+                            },
+                        );
                     } else if requirement.raw.default_body.is_some() {
                         let minted_id = self.resolver.fresh_synthetic_id();
                         methods.push((
@@ -269,6 +290,7 @@ impl<'r> Analyzer<'r> {
                 .iter()
                 .any(|(_, method)| method.decl_id == *method_id)
                 && !templates.contains(method_id)
+                && !mismatched.contains(method_id)
             {
                 self.error(
                     function.id,
@@ -681,8 +703,12 @@ impl<'r> Analyzer<'r> {
             && own.is_variadic == req_fn_type.is_variadic
             && own.params == req_fn_type.params
             && req_bound.iter().all(|(spec, spec_args)| {
-                self.type_implements_spec(id, span, &own.return_type, spec, spec_args, false)
-                    .is_ok()
+                self.resolver
+                    .conformance_being_checked(&own.return_type, spec, spec_args)
+                    .unwrap_or(false)
+                    || self
+                        .type_implements_spec(id, span, &own.return_type, spec, spec_args, false)
+                        .is_ok()
             })
     }
 
@@ -1004,4 +1030,24 @@ fn static_spec_position(generics: &[GenericParam], param_index: usize) -> Option
     generics.iter().position(|generic| {
         generic.origin == crate::generics::GenericParamOrigin::StaticSpecParameter { param_index }
     })
+}
+
+/// A concrete requirement as written: a `=> spec S` return is resolved to a
+/// bound with a `void` placeholder, so it is spelled from the bound.
+fn requirement_display(
+    fn_type: &ResolvedFunctionType,
+    return_type_bound: &[(NominalRef, Vec<ResolvedGenericArg>)],
+) -> String {
+    let rendered = ResolvedType::Function(fn_type.clone()).to_string();
+    if return_type_bound.is_empty() {
+        return rendered;
+    }
+    let (params, _) = rendered
+        .rsplit_once(" => ")
+        .expect("a function type renders its return type");
+    let bound: Vec<String> = return_type_bound
+        .iter()
+        .map(|(spec, args)| crate::error::generic_name(&spec.name, args))
+        .collect();
+    format!("{params} => spec {}", bound.join(" + "))
 }

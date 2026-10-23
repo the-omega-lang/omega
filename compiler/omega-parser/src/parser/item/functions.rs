@@ -6,9 +6,9 @@ use crate::ast::statement::{DeclarationStmt, FunctionDefinitionStmt, WalrusStmt}
 use crate::ast::visibility::Visibility;
 use crate::diagnostics::{ParseErrorKind, Span};
 use crate::lexer::TokenKind;
+use crate::parser::Parser;
 use crate::parser::expression::{parse_codeblock, parse_expression};
 use crate::parser::statement::parse_declaration;
-use crate::parser::{Parser, contextual};
 
 pub(super) fn parse_declaration_or_function_definition(
     p: &mut Parser,
@@ -172,13 +172,7 @@ pub(super) fn parse_optional_generics(p: &mut Parser) -> Option<Vec<GenericParam
 }
 
 fn parse_generic_param(p: &mut Parser, seen_default: &mut bool) -> Option<GenericParam> {
-    // `comp` is contextual, so it only introduces a value parameter when an
-    // actual parameter name follows it; `<comp, T>` still declares a type
-    // parameter spelled `comp`.
-    let is_comp = p.at_contextual(contextual::COMP) && matches!(p.peek_at(1), TokenKind::Ident(_));
-    if is_comp {
-        p.advance();
-    }
+    let is_comp = p.eat(&TokenKind::Comp);
     let ident = p.expect_ident()?;
     let name_span = p.last_span();
     let kind = if is_comp {

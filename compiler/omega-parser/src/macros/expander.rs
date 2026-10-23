@@ -676,7 +676,18 @@ impl<'a, E> Expander<'a, E> {
                 base: self.expand_expr(access.base)?,
                 field: access.field,
                 field_origin: access.field_origin,
-                generic_args: access.generic_args,
+            })),
+            Expression::MemberCall(call) => Expression::MemberCall(Box::new(MemberCallExpr {
+                base: self.expand_expr(call.base)?,
+                member: call.member,
+                member_origin: call.member_origin,
+                member_span: call.member_span,
+                generic_args: call.generic_args,
+                args: call
+                    .args
+                    .into_iter()
+                    .map(|a| self.expand_expr(a))
+                    .collect::<Result<Vec<_>, _>>()?,
             })),
             Expression::Index(index) => Expression::Index(Box::new(IndexExpr {
                 base: self.expand_expr(index.base)?,

@@ -687,6 +687,7 @@ impl<'r> Analyzer<'r> {
             };
 
         let method = if sig.function_params().is_empty() {
+            self.ensure_owner_functions(node_id, span, &owner_type)?;
             let candidates = self.type_facts(node_id, span, |types| {
                 owner_type.candidates_in(types, namespace, member)
             })?;

@@ -513,6 +513,7 @@ pub enum HirExpr {
     Codeblock(HirBlock),
     If(HirIf),
     FunctionCall(HirFunctionCall),
+    MemberCall(HirMemberCall),
     Assignment(HirAssignment),
     CompoundAssign(HirCompoundAssign),
     AddressOf(HirAddressOf),
@@ -711,10 +712,7 @@ pub enum HirPlaceRoot {
 
 #[derive(Debug, Clone)]
 pub enum HirProjection {
-    /// A named member: a field, or the method a call selects. Generic
-    /// arguments are only ever written on the latter -- the grammar accepts
-    /// them solely before a call's `(`.
-    FieldAccess(Ident, Origin, Vec<ExprGenericArg>),
+    FieldAccess(Ident, Origin),
     Index(Box<HirExprNode>),
     Deref,
 }
@@ -722,6 +720,20 @@ pub enum HirProjection {
 #[derive(Debug, Clone)]
 pub struct HirFunctionCall {
     pub callee: Box<HirExprNode>,
+    pub args: Vec<HirExprNode>,
+}
+
+/// `receiver.member<...>(args)`, which selects among member functions only.
+#[derive(Debug, Clone)]
+pub struct HirMemberCall {
+    pub receiver: HirPlace,
+    pub member: Ident,
+    pub member_origin: Origin,
+    /// Identifies `receiver.member` itself, which a call through a member
+    /// function records as its callee.
+    pub callee_id: HirId,
+    pub callee_span: Span,
+    pub generic_args: Vec<ExprGenericArg>,
     pub args: Vec<HirExprNode>,
 }
 

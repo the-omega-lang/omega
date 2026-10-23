@@ -1,0 +1,17 @@
+error: 'show' does not match its requirement in spec 'Show'
+  --> tests/t85_conformance_signature_mismatch/t85_conformance_signature_mismatch.omg:17:5
+   |
+17 |     show(*self, width: u8) => i32 {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this is `(*self, width: u8) => i32`
+   |
+   = note: 'Show' requires `show` to be `(*self, width: i32) => i32`
+
+error: 'make' does not match its requirement in spec 'MakesIter'
+  --> tests/t85_conformance_signature_mismatch/t85_conformance_signature_mismatch.omg:23:5
+   |
+23 |     make(*self) => i32 {
+   |     ^^^^^^^^^^^^^^^^^^ this is `(*self) => i32`
+   |
+   = note: 'MakesIter' requires `make` to be `(*self) => spec Iterator<u8>`
+
+error: could not compile the program due to 2 previous errors

@@ -1027,8 +1027,7 @@ impl<'r> Analyzer<'r> {
     ) -> Option<OwnerFunctions> {
         match r#type {
             ResolvedType::Struct(nominal) | ResolvedType::Union(nominal) => {
-                let functions =
-                    self.type_facts(node_id, span, |types| types.functions(nominal).cloned())?;
+                let functions = self.member_functions(node_id, span, nominal)?;
                 Some(OwnerFunctions {
                     name: nominal.name.clone(),
                     functions: functions.to_vec(),
@@ -1036,12 +1035,9 @@ impl<'r> Analyzer<'r> {
                 })
             }
             ResolvedType::Enum { nominal, .. } => {
-                let (facts, functions) = self.type_facts(node_id, span, |types| {
-                    Ok((
-                        types.enum_facts(nominal)?.clone(),
-                        types.functions(nominal)?.clone(),
-                    ))
-                })?;
+                let facts =
+                    self.type_facts(node_id, span, |types| types.enum_facts(nominal).cloned())?;
+                let functions = self.member_functions(node_id, span, nominal)?;
                 Some(OwnerFunctions {
                     name: nominal.name.clone(),
                     functions: functions.to_vec(),

@@ -158,8 +158,7 @@ fn field_follows(p: &Parser) -> bool {
         _ => 0,
     };
     [modifier_offset, 0].into_iter().any(|offset| {
-        matches!(p.peek_at(offset), TokenKind::Ident(_))
-            && matches!(p.peek_at(offset + 1), TokenKind::Colon)
+        p.declared_name_at(offset) && matches!(p.peek_at(offset + 1), TokenKind::Colon)
     })
 }
 

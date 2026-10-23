@@ -63,7 +63,13 @@ impl<'r> Analyzer<'r> {
         };
         if let Some(first_dead) = stmts.get(cutoff + 1) {
             let (id, span) = Self::checked_stmt_id_span(first_dead);
-            self.warn(id, span, AnalysisWarningKind::UnreachableCode);
+            self.warn(
+                id,
+                span,
+                AnalysisWarningKind::UnreachableCode {
+                    cause: UnreachableCause::AfterDivergence,
+                },
+            );
         }
         stmts.truncate(cutoff + 1);
         stmts
@@ -119,7 +125,13 @@ impl<'r> Analyzer<'r> {
         // is unreachable too, for the same reason.
         let tail = match &tail {
             Some(t) if stmts.last().is_some_and(Self::stmt_diverges) => {
-                self.warn(t.id, t.span, AnalysisWarningKind::UnreachableCode);
+                self.warn(
+                    t.id,
+                    t.span,
+                    AnalysisWarningKind::UnreachableCode {
+                        cause: UnreachableCause::AfterDivergence,
+                    },
+                );
                 None
             }
             _ => tail,
@@ -286,7 +298,7 @@ impl<'r> Analyzer<'r> {
                 })
             }
             HirStmt::Return(expr) => {
-                if self.in_defer_body {
+                if self.in_defer_body() {
                     self.error(expr.id, expr.span, AnalysisErrorKind::ReturnInsideDefer);
                     return None;
                 }
@@ -308,9 +320,7 @@ impl<'r> Analyzer<'r> {
             }
             HirStmt::WalrusDeclaration(w) => self.analyze_walrus(w),
             HirStmt::While(w) => {
-                let checked_cond = self.with_repeated_loop_header(|this| {
-                    this.analyze_expr(&w.condition, Expected::None)
-                })?;
+                let checked_cond = self.analyze_expr(&w.condition, Expected::None)?;
                 if checked_cond.r#type != ResolvedType::Bool {
                     self.error(
                         w.id,
@@ -351,8 +361,8 @@ impl<'r> Analyzer<'r> {
             }
             HirStmt::For(f) => self.analyze_for(f),
             HirStmt::ForIn(f) => self.analyze_for_in(f),
-            HirStmt::Break(b) => match self.loop_stack.last() {
-                Some(&loop_id) => {
+            HirStmt::Break(b) => match self.loop_exit_target(b.id, b.span, "break") {
+                Some(loop_id) => {
                     self.loops_with_break.insert(loop_id);
                     Some(vec![CheckedStmt::Break(CheckedBreak {
                         id: b.id,
@@ -360,31 +370,25 @@ impl<'r> Analyzer<'r> {
                         loop_id,
                     })])
                 }
-                None => {
+                None if self.loop_stack.is_empty() => {
                     self.error(b.id, b.span, AnalysisErrorKind::BreakOutsideLoop);
                     None
                 }
+                None => None,
             },
-            HirStmt::Continue(c) => match self.loop_stack.last() {
-                Some(&loop_id) => Some(vec![CheckedStmt::Continue(CheckedContinue {
+            HirStmt::Continue(c) => match self.loop_exit_target(c.id, c.span, "continue") {
+                Some(loop_id) => Some(vec![CheckedStmt::Continue(CheckedContinue {
                     id: c.id,
                     span: c.span,
                     loop_id,
                 })]),
-                None => {
+                None if self.loop_stack.is_empty() => {
                     self.error(c.id, c.span, AnalysisErrorKind::ContinueOutsideLoop);
                     None
                 }
+                None => None,
             },
             HirStmt::Defer(d) => {
-                if !self.loop_stack.is_empty() || self.in_repeated_loop_header {
-                    self.error(d.id, d.span, AnalysisErrorKind::DeferInsideLoopNotSupported);
-                    return None;
-                }
-                if self.in_defer_body {
-                    self.error(d.id, d.span, AnalysisErrorKind::NestedDeferNotSupported);
-                    return None;
-                }
                 let body =
                     self.with_defer_body(|this| this.analyze_block(&d.body, Expected::None))?;
                 Some(vec![CheckedStmt::Defer(CheckedDefer {
@@ -406,9 +410,7 @@ impl<'r> Analyzer<'r> {
             ok &= checked_init.is_some();
 
             let checked_condition = match &f.condition {
-                Some(condition) => match this
-                    .with_repeated_loop_header(|this| this.analyze_expr(condition, Expected::None))
-                {
+                Some(condition) => match this.analyze_expr(condition, Expected::None) {
                     Some(checked) if checked.r#type != ResolvedType::Bool => {
                         this.error(
                             f.id,
@@ -435,8 +437,7 @@ impl<'r> Analyzer<'r> {
 
             let checked_post = match &f.post {
                 Some(post) => {
-                    let checked = this
-                        .with_repeated_loop_header(|this| this.analyze_expr(post, Expected::None));
+                    let checked = this.analyze_expr(post, Expected::None);
                     ok &= checked.is_some();
                     checked
                 }

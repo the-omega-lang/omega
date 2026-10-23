@@ -9,7 +9,7 @@ use omega_analyzer::checked::{
     CheckedForeignBinding, CheckedItem, CheckedModule, ExternFunctionKind, ExternFunctionRef,
     ExternGlobalRef, Storage,
 };
-use omega_analyzer::dead_code::{self, FieldUsage};
+use omega_analyzer::dead_code::{self, Usage};
 use omega_analyzer::error::{
     AnalysisError, AnalysisErrorKind, AnalysisWarning, AnalysisWarningKind,
 };
@@ -99,19 +99,7 @@ impl Driver {
         self.collect_glue_signatures(&relationship_surface);
         let (mut modules, mut warnings) = self.check_bodies(compilation.emitted());
 
-        // Concrete generic bodies are emitted by this invocation even when
-        // their template lives in an extern package. Keep the template's
-        // declared module path: MIR uses that path as part of symbol identity.
-        for (key, body) in &self.items.generic_instantiations {
-            let checked_module = self.emission_module(&mut modules, key.module());
-            checked_module.items.push(body.item.clone());
-            warnings.extend(
-                body.warnings
-                    .iter()
-                    .map(|warning| (key.module().clone(), warning.clone())),
-            );
-        }
-        self.drain_pending_declaration_bodies(&mut modules, &mut warnings);
+        self.emit_reachable_bodies(&mut modules, &mut warnings);
 
         // The last relationship sweep that can still produce errors, so it
         // runs before the barrier; its warnings are absence claims and wait

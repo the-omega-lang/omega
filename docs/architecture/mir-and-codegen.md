@@ -177,7 +177,7 @@ The analyzer already proved the operation legal and resolved field/type/mutabili
 
 ## Control-flow lowering
 
-Function lowering is split by responsibility: `lower/function.rs` owns builder state and invariants, `lower/function/control_flow.rs` owns CFG construction, `lower/function/expr.rs` owns ordinary expression translation, and `lower/function/defer.rs` owns the structural defer pre-pass.
+Function lowering is split by responsibility: `lower/function.rs` owns builder state, invariants, statements, and block-exit cleanup, `lower/function/control_flow.rs` owns CFG construction, and `lower/function/expr.rs` owns ordinary expression translation.
 
 ### `if` / `match`
 
@@ -189,13 +189,15 @@ Loop lowering creates explicit condition/body/post/exit blocks as required. `Che
 
 ### `return`
 
-Returns route to the function's exit path. If the function has defers, return values are stored before cleanup so all active deferred bodies run before the final `Return` terminator.
+A return stores its value in the return slot first, then leaves every enclosing block (running their defers, below) and jumps to the function's single `Return` block. A failing `?` takes the same path with the failure value it built.
 
 ### `defer`
 
-A pre-pass allocates a boolean flag for each supported defer. Reaching the source `defer` statement sets its flag; the function exit chain checks flags in reverse order and executes enabled bodies before the final return.
+Defers are block-scoped and cost code, never storage. The lowerer keeps a cleanup stack with one frame per `CheckedBlock` being lowered; lowering a `defer` statement appends its body to the innermost frame. Registration within a block is sequential, so at any exit edge the frames already hold exactly the defers that have run their registration, and no flags are needed.
 
-The language restrictions on where defer is currently allowed are semantic-analysis concerns and tracked in language/issues docs; MIR assumes checked input satisfies them.
+Every exit edge emits the defer bodies of the frames it leaves inline, innermost frame first and last-registered first within a frame, before its jump: falling off a block's end (after the tail value is stored), `break`/`continue` (down to the depth recorded on the target loop), and `return`/`?` (down to the function body). A body is therefore duplicated once per exit edge that leaves its block, as in Zig, and its declarations get fresh locals in each copy. A block with no registered defers adds no blocks. A defer body that diverges ends the edge. Invariant panics do not return and emit no defers.
+
+Semantic analysis guarantees a defer body never leaves itself (`return`, `?`, or `break`/`continue` to an outer loop), so emitting one never needs to unwind frames outside it.
 
 ### try (`?`)
 

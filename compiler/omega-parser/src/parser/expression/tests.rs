@@ -348,13 +348,13 @@ fn call_generic_args(source: &str) -> Vec<crate::ast::generics::ExprGenericArg> 
     let Statement::Expression(expr) = &stmts[0] else {
         panic!("expected an expression statement")
     };
-    let Expression::FunctionCall(call) = &expr.expression else {
-        panic!("expected a call")
-    };
-    match &call.callee.expression {
-        Expression::Path(path) => path.generic_args.single().unwrap().1.to_vec(),
-        Expression::FieldAccess(access) => access.generic_args.clone(),
-        _ => panic!("expected a path or member callee"),
+    match &expr.expression {
+        Expression::FunctionCall(call) => match &call.callee.expression {
+            Expression::Path(path) => path.generic_args.single().unwrap().1.to_vec(),
+            _ => panic!("expected a path callee"),
+        },
+        Expression::MemberCall(call) => call.generic_args.clone(),
+        _ => panic!("expected a call"),
     }
 }
 

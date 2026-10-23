@@ -32,7 +32,7 @@ match value {
 
 `match` is an expression when its arms produce values. Pattern forms, exhaustiveness, ranges, overlap rules, and enum narrowing are specified in [`enums-and-pattern-matching.md`](enums-and-pattern-matching.md).
 
-Arm results follow the same rules as `if` branches: a surrounding expected type is checked against every arm body, catch-all, and `else` block, and without one the arms must already agree on a type.
+Arm results follow the same rules as `if` branches: a surrounding expected type is checked against every arm body, catch-all, and `else` block. Without one, arm typing is source-order anchored: the first arm whose result participates (one that does not diverge) establishes the result type, and every later arm, catch-all, and reachable `else` is checked against it. An `else` the arms already cover cannot run and takes no part.
 
 ## Loops
 
@@ -63,6 +63,8 @@ for [init] ; [condition] ; [post] { body }
 
 The initializer and post clauses are optional. The parser accepts an omitted condition, but a valid Omega program currently requires the condition to be present and `bool`; `for ;; { ... }` is therefore rejected. There are no parentheses around the clauses. The initializer may use ordinary binding/statement forms.
 
+A `{` directly after the second `;` always begins the body, because the post clause is optional. A block expression used as the post clause is therefore parenthesized: `for mut i := 0; i < n; ({ ...; ++i; }) { ... }`.
+
 ### `for ... in`
 
 `for [mut] name [: Type] in expression { body }` uses Omega's iteration/range rules. See [`iteration-and-ranges.md`](iteration-and-ranges.md).
@@ -71,9 +73,24 @@ The initializer and post clauses are optional. The parser accepts an omitted con
 
 `break` exits the innermost applicable loop. `continue` begins its next iteration.
 
-`defer statement` schedules the statement for execution when the **enclosing function** exits, not when the current block ends. Defers execute in reverse order of registration (FILO) for that function invocation. The function's return value is determined before its deferred statements execute.
+`defer statement` registers the statement for its **innermost enclosing block**: a function body, a `{ }` block expression, an `if` or `else` body, a `match` arm or `else` block, a loop body, or another `defer`'s body. When control leaves that block, by any route, the deferred statements registered in it so far run in reverse order of registration (LIFO). The routes out of a block are falling off its end, `break`, `continue`, `return`, and a failing `?`; leaving several nested blocks at once runs the inner block's defers before the outer one's.
 
-Current Omega rejects `defer` while lexically inside a loop and rejects a `defer` nested inside another deferred body. These are current language/implementation limitations tracked in [`../issues/language-limitations.md`](../issues/language-limitations.md).
+```omega
+for mut i := 0; i < 3; ++i {
+    defer { println$("end of iteration ", i); }   # runs once per iteration
+    if i == 1 {
+        continue;                                 # still runs the defer
+    }
+}
+```
+
+A block's value, and a function's return value, are fixed before that block's defers run, so a defer that changes a variable named by the block's tail does not change the result.
+
+Because a loop body is a block, a `defer` in it runs at the end of every iteration. A `defer` in a block expression inside a loop header or a `for` initializer belongs to that block and runs each time that block is left. Registration needs no runtime storage: within a block it is sequential, so each way out of the block statically knows which defers it runs, and the compiler emits them on that path.
+
+A deferred body is itself a block, so it may register defers of its own, which run when it finishes. It may not leave itself: `return`, `?`, and a `break` or `continue` aimed at a loop outside the deferred body are errors. A loop written inside the deferred body may be exited normally.
+
+A runtime invariant panic (see [`enums-and-pattern-matching.md`](enums-and-pattern-matching.md#invalid-tags)) does not return, so no defer runs on that path.
 
 Omega has no exception/`try`/`catch` mechanism in the current language.
 

@@ -1,4 +1,5 @@
 use super::*;
+use omega_analyzer::checked::CheckedFunctionDef;
 use omega_analyzer::generics::GenericSubstitution;
 
 impl Driver {
@@ -234,6 +235,125 @@ impl Driver {
             .last_mut()
             .expect("an emitted module was just appended")
             .1
+    }
+
+    /// Emits every body this compilation owes: the generic instantiations and
+    /// pending primitive/conformance bodies checked code produced, and each
+    /// concrete member of an instantiated owner that emitted code names. An
+    /// instance member nothing names is never checked or emitted, so an owner
+    /// type costs only the members a program uses. Checking any of these can
+    /// produce more of every kind, so this runs to a fixpoint.
+    ///
+    /// Generic bodies are emitted by this invocation even when their template
+    /// lives in an extern package, under the template's declared module path:
+    /// MIR uses that path as part of symbol identity.
+    pub(super) fn emit_reachable_bodies(
+        &mut self,
+        modules: &mut CheckedModules,
+        warnings: &mut TaggedWarnings,
+    ) {
+        let mut emitted_instantiations = 0;
+        let mut scanned: IndexMap<ModulePath, usize> = IndexMap::new();
+        let mut reached_members: std::collections::HashSet<HirId> = Default::default();
+        let mut members: IndexMap<ItemKey, Vec<CheckedFunctionDef>> = IndexMap::new();
+        let mut referenced: Vec<HirId> = Vec::new();
+        loop {
+            while let Some((key, body)) = self
+                .items
+                .generic_instantiations
+                .get_index(emitted_instantiations)
+                .map(|(key, body)| (key.clone(), body.clone_of()))
+            {
+                emitted_instantiations += 1;
+                self.emission_module(modules, key.module())
+                    .items
+                    .push(body.item);
+                warnings.extend(
+                    body.warnings
+                        .into_iter()
+                        .map(|warning| (key.module().clone(), warning)),
+                );
+            }
+            self.drain_pending_declaration_bodies(modules, warnings);
+
+            let mut usage = Usage::default();
+            for (path, module) in modules.iter() {
+                let start = scanned.get(path).copied().unwrap_or(0);
+                for item in &module.items[start..] {
+                    dead_code::collect_item(item, &mut usage);
+                }
+                scanned.insert(path.clone(), module.items.len());
+            }
+            referenced.extend(usage.functions);
+            if referenced.is_empty()
+                && emitted_instantiations == self.items.generic_instantiations.len()
+            {
+                break;
+            }
+
+            for decl_id in std::mem::take(&mut referenced) {
+                if reached_members.contains(&decl_id) {
+                    continue;
+                }
+                let Some(owner) = self.instance_member_owner(decl_id) else {
+                    continue;
+                };
+                reached_members.insert(decl_id);
+                let Some(body) = self.ensure_instance_member_body(decl_id) else {
+                    continue;
+                };
+                let mut usage = Usage::default();
+                dead_code::collect_item(&body.item, &mut usage);
+                referenced.extend(usage.functions);
+                let CheckedItem::FunctionDefinition(function) = body.item else {
+                    unreachable!("an instance member body is a function definition");
+                };
+                warnings.extend(
+                    body.warnings
+                        .into_iter()
+                        .map(|warning| (owner.module().clone(), warning)),
+                );
+                members.entry(owner).or_default().push(function);
+            }
+        }
+
+        for (owner, functions) in members {
+            self.attach_instance_members(modules, &owner, functions);
+        }
+    }
+
+    /// Adds the members an instantiated owner was found to need to that
+    /// owner's emitted item, where its member symbols belong.
+    fn attach_instance_members(
+        &self,
+        modules: &mut CheckedModules,
+        owner: &ItemKey,
+        functions: Vec<CheckedFunctionDef>,
+    ) {
+        let declared = match &self.modules.hir(owner.module()).items[owner.disambiguator] {
+            HirItem::Struct(s) => s.id,
+            HirItem::Enum(e) => e.id,
+            HirItem::Union(u) => u.id,
+            _ => unreachable!("an instance member's owner is an aggregate"),
+        };
+        let module = self.emission_module(modules, owner.module());
+        let target = module.items.iter_mut().find_map(|item| match item {
+            CheckedItem::Struct(s) if s.id == declared && s.generic_args == owner.generic_args => {
+                Some(&mut s.functions)
+            }
+            CheckedItem::Enum(e) if e.id == declared && e.generic_args == owner.generic_args => {
+                Some(&mut e.functions)
+            }
+            CheckedItem::Union(u) if u.id == declared && u.generic_args == owner.generic_args => {
+                Some(&mut u.functions)
+            }
+            _ => None,
+        });
+        // A member checks only after its owner's instantiation resolved; an
+        // owner whose own body failed was reported and emits nothing.
+        if let Some(target) = target {
+            target.extend(functions);
+        }
     }
 
     pub(super) fn drain_pending_declaration_bodies(

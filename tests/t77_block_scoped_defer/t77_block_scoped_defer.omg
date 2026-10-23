@@ -1,0 +1,120 @@
+# A `defer` runs when its innermost enclosing block is left, by falling off
+# its end, `break`, `continue`, `return`, or a failing `?`; a block's defers
+# run last-registered first, inner blocks before outer ones
+# (control-flow-and-operators.md "defer").
+import std::io::println;
+import core::option::Option;
+
+per_iteration() => void {
+	mut i := 0;
+	while i < 3 {
+		defer { println$("  end of iteration ", i); }
+		i += 1;
+		if i == 2 {
+			continue;
+		}
+		println$("  body ", i);
+	}
+}
+
+breaks_out() => void {
+	loop {
+		defer { println$("  loop body left"); }
+		{
+			defer { println$("  inner block left"); }
+			break;
+		}
+	}
+	println$("  after loop");
+}
+
+returns_through(early: bool) => i32 {
+	defer { println$("  function body left"); }
+	mut result := 1;
+	if early {
+		defer { println$("  if body left"); }
+		result = 10;
+		return result;
+	}
+	# The return value is fixed before the defer that changes `result` runs.
+	defer { result = 99; }
+	result
+}
+
+half(n: i32) => Option<i32> {
+	if n % 2 == 0 { Option<i32>::Some { value = n / 2; } } else { Option<i32>::None }
+}
+
+quarter(n: i32) => Option<i32> {
+	defer { println$("  quarter left"); }
+	h := {
+		defer { println$("  first half left"); }
+		half(n)?
+	};
+	half(h)
+}
+
+nested() => void {
+	defer {
+		println$("  outer defer runs");
+		defer { println$("  defer inside a defer runs last"); }
+		println$("  outer defer body ends");
+	}
+	println$("  nested body");
+}
+
+ordered() => void {
+	defer { println$("  registered first, runs last"); }
+	defer { println$("  registered second"); }
+	defer { println$("  registered third, runs first"); }
+}
+
+header() => void {
+	mut n := 0;
+	while { defer { println$("  condition block left"); } n < 1 } {
+		n += 1;
+	}
+}
+
+value_of(o: Option<i32>) => i32 {
+	match o {
+		Option::Some => o.value,
+		Option::None => -1,
+	}
+}
+
+# Compile-time evaluation leaves blocks the same way.
+counted() => i32 {
+	mut total := 0;
+	mut i := 0;
+	while i < 3 {
+		defer { total += 10; }
+		i += 1;
+	}
+	{
+		defer { total += 1; }
+		total
+	}
+}
+
+comp COUNTED := counted();
+
+main() => void {
+	println$("per-iteration:");
+	per_iteration();
+	println$("break:");
+	breaks_out();
+	println$("return:");
+	println$("  returned ", returns_through(true));
+	println$("  returned ", returns_through(false));
+	println$("try:");
+	println$("  quarter ", value_of(quarter(8)));
+	println$("  quarter ", value_of(quarter(3)));
+	println$("nested:");
+	nested();
+	println$("order:");
+	ordered();
+	println$("loop header:");
+	header();
+	println$("comp: ", COUNTED, " runtime: ", counted());
+}

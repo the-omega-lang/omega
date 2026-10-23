@@ -1,0 +1,37 @@
+error: expected a name, found keyword 'reveal'
+ --> tests/t82_keyword_as_name/t82_keyword_as_name.omg:3:8
+  |
+3 | struct reveal {
+  |        ^^^^^^ `reveal` is a reserved keyword
+  |
+  = note: a reserved keyword cannot name a binding, parameter, field, or item
+  = help: choose a different name
+
+error: expected a name, found keyword 'if'
+ --> tests/t82_keyword_as_name/t82_keyword_as_name.omg:4:5
+  |
+4 |     if: i32;
+  |     ^^ `if` is a reserved keyword
+  |
+  = note: a reserved keyword cannot name a binding, parameter, field, or item
+  = help: choose a different name
+
+error: expected a name, found keyword 'match'
+ --> tests/t82_keyword_as_name/t82_keyword_as_name.omg:7:7
+  |
+7 | scale(match: i32) => i32 {
+  |       ^^^^^ `match` is a reserved keyword
+  |
+  = note: a reserved keyword cannot name a binding, parameter, field, or item
+  = help: choose a different name
+
+error: expected a name, found keyword 'loop'
+  --> tests/t82_keyword_as_name/t82_keyword_as_name.omg:12:9
+   |
+12 |     mut loop : i32 = 1;
+   |         ^^^^ `loop` is a reserved keyword
+   |
+   = note: a reserved keyword cannot name a binding, parameter, field, or item
+   = help: choose a different name
+
+error: could not compile the program due to 4 previous errors

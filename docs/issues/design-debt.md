@@ -45,51 +45,18 @@ future proposal should distinguish compiler-generated checks from explicit
 source-level panic calls and weigh actual optimization gains against these
 semantic costs.
 
-### Enum match dispatch re-reads the tag for each condition
+### Deferred question: restricting variant construction to the declaring module
 
-Named and anonymous enum matches currently carry a separate tag-place read in
-each arm condition, including the conditions for `..` and a reachable `else`.
-This does not repeat evaluation of the scrutinee expression, but dispatch can
-load its tag repeatedly. The conditions are built by `tag_variant_condition`
-and `member_tag_condition` in
-[`analysis/patterns/resolve.rs`](../../compiler/omega-analyzer/src/analysis/patterns/resolve.rs)
-and lowered independently by
-[`lower_match_chain`](../../compiler/omega-mir/src/lower/function/control_flow.rs).
-
-This is an optimization follow-up, not a known failure of the invalid-tag panic
-check: these are ordinary field loads with no intervening user code during
-dispatch. Redundant loads may survive without optimization; the current
-representation leaves their elimination to the backend.
-
-Follow up by sampling the tag once before dispatch and sharing that value
-across all conditions. Preserve binding refinement, legal-variant-only `else`,
-and the separate invalid-tag panic path. Verify one tag read in MIR for named
-and anonymous enums (including pointer scrutinees and sparse explicit tags),
-and retain executable coverage of valid arms and invalid-tag panics at `-O0`
-and `-O3`.
-
-### Matching on an enum's `.tag` is checked against the tag type's whole domain
-
-Every `match` is checked by one pattern-space engine (`exhaustiveness.rs`), but
-the domain it checks against comes from the scrutinee's type. Matching the enum
-value itself covers its declared variants; matching its `.tag` field is an
-ordinary integer match over the tag type's full range:
-
-```
-enum E(tag: u32) { First(10), Second(20) }
-
-match e { E::First => .., E::Second => .. }             # exhaustive, no `else` needed
-
-match e.tag { 10 => .., 20 => .. }                        # `else` REQUIRED --
-                                                             # the u32 domain has
-                                                             # no idea only 10/20
-                                                             # ever occur
-```
-Both behaviors are individually correct for what each match knows, but the
-moment you reach for `.tag` instead of the value itself (plausible whenever you
-want the numeric tag for logging/serialization/FFI alongside a match),
-exhaustiveness checking gets categorically weaker with no warning that anything
-changed.
+`Option` and `Result` have static constructors (`Option::some(v)`,
+`Result::err(e)`), but variant literals such as `Option<T>::Some { value = v; }`
+stay legal everywhere. Making the constructors the only way to build these
+types would need a general rule, not an `Option`/`Result` special case: a way
+for an enum to declare its variants constructible only inside its declaring
+module, as a struct's private fields already restrict its literal. No such rule
+exists yet, so nothing is restricted. Any proposal must settle how it
+interacts with pattern matching (which names variants without constructing
+them), with `?` (which the compiler lowers to variant construction), and with
+generic code outside the declaring module.
 
 ### Annotation holes are synthesized parameters with fabricated names
 

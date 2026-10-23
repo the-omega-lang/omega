@@ -1,0 +1,15 @@
+# `value.name(...)` never calls a field and an uncalled `value.name` never
+# names a member function (functions.md "Associated-function namespaces").
+double(x: i32) => i32 { x * 2 }
+
+struct Thing {
+    exposed callback: (i32) => i32;
+
+    exposed method(*self) => i32 { 1 }
+}
+
+main() => void {
+    t := Thing { callback = double; };
+    a := t.callback(1);
+    b := t.method;
+}

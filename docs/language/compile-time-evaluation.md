@@ -69,7 +69,7 @@ Current compile-time evaluation supports the ordinary operations needed by Omega
 - nested `comp` evaluation;
 - addresses/references to compile-time data where the resulting value can be represented as immutable static data.
 
-`defer` inside a compile-time function call follows the same function-scoped FILO execution rule as at runtime and runs after the function's return value has been determined. A failing `?` exits the evaluated function the same way an explicit `return` does, so its deferred statements still run.
+`defer` inside a compile-time function call follows the same block-scoped LIFO rule as at runtime: each block runs the defers it registered when it is left, after its value has been determined. A failing `?` exits the evaluated function the same way an explicit `return` does, so the deferred statements of every block it leaves still run.
 
 A `comp` operand that itself exits the enclosing *runtime* function — a bare `?` under `comp`, for instance — has no frame to return into, so the evaluation fails with a diagnostic rather than producing a value.
 

@@ -1,7 +1,7 @@
 use crate::Driver;
 use crate::error::CompileError;
 use omega_analyzer::analysis::{AnalysisMode, AnalysisSite, Analyzer};
-use omega_analyzer::dead_code::FieldUsage;
+use omega_analyzer::dead_code::Usage;
 use omega_analyzer::error::{AnalysisError, AnalysisWarning};
 use omega_analyzer::generics::GenericSubstitution;
 use omega_diagnostics::Span;
@@ -27,7 +27,7 @@ pub(crate) struct Diagnostics {
     /// the same fault once. Identity is the node, its span, and the rendered
     /// claim -- two of those are the same finding, not two findings.
     reported: HashSet<(ModulePath, HirId, Span, String)>,
-    comp_field_usage: FieldUsage,
+    comp_field_usage: Usage,
 }
 
 impl Diagnostics {
@@ -165,7 +165,7 @@ impl Diagnostics {
             .collect()
     }
 
-    pub fn take_comp_field_usage(&mut self) -> FieldUsage {
+    pub fn take_comp_field_usage(&mut self) -> Usage {
         std::mem::take(&mut self.comp_field_usage)
     }
 }

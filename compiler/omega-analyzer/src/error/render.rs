@@ -51,7 +51,22 @@ impl AnalysisErrorKind {
             Self::NotAStruct { found } => d
                 .with_label(span, format!("this has type `{found}`, which has no fields"))
                 .with_note("only struct values (and pointers to them) support field access"),
-            Self::NoSuchField { base, .. } => d.with_label(span, format!("`{base}` has no field by that name")),
+            Self::NoSuchField { field, base, member_function } => {
+                let d = d.with_label(span, format!("`{base}` has no field by that name"));
+                with_member_function_help(d, field, member_function.as_ref())
+            }
+            Self::NoSuchMemberFunction { function, owner, callable_field, receiver } => {
+                let d = d.with_label(span, format!("`{owner}` has no member function by that name"));
+                match (callable_field, receiver) {
+                    (false, _) => d,
+                    (true, Some(receiver)) => d.with_help(format!(
+                        "to call the function stored in the field `{function}`, parenthesize the field access: `({receiver}.{function})(...)`"
+                    )),
+                    (true, None) => d.with_help(format!(
+                        "to call the function stored in the field `{function}`, parenthesize the field access before the call"
+                    )),
+                }
+            }
             Self::FieldNotVisible { field, base } => d
                 .with_label(span, format!("`{field}` is not visible from this module"))
                 .with_help(format!("mark the field `exposed`/`shared` on `{base}`, or bypass with `reveal`")),
@@ -267,12 +282,12 @@ impl AnalysisErrorKind {
                 d.with_label(span, format!("cannot infer type argument(s) {names} of `{type}` here"))
                     .with_help(format!("write them explicitly, e.g. `{type}<...>`"))
             }
-            Self::DeferInsideLoopNotSupported => d
-                .with_label(span, "`defer` cannot appear inside a loop body or a repeated loop header")
-                .with_help("move the `defer` outside the loop, or run the cleanup code directly"),
             Self::ReturnInsideDefer => d
                 .with_label(span, "cannot `return` from inside a `defer` body")
-                .with_note("deferred code runs while the function is already returning"),
+                .with_note("deferred code runs while its block is already being left"),
+            Self::LoopExitInsideDefer { keyword } => d
+                .with_label(span, format!("this `{keyword}` would leave the `defer` body"))
+                .with_note("deferred code runs while its block is already being left; only a loop inside the `defer` body can be exited"),
             Self::TryInsideDefer => d
                 .with_label(span, "`?` cannot appear inside a `defer` body")
                 .with_note("a failing `?` exits the enclosing function, which deferred code cannot do"),
@@ -294,9 +309,6 @@ impl AnalysisErrorKind {
                 .with_note(anonymous_enum_conversion_note(expected, found).unwrap_or(
                     "`?` converts a propagated error exactly as an explicitly typed destination would; it never rebuilds the whole `Result`",
                 )),
-            Self::NestedDeferNotSupported => d
-                .with_label(span, "`defer` cannot appear inside another `defer` body")
-                .with_note("a defer's body already runs exactly once, at function exit"),
             Self::StructLiteralNotAStruct { found } => d
                 .with_label(span, format!("`{found}` is not a struct or union"))
                 .with_note("only struct and union types can be built with `Name { field = value; ... }`"),
@@ -443,12 +455,13 @@ impl AnalysisErrorKind {
                     field.as_ref(),
                     owner.as_ref()
                 )),
-            Self::NoSuchEnumField { r#enum, similar, .. } => {
+            Self::NoSuchEnumField { field, r#enum, similar, member_function } => {
                 let d = d.with_label(span, format!("`{}` has no field by that name", r#enum.as_ref()));
-                match similar {
+                let d = match similar {
                     Some(name) => d.with_help(format!("a field with a similar name exists: `{}`", name.as_ref())),
                     None => d,
-                }
+                };
+                with_member_function_help(d, field, member_function.as_ref())
             }
             Self::GenericPathTooDeep { r#type } => d
                 .with_label(span, format!("nothing nests deeper than `{}`'s own members", r#type.as_ref())),
@@ -843,6 +856,13 @@ impl AnalysisErrorKind {
             }
             Self::ConformanceExtraFunction { function, spec } => d
                 .with_label(span, format!("'{}' is not declared by '{}'", function.as_ref(), spec.as_ref())),
+            Self::ConformanceSignatureMismatch { spec, function, required, found } => d
+                .with_label(span, format!("this is `{found}`"))
+                .with_note(format!(
+                    "'{}' requires `{}` to be `{required}`",
+                    spec.as_ref(),
+                    function.as_ref()
+                )),
             Self::UnconstrainedConformanceParameter { parameter } => d
                 .with_label(span, format!("'{}' is not fixed by the conformance target", parameter.as_ref()))
                 .with_help("mention this parameter in the target, or remove it from the conformance declaration"),
@@ -1209,6 +1229,21 @@ pub fn resolve_error_diagnostic(error: &ResolveError, span: Option<Span>) -> Dia
                 "write the fully-qualified path instead, e.g. '{}'",
                 candidates.first().map(ToString::to_string).unwrap_or_default(),
             )),
+    }
+}
+
+/// An uncalled `value.name` never selects a member function; when one of
+/// that name exists, the help names its value spelling.
+fn with_member_function_help(
+    d: Diagnostic,
+    name: &Ident,
+    owner: Option<&ResolvedType>,
+) -> Diagnostic {
+    match owner {
+        Some(owner) => d.with_help(format!(
+            "`{name}` is a member function; name it as a value with `{owner}::self::{name}`"
+        )),
+        None => d,
     }
 }
 

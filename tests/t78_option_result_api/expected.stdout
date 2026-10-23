@@ -1,0 +1,16 @@
+option-tests: true false false true true
+option-unwrap: 5 5 5 9
+ok-or: 5 missing
+and: 7 -1 -1
+or: 5 6 -1
+xor: 5 6 -1 -1
+take: 1 -1
+replace: -1 2
+get-or-insert: 12 14
+as-ptr: 21 true
+result-tests: true false false true true
+result-unwrap: 8 8 broken broken 0 8
+conversions: 8 -1 broken true
+result-and: 2 broken
+result-or: 8 4 5
+result-as-ptr: 32 broken

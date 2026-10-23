@@ -18,6 +18,10 @@ impl ParseError {
     pub fn to_diagnostic(&self) -> Diagnostic {
         match &self.kind {
             ParseErrorKind::Expected { expected, .. } => Diagnostic::error(self.kind.message()).with_label(self.span, format!("expected {expected}")),
+            ParseErrorKind::KeywordAsName { keyword } => Diagnostic::error(self.kind.message())
+                .with_label(self.span, format!("`{keyword}` is a reserved keyword"))
+                .with_note("a reserved keyword cannot name a binding, parameter, field, or item")
+                .with_help("choose a different name"),
             ParseErrorKind::UnterminatedString => Diagnostic::error(self.kind.message())
                 .with_label(self.span, "this string never closes")
                 .with_help("add a closing `\"`"),
@@ -187,6 +191,9 @@ pub enum ParseErrorKind {
         expected: &'static str,
         found: TokenDescription,
     },
+    KeywordAsName {
+        keyword: &'static str,
+    },
     UnterminatedString,
     UnterminatedChar,
     UnterminatedComment,
@@ -268,6 +275,7 @@ impl ParseErrorKind {
     pub fn message(&self) -> String {
         match self {
             ParseErrorKind::Expected { expected, found } => format!("expected {expected}, found {found}"),
+            ParseErrorKind::KeywordAsName { keyword } => format!("expected a name, found keyword '{keyword}'"),
             ParseErrorKind::UnterminatedString => "unterminated string literal".to_owned(),
             ParseErrorKind::UnterminatedChar => "unterminated character literal".to_owned(),
             ParseErrorKind::UnterminatedComment => "unterminated comment".to_owned(),

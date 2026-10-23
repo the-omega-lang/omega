@@ -1,0 +1,17 @@
+error: 'u8' does not implement spec 'Tag'
+  --> tests/t86b_used_member_signature_errors/t86b_used_member_signature_errors.omg:13:27
+   |
+13 |     exposed tagged(*self, n: Need<T>) => T { self.v }
+   |                           ^^^^^^^^^^ does not implement this spec
+   |
+   = note: no conformance to it is declared for this type
+
+error: cannot use 't86b_used_member_signature_errors::Wrap' because of its own error
+  --> tests/t86b_used_member_signature_errors/t86b_used_member_signature_errors.omg:18:11
+   |
+18 |     <void>plain.get();
+   |           ^^^^^^^^^ cannot be used because of its own error
+   |
+   = note: `Wrap`'s own error is reported where it is defined
+
+error: could not compile the program due to 2 previous errors

@@ -1,0 +1,17 @@
+error: no member function 'callback' on 'Thing'
+  --> tests/t74b_member_call_errors/t74b_member_call_errors.omg:13:10
+   |
+13 |     a := t.callback(1);
+   |          ^^^^^^^^^^ `Thing` has no member function by that name
+   |
+   = help: to call the function stored in the field `callback`, parenthesize the field access: `(t.callback)(...)`
+
+error: no field 'method' on 'Thing'
+  --> tests/t74b_member_call_errors/t74b_member_call_errors.omg:14:10
+   |
+14 |     b := t.method;
+   |          ^^^^^^^^ `Thing` has no field by that name
+   |
+   = help: `method` is a member function; name it as a value with `Thing::self::method`
+
+error: could not compile the program due to 2 previous errors

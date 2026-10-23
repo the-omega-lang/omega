@@ -54,7 +54,7 @@ impl<'r> Analyzer<'r> {
         r#try: &HirTry,
     ) -> Option<CheckedExprNode> {
         let operator_span = r#try.operator_span;
-        if self.in_defer_body {
+        if self.in_defer_body() {
             self.error(id, operator_span, AnalysisErrorKind::TryInsideDefer);
             return None;
         }

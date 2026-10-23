@@ -344,7 +344,7 @@ fn parse_alias_def(
 fn parse_import(p: &mut Parser, annotations: Vec<AnnotationNode>) -> Option<ImportStmt> {
     let start = p.peek_span();
     p.expect(&TokenKind::Import, "'import'");
-    let reveal = p.eat_contextual(contextual::REVEAL);
+    let reveal = p.eat(&TokenKind::Reveal);
     let anchor = parse_path_anchor(p);
     let (head, origin) = p.expect_ident_with_origin()?;
     let tail = parse_import_segments(p)?;
@@ -420,7 +420,7 @@ fn parse_import_group(p: &mut Parser) -> Option<Vec<ImportNode>> {
 
 fn parse_import_entry(p: &mut Parser) -> Option<ImportNode> {
     let start = p.peek_span();
-    let reveal = p.eat_contextual(contextual::REVEAL);
+    let reveal = p.eat(&TokenKind::Reveal);
     let segments = if p.at_contextual(contextual::SELF) {
         if matches!(p.peek_at(1), TokenKind::ColonColon) {
             p.error_at(

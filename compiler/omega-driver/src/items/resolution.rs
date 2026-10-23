@@ -375,6 +375,10 @@ impl Driver {
         let item = &hir.items[index];
         let module = key.module();
         let substitution = GenericSubstitution::zip(generics, &key.generic_args);
+        // An instantiated owner's member signatures wait for their first
+        // use (`ensure_member_signatures`); a declared type's are part of
+        // its definition.
+        let lazy_members = key.is_instantiation();
 
         let resolved = match item {
             HirItem::Declaration {
@@ -516,7 +520,18 @@ impl Driver {
                     &substitution,
                     self_type,
                     method_ids,
-                    |a, ids| a.signature_of_struct(s, &nominal, ids),
+                    |a, ids| {
+                        a.signature_of_struct(s, &nominal)?;
+                        if lazy_members {
+                            return Some(());
+                        }
+                        a.define_member_signatures(
+                            &s.functions,
+                            !s.generics.is_empty(),
+                            &nominal,
+                            ids,
+                        )
+                    },
                 )
             }
 
@@ -537,7 +552,18 @@ impl Driver {
                     &substitution,
                     self_type,
                     method_ids,
-                    |a, ids| a.signature_of_enum(e, &nominal, ids),
+                    |a, ids| {
+                        a.signature_of_enum(e, &nominal)?;
+                        if lazy_members {
+                            return Some(());
+                        }
+                        a.define_member_signatures(
+                            &e.functions,
+                            !e.generics.is_empty(),
+                            &nominal,
+                            ids,
+                        )
+                    },
                 )
             }
 
@@ -554,7 +580,18 @@ impl Driver {
                     &substitution,
                     self_type,
                     method_ids,
-                    |a, ids| a.signature_of_union(u, &nominal, ids),
+                    |a, ids| {
+                        a.signature_of_union(u, &nominal)?;
+                        if lazy_members {
+                            return Some(());
+                        }
+                        a.define_member_signatures(
+                            &u.functions,
+                            !u.generics.is_empty(),
+                            &nominal,
+                            ids,
+                        )
+                    },
                 )
             }
 
@@ -603,6 +640,70 @@ impl Driver {
         items
             .nominals
             .intern(&mut items.types, key, decl_id, kind, variant_names)
+    }
+
+    /// Resolves an instantiated owner's member signatures the first time
+    /// something reads them. Every other owner wrote them with its facts, so
+    /// for it this is a no-op, and a read that finds them missing is a cycle.
+    pub(crate) fn ensure_member_signatures(
+        &mut self,
+        nominal: &NominalRef,
+    ) -> Result<(), ResolveError> {
+        if self.items.types.functions(nominal).is_ok() {
+            return Ok(());
+        }
+        let Some(key) = self.items.nominals.key_of(nominal) else {
+            return Ok(());
+        };
+        if !key.is_instantiation() || !self.items.is_resolved(&key) {
+            return Ok(());
+        }
+        if self.items.member_signatures_failed.contains(&key) {
+            return Err(key.failed());
+        }
+        if !self.items.member_signatures_in_progress.insert(key.clone()) {
+            return Ok(());
+        }
+        let hir = self.modules.hir(key.module());
+        let (functions, generics, site, self_type) = match &hir.items[key.disambiguator] {
+            HirItem::Struct(s) => (
+                &s.functions,
+                GenericParam::declared(s.id, &s.generics),
+                AnalysisSite::new(s.id, s.span),
+                ResolvedType::Struct(nominal.clone()),
+            ),
+            HirItem::Enum(e) => (
+                &e.functions,
+                GenericParam::declared(e.id, &e.generics),
+                AnalysisSite::new(e.id, e.span),
+                ResolvedType::Enum {
+                    nominal: nominal.clone(),
+                    variant: None,
+                },
+            ),
+            HirItem::Union(u) => (
+                &u.functions,
+                GenericParam::declared(u.id, &u.generics),
+                AnalysisSite::new(u.id, u.span),
+                ResolvedType::Union(nominal.clone()),
+            ),
+            _ => unreachable!("only an aggregate declaration owns member functions"),
+        };
+        let method_ids = self
+            .items
+            .method_identities(&key, functions.iter().map(|f| f.id));
+        let substitution =
+            GenericSubstitution::zip(&generics, &key.generic_args).with_self_type(self_type);
+        let written = self.analyze(key.module(), &substitution, site, |analyzer| {
+            analyzer.define_member_signatures(functions, true, nominal, &method_ids)
+        });
+        self.items.member_signatures_in_progress.remove(&key);
+        if written.is_none() {
+            let failed = key.failed();
+            self.items.member_signatures_failed.insert(key);
+            return Err(failed);
+        }
+        Ok(())
     }
 
     fn compute_aggregate(

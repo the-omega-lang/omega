@@ -11,8 +11,8 @@ closed by a matching run of the same length.
 
 # Contextual keywords lex as ordinary identifiers outside the grammar
 # positions that consume them contextually.
-describe(path: i32, reveal: i32, ident: i32) => i32 {
-	path + reveal + ident
+describe(path: i32, clobber: i32, ident: i32) => i32 {
+	path + clobber + ident
 }
 
 main() => void {
@@ -25,12 +25,12 @@ main() => void {
 	primitive := 13;
 	shared := 14;
 	exposed := 15;
-	comp := 16;
+	asm := 16;
 	expr := 17;
 	in := 18;
 
 	sum := describe(1, 2, 3) + type + root + glue + gap + marker
-		+ meet + primitive + shared + exposed + comp + expr + in;
+		+ meet + primitive + shared + exposed + asm + expr + in;
 	println$("sum: ", sum);
 
 	# `extern` was removed as a keyword in favor of `foreign`; it now lexes

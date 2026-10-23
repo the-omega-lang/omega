@@ -1,4 +1,5 @@
 use omega_parser::SourceModule;
+use omega_parser::diagnostics::{ParseError, ParseErrorKind};
 use omega_parser::parser::contextual;
 use omega_parser::prelude::Item;
 
@@ -34,6 +35,33 @@ fn every_contextual_keyword_works_as_a_parameter_and_field_name() {
         );
         SourceModule::parse(&source)
             .unwrap_or_else(|e| panic!("`{word}` must work as a parameter and field name: {e:?}"));
+    }
+}
+
+#[test]
+fn reserved_keywords_are_not_identifiers() {
+    for word in ["comp", "reveal", "match", "loop", "true"] {
+        for source in [
+            format!("{word} := 1;"),
+            format!("use_it() => void {{ {word} := 2; }}"),
+            format!("use_it() => void {{ mut {word} : i32 = 2; }}"),
+            format!("struct Holder {{ {word}: i32; }}"),
+            format!("struct {word} {{ }}"),
+            format!("takes({word}: i32) => void {{ }}"),
+            format!("takes(a: i32, {word}: i32) => void {{ }}"),
+        ] {
+            let errors = SourceModule::parse(&source)
+                .err()
+                .unwrap_or_else(|| panic!("`{word}` is reserved, so `{source}` must not parse"));
+            assert!(
+                matches!(
+                    errors.as_slice(),
+                    [ParseError { kind: ParseErrorKind::KeywordAsName { keyword }, .. }]
+                        if *keyword == word
+                ),
+                "`{source}` should report one keyword used as a name, got {errors:?}"
+            );
+        }
     }
 }
 

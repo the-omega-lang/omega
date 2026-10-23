@@ -1,0 +1,42 @@
+# Matching an enum's `.tag` is an ordinary integer match over the tag type's
+# whole domain, so it warns (enums-and-pattern-matching.md).
+import std::io::println;
+
+enum Code(tag: u8) {
+    First(10),
+    Second(20),
+}
+
+describe(c: Code) => i32 {
+    match c.tag {
+        10 => 1,
+        20 => 2,
+    } else {
+        0
+    }
+}
+
+alias Either = enum i32 | bool;
+
+member(e: Either) => i32 {
+    match e.tag {
+        0 => 1,
+    } else {
+        2
+    }
+}
+
+@suppress(tag_match)
+quiet(c: *Code) => i32 {
+    match c.tag {
+        10 => 1,
+    } else {
+        3
+    }
+}
+
+main() => void {
+    second := Code::Second;
+    flag : Either = true;
+    println$("tag-match: ", describe(Code::First), " ", describe(second), " ", member(flag), " ", quiet(&second));
+}

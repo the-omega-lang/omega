@@ -1,0 +1,8 @@
+# `Option::unwrap` on `None` panics with Rust's wording.
+import std::io::println;
+import core::option::Option;
+
+main() => void {
+	println$("before-panic");
+	println$(Option<i32>::none().unwrap());
+}

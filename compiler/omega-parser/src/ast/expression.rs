@@ -9,6 +9,7 @@ use crate::lexer::Token;
 pub enum Expression {
     Path(ExprPath),
     FieldAccess(Box<FieldAccessExpr>),
+    MemberCall(Box<MemberCallExpr>),
     Index(Box<IndexExpr>),
     Deref(Box<DerefExpr>),
     AddressOf(Box<AddressOfExpr>),
@@ -63,10 +64,19 @@ pub struct FieldAccessExpr {
     /// site for a macro-authored member name and the caller's for a
     /// substituted one. Member visibility is decided with these rights.
     pub field_origin: Origin,
-    /// Generic arguments written on the member, as in `x.map<u8>(f)`. The
-    /// grammar only accepts them directly before a call's `(`, so they are
-    /// always a generic method's arguments rather than a field's.
+}
+
+/// `base.member<...>(args)`, which only ever calls a member function. A
+/// function stored in a field is called as `(base.field)(args)` instead.
+#[derive(Debug, Clone)]
+pub struct MemberCallExpr {
+    pub base: ExpressionNode,
+    pub member: Ident,
+    /// Provenance of the member name, as for [`FieldAccessExpr::field_origin`].
+    pub member_origin: Origin,
+    pub member_span: Span,
     pub generic_args: Vec<crate::ast::generics::ExprGenericArg>,
+    pub args: Vec<ExpressionNode>,
 }
 
 #[derive(Debug, Clone)]

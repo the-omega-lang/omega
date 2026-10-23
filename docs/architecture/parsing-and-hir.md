@@ -45,7 +45,7 @@ Contextual words are intentionally not all hard lexer keywords. The parser's `pa
 
 ### Contextual-keyword commit rule
 
-A contextual word must be treated as syntax only after the surrounding shape proves that interpretation. A bare identifier spelling such as `mut`, `comp`, or `root` remains usable as a name where the contextual production does not match.
+A contextual word must be treated as syntax only after the surrounding shape proves that interpretation. A bare identifier spelling such as `mut`, `self`, or `root` remains usable as a name where the contextual production does not match.
 
 This rule matters because committing on the word alone silently shrinks the identifier namespace instead of merely producing a local parse error.
 
@@ -63,7 +63,7 @@ The recursive-descent parser is split by syntactic concern. `parser/mod.rs` owns
 - `parser/expression.rs` — expressions and precedence;
 - `parser/item.rs` — top-level routing, imports, and visibility;
 - `parser/item/annotations.rs` — annotation syntax;
-- `parser/item/functions.rs` — declarations, functions, parameters, and generics, including the contextual `comp NAME: TYPE` parameter form;
+- `parser/item/functions.rs` — declarations, functions, parameters, and generics, including the `comp NAME: TYPE` parameter form;
 - `parser/item/definitions.rs` — aggregate/spec/gap/glue/conform/primitive bodies;
 - `parser/statement.rs` — statement grammar;
 - `parser/type.rs` — type grammar;
@@ -318,4 +318,4 @@ Synthetic nodes take the source site of the construct that implies them: the imp
 
 ### HIR structural lowering
 
-HIR lowering may normalize source structure only when no semantic knowledge is required. Current examples include synthetic `self`, by-value `mut self` shadowing, and flattening place-shaped field/index/deref chains. If a chain is rooted in a non-place expression (for example `make().field`), that expression remains the place root and projections are appended in source order.
+HIR lowering may normalize source structure only when no semantic knowledge is required. Current examples include synthetic `self`, by-value `mut self` shadowing, and flattening place-shaped field/index/deref chains. If a chain is rooted in a non-place expression (for example `make().field`), that expression remains the place root and projections are appended in source order. The parser builds a distinct member-call node for `.name` (with optional generic arguments) directly followed by `(`, and HIR lowers it to `HirMemberCall`, whose receiver is the place chain before the member; `(x.f)(...)` stays an ordinary call whose callee is the field place, which is what keeps fields and member functions in separate namespaces.

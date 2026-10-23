@@ -82,6 +82,25 @@ impl ConformanceOrigin {
     }
 }
 
+/// A concrete `meet` not yet instantiated. `provides` is the `(target, spec)`
+/// it declares, when both resolve: a lookup of that goal instantiates it out
+/// of declaration order. One that does not resolve waits for the
+/// declaration-order pass, which reports why.
+#[derive(Clone)]
+struct ConcreteDeclaration {
+    module: ModulePath,
+    conform: HirConformDef,
+    provides: Option<ConcreteGoal>,
+}
+
+#[derive(Clone)]
+struct ConcreteGoal {
+    target: ResolvedType,
+    spec: HirId,
+    spec_name: Ident,
+    spec_args: Vec<ResolvedGenericArg>,
+}
+
 #[derive(Clone)]
 struct ConformanceTemplate {
     module: ModulePath,
@@ -101,12 +120,16 @@ struct ConformanceGoal {
     spec_name: Ident,
     module: ModulePath,
     span: Span,
+    /// A concrete declaration's spec arguments. Its own check reports any
+    /// failure, so a lookup made from inside that check may assume it holds.
+    declared_args: Option<Vec<ResolvedGenericArg>>,
 }
 
 #[derive(Default)]
 pub(crate) struct Conformances {
     pub entries: Vec<ConformanceEntry>,
     templates: Vec<ConformanceTemplate>,
+    concrete: Vec<ConcreteDeclaration>,
     failed: Vec<(HirId, ResolvedType)>,
     materialized: Vec<ResolvedType>,
     goals: Vec<ConformanceGoal>,

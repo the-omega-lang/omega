@@ -117,6 +117,7 @@ impl<'r> Analyzer<'r> {
                         AnalysisErrorKind::NoSuchField {
                             field: field.name.clone(),
                             base: base.clone(),
+                            member_function: None,
                         }
                     })?;
                 Some(CheckedExprNode {
@@ -186,6 +187,7 @@ impl<'r> Analyzer<'r> {
                                 field: field.name.clone(),
                                 r#enum: unknown_enum.clone(),
                                 similar: best_match(&field.name, declared_names.iter()),
+                                member_function: None,
                             }
                         }
                     },
@@ -248,6 +250,7 @@ impl<'r> Analyzer<'r> {
                         AnalysisErrorKind::NoSuchField {
                             field: field.name.clone(),
                             base: resolved.clone(),
+                            member_function: None,
                         },
                     );
                     return None;
@@ -891,9 +894,7 @@ impl<'r> Analyzer<'r> {
                             return Some(AggregateTarget::EnumVariant(nominal.clone(), index));
                         }
                         None => {
-                            let functions = self.type_facts(node_id, span, |types| {
-                                types.functions(nominal).cloned()
-                            })?;
+                            let functions = self.member_functions(node_id, span, nominal)?;
                             AnalysisErrorKind::NoSuchEnumMember {
                                 r#enum: nominal.name.clone(),
                                 name: variant_name.clone(),

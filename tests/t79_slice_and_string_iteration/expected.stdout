@@ -1,0 +1,19 @@
+slice-sum: 8
+point: 1 2
+point: 3 4
+mutable-slice: 10
+mutable-slice: 20
+char: a 97
+char: é 233
+char: € 8364
+char: 😀 128512
+decoded: 97
+decoded: 65533
+decoded: 98
+decoded: 65533
+decoded: 65533
+decoded: 65533
+decoded: 65533
+decoded: 65533
+decoded: 65533
+decoded-count: 9

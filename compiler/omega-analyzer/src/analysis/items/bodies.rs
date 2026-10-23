@@ -1,6 +1,24 @@
 use super::*;
 use crate::compiler_functions::CompilerFunction;
 
+/// Which concrete member bodies an aggregate body check covers. An
+/// instantiated generic owner checks each member only when it is used, so
+/// its own body check covers none of them.
+#[derive(Clone, Copy)]
+pub enum MemberBodies<'a> {
+    All,
+    Only(&'a [HirId]),
+}
+
+impl MemberBodies<'_> {
+    fn includes(self, decl_id: HirId) -> bool {
+        match self {
+            Self::All => true,
+            Self::Only(ids) => ids.contains(&decl_id),
+        }
+    }
+}
+
 impl<'r> Analyzer<'r> {
     pub fn check_function_body(
         &mut self,
@@ -31,7 +49,7 @@ impl<'r> Analyzer<'r> {
                     "loop state must not leak between function bodies"
                 );
                 debug_assert!(
-                    !this.in_defer_body,
+                    !this.in_defer_body(),
                     "defer state must not leak between function bodies"
                 );
                 let body = this.analyze_block(body, Expected::Exact(fn_type.return_type.as_ref()));
@@ -267,6 +285,7 @@ impl<'r> Analyzer<'r> {
         functions: &[omega_hir::HirFunctionDef],
         methods: &[(Ident, ResolvedMethod)],
         suppress: &[Ident],
+        members: MemberBodies<'_>,
     ) -> Option<Vec<CheckedFunctionDef>> {
         // Only the declarations `collect_methods` resolved concretely have a
         // signature here, and the two lists agree on declaration order, so a
@@ -277,6 +296,9 @@ impl<'r> Analyzer<'r> {
             let mut checked = Vec::with_capacity(functions.len());
             let mut ok = true;
             for (function, (_, method)) in functions.iter().zip(methods) {
+                if !members.includes(method.decl_id) {
+                    continue;
+                }
                 match this.check_function_body(
                     function,
                     &method.fn_type,
@@ -289,6 +311,21 @@ impl<'r> Analyzer<'r> {
             }
             ok.then_some(checked)
         })
+    }
+
+    /// The member signatures a body check needs: none when it checks no
+    /// member body, so checking an instantiated owner does not resolve them.
+    fn member_functions_for(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        nominal: &NominalRef,
+        members: MemberBodies<'_>,
+    ) -> Option<crate::type_store::Methods> {
+        match members {
+            MemberBodies::Only([]) => Some(Default::default()),
+            _ => self.member_functions(node_id, span, nominal),
+        }
     }
 
     fn checked_fields(declared: &[HirField], resolved: &[ResolvedField]) -> Vec<CheckedField> {
@@ -308,16 +345,14 @@ impl<'r> Analyzer<'r> {
         &mut self,
         s: &HirStructDef,
         nominal: &NominalRef,
+        members: MemberBodies<'_>,
     ) -> Option<CheckedStructDef> {
-        let (resolved, methods) = self.type_facts(s.id, s.span, |types| {
-            Ok((
-                types.struct_facts(nominal)?.clone(),
-                types.functions(nominal)?.clone(),
-            ))
-        })?;
+        let resolved =
+            self.type_facts(s.id, s.span, |types| types.struct_facts(nominal).cloned())?;
+        let methods = self.member_functions_for(s.id, s.span, nominal, members)?;
         let fields = Self::checked_fields(&s.fields, &resolved.fields);
         let suppress = resolved.suppress.clone();
-        let functions = self.check_method_bodies(&s.functions, &methods, &suppress)?;
+        let functions = self.check_method_bodies(&s.functions, &methods, &suppress, members)?;
         Some(CheckedStructDef {
             id: s.id,
             span: s.span,
@@ -332,16 +367,14 @@ impl<'r> Analyzer<'r> {
         &mut self,
         u: &HirUnionDef,
         nominal: &NominalRef,
+        members: MemberBodies<'_>,
     ) -> Option<CheckedUnionDef> {
-        let (resolved, methods) = self.type_facts(u.id, u.span, |types| {
-            Ok((
-                types.union_facts(nominal)?.clone(),
-                types.functions(nominal)?.clone(),
-            ))
-        })?;
+        let resolved =
+            self.type_facts(u.id, u.span, |types| types.union_facts(nominal).cloned())?;
+        let methods = self.member_functions_for(u.id, u.span, nominal, members)?;
         let fields = Self::checked_fields(&u.fields, &resolved.fields);
         let suppress = resolved.suppress.clone();
-        let functions = self.check_method_bodies(&u.functions, &methods, &suppress)?;
+        let functions = self.check_method_bodies(&u.functions, &methods, &suppress, members)?;
         Some(CheckedUnionDef {
             id: u.id,
             span: u.span,
@@ -356,15 +389,12 @@ impl<'r> Analyzer<'r> {
         &mut self,
         e: &HirEnumDef,
         nominal: &NominalRef,
+        members: MemberBodies<'_>,
     ) -> Option<CheckedEnumDef> {
-        let (resolved, methods) = self.type_facts(e.id, e.span, |types| {
-            Ok((
-                types.enum_facts(nominal)?.clone(),
-                types.functions(nominal)?.clone(),
-            ))
-        })?;
+        let resolved = self.type_facts(e.id, e.span, |types| types.enum_facts(nominal).cloned())?;
+        let methods = self.member_functions_for(e.id, e.span, nominal, members)?;
         let suppress = resolved.suppress.clone();
-        let functions = self.check_method_bodies(&e.functions, &methods, &suppress)?;
+        let functions = self.check_method_bodies(&e.functions, &methods, &suppress, members)?;
         Some(CheckedEnumDef {
             id: e.id,
             span: e.span,

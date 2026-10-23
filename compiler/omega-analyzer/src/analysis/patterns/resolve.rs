@@ -9,6 +9,9 @@ pub(super) struct Position {
     pub(super) place: CheckedPlace,
     pub(super) r#type: ResolvedType,
     pub(super) path: Vec<Ident>,
+    /// The local this position's tag was sampled into before dispatch, which
+    /// every tag test reads instead of the tag field.
+    pub(super) sampled_tag: Option<CheckedPlace>,
 }
 
 impl Position {
@@ -157,30 +160,12 @@ impl<'r> Analyzer<'r> {
             }
         };
 
-        let mut tag_projections = position.place.projections.clone();
-        let tag_type = self.resolve_field_projection(
-            node_id,
-            pattern.span(),
-            &mut tag_projections,
-            &position.r#type,
-            &Ident("tag".to_string()),
-            Origin::default(),
-            &mut false,
-        )?;
-        let tag_place = CheckedPlace {
-            root: position.place.root.clone(),
-            projections: tag_projections,
-            r#type: tag_type.clone(),
-        };
+        let tag_place = self.tag_place(node_id, pattern.span(), position)?;
         let e = self.type_facts(node_id, pattern.span(), |types| {
             types.enum_facts(nominal).cloned()
         })?;
-        let tag_test = self.tag_variant_condition(
-            &tag_place,
-            &tag_type,
-            e.variants[index].tag,
-            pattern.span(),
-        );
+        let tag_test =
+            self.tag_variant_condition(&tag_place, e.variants[index].tag, pattern.span());
         proof.conditions.push(tag_test);
         proof.tests_tag = true;
 
@@ -243,14 +228,8 @@ impl<'r> Analyzer<'r> {
             self.resolve_anonymous_member(node_id, shape, &position.r#type, pattern)?;
         let member = shape.members()[index].clone();
 
-        let tag_type = crate::layout::ANONYMOUS_ENUM_TAG_TYPE;
-        let tag_place = position.projected(
-            CheckedProjection::EnumTag {
-                r#type: tag_type.clone(),
-            },
-            tag_type.clone(),
-        );
-        let tag_test = self.member_tag_condition(&tag_place, &tag_type, index, pattern.span());
+        let tag_place = self.tag_place(node_id, pattern.span(), position)?;
+        let tag_test = self.member_tag_condition(&tag_place, index, pattern.span());
         proof.conditions.push(tag_test);
         proof.tests_tag = true;
 
@@ -267,6 +246,7 @@ impl<'r> Analyzer<'r> {
                 ),
                 r#type: member.clone(),
                 path: position.path.clone(),
+                sampled_tag: None,
             };
             let before = proof.refinements.len();
             let inner = self.resolve_subpattern(node_id, &member_position, pattern, proof)?;
@@ -515,11 +495,13 @@ impl<'r> Analyzer<'r> {
                         field: field.name.clone(),
                         r#enum: nominal.name.clone(),
                         similar: best_match(&field.name, declared.iter().map(|d| &d.name)),
+                        member_function: None,
                     }
                 } else {
                     AnalysisErrorKind::NoSuchField {
                         field: field.name.clone(),
                         base: owner.clone(),
+                        member_function: None,
                     }
                 };
                 self.error(node_id, field.name_span, kind);
@@ -572,6 +554,7 @@ impl<'r> Analyzer<'r> {
                 },
                 r#type: field_type,
                 path,
+                sampled_tag: None,
             };
             let pat = self.resolve_subpattern(node_id, &child, &field.pattern, proof)?;
             components.push((
@@ -631,44 +614,59 @@ impl<'r> Analyzer<'r> {
         self.pattern_member_index(node_id, span, shape, parent, member)
     }
 
+    /// The place a tag test at `position` reads: its sample when the tag was
+    /// sampled before dispatch, its tag field otherwise.
+    pub(super) fn tag_place(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        position: &Position,
+    ) -> Option<CheckedPlace> {
+        if let Some(sample) = &position.sampled_tag {
+            return Some(sample.clone());
+        }
+        if let ResolvedType::Enum { .. } = position.r#type {
+            let mut projections = position.place.projections.clone();
+            let tag_type = self.resolve_field_projection(
+                node_id,
+                span,
+                &mut projections,
+                &position.r#type,
+                &Ident("tag".to_string()),
+                Origin::default(),
+                &mut false,
+            )?;
+            return Some(CheckedPlace {
+                root: position.place.root.clone(),
+                projections,
+                r#type: tag_type,
+            });
+        }
+        let tag_type = crate::layout::ANONYMOUS_ENUM_TAG_TYPE;
+        Some(position.projected(
+            CheckedProjection::EnumTag {
+                r#type: tag_type.clone(),
+            },
+            tag_type,
+        ))
+    }
+
     pub(super) fn member_tag_condition(
         &mut self,
         tag_place: &CheckedPlace,
-        tag_type: &ResolvedType,
         member_index: usize,
         span: Span,
     ) -> CheckedExprNode {
-        let tag_read = CheckedExprNode {
-            id: self.resolver.fresh_synthetic_id(),
-            span,
-            r#type: tag_type.clone(),
-            kind: CheckedExpr::Place(tag_place.clone()),
-        };
-        let tag_const = CheckedExprNode {
-            id: self.resolver.fresh_synthetic_id(),
-            span,
-            r#type: tag_type.clone(),
-            kind: CheckedExpr::Number(NumberValue::Unsigned(member_index as u64)),
-        };
-        CheckedExprNode {
-            id: self.resolver.fresh_synthetic_id(),
-            span,
-            r#type: ResolvedType::Bool,
-            kind: CheckedExpr::BinaryOp(CheckedBinaryOp {
-                op: BinaryOp::Eq,
-                left: Box::new(tag_read),
-                right: Box::new(tag_const),
-            }),
-        }
+        self.tag_variant_condition(tag_place, NumberValue::Unsigned(member_index as u64), span)
     }
 
     pub(super) fn tag_variant_condition(
         &mut self,
         tag_place: &CheckedPlace,
-        tag_type: &ResolvedType,
         tag: NumberValue,
         span: Span,
     ) -> CheckedExprNode {
+        let tag_type = &tag_place.r#type;
         let tag_read = CheckedExprNode {
             id: self.resolver.fresh_synthetic_id(),
             span,

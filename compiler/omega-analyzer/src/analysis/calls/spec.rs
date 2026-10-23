@@ -769,7 +769,10 @@ impl<'r> Analyzer<'r> {
             let mut checked_args = Vec::with_capacity(call.args.len());
             let mut ok = true;
             let adapted_first = match self.adapt_self_argument(
-                &call.callee,
+                CallSite {
+                    id: call.callee.id,
+                    span: call.callee.span,
+                },
                 receiver.clone(),
                 method.fn_type.self_mode.expect("filtered above"),
             ) {

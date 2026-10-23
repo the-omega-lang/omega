@@ -62,9 +62,14 @@ fn function_display_distinguishes_calling_conventions() {
 
 #[test]
 fn function_display_distinguishes_self_modes() {
+    // A method's receiver is its first parameter; the mode alone spells it.
     let with_self = |self_mode| {
         let mut fn_type = fn_type(CallingConvention::Omega);
         fn_type.self_mode = Some(self_mode);
+        fn_type.params.insert(
+            0,
+            ResolvedFunctionParam::described(Ident("self".into()), ResolvedType::I32),
+        );
         ResolvedType::Function(fn_type).to_string()
     };
     assert_eq!(with_self(SelfMode::Value), "(self, x: i32) => i32");

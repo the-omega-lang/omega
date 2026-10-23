@@ -1,0 +1,36 @@
+# Deferred code runs while its block is already being left, so nothing in a
+# `defer` body may leave it: no `return`, no `?`, and no `break` or
+# `continue` aimed at a loop outside the body (control-flow-and-operators.md
+# "defer"). A loop inside the body may still be exited.
+import core::option::Option;
+
+returns() => void {
+	defer { return; }
+}
+
+tries(o: Option<i32>) => Option<i32> {
+	defer { o?; }
+	o
+}
+
+breaks() => void {
+	loop {
+		defer { break; }
+	}
+}
+
+continues() => void {
+	while true {
+		defer { continue; }
+	}
+}
+
+inner_loop_is_fine() => void {
+	defer {
+		loop {
+			break;
+		}
+	}
+}
+
+main() => void {}

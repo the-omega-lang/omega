@@ -79,27 +79,6 @@ Concrete current compiler/library bugs and unsupported cases. Resolved issues ar
   (Ryu/Grisu-class) is deliberate future work, not a narrow fix here.
   [console-io.md](../guide/console-io.md)
 
-- **A field and a member function may share a name, and the field silently
-  shadows the function.** `struct Thing { exposed thing : i32; exposed
-  thing(*self) => i32 { self.thing } }` is accepted with no diagnostic.
-  `t.thing()` then fails with `this expression is not a callable function`,
-  because member access resolves the field first and an `i32` is not callable;
-  the function remains reachable only as `Thing::self::thing(&t)`. So the
-  declaration is not rejected — the function is just unreachable through the
-  spelling anyone would write, and the diagnostic blames the call site rather
-  than the declaration. Field names are checked against each other
-  (`analyze_struct_fields`' `seen` map) and member functions against each other
-  (`collect_methods` -> `check_overload_duplicates`), but the two sets are never
-  compared, in `signature_of_struct` or `signature_of_union`.
-  **Decision needed:** whether a field and a member function share one member
-  namespace (making this a `Redeclaration` at the declaration), or are separate
-  domains that member access must disambiguate by syntactic position.
-  `functions.md` states that static and member functions are separate overload
-  domains but says nothing about fields, and `structs-and-unions.md` states no
-  member-collision rule at all, so neither outcome is currently specified.
-  [functions.md](../language/functions.md),
-  [structs-and-unions.md](../language/structs-and-unions.md)
-
 ## Conformance and specs (`meet` / `primitive`)
 
 Remaining known conformance/spec issues:
@@ -176,7 +155,7 @@ Remaining known conformance/spec issues:
 ## Design debt worth watching
 
 - **The contextual-keyword set grows with every feature, with no promotion
-  policy.** Eighteen words are now position-dependent keywords
+  policy.** Twenty-four words are now position-dependent keywords
   (`parser::contextual`). Each one is a place where a lookahead can commit
   too early and silently stop the word being usable as a name — three had
   already done exactly that. The registry plus its generated test make the
@@ -266,42 +245,3 @@ Remaining known conformance/spec issues:
   argument. There is no in-tree instance; partitioning these bindings would
   break the `Self` uses in the primitive conformance macros.
   [macros.md](../language/macros.md)
-
-## Control flow
-
-- **`bool` now has two spellings for each connective, and both are
-  supported.** `a & b` and `a && b` differ only in whether `b` is evaluated;
-  same for `|` and `||`. This is what C, C++ and Rust all do and what
-  programmers expect, but it is still two mechanisms for one concept — the
-  cleaner endpoint would be `&&`/`||`/`!` on `bool` and `&`/`|`/`^`/`~`
-  reserved for integers. That is a breaking change to any `core`/`std` code
-  using `&`/`|` on `bool`, so it was **not** taken unilaterally.
-  **Decision needed:** keep both, or drop `&`/`|`/`^` on `bool`.
-  [control-flow.md](../language/control-flow-and-operators.md)
-- **Chained comparison is permanently a syntax error.** `a < b < c` now
-  reports `comparison operators are non-associative` (it previously
-  surfaced as a confusing `expected ';'`), matching Rust. Python chains it
-  instead. **Decision needed:** is rejection the permanent answer, or should
-  chaining eventually mean the conjunction?
-  [control-flow.md](../language/control-flow-and-operators.md)
-- **`&&` took a spelling that already meant something.** Adding the `&&`
-  token silently changed the meaning of `a&&b` written without spaces: it
-  used to lex as `&` `&` and mean "bitwise-and `a` with the address of `b`"
-  — a program that compiles (an integer and a pointer both coerce for `&`,
-  see [primitives](../language/types-and-primitives.md)) — and now parses as the logical
-  connective and fails type checking. `a & &b` with the space is unaffected,
-  and `||` has no such collision because `|` is infix-only. This was
-  accepted rather than designed: the same trade C and C++ make. **Decision
-  needed:** leave it (and say so in the docs), or require whitespace around
-  binary `&` so the two readings can never be confused.
-  [control-flow.md](../language/control-flow-and-operators.md)
-- **`comp <` and `reveal <` are always the operator, never a comparison.**
-  Both are contextual keywords, so `comp`/`reveal` are legal variable names,
-  and both commit to the prefix-operator reading as soon as something that
-  could be an operand follows. A leading `<` can begin a cast
-  (`comp <usize>N`, which has always been valid), so it must count as an
-  operand — which means a *variable* named `comp` can never be the left side
-  of a `<` comparison. No single-token lookahead separates the two readings.
-  **Decision needed:** accept the asymmetry, promote these two words to real
-  keywords, or give casts a spelling that does not start with `<`.
-  [parsing-and-hir.md](../architecture/parsing-and-hir.md)

@@ -101,6 +101,20 @@ for value : u8 in source { ... }
 
 `ToIterator<T>::to_iterator` returns `spec Iterator<T>` in the static-dispatch sense: each implementor may return its own concrete iterator type satisfying `Iterator<T>`. Consequently `ToIterator<T>` is not object-safe as a dynamic `*spec ToIterator<T>` contract; see [`specs-and-conformance.md`](specs-and-conformance.md).
 
+## Slices and strings
+
+`core` conforms the two built-in sequence types:
+
+- A slice `*[]T` (or `*mut []T`) is a `ToIterator<T>`. Its cursor, `core::primitives::slices::SliceIterator<T>`, yields each element **by value**, in index order, so the loop binding is a copy and writing to it never changes the slice.
+- A string `*str` is a `ToIterator<char>`. Its cursor, `core::primitives::strings::Chars`, decodes the string's UTF-8 bytes one `char` at a time. A `*str` is not validated on construction, so ill-formed input is decoded leniently: each **maximal subpart** of an ill-formed sequence — the longest prefix of a well-formed sequence that is present — yields one U+FFFD REPLACEMENT CHARACTER, and decoding resumes at the next byte. This is Unicode's "substitution of maximal subparts", the same result as Rust's lossy UTF-8 decoding.
+
+```omega
+for n in &numbers[0..] { total += n; }
+for c in "aé€" { ... }        # 'a', 'é', '€'
+```
+
+Neither cursor allocates; each holds the sequence it walks and a byte or element index.
+
 ## Semantic expansion of protocol iteration
 
 A protocol-driven loop behaves as if it repeatedly calls the iterator and matches its `Option<T>` result:

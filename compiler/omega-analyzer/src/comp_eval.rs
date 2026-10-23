@@ -156,22 +156,7 @@ pub fn eval<R: CompFunctionResolver + ?Sized>(
         source,
         call_trace: vec![],
     };
-    let result = interp.eval_expr(expr);
-    let result = match result {
-        Ok(value) => {
-            let defers = std::mem::take(&mut interp.frame().defers);
-            let mut result = Ok(value);
-            for deferred in defers.into_iter().rev() {
-                if let Err(e) = interp.eval_block(&deferred) {
-                    result = Err(e);
-                    break;
-                }
-            }
-            result
-        }
-        Err(other) => Err(other),
-    };
-    match result {
+    match interp.eval_expr(expr) {
         Ok(value) => Ok(value),
         Err(Outcome::Error(e)) => Err(e),
         // Reachable when the evaluated expression itself exits the enclosing
@@ -1002,31 +987,34 @@ impl<'r, R: CompFunctionResolver + ?Sized> Interpreter<'r, R> {
             frame.locals.insert(param.id, value);
         }
         self.frames.push(frame);
-        let value = match self.eval_block(&body.body) {
+        let result = match self.eval_block(&body.body) {
             Ok(BlockResult::Value(v)) => Ok(v),
             Ok(BlockResult::Diverged) => Ok(ConstValue::Bool(false)),
             Err(Outcome::Signal(Signal::Return(v))) => Ok(v),
-            Err(other) => Err(other),
-        };
-        let result = match value {
-            Ok(v) => {
-                let defers = std::mem::take(&mut self.frame().defers);
-                let mut result = Ok(v);
-                for deferred in defers.into_iter().rev() {
-                    if let Err(e) = self.eval_block(&deferred) {
-                        result = Err(e);
-                        break;
-                    }
-                }
-                result
-            }
             Err(other) => Err(other),
         };
         self.frames.pop();
         result
     }
 
+    /// Runs the block, then the defers it registered, last first. They run
+    /// on every way out -- falling off the end and every control-flow signal
+    /// -- after the block's own result is fixed. An evaluation error abandons
+    /// the whole evaluation, so nothing more runs for it.
     fn eval_block(&mut self, block: &CheckedBlock) -> CompResult<BlockResult> {
+        let registered = self.frame().defers.len();
+        let result = self.eval_block_body(block);
+        let defers = self.frame().defers.split_off(registered);
+        if let Err(Outcome::Error(_)) = result {
+            return result;
+        }
+        for deferred in defers.iter().rev() {
+            self.eval_block(deferred)?;
+        }
+        result
+    }
+
+    fn eval_block_body(&mut self, block: &CheckedBlock) -> CompResult<BlockResult> {
         for stmt in &block.stmts {
             self.eval_stmt(stmt)?;
         }

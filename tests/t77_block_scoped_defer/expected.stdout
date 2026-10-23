@@ -1,0 +1,36 @@
+per-iteration:
+  body 1
+  end of iteration 1
+  end of iteration 2
+  body 3
+  end of iteration 3
+break:
+  inner block left
+  loop body left
+  after loop
+return:
+  if body left
+  function body left
+  returned 10
+  function body left
+  returned 1
+try:
+  first half left
+  quarter left
+  quarter 2
+  first half left
+  quarter left
+  quarter -1
+nested:
+  nested body
+  outer defer runs
+  outer defer body ends
+  defer inside a defer runs last
+order:
+  registered third, runs first
+  registered second
+  registered first, runs last
+loop header:
+  condition block left
+  condition block left
+comp: 30 runtime: 30

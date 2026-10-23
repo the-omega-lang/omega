@@ -1,0 +1,8 @@
+# `Result::expect` on `Err` panics with the given message.
+import std::io::println;
+import core::result::Result;
+
+main() => void {
+	println$("before-panic");
+	println$(Result<i32, *str>::err("broken").expect("the result failed"));
+}

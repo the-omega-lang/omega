@@ -1,0 +1,17 @@
+# A generic owner's member is instantiated when it is used, not when the
+# owner type is (generics.md). `doubled` cannot be checked for `Wrap<bool>`
+# (`bool` has no `+`), but nothing calls it on that instantiation.
+import std::io::println;
+
+struct Wrap<T> {
+    exposed v: T;
+
+    exposed doubled(*self) => T { self.v + self.v }
+    exposed get(*self) => T { self.v }
+}
+
+main() => void {
+    flag := Wrap<bool> { v = true; };
+    number := Wrap<i32> { v = 21; };
+    println$("unused-member: ", flag.v, " ", flag.get(), " ", number.doubled());
+}

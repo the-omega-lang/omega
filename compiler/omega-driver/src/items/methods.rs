@@ -26,6 +26,9 @@ impl Driver {
         name: &Ident,
         namespace: FunctionNamespace,
     ) -> Result<OverloadCandidates, ResolveError> {
+        if let Some(nominal) = owner.aggregate() {
+            self.ensure_member_signatures(nominal)?;
+        }
         let mut candidates: Vec<_> = owner
             .candidates_in(&self.items.types, namespace, name)?
             .unwrap_or_default()
@@ -414,6 +417,9 @@ impl Driver {
         namespace: FunctionNamespace,
     ) -> Result<Vec<MethodTemplate>, ResolveError> {
         let inherent = self.find_inherent_generic_methods(owner, name, namespace)?;
+        if let Some(nominal) = owner.aggregate() {
+            self.ensure_member_signatures(nominal)?;
+        }
         let has_concrete = owner
             .candidates_in(&self.items.types, namespace, name)?
             .is_some_and(|candidates| !candidates.is_empty());

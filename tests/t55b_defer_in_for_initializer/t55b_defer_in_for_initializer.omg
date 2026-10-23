@@ -1,7 +1,8 @@
 import std::io::println;
 
 count() => void {
-	# The initializer runs once, so its `defer` registers once, for the function.
+	# The initializer's block is left as soon as it yields `0`, so its
+	# `defer` runs once, before the first iteration.
 	for mut i := { defer { println$("deferred"); } 0 }; i < 2; ++i {
 		println$("iteration ", i);
 	}

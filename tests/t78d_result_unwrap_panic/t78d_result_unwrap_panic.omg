@@ -1,0 +1,8 @@
+# `Result::unwrap` on `Err` panics with Rust's wording.
+import std::io::println;
+import core::result::Result;
+
+main() => void {
+	println$("before-panic");
+	println$(Result<i32, *str>::err("broken").unwrap());
+}

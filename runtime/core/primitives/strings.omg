@@ -8,6 +8,9 @@
 # conform it -- hashing/formatting for `str` stay in `std` for the same reason.
 
 import root::cmp::Eq;
+import root::iterator::Iterator;
+import root::iterator::ToIterator;
+import root::option::Option;
 
 meet Eq for str {
     equals(*self, other: Self) => bool {
@@ -97,4 +100,68 @@ primitive str {
         false
     }
 
+}
+
+# `for c in text` decodes UTF-8 one `char` at a time, without allocating.
+# `*str` is not checked for validity on construction, so each maximal
+# subpart of an ill-formed sequence yields one U+FFFD, as Unicode's
+# "substitution of maximal subparts" (and Rust's lossy decoding) does.
+exposed struct Chars {
+    shared bytes: *[]u8;
+    shared index: i32;
+}
+
+meet ToIterator<char> for str {
+    to_iterator(*self) => Chars {
+        Chars { bytes = <*[]u8>self; index = 0; }
+    }
+}
+
+meet Iterator<char> for Chars {
+    next(*mut self) => Option<char> {
+        if self.index >= self.bytes.length {
+            return Option<char>::None;
+        }
+        lead := <u32>self.bytes[self.index];
+        self.index += 1;
+        if lead < 0x80_u32 {
+            return char::from_u32(lead);
+        }
+        # The continuation count, the leading bits, and the range the first
+        # continuation must fall in -- narrower than 0x80..=0xBF exactly where
+        # a wider one would admit an overlong form, a surrogate, or a value
+        # past U+10FFFF.
+        mut remaining := 0;
+        mut scalar := 0_u32;
+        mut low := 0x80_u32;
+        mut high := 0xBF_u32;
+        match lead {
+            0xC2..=0xDF => { remaining = 1; scalar = lead & 0x1F_u32; },
+            0xE0 => { remaining = 2; scalar = lead & 0x0F_u32; low = 0xA0_u32; },
+            0xE1..=0xEC => { remaining = 2; scalar = lead & 0x0F_u32; },
+            0xED => { remaining = 2; scalar = lead & 0x0F_u32; high = 0x9F_u32; },
+            0xEE..=0xEF => { remaining = 2; scalar = lead & 0x0F_u32; },
+            0xF0 => { remaining = 3; scalar = lead & 0x07_u32; low = 0x90_u32; },
+            0xF1..=0xF3 => { remaining = 3; scalar = lead & 0x07_u32; },
+            0xF4 => { remaining = 3; scalar = lead & 0x07_u32; high = 0x8F_u32; },
+        } else {
+            return char::from_u32(0xFFFD_u32);
+        }
+        while remaining > 0 {
+            if self.index >= self.bytes.length {
+                return char::from_u32(0xFFFD_u32);
+            }
+            next := <u32>self.bytes[self.index];
+            if next < low || next > high {
+                # The offending byte starts the next sequence.
+                return char::from_u32(0xFFFD_u32);
+            }
+            scalar = (scalar << 6) | (next & 0x3F_u32);
+            self.index += 1;
+            low = 0x80_u32;
+            high = 0xBF_u32;
+            remaining -= 1;
+        }
+        char::from_u32(scalar)
+    }
 }

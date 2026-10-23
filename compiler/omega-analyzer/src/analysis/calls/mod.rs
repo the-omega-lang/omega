@@ -44,6 +44,13 @@ pub(super) struct ResolvedCallee {
     pub(super) checked_args: Option<Vec<CheckedExprNode>>,
 }
 
+/// Where a member call's callee, `receiver.member`, was written.
+#[derive(Clone, Copy)]
+pub(super) struct CallSite {
+    pub(super) id: HirId,
+    pub(super) span: Span,
+}
+
 pub(super) enum CalleeResolution {
     Ordinary(ResolvedCallee),
     Dynamic(Option<CheckedExprNode>),
@@ -150,39 +157,35 @@ impl<'r> Analyzer<'r> {
         }
     }
 
-    pub(super) fn resolve_callee(
+    /// The callee of an ordinary call: any expression whose value is a
+    /// function, including a field holding one, as in `(value.f)(...)`.
+    pub(super) fn resolve_callee(&mut self, callee: &HirExprNode) -> Option<ResolvedCallee> {
+        let checked = self.analyze_expr(callee, Expected::None)?;
+        let fn_type = self.require_callable(callee.id, callee.span, checked.r#type.clone())?;
+        Some(ResolvedCallee {
+            callee: checked,
+            fn_type,
+            implicit_self: None,
+            checked_args: None,
+        })
+    }
+
+    /// `receiver.member(...)`, which only ever selects a member function.
+    pub(super) fn resolve_member_callee(
         &mut self,
-        callee: &HirExprNode,
-        args: &[HirExprNode],
+        call: &HirMemberCall,
         expected: Expected<'_>,
     ) -> Option<CalleeResolution> {
-        let member = match &callee.expr {
-            HirExpr::Place(place) => match place.projections.last() {
-                Some(HirProjection::FieldAccess(field, origin, generic_args)) => {
-                    Some((place, field, *origin, generic_args))
-                }
-                _ => None,
-            },
-            _ => None,
+        let site = CallSite {
+            id: call.callee_id,
+            span: call.callee_span,
         };
-        let Some((place, field, field_origin, generic_args)) = member else {
-            let checked = self.analyze_expr(callee, Expected::None)?;
-            let fn_type = self.require_callable(callee.id, callee.span, checked.r#type.clone())?;
-            return Some(CalleeResolution::Ordinary(ResolvedCallee {
-                callee: checked,
-                fn_type,
-                implicit_self: None,
-                checked_args: None,
-            }));
-        };
-
-        let base_place = HirPlace {
-            root: place.root.clone(),
-            projections: place.projections[..place.projections.len() - 1].to_vec(),
-            reveals: place.reveals.clone(),
-        };
+        let field = &call.member;
+        let field_origin = call.member_origin;
+        let generic_args = &call.generic_args;
+        let args = &call.args;
         let (mut checked, mut r#type, mut mutable) =
-            self.analyze_place(callee.id, callee.span, &base_place, None)?;
+            self.analyze_place(site.id, site.span, &call.receiver, None)?;
         // A method call names something on the member, so a refined
         // anonymous receiver opens onto its payload before method lookup.
         if let Some(member) =
@@ -199,7 +202,7 @@ impl<'r> Analyzer<'r> {
             self.context.mark_used(decl_id);
         }
         let receiver = Receiver {
-            place: base_place,
+            place: call.receiver.clone(),
             checked,
             r#type,
             mutable,
@@ -209,8 +212,8 @@ impl<'r> Analyzer<'r> {
             let shape = shape.clone();
             return Some(CalleeResolution::Dynamic(
                 self.finish_dynamic_dispatch_call(
-                    callee.id,
-                    callee.span,
+                    site.id,
+                    site.span,
                     receiver.checked,
                     &shape,
                     field,
@@ -228,8 +231,8 @@ impl<'r> Analyzer<'r> {
             Ok(candidates) => candidates,
             Err(error) => {
                 self.error(
-                    callee.id,
-                    callee.span,
+                    site.id,
+                    site.span,
                     AnalysisErrorKind::ModuleResolution(error),
                 );
                 return None;
@@ -241,8 +244,8 @@ impl<'r> Analyzer<'r> {
                 .any(|candidate| candidate.template().is_some())
         {
             let (winner, instantiated, checked_args) = self.resolve_overload_candidates(
-                callee.id,
-                callee.span,
+                site.id,
+                site.span,
                 field,
                 &overloads,
                 args,
@@ -260,7 +263,7 @@ impl<'r> Analyzer<'r> {
                     .find(|m| m.decl_id == overloads[winner].decl_id)
             })?;
             return self.finish_method_callee(
-                callee,
+                site,
                 field,
                 field_origin,
                 receiver,
@@ -269,8 +272,8 @@ impl<'r> Analyzer<'r> {
             );
         }
         let members = self.find_functions(
-            callee.id,
-            callee.span,
+            site.id,
+            site.span,
             &receiver.r#type,
             field,
             FunctionNamespace::Member,
@@ -280,7 +283,7 @@ impl<'r> Analyzer<'r> {
             // it has no signature until this call's arguments give it one --
             // so it is looked up before the name is treated as missing.
             if let Some(resolution) = self.resolve_generic_method_callee(
-                callee,
+                site,
                 field,
                 field_origin,
                 &receiver,
@@ -290,75 +293,146 @@ impl<'r> Analyzer<'r> {
             ) {
                 return resolution;
             }
-            let receiver_type = receiver.r#type.autoderef();
-            // An incomplete owner was already reported by `find_functions`.
-            let field_shadows =
-                places::shadowing_field(self.resolver.types(), receiver_type, field).ok()?;
-            if !field_shadows {
-                // The type's own receiverless declaration is the precise
-                // diagnosis for `value.name(...)`; it is probed only here,
-                // never merged into the member candidate set.
-                if !self
-                    .find_functions(
-                        callee.id,
-                        callee.span,
-                        &receiver.r#type,
-                        field,
-                        FunctionNamespace::Static,
-                    )
-                    .is_empty()
-                {
+            self.report_missing_member_function(site, field, field_origin, &receiver);
+            return None;
+        }
+        self.reject_member_generic_args(site, field, &receiver.r#type, generic_args)?;
+        self.resolve_method_callee(site, field, field_origin, receiver, members, args)
+    }
+
+    /// Diagnoses `value.name(...)` that selects no member function, preferring
+    /// the declaration the name does reach: a static function, a member of a
+    /// conformance that is not in scope, or a field holding a function.
+    fn report_missing_member_function(
+        &mut self,
+        site: CallSite,
+        field: &Ident,
+        field_origin: Origin,
+        receiver: &Receiver,
+    ) {
+        let receiver_type = receiver.r#type.autoderef();
+        // The type's own receiverless declaration is the precise diagnosis
+        // for `value.name(...)`; it is probed only here, never merged into
+        // the member candidate set.
+        if !self
+            .find_functions(
+                site.id,
+                site.span,
+                &receiver.r#type,
+                field,
+                FunctionNamespace::Static,
+            )
+            .is_empty()
+        {
+            self.error(
+                site.id,
+                site.span,
+                AnalysisErrorKind::StaticFunctionOnInstance {
+                    r#struct: Self::owner_name(&receiver.r#type),
+                    function: field.clone(),
+                },
+            );
+            return;
+        }
+        match self.resolver.conformances_for_type(receiver_type) {
+            Ok(conformances) => {
+                if let Some(conform) = conformances.iter().find(|conform| {
+                    !FunctionNamespace::Member
+                        .select(&conform.methods, field)
+                        .is_empty()
+                }) {
                     self.error(
-                        callee.id,
-                        callee.span,
-                        AnalysisErrorKind::StaticFunctionOnInstance {
-                            r#struct: Self::owner_name(&receiver.r#type),
-                            function: field.clone(),
+                        site.id,
+                        site.span,
+                        AnalysisErrorKind::MethodNotInScope {
+                            method: field.clone(),
+                            spec: conform.spec.name.clone(),
+                            r#type: receiver_type.clone(),
                         },
                     );
-                    return None;
-                }
-                match self.resolver.conformances_for_type(receiver_type) {
-                    Ok(conformances) => {
-                        if let Some(conform) = conformances.iter().find(|conform| {
-                            !FunctionNamespace::Member
-                                .select(&conform.methods, field)
-                                .is_empty()
-                        }) {
-                            self.error(
-                                callee.id,
-                                callee.span,
-                                AnalysisErrorKind::MethodNotInScope {
-                                    method: field.clone(),
-                                    spec: conform.spec.name.clone(),
-                                    r#type: receiver_type.clone(),
-                                },
-                            );
-                            return None;
-                        }
-                    }
-                    Err(err) => {
-                        self.error(
-                            callee.id,
-                            callee.span,
-                            AnalysisErrorKind::ModuleResolution(err),
-                        );
-                        return None;
-                    }
+                    return;
                 }
             }
-            self.reject_member_generic_args(callee, field, &receiver.r#type, generic_args)?;
-            return self.resolve_field_callee(callee, field, field_origin, receiver);
+            Err(err) => {
+                self.error(site.id, site.span, AnalysisErrorKind::ModuleResolution(err));
+                return;
+            }
         }
-        self.reject_member_generic_args(callee, field, &receiver.r#type, generic_args)?;
-        self.resolve_method_callee(callee, field, field_origin, receiver, members, args)
+        let callable_field = self.without_diagnostics(|this| {
+            let mut projections = receiver.checked.projections.clone();
+            this.resolve_field_projection(
+                site.id,
+                site.span,
+                &mut projections,
+                &receiver.r#type,
+                field,
+                field_origin,
+                &mut false,
+            )
+            .is_some_and(|r#type| matches!(r#type, ResolvedType::Function(_)))
+        });
+        self.error(
+            site.id,
+            site.span,
+            AnalysisErrorKind::NoSuchMemberFunction {
+                function: field.clone(),
+                owner: receiver_type.widened(),
+                callable_field,
+                receiver: callable_field
+                    .then(|| Self::written_place(&receiver.place))
+                    .flatten(),
+            },
+        );
+    }
+
+    /// A place as written, when it is a plain path followed by field names.
+    fn written_place(place: &HirPlace) -> Option<String> {
+        let HirPlaceRoot::Path(path) = &place.root else {
+            return None;
+        };
+        let path = path.plain().filter(|path| path.is_unqualified())?;
+        let mut text = path.head.as_ref().to_string();
+        for projection in &place.projections {
+            let HirProjection::FieldAccess(field, _) = projection else {
+                return None;
+            };
+            text.push('.');
+            text.push_str(field.as_ref());
+        }
+        Some(text)
+    }
+
+    /// Whether `owner` declares a member function named `name`, concrete or
+    /// generic. Probes only: nothing is reported.
+    pub(super) fn declares_member_function(
+        &mut self,
+        id: HirId,
+        span: Span,
+        owner: &ResolvedType,
+        name: &Ident,
+    ) -> bool {
+        self.without_diagnostics(|this| {
+            !this
+                .find_functions(id, span, owner, name, FunctionNamespace::Member)
+                .is_empty()
+                || matches!(
+                    this.generic_method_template(
+                        id,
+                        span,
+                        owner.autoderef(),
+                        name,
+                        FunctionNamespace::Member
+                    ),
+                    MethodTemplate::Found(_)
+                )
+        })
     }
 
     /// Written generic arguments belong to a generic declaration, which was
     /// already tried by the time a member resolves to anything else.
     fn reject_member_generic_args(
         &mut self,
-        callee: &HirExprNode,
+        site: CallSite,
         field: &Ident,
         receiver_type: &ResolvedType,
         generic_args: &[ExprGenericArg],
@@ -367,8 +441,8 @@ impl<'r> Analyzer<'r> {
             return Some(());
         }
         self.error(
-            callee.id,
-            callee.span,
+            site.id,
+            site.span,
             AnalysisErrorKind::MemberTakesNoGenericArgs {
                 owner: Self::owner_name(receiver_type),
                 member: field.clone(),
@@ -385,7 +459,7 @@ impl<'r> Analyzer<'r> {
     /// "invalid, and reported" rather than "declined".
     fn resolve_generic_method_callee(
         &mut self,
-        callee: &HirExprNode,
+        site: CallSite,
         field: &Ident,
         field_origin: Origin,
         receiver: &Receiver,
@@ -395,8 +469,8 @@ impl<'r> Analyzer<'r> {
     ) -> Option<Option<CalleeResolution>> {
         let owner = receiver.r#type.autoderef().clone();
         let template = match self.generic_method_template(
-            callee.id,
-            callee.span,
+            site.id,
+            site.span,
             &owner,
             field,
             FunctionNamespace::Member,
@@ -406,7 +480,7 @@ impl<'r> Analyzer<'r> {
             MethodTemplate::Found(template) => template,
         };
         Some(self.finish_generic_method_callee(
-            callee,
+            site,
             field,
             field_origin,
             receiver,
@@ -421,7 +495,7 @@ impl<'r> Analyzer<'r> {
     #[allow(clippy::too_many_arguments)]
     fn finish_generic_method_callee(
         &mut self,
-        callee: &HirExprNode,
+        site: CallSite,
         field: &Ident,
         field_origin: Origin,
         receiver: &Receiver,
@@ -433,8 +507,8 @@ impl<'r> Analyzer<'r> {
     ) -> Option<CalleeResolution> {
         let declared = Self::owner_item_path(owner, field);
         let explicit = self.resolve_written_generics(
-            callee.id,
-            callee.span,
+            site.id,
+            site.span,
             written_generics,
             &declared,
             &template.template.generics,
@@ -442,8 +516,8 @@ impl<'r> Analyzer<'r> {
         // The receiver is supplied by the instance syntax itself, so it is
         // the one parameter neither inference nor the argument check sees.
         let (method, checked_args) = self.instantiate_generic_method_call(
-            callee.id,
-            callee.span,
+            site.id,
+            site.span,
             owner,
             field,
             FunctionNamespace::Member,
@@ -454,15 +528,15 @@ impl<'r> Analyzer<'r> {
             expected,
         )?;
         let checked_args = self.finish_generic_call_arguments(
-            callee.id,
-            callee.span,
+            site.id,
+            site.span,
             &method.fn_type,
             1,
             args.len(),
             checked_args,
         )?;
         self.finish_method_callee(
-            callee,
+            site,
             field,
             field_origin,
             receiver.clone(),
@@ -473,38 +547,38 @@ impl<'r> Analyzer<'r> {
 
     fn resolve_method_callee(
         &mut self,
-        callee: &HirExprNode,
+        site: CallSite,
         field: &Ident,
         field_origin: Origin,
         receiver: Receiver,
         methods: Vec<ResolvedMethod>,
         args: &[HirExprNode],
     ) -> Option<CalleeResolution> {
-        let (method, checked_args) = self.pick_method(callee, field, methods, args)?;
-        self.finish_method_callee(callee, field, field_origin, receiver, method, checked_args)
+        let (method, checked_args) = self.pick_method(site, field, methods, args)?;
+        self.finish_method_callee(site, field, field_origin, receiver, method, checked_args)
     }
 
     fn finish_method_callee(
         &mut self,
-        callee: &HirExprNode,
+        site: CallSite,
         field: &Ident,
         field_origin: Origin,
         receiver: Receiver,
         method: ResolvedMethod,
         checked_args: Option<Vec<CheckedExprNode>>,
     ) -> Option<CalleeResolution> {
-        self.require_method_visible(callee, field, field_origin, &receiver.r#type, &method)?;
+        self.require_method_visible(site, field, field_origin, &receiver.r#type, &method)?;
 
         let self_mode = method
             .fn_type
             .self_mode
             .expect("a member candidate always has a self mode");
-        let self_arg = self.adapt_self_argument(callee, receiver, self_mode)?;
+        let self_arg = self.adapt_self_argument(site, receiver, self_mode)?;
 
         let fn_type = ResolvedType::Function(method.fn_type.clone());
         let callee_expr = CheckedExprNode {
-            id: callee.id,
-            span: callee.span,
+            id: site.id,
+            span: site.span,
             r#type: fn_type.clone(),
             kind: CheckedExpr::Place(CheckedPlace {
                 root: CheckedPlaceRoot::Variable {
@@ -529,7 +603,7 @@ impl<'r> Analyzer<'r> {
     /// parameter is dropped from every candidate before ranking.
     fn pick_method(
         &mut self,
-        callee: &HirExprNode,
+        site: CallSite,
         field: &Ident,
         members: Vec<ResolvedMethod>,
         args: &[HirExprNode],
@@ -546,7 +620,7 @@ impl<'r> Analyzer<'r> {
             })
             .collect();
         let (winner, checked) =
-            self.resolve_overload(callee.id, callee.span, field, &candidates, &[], args)?;
+            self.resolve_overload(site.id, site.span, field, &candidates, &[], args)?;
         Some((members[winner].clone(), Some(checked)))
     }
 
@@ -561,7 +635,7 @@ impl<'r> Analyzer<'r> {
 
     fn require_method_visible(
         &mut self,
-        callee: &HirExprNode,
+        site: CallSite,
         field: &Ident,
         field_origin: Origin,
         receiver_type: &ResolvedType,
@@ -571,8 +645,8 @@ impl<'r> Analyzer<'r> {
             return Some(());
         }
         self.error(
-            callee.id,
-            callee.span,
+            site.id,
+            site.span,
             AnalysisErrorKind::MethodNotVisible {
                 method: field.clone(),
                 base: method.visibility_owner(receiver_type),
@@ -583,11 +657,11 @@ impl<'r> Analyzer<'r> {
 
     fn adapt_self_argument(
         &mut self,
-        callee: &HirExprNode,
+        site: CallSite,
         receiver: Receiver,
         self_mode: SelfMode,
     ) -> Option<CheckedExprNode> {
-        let (id, span) = (callee.id, callee.span);
+        let (id, span) = (site.id, site.span);
         let generated_id = self.resolver.fresh_synthetic_id();
         let wants_mutable = self_mode.is_mutable();
         let Receiver {
@@ -780,65 +854,6 @@ impl<'r> Analyzer<'r> {
             return None;
         }
         Some(())
-    }
-
-    fn resolve_field_callee(
-        &mut self,
-        callee: &HirExprNode,
-        field: &Ident,
-        field_origin: Origin,
-        receiver: Receiver,
-    ) -> Option<CalleeResolution> {
-        if let CheckedPlaceRoot::Variable {
-            storage: Storage::Comp,
-            ..
-        } = receiver.checked.root
-        {
-            self.error(
-                callee.id,
-                callee.span,
-                AnalysisErrorKind::CompEvalFailed {
-                    reason:
-                        "calling a function stored in a 'comp' binding's field isn't supported yet"
-                            .into(),
-                    failure: None,
-                    trace: vec![],
-                },
-            );
-            return None;
-        }
-        let CheckedPlace {
-            root,
-            mut projections,
-            r#type: _,
-        } = receiver.checked;
-        let base_type = receiver.r#type;
-        let field_type = self.resolve_field_projection(
-            callee.id,
-            callee.span,
-            &mut projections,
-            &base_type,
-            field,
-            field_origin,
-            &mut false,
-        )?;
-        let checked = CheckedExprNode {
-            id: callee.id,
-            span: callee.span,
-            r#type: field_type.clone(),
-            kind: CheckedExpr::Place(CheckedPlace {
-                root,
-                projections,
-                r#type: field_type.clone(),
-            }),
-        };
-        let fn_type = self.require_callable(callee.id, callee.span, field_type)?;
-        Some(CalleeResolution::Ordinary(ResolvedCallee {
-            callee: checked,
-            fn_type,
-            implicit_self: None,
-            checked_args: None,
-        }))
     }
 
     fn require_callable(

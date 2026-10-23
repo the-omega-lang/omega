@@ -1,0 +1,28 @@
+# A conformance function with a requirement's name but not its signature
+# does not satisfy it (specs-and-conformance.md); the error names both
+# signatures, once, rather than a missing and an extra function.
+spec Show {
+    show(*self, width: i32) => i32;
+}
+
+spec MakesIter<T> {
+    make(*self) => spec Iterator<T>;
+}
+
+struct Label {
+    width: i32;
+}
+
+meet Show for Label {
+    show(*self, width: u8) => i32 {
+        self.width
+    }
+}
+
+meet MakesIter<u8> for Label {
+    make(*self) => i32 {
+        self.width
+    }
+}
+
+main() => void { }

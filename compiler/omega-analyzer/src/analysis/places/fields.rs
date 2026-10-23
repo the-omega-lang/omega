@@ -272,7 +272,13 @@ impl<'r> Analyzer<'r> {
         let facts = self.type_facts(node_id, span, |types| types.enum_facts(nominal).cloned())?;
         let member = Self::find_enum_member(nominal, &facts, variant, field);
         let Some(member) = member else {
-            let kind = Self::no_such_enum_field(nominal, &facts, variant, field);
+            let mut kind = Self::no_such_enum_field(nominal, &facts, variant, field);
+            if let AnalysisErrorKind::NoSuchEnumField {
+                member_function, ..
+            } = &mut kind
+            {
+                *member_function = self.member_function_owner(node_id, span, base, field);
+            }
             self.error(node_id, span, kind);
             return None;
         };
@@ -380,6 +386,7 @@ impl<'r> Analyzer<'r> {
                     field: field.clone(),
                     r#enum: nominal.name.clone(),
                     similar: best_match(field, candidates),
+                    member_function: None,
                 }
             }
         }
@@ -484,14 +491,29 @@ impl<'r> Analyzer<'r> {
     }
 
     fn no_such_field(&mut self, node_id: HirId, span: Span, field: &Ident, base: &ResolvedType) {
+        let member_function = self.member_function_owner(node_id, span, base, field);
         self.error(
             node_id,
             span,
             AnalysisErrorKind::NoSuchField {
                 field: field.clone(),
                 base: base.clone(),
+                member_function,
             },
         );
+    }
+
+    /// `base`, when it declares a member function named `field`: an uncalled
+    /// `value.field` never selects one, so the error names its value spelling.
+    fn member_function_owner(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        base: &ResolvedType,
+        field: &Ident,
+    ) -> Option<ResolvedType> {
+        self.declares_member_function(node_id, span, base, field)
+            .then(|| base.widened())
     }
 
     pub(super) fn project_index(

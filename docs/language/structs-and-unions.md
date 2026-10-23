@@ -30,7 +30,7 @@ A struct literal must initialize every field exactly once. There is no partial-i
 
 Fields and methods may be hidden, `shared`, or `exposed`; see [`visibility.md`](visibility.md). Generic parameters follow the struct name and obey [`generics.md`](generics.md); a method may also declare generic parameters of its own.
 
-A method with a receiver is an instance method. A method without a receiver is static. The two live in separate associated-function namespaces -- `Type::method` selects a static, `Type::self::method` selects a member -- so they may share a name; see [`functions.md`](functions.md#associated-function-namespaces).
+A method with a receiver is an instance method. A method without a receiver is static. The two live in separate associated-function namespaces -- `Type::method` selects a static, `Type::self::method` selects a member -- so they may share a name. Fields form a namespace of their own as well, so a field may share its name with a member or static function: `value.name(...)` calls the member function, while `value.name` reads the field and `(value.name)(...)` calls the function it holds; see [`functions.md`](functions.md#associated-function-namespaces).
 
 A struct whose instantiated value representation is zero-sized is invalid; use `marker` for nominal zero-sized types.
 

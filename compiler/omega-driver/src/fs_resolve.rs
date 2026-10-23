@@ -347,16 +347,16 @@ mod tests {
     }
 
     #[test]
-    fn navigation_and_type_spellings_are_invalid_module_names_but_other_contextual_words_are_not() {
+    fn reserved_spellings_are_invalid_module_names_but_contextual_words_are_not() {
         for reserved in [
-            "root", "self", "super", "i32", "bool", "str", "void", "never", "f64",
+            "root", "self", "super", "comp", "reveal", "i32", "bool", "str", "void", "never", "f64",
         ] {
             assert!(
                 !is_valid_module_name(reserved),
                 "{reserved} should be rejected"
             );
         }
-        for ordinary in ["mut", "comp", "reveal", "helper", "std"] {
+        for ordinary in ["mut", "helper", "std"] {
             assert!(
                 is_valid_module_name(ordinary),
                 "{ordinary} should be accepted"

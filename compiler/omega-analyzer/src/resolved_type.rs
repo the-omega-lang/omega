@@ -1075,7 +1075,9 @@ impl ResolvedType {
                     write!(f, "{}", self_mode_spelling(self_mode))?;
                     wrote_param = true;
                 }
-                for param in &fn_type.params {
+                // With a `self` mode, the first parameter is that receiver.
+                let receivers = usize::from(fn_type.self_mode.is_some());
+                for param in fn_type.params.iter().skip(receivers) {
                     if wrote_param {
                         write!(f, ", ")?;
                     }

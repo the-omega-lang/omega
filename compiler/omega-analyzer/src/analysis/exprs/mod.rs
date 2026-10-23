@@ -83,6 +83,10 @@ impl<'r> Analyzer<'r> {
                 else_branch,
             }) => self.analyze_if(id, span, branches, else_branch.as_ref(), expected),
             HirExpr::FunctionCall(call) => self.analyze_call(id, span, call, expected),
+            HirExpr::MemberCall(call) => {
+                let resolution = self.resolve_member_callee(call, expected)?;
+                self.finish_call(id, span, resolution, &call.args)
+            }
             HirExpr::Assignment(assignment) => self.analyze_assignment(id, span, assignment),
             HirExpr::CompoundAssign(HirCompoundAssign { target, op, value }) => {
                 self.analyze_compound_assign(id, span, target, *op, value)
@@ -359,7 +363,7 @@ impl<'r> Analyzer<'r> {
 
     /// A pattern's known parts hold for every branch, whatever an earlier
     /// branch produced; otherwise later branches follow the first one.
-    fn later_branch_expected<'a>(
+    pub(super) fn later_branch_expected<'a>(
         expected: Expected<'a>,
         anchor: Option<&'a ResolvedType>,
     ) -> Expected<'a> {
@@ -508,17 +512,34 @@ impl<'r> Analyzer<'r> {
             }
         }
 
+        let callee = self.resolve_callee(&call.callee)?;
+        self.finish_call(
+            node_id,
+            span,
+            CalleeResolution::Ordinary(callee),
+            &call.args,
+        )
+    }
+
+    /// Checks a resolved call's written arguments against its callee.
+    fn finish_call(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        resolution: CalleeResolution,
+        call_args: &[HirExprNode],
+    ) -> Option<CheckedExprNode> {
         let ResolvedCallee {
             callee,
             fn_type,
             implicit_self,
             checked_args,
-        } = match self.resolve_callee(&call.callee, &call.args, expected)? {
+        } = match resolution {
             CalleeResolution::Dynamic(result) => return result,
             CalleeResolution::Ordinary(resolved) => resolved,
         };
 
-        let mut args = Vec::with_capacity(call.args.len() + implicit_self.is_some() as usize);
+        let mut args = Vec::with_capacity(call_args.len() + implicit_self.is_some() as usize);
         args.extend(implicit_self);
 
         match checked_args {
@@ -526,7 +547,7 @@ impl<'r> Analyzer<'r> {
             None => {
                 let implicit_count = args.len();
 
-                for arg in &call.args {
+                for arg in call_args {
                     let param_index = args.len();
                     if param_index >= fn_type.params.len() && !fn_type.is_variadic {
                         self.error(
@@ -534,7 +555,7 @@ impl<'r> Analyzer<'r> {
                             arg.span,
                             AnalysisErrorKind::WrongArgumentCount {
                                 expected: fn_type.params.len() - implicit_count,
-                                found: call.args.len(),
+                                found: call_args.len(),
                             },
                         );
                         return None;

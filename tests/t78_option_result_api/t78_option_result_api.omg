@@ -1,0 +1,56 @@
+# Every `Option`/`Result` constructor and callback-free method
+# (guide/core-library.md). Variant literal construction stays legal.
+import std::io::println;
+import core::option::Option;
+import core::result::Result;
+
+describe(o: Option<i32>) => i32 {
+	o.unwrap_or(-1)
+}
+
+main() => void {
+	some := Option<i32>::some(5);
+	none := Option<i32>::none();
+	literal := Option<i32>::Some { value = 6; };
+	println$("option-tests: ", some.is_some(), " ", some.is_none(), " ", none.is_some(), " ", none.is_none(), " ", literal.is_some());
+	println$("option-unwrap: ", some.unwrap(), " ", some.expect("present"), " ", some.unwrap_or(0), " ", none.unwrap_or(9));
+
+	found := some.ok_or<*str>("missing");
+	missing := none.ok_or<*str>("missing");
+	println$("ok-or: ", found.unwrap(), " ", missing.unwrap_err());
+
+	println$("and: ", describe(some.and<i32>(Option<i32>::some(7))), " ", describe(none.and<i32>(Option<i32>::some(7))), " ", describe(some.and<i32>(none)));
+	println$("or: ", describe(some.or(literal)), " ", describe(none.or(literal)), " ", describe(none.or(none)));
+	println$("xor: ", describe(some.xor(none)), " ", describe(none.xor(literal)), " ", describe(some.xor(literal)), " ", describe(none.xor(none)));
+
+	mut slot := Option<i32>::some(1);
+	taken := slot.take();
+	println$("take: ", describe(taken), " ", describe(slot));
+	previous := slot.replace(2);
+	println$("replace: ", describe(previous), " ", describe(slot));
+	inserted := slot.get_or_insert(3);
+	*inserted += 10;
+	mut empty := Option<i32>::none();
+	filled := empty.get_or_insert(4);
+	*filled += 10;
+	println$("get-or-insert: ", describe(slot), " ", describe(empty));
+
+	mut held := Option<i32>::some(20);
+	seen := held.as_ptr();
+	*held.as_mut_ptr().unwrap() += 1;
+	println$("as-ptr: ", *seen.unwrap(), " ", none.as_ptr().is_none());
+
+	good := Result<i32, *str>::ok(8);
+	bad := Result<i32, *str>::err("broken");
+	built := Result<i32, *str>::Ok { value = 1; };
+	println$("result-tests: ", good.is_ok(), " ", good.is_err(), " ", bad.is_ok(), " ", bad.is_err(), " ", built.is_ok());
+	println$("result-unwrap: ", good.unwrap(), " ", good.expect("value"), " ", bad.unwrap_err(), " ", bad.expect_err("error"), " ", bad.unwrap_or(0), " ", good.unwrap_or(0));
+	println$("conversions: ", describe(good.ok()), " ", describe(bad.ok()), " ", bad.err().unwrap(), " ", good.err().is_none());
+
+	println$("result-and: ", good.and<u8>(Result<u8, *str>::ok(2)).unwrap(), " ", bad.and<u8>(Result<u8, *str>::ok(2)).unwrap_err());
+	println$("result-or: ", good.or<i32>(Result<i32, i32>::err(3)).unwrap(), " ", bad.or<i32>(Result<i32, i32>::ok(4)).unwrap(), " ", bad.or<i32>(Result<i32, i32>::err(5)).unwrap_err());
+
+	mut outcome := Result<i32, *str>::ok(30);
+	*outcome.as_mut_ptr().unwrap() += 2;
+	println$("result-as-ptr: ", *outcome.as_ptr().unwrap(), " ", *bad.as_ptr().unwrap_err());
+}

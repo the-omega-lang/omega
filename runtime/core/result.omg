@@ -2,7 +2,110 @@
 # `core::option::Option` it is one of the two types the postfix `?` operator
 # recognizes (see docs/language/control-flow-and-operators.md).
 
+import super::option::Option;
+
 exposed enum Result<T, E> {
     Ok { exposed value: T; },
     Err { exposed error: E; };
+
+    # The static constructors and the member conversions below share their
+    # names: `Result::ok(v)` builds a value, `r.ok()` converts one.
+    exposed ok(value: T) => Result<T, E> {
+        Result<T, E>::Ok { value = value; }
+    }
+
+    exposed err(error: E) => Result<T, E> {
+        Result<T, E>::Err { error = error; }
+    }
+
+    exposed is_ok(*self) => bool {
+        match self {
+            Result::Ok => true,
+            Result::Err => false,
+        }
+    }
+
+    exposed is_err(*self) => bool {
+        match self {
+            Result::Ok => false,
+            Result::Err => true,
+        }
+    }
+
+    exposed ok(self) => Option<T> {
+        match self {
+            Result::Ok => Option<T>::Some { value = self.value; },
+            Result::Err => Option<T>::None,
+        }
+    }
+
+    exposed err(self) => Option<E> {
+        match self {
+            Result::Ok => Option<E>::None,
+            Result::Err => Option<E>::Some { value = self.error; },
+        }
+    }
+
+    exposed unwrap(self) => T {
+        match self {
+            Result::Ok => self.value,
+            Result::Err => panic$("called `Result::unwrap()` on an `Err` value"),
+        }
+    }
+
+    exposed expect(self, message: *str) => T {
+        match self {
+            Result::Ok => self.value,
+            Result::Err => panic$(message),
+        }
+    }
+
+    exposed unwrap_err(self) => E {
+        match self {
+            Result::Ok => panic$("called `Result::unwrap_err()` on an `Ok` value"),
+            Result::Err => self.error,
+        }
+    }
+
+    exposed expect_err(self, message: *str) => E {
+        match self {
+            Result::Ok => panic$(message),
+            Result::Err => self.error,
+        }
+    }
+
+    exposed unwrap_or(self, default: T) => T {
+        match self {
+            Result::Ok => self.value,
+            Result::Err => default,
+        }
+    }
+
+    exposed and<U>(self, other: Result<U, E>) => Result<U, E> {
+        match self {
+            Result::Ok => other,
+            Result::Err => Result<U, E>::Err { error = self.error; },
+        }
+    }
+
+    exposed or<F>(self, other: Result<T, F>) => Result<T, F> {
+        match self {
+            Result::Ok => Result<T, F>::Ok { value = self.value; },
+            Result::Err => other,
+        }
+    }
+
+    exposed as_ptr(*self) => Result<*T, *E> {
+        match self {
+            Result::Ok => Result<*T, *E>::Ok { value = &self.value; },
+            Result::Err => Result<*T, *E>::Err { error = &self.error; },
+        }
+    }
+
+    exposed as_mut_ptr(*mut self) => Result<*mut T, *mut E> {
+        match self {
+            Result::Ok => Result<*mut T, *mut E>::Ok { value = &mut self.value; },
+            Result::Err => Result<*mut T, *mut E>::Err { error = &mut self.error; },
+        }
+    }
 }

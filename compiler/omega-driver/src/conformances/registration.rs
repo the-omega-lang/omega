@@ -212,15 +212,81 @@ impl Driver {
                 }
             }
         }
-        // Every template is visible before a concrete conform can cause a
-        // bound lookup, removing module-order dependence.
+        // Every template and every concrete declaration is visible before a
+        // concrete conform can cause a bound lookup, removing declaration-
+        // and module-order dependence.
         for (module, conform) in concrete {
-            self.instantiate_conformance(
+            let provides = self.concrete_provides(&module, &conform);
+            self.conformances.concrete.push(ConcreteDeclaration {
+                module,
+                conform,
+                provides,
+            });
+        }
+        while !self.conformances.concrete.is_empty() {
+            let declaration = self.conformances.concrete.remove(0);
+            self.instantiate_concrete(declaration);
+        }
+    }
+
+    fn concrete_provides(
+        &mut self,
+        module: &ModulePath,
+        conform: &HirConformDef,
+    ) -> Option<ConcreteGoal> {
+        self.with_analyzer(
+            module,
+            &GenericSubstitution::new(),
+            AnalysisSite::new(conform.id, conform.span),
+            |analyzer| {
+                analyzer.without_diagnostics(|a| {
+                    let target =
+                        a.resolve_conform_target(conform.id, conform.span, &conform.target)?;
+                    let (spec, spec_args) =
+                        a.resolve_spec_reference(conform.id, conform.span, &conform.spec)?;
+                    Some(ConcreteGoal {
+                        target: target.lookup_key(),
+                        spec: spec.decl_id,
+                        spec_name: spec.name.clone(),
+                        spec_args,
+                    })
+                })
+            },
+        )
+        .result
+    }
+
+    /// Instantiates a concrete declaration on the goal stack, so a lookup
+    /// its own check makes for the same goal is reported as a cycle rather
+    /// than as a missing conformance.
+    pub(super) fn instantiate_concrete(&mut self, declaration: ConcreteDeclaration) {
+        let ConcreteDeclaration {
+            module,
+            conform,
+            provides,
+        } = declaration;
+        let instantiate = |this: &mut Self| {
+            this.instantiate_conformance(
                 &module,
                 &conform,
                 &GenericSubstitution::new(),
                 ConformanceOrigin::Concrete,
             );
+        };
+        match provides {
+            Some(provided) => {
+                let goal = ConformanceGoal {
+                    id: conform.id,
+                    target: provided.target,
+                    spec: provided.spec,
+                    spec_name: provided.spec_name,
+                    module: module.clone(),
+                    span: conform.span,
+                    declared_args: Some(provided.spec_args),
+                };
+                self.with_conformance_goal(goal, instantiate);
+            }
+            None => instantiate(self),
         }
     }
 

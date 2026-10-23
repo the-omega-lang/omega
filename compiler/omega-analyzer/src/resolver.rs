@@ -502,6 +502,13 @@ pub trait Items {
     /// Where signature analysis writes each nominal type's staged facts.
     fn types_mut(&mut self) -> &mut crate::type_store::TypeStore;
 
+    /// Writes `nominal`'s member signatures if they are not yet. An
+    /// instantiated generic owner resolves them only when something reads
+    /// them, so a member may name the owner at a type built from the owner's
+    /// own parameters (`as_ptr(*self) => Option<*T>`). A read that still finds
+    /// them unwritten is in the middle of writing them: a cycle.
+    fn ensure_member_signatures(&mut self, nominal: &NominalRef) -> Result<(), ResolveError>;
+
     fn resolve_item(
         &mut self,
         accessor_module_path: &ModulePath,
@@ -694,6 +701,18 @@ pub trait Conformances {
         spec: &NominalRef,
         spec_args: &[ResolvedGenericArg],
     ) -> Result<Option<ResolvedConformance>, ResolveError>;
+
+    /// Whether a concrete conformance of `target` to `spec<spec_args>` is
+    /// being checked right now. That check reports its own failures, so a
+    /// question that needs only the fact -- a `=> spec S` requirement's
+    /// return type -- may assume it, which lets two conformances each
+    /// satisfy the other's requirement.
+    fn conformance_being_checked(
+        &mut self,
+        target: &ResolvedType,
+        spec: &NominalRef,
+        spec_args: &[ResolvedGenericArg],
+    ) -> Result<bool, ResolveError>;
 
     fn conformances_for_type(
         &mut self,

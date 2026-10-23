@@ -1,0 +1,21 @@
+warning: unreachable code
+  --> tests/t81_unreachable_code_notes/t81_unreachable_code_notes.omg:15:12
+   |
+15 |       } else {
+   |  ____________^
+16 | |         3
+17 | |     }
+   | |_____^ this can never run
+   |
+   = note: the arms above already match every value the scrutinee can have
+   = note: suppress this with '@suppress(unreachable_code)'
+
+warning: unreachable code
+  --> tests/t81_unreachable_code_notes/t81_unreachable_code_notes.omg:22:5
+   |
+22 |     5
+   |     ^ this can never run
+   |
+   = note: it follows something that always diverges (`return`, `break`, `continue`, a `loop` with no way out, or a call to a `never`-returning function)
+   = note: suppress this with '@suppress(unreachable_code)'
+

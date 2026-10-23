@@ -27,6 +27,8 @@ impl Highlighter for OmegaHighlighter {
                 | TokenKind::Continue
                 | TokenKind::Defer
                 | TokenKind::Macro
+                | TokenKind::Comp
+                | TokenKind::Reveal
                 | TokenKind::Dollar
                 // A metavariable is macro syntax, not an ordinary name --
                 // keyword coloring reads right.

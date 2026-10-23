@@ -1,14 +1,17 @@
 use crate::checked::{
     CheckedAsmDescriptorKind, CheckedBlock, CheckedExpr, CheckedExprNode, CheckedItem,
     CheckedModule, CheckedPlace, CheckedPlaceRoot, CheckedProjection, CheckedRangeEnd, CheckedStmt,
-    CheckedTry,
+    CheckedTry, Storage,
 };
 use crate::resolved_type::ResolvedType;
 use omega_hir::HirId;
 use std::collections::HashSet;
 
+/// What checked code uses: the fields and variants dead-code warnings ask
+/// about, and the functions it names, which decide what must be emitted.
 #[derive(Default)]
-pub struct FieldUsage {
+pub struct Usage {
+    pub functions: Vec<HirId>,
     pub struct_fields: HashSet<(HirId, usize)>,
     pub union_fields: HashSet<(HirId, usize)>,
     pub enum_dynamic_fields: HashSet<(HirId, usize)>,
@@ -16,8 +19,9 @@ pub struct FieldUsage {
     pub enum_variants: HashSet<(HirId, usize)>,
 }
 
-impl FieldUsage {
-    pub fn merge(&mut self, other: FieldUsage) {
+impl Usage {
+    pub fn merge(&mut self, other: Usage) {
+        self.functions.extend(other.functions);
         self.struct_fields.extend(other.struct_fields);
         self.union_fields.extend(other.union_fields);
         self.enum_dynamic_fields.extend(other.enum_dynamic_fields);
@@ -26,13 +30,13 @@ impl FieldUsage {
     }
 }
 
-pub fn collect_module(module: &CheckedModule, usage: &mut FieldUsage) {
+pub fn collect_module(module: &CheckedModule, usage: &mut Usage) {
     for item in &module.items {
         collect_item(item, usage);
     }
 }
 
-fn collect_item(item: &CheckedItem, usage: &mut FieldUsage) {
+pub fn collect_item(item: &CheckedItem, usage: &mut Usage) {
     match item {
         CheckedItem::Declaration(_) | CheckedItem::ForeignBinding(_) => {}
         CheckedItem::ForeignFunction(f) => {
@@ -59,7 +63,7 @@ fn collect_item(item: &CheckedItem, usage: &mut FieldUsage) {
     }
 }
 
-fn collect_block(block: &CheckedBlock, usage: &mut FieldUsage) {
+fn collect_block(block: &CheckedBlock, usage: &mut Usage) {
     for stmt in &block.stmts {
         collect_stmt(stmt, usage);
     }
@@ -68,7 +72,7 @@ fn collect_block(block: &CheckedBlock, usage: &mut FieldUsage) {
     }
 }
 
-fn collect_stmt(stmt: &CheckedStmt, usage: &mut FieldUsage) {
+fn collect_stmt(stmt: &CheckedStmt, usage: &mut Usage) {
     match stmt {
         CheckedStmt::Declaration(_) | CheckedStmt::Break(_) | CheckedStmt::Continue(_) => {}
         CheckedStmt::Expression(e) | CheckedStmt::Return(e) => collect_expr(e, usage),
@@ -98,7 +102,7 @@ fn collect_stmt(stmt: &CheckedStmt, usage: &mut FieldUsage) {
     }
 }
 
-pub(crate) fn collect_expr(expr: &CheckedExprNode, usage: &mut FieldUsage) {
+pub(crate) fn collect_expr(expr: &CheckedExprNode, usage: &mut Usage) {
     match &expr.kind {
         CheckedExpr::Number(_)
         | CheckedExpr::Bool(_)
@@ -202,7 +206,7 @@ pub(crate) fn collect_expr(expr: &CheckedExprNode, usage: &mut FieldUsage) {
 /// the enclosing function's failure variant, none of which appears as an
 /// ordinary projection or construction in the checked tree. Recording them
 /// here keeps the usage accounting complete.
-fn collect_try(r#try: &CheckedTry, usage: &mut FieldUsage) {
+fn collect_try(r#try: &CheckedTry, usage: &mut Usage) {
     collect_expr(&r#try.operand, usage);
 
     if let ResolvedType::Enum { nominal, .. } = &r#try.operand.r#type {
@@ -232,8 +236,16 @@ fn collect_try(r#try: &CheckedTry, usage: &mut FieldUsage) {
     }
 }
 
-pub(crate) fn collect_place(place: &CheckedPlace, usage: &mut FieldUsage) {
+pub(crate) fn collect_place(place: &CheckedPlace, usage: &mut Usage) {
     let mut current_type = match &place.root {
+        CheckedPlaceRoot::Variable {
+            decl_id,
+            storage: Storage::Function,
+            r#type,
+        } => {
+            usage.functions.push(*decl_id);
+            Some(r#type.clone())
+        }
         CheckedPlaceRoot::Variable { r#type, .. } => Some(r#type.clone()),
         CheckedPlaceRoot::Expr(e) => {
             collect_expr(e, usage);

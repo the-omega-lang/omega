@@ -448,7 +448,7 @@ fn parse_asm_descriptor(p: &mut Parser) -> Option<AsmDescriptorNode> {
                 span: start.to(p.last_span()),
             })
         }
-        TokenKind::Ident(_) if p.at_contextual(contextual::COMP) => {
+        TokenKind::Comp => {
             p.advance();
             p.expect(&TokenKind::LParen, "'('");
             let (name, origin) = p.expect_ident_with_origin()?;

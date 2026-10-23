@@ -1,0 +1,10 @@
+# A `{` after a classic `for`'s second `;` begins the body, so a block used as
+# the post clause is parenthesized (control-flow-and-operators.md).
+import std::io::println;
+
+main() => void {
+    for mut i := 0; i < 2; ({ defer { println$("post ", i); } ++i; }) {
+        println$("body ", i);
+    }
+    for mut j := 0; j < 1; ++j { println$("body ", j); } { println$("after"); }
+}

@@ -69,13 +69,7 @@ impl Driver {
                 self.site(&active_module, active_span),
             ));
             self.diagnostics.error(
-                &self
-                    .conformances
-                    .templates
-                    .iter()
-                    .find(|template| template.conform.id == active.id)
-                    .map(|template| template.module.clone())
-                    .unwrap_or_default(),
+                &active_module,
                 AnalysisError::new(
                     active_id,
                     active_span,
@@ -88,6 +82,19 @@ impl Driver {
             );
         }
         None
+    }
+
+    pub(crate) fn conformance_being_checked(
+        &self,
+        target: &ResolvedType,
+        spec: &NominalRef,
+        spec_args: &[ResolvedGenericArg],
+    ) -> bool {
+        self.conformances.goals.iter().any(|goal| {
+            goal.target == target.lookup_key()
+                && goal.spec == spec.decl_id
+                && goal.declared_args.as_deref() == Some(spec_args)
+        })
     }
 
     pub(crate) fn bound_context_for(
@@ -166,7 +173,7 @@ impl Driver {
             .collect()
     }
 
-    fn with_conformance_goal<T>(
+    pub(super) fn with_conformance_goal<T>(
         &mut self,
         goal: ConformanceGoal,
         f: impl FnOnce(&mut Self) -> T,
@@ -181,6 +188,17 @@ impl Driver {
     }
 
     pub(crate) fn solve(&mut self, target: &ResolvedType, spec: Option<&HirId>) -> SweepOutcome {
+        // Concrete declarations first: one takes precedence over any
+        // blanket, and must win before the blanket's body is checked.
+        let key = target.lookup_key();
+        while let Some(index) = self.conformances.concrete.iter().position(|declaration| {
+            declaration.provides.as_ref().is_some_and(|provided| {
+                provided.target == key && spec.is_none_or(|wanted| *wanted == provided.spec)
+            })
+        }) {
+            let declaration = self.conformances.concrete.remove(index);
+            self.instantiate_concrete(declaration);
+        }
         let templates = self.conformances.templates.clone();
         let mut skipped_goal = false;
         for template in templates {
@@ -232,6 +250,7 @@ impl Driver {
                 spec_name,
                 module: template.module.clone(),
                 span: template.conform.span,
+                declared_args: None,
             };
             self.with_conformance_goal(goal, |this| {
                 this.instantiate_conformance(

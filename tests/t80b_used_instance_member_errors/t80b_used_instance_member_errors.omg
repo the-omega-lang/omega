@@ -1,0 +1,12 @@
+# Calling a member instantiates it, so its body is checked for that owner
+# instantiation (generics.md).
+struct Wrap<T> {
+    exposed v: T;
+
+    exposed doubled(*self) => T { self.v + self.v }
+}
+
+main() => void {
+    flag := Wrap<bool> { v = true; };
+    <void>flag.doubled();
+}

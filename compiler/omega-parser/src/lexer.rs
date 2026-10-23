@@ -36,6 +36,8 @@ pub enum TokenKind {
     Defer,
     Macro,
     Alias,
+    Comp,
+    Reveal,
     Underscore,
 
     // Multi-char punctuation, maximal-munch (tried longest-first during
@@ -105,6 +107,19 @@ impl TokenKind {
         FIXED_TOKENS
             .iter()
             .find(|token| &token.kind == self)
+            .map(|token| token.spelling)
+    }
+
+    /// The spelling of a reserved keyword, which can never be a name. `_` is
+    /// excluded: it is the wildcard, not a word someone would mean as a name.
+    pub fn reserved_word(&self) -> Option<&'static str> {
+        FIXED_TOKENS
+            .iter()
+            .find(|token| {
+                token.class == FixedTokenClass::Keyword
+                    && &token.kind == self
+                    && token.kind != TokenKind::Underscore
+            })
             .map(|token| token.spelling)
     }
 
@@ -179,6 +194,8 @@ const FIXED_TOKENS: &[FixedToken] = &[
     keyword("defer", TokenKind::Defer),
     keyword("macro", TokenKind::Macro),
     keyword("alias", TokenKind::Alias),
+    keyword("comp", TokenKind::Comp),
+    keyword("reveal", TokenKind::Reveal),
     keyword("_", TokenKind::Underscore),
     punctuation("...", TokenKind::DotDotDot),
     punctuation("..=", TokenKind::DotDotEq),
@@ -287,7 +304,9 @@ mod identifier_tests {
 
     #[test]
     fn rejects_reserved_keyword_spellings() {
-        for name in ["if", "else", "struct", "for", "return", "macro", "_"] {
+        for name in [
+            "if", "else", "struct", "for", "return", "macro", "comp", "reveal", "_",
+        ] {
             assert!(
                 !is_valid_identifier(name),
                 "expected keyword {name:?} to be invalid"

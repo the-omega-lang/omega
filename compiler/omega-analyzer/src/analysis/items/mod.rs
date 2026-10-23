@@ -930,12 +930,52 @@ impl<'r> Analyzer<'r> {
         Some(own)
     }
 
-    pub fn signature_of_struct(
+    /// Resolves and writes the concrete member signatures of an owner whose
+    /// facts are already written.
+    pub fn define_member_signatures(
         &mut self,
-        s: &HirStructDef,
+        functions: &[omega_hir::HirFunctionDef],
+        owner_is_generic: bool,
         nominal: &NominalRef,
         method_ids: &[HirId],
     ) -> Option<()> {
+        let functions = self.collect_methods(functions, method_ids, owner_is_generic)?;
+        self.resolver
+            .types_mut()
+            .define_functions(nominal, functions);
+        Some(())
+    }
+
+    /// The member functions `nominal` declares, resolving them first if this
+    /// is their first use.
+    pub(crate) fn member_functions(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        nominal: &NominalRef,
+    ) -> Option<crate::type_store::Methods> {
+        if let Err(error) = self.resolver.ensure_member_signatures(nominal) {
+            self.error(node_id, span, AnalysisErrorKind::ModuleResolution(error));
+            return None;
+        }
+        self.type_facts(node_id, span, |types| types.functions(nominal).cloned())
+    }
+
+    /// [`Self::member_functions`] for a type that may own none: only an
+    /// aggregate declares functions of its own.
+    pub(crate) fn ensure_owner_functions(
+        &mut self,
+        node_id: HirId,
+        span: Span,
+        owner: &ResolvedType,
+    ) -> Option<()> {
+        match owner.aggregate() {
+            Some(nominal) => self.member_functions(node_id, span, nominal).map(drop),
+            None => Some(()),
+        }
+    }
+
+    pub fn signature_of_struct(&mut self, s: &HirStructDef, nominal: &NominalRef) -> Option<()> {
         self.check_redundant_hidden(s.id, s.explicit_hidden_span);
         let annotations =
             self.item_annotations(s.id, &s.annotations, crate::annotations::ItemKind::Struct);
@@ -963,19 +1003,10 @@ impl<'r> Analyzer<'r> {
             );
         }
 
-        let functions = self.collect_methods(&s.functions, method_ids, !s.generics.is_empty())?;
-        self.resolver
-            .types_mut()
-            .define_functions(nominal, functions);
         Some(())
     }
 
-    pub fn signature_of_union(
-        &mut self,
-        u: &HirUnionDef,
-        nominal: &NominalRef,
-        method_ids: &[HirId],
-    ) -> Option<()> {
+    pub fn signature_of_union(&mut self, u: &HirUnionDef, nominal: &NominalRef) -> Option<()> {
         self.check_redundant_hidden(u.id, u.explicit_hidden_span);
         let annotations =
             self.item_annotations(u.id, &u.annotations, crate::annotations::ItemKind::Union);
@@ -1001,10 +1032,6 @@ impl<'r> Analyzer<'r> {
             );
         }
 
-        let functions = self.collect_methods(&u.functions, method_ids, !u.generics.is_empty())?;
-        self.resolver
-            .types_mut()
-            .define_functions(nominal, functions);
         Some(())
     }
 
@@ -1349,12 +1376,7 @@ impl<'r> Analyzer<'r> {
         ok
     }
 
-    pub fn signature_of_enum(
-        &mut self,
-        e: &HirEnumDef,
-        nominal: &NominalRef,
-        method_ids: &[HirId],
-    ) -> Option<()> {
+    pub fn signature_of_enum(&mut self, e: &HirEnumDef, nominal: &NominalRef) -> Option<()> {
         self.check_redundant_hidden(e.id, e.explicit_hidden_span);
         let annotations =
             self.item_annotations(e.id, &e.annotations, crate::annotations::ItemKind::Enum);
@@ -1377,10 +1399,6 @@ impl<'r> Analyzer<'r> {
             },
         );
 
-        let functions = self.collect_methods(&e.functions, method_ids, !e.generics.is_empty())?;
-        self.resolver
-            .types_mut()
-            .define_functions(nominal, functions);
         Some(())
     }
 }
@@ -1388,6 +1406,7 @@ impl<'r> Analyzer<'r> {
 mod bodies;
 mod holes;
 
+pub use bodies::MemberBodies;
 pub(super) use holes::{HoledAnnotation, read_back_holes};
 
 #[cfg(test)]

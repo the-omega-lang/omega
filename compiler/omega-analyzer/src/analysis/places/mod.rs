@@ -4,36 +4,12 @@ mod fields;
 mod roots;
 mod slicing;
 
-/// Whether `owner` has a field named `field`, which shadows every function of
-/// that name in both namespaces.
-pub(super) fn shadowing_field(
-    types: &TypeStore,
-    owner: &ResolvedType,
-    field: &Ident,
-) -> Result<bool, Incomplete> {
-    let declares =
-        |fields: &[ResolvedField]| fields.iter().any(|candidate| &candidate.name == field);
-    Ok(match owner {
-        ResolvedType::Struct(nominal) | ResolvedType::Union(nominal) => {
-            declares(types.fields(nominal)?)
-        }
-        ResolvedType::Enum { nominal, variant } => {
-            let e = types.enum_facts(nominal)?;
-            field.as_ref() == "tag"
-                || declares(&e.header)
-                || variant.is_some_and(|i| declares(&e.variants[i].fields))
-        }
-        _ => false,
-    })
-}
-
 impl<'r> Analyzer<'r> {
     /// The functions `current_type` offers under `field` in one namespace.
     ///
     /// Instance syntax asks for [`FunctionNamespace::Member`] directly, so a
     /// receiverless declaration never enters an instance overload set; the
     /// static namespace is only probed to diagnose `value.static_name(...)`.
-    /// A field of the same name shadows every function, in both namespaces.
     pub(super) fn find_functions(
         &mut self,
         id: HirId,
@@ -47,17 +23,9 @@ impl<'r> Analyzer<'r> {
             ResolvedType::Struct(nominal)
             | ResolvedType::Union(nominal)
             | ResolvedType::Enum { nominal, .. } => {
-                let Some((shadowed, functions)) = self.type_facts(id, span, |types| {
-                    Ok((
-                        shadowing_field(types, current_type, field)?,
-                        types.functions(nominal)?.clone(),
-                    ))
-                }) else {
+                let Some(functions) = self.member_functions(id, span, nominal) else {
                     return Vec::new();
                 };
-                if shadowed {
-                    return Vec::new();
-                }
                 namespace.select(&functions, field)
             }
             other => match self.resolver.primitive_methods(other) {
@@ -372,10 +340,7 @@ impl<'r> Analyzer<'r> {
                 );
             }
             current_type = match projection {
-                // Generic arguments are only ever written on a call's
-                // member segment, which `resolve_callee` consumes before a
-                // place is resolved from the projections before it.
-                HirProjection::FieldAccess(field, origin, _) => self.resolve_field_projection(
+                HirProjection::FieldAccess(field, origin) => self.resolve_field_projection(
                     node_id,
                     span,
                     &mut projections,

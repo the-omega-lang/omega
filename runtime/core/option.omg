@@ -2,7 +2,121 @@
 # load-bearing: `for..in` desugaring hardcodes `None`=0, `Some`=1
 # (see `Analyzer::analyze_for_in`); don't reorder.
 
+import super::result::Result;
+
 exposed enum Option<T> {
     None,
     Some { exposed value: T; };
+
+    exposed some(value: T) => Option<T> {
+        Option<T>::Some { value = value; }
+    }
+
+    exposed none() => Option<T> {
+        Option<T>::None
+    }
+
+    exposed is_some(*self) => bool {
+        match self {
+            Option::Some => true,
+            Option::None => false,
+        }
+    }
+
+    exposed is_none(*self) => bool {
+        match self {
+            Option::Some => false,
+            Option::None => true,
+        }
+    }
+
+    exposed unwrap(self) => T {
+        match self {
+            Option::Some => self.value,
+            Option::None => panic$("called `Option::unwrap()` on a `None` value"),
+        }
+    }
+
+    exposed expect(self, message: *str) => T {
+        match self {
+            Option::Some => self.value,
+            Option::None => panic$(message),
+        }
+    }
+
+    exposed unwrap_or(self, default: T) => T {
+        match self {
+            Option::Some => self.value,
+            Option::None => default,
+        }
+    }
+
+    exposed ok_or<E>(self, error: E) => Result<T, E> {
+        match self {
+            Option::Some => Result<T, E>::Ok { value = self.value; },
+            Option::None => Result<T, E>::Err { error = error; },
+        }
+    }
+
+    exposed and<U>(self, other: Option<U>) => Option<U> {
+        match self {
+            Option::Some => other,
+            Option::None => Option<U>::None,
+        }
+    }
+
+    exposed or(self, other: Option<T>) => Option<T> {
+        match self {
+            Option::Some => self,
+            Option::None => other,
+        }
+    }
+
+    exposed xor(self, other: Option<T>) => Option<T> {
+        match self {
+            Option::Some => match other {
+                Option::Some => Option<T>::None,
+                Option::None => self,
+            },
+            Option::None => other,
+        }
+    }
+
+    exposed take(*mut self) => Option<T> {
+        taken := *self;
+        *self = Option<T>::None;
+        taken
+    }
+
+    exposed replace(*mut self, value: T) => Option<T> {
+        replaced := *self;
+        *self = Option<T>::Some { value = value; };
+        replaced
+    }
+
+    exposed get_or_insert(*mut self, value: T) => *mut T {
+        if self.is_none() {
+            *self = Option<T>::Some { value = value; };
+        }
+        # A store through `self` proves no variant, so the `Some` it just
+        # made is matched again; the other arm cannot run.
+        match self {
+            Option::Some => &mut self.value,
+            Option::None => panic$("`Option::get_or_insert()` found no value after inserting one"),
+        }
+    }
+
+    exposed as_ptr(*self) => Option<*T> {
+        match self {
+            Option::Some => Option<*T>::Some { value = &self.value; },
+            Option::None => Option<*T>::None,
+        }
+    }
+
+    exposed as_mut_ptr(*mut self) => Option<*mut T> {
+        match self {
+            Option::Some => Option<*mut T>::Some { value = &mut self.value; },
+            Option::None => Option<*mut T>::None,
+        }
+    }
 }

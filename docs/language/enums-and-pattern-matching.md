@@ -248,7 +248,10 @@ x: enum A | B = if cond { a } else { b };
 
 The same expected type reaches `match` arms, `else` blocks, function returns,
 parameters, fields, and elements — every position that already checks a value
-against a known type. A cast writes the type down just as well, so
+against a known type. Without one, a `match` anchors on its first arm whose
+result participates, exactly as an `if` anchors on its first branch (see
+[`control-flow-and-operators.md`](control-flow-and-operators.md#if-expressions)),
+so `match v { A => 5u64, B => 7 }` has type `u64`. A cast writes the type down just as well, so
 `x := <enum A | B>a;` is fine where `x := if cond { a } else { b };` is not.
 
 An anonymous enum that already exists propagates like any other type. Passing a
@@ -480,6 +483,8 @@ message := match n {
 ```
 
 For value matches, the scrutinee's domain is the finite ordered integral domain of its type: integer types, `bool`, and `char`. Literal and range patterns denote sets of values, and a value match is the single-leaf case of the rules above. Floating-point values are not supported as `match` scrutinees or field patterns.
+
+An enum's `.tag` is an ordinary integer of its tag type, so `match e.tag` is a value match over that type's whole domain, not over the declared variants: it needs an `else` or `..` even when the arms name every declared tag. Because that silently weakens what coverage proves, a `match` whose scrutinee is an enum's or anonymous enum's `.tag` reports the `tag_match` warning, suppressible with `@suppress(tag_match)`. Match the enum value itself to have its variants checked.
 
 An enum `match`'s `else` covers the variants whose values the arms left — exactly as a bare `..` does — and is not an unconditional fallthrough. If the arms already cover every declared variant (a `..` among them counts), the `else` can never run: it is reported as unreachable code. A dead `else` is still ordinary source and is checked for ordinary errors, but its result does not participate in the match's type and its body is not emitted. Giving it a different result type is therefore not a type error in the surrounding match.
 

@@ -301,16 +301,13 @@ fn config_expands_its_condition_to_the_configured_literal() {
 #[test]
 fn a_negative_config_value_is_parenthesized_so_postfix_use_applies_to_it() {
     let module = config_probe("config$(def::low).abs()").expect("expansion succeeds");
-    let Expression::FunctionCall(call) = probe(&module, 0) else {
+    let Expression::MemberCall(call) = probe(&module, 0) else {
         panic!("expected a method call, found {:?}", probe(&module, 0));
     };
-    let Expression::FieldAccess(method) = &call.callee.expression else {
-        panic!("expected a method callee, found {:?}", call.callee);
-    };
-    let Expression::Negate(negated) = &method.base.expression else {
+    let Expression::Negate(negated) = &call.base.expression else {
         panic!(
             "the receiver is the whole negated value, found {:?}",
-            method.base
+            call.base
         );
     };
     assert_eq!(number(&negated.base.expression), ("128", Some("i8")));

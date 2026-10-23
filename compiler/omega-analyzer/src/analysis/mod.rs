@@ -17,6 +17,7 @@ mod visibility;
 #[cfg(test)]
 mod tests;
 
+pub use items::MemberBodies;
 pub use specs::PendingSpecMethod;
 use specs::RequirementSignature;
 
@@ -46,7 +47,7 @@ use crate::{
     },
     error::{
         AnalysisError, AnalysisErrorKind, AnalysisWarning, AnalysisWarningKind, AuthoredSite,
-        TypeResolutionError,
+        TypeResolutionError, UnreachableCause,
     },
     generics::{GenericParam, GenericSubstitution, NormalizedFunction},
     resolved_type::{
@@ -69,10 +70,10 @@ use omega_hir::{
     BinaryOp, HirAddressOf, HirAsmDescriptor, HirAsmDescriptorKind, HirBlock, HirCast,
     HirCompoundAssign, HirDeclaration, HirEnumDef, HirExpr, HirExprNode, HirField, HirFor,
     HirForIn, HirFunctionCall, HirFunctionDef, HirId, HirIf, HirInlineAsm, HirItem, HirMatch,
-    HirMatchArm, HirParam, HirPattern, HirPatternValue, HirPlace, HirPlaceReveal, HirPlaceRoot,
-    HirProjection, HirRange, HirRangeEnd, HirReveal, HirSlice, HirSpecDef, HirStmt, HirStructDef,
-    HirStructLiteral, HirStructLiteralField, HirUnionDef, HirWalrusDeclaration, ItemPath,
-    LogicalOp, ModulePath,
+    HirMatchArm, HirMemberCall, HirParam, HirPattern, HirPatternValue, HirPlace, HirPlaceReveal,
+    HirPlaceRoot, HirProjection, HirRange, HirRangeEnd, HirReveal, HirSlice, HirSpecDef, HirStmt,
+    HirStructDef, HirStructLiteral, HirStructLiteralField, HirUnionDef, HirWalrusDeclaration,
+    ItemPath, LogicalOp, ModulePath,
 };
 use omega_parser::prelude::{
     ArrayLength, ExprGenericArg, ExprPath, GenericArg, Ident, NumberBase, NumberExpr, Origin, Path,
@@ -94,17 +95,16 @@ pub struct Analyzer<'r> {
     current_return_type: ResolvedType,
     loop_stack: Vec<HirId>,
     loops_with_break: HashSet<HirId>,
-    in_defer_body: bool,
-    /// A `while` condition or C-style `for` condition/post: evaluated once
-    /// per iteration, so a `defer` there is a `defer` inside the loop.
-    in_repeated_loop_header: bool,
+    /// Inside a `defer` body, the depth of `loop_stack` where the body
+    /// begins: a `break` or `continue` may only target a loop above it.
+    defer_loop_floor: Option<usize>,
     in_naked_asm: bool,
     suppressed: Vec<Vec<Ident>>,
     /// Every generic binding in effect, including the anonymous ones no name
     /// can reach: a `spec S` parameter's type is found here by identity.
     generic_env: GenericSubstitution,
     reveals: visibility::RevealState,
-    field_usage: crate::dead_code::FieldUsage,
+    field_usage: crate::dead_code::Usage,
     bounds: Vec<ResolvedBound>,
 }
 
@@ -457,13 +457,12 @@ impl<'r> Analyzer<'r> {
             current_return_type: ResolvedType::Void,
             loop_stack: vec![],
             loops_with_break: HashSet::new(),
-            in_defer_body: false,
-            in_repeated_loop_header: false,
+            defer_loop_floor: None,
             in_naked_asm: false,
             suppressed: vec![],
             generic_env: generics.clone(),
             reveals: visibility::RevealState::default(),
-            field_usage: crate::dead_code::FieldUsage::default(),
+            field_usage: crate::dead_code::Usage::default(),
             bounds: bounds.to_vec(),
         }
     }
@@ -492,7 +491,7 @@ impl<'r> Analyzer<'r> {
     ) -> (
         Vec<AnalysisError>,
         Vec<AnalysisWarning>,
-        crate::dead_code::FieldUsage,
+        crate::dead_code::Usage,
     ) {
         (self.errors, self.warnings, self.field_usage)
     }
@@ -723,18 +722,29 @@ impl<'r> Analyzer<'r> {
         result
     }
 
-    fn with_repeated_loop_header<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
-        let previous = std::mem::replace(&mut self.in_repeated_loop_header, true);
+    fn with_defer_body<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        let previous = self.defer_loop_floor.replace(self.loop_stack.len());
         let result = f(self);
-        self.in_repeated_loop_header = previous;
+        self.defer_loop_floor = previous;
         result
     }
 
-    fn with_defer_body<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
-        let previous = std::mem::replace(&mut self.in_defer_body, true);
-        let result = f(self);
-        self.in_defer_body = previous;
-        result
+    fn in_defer_body(&self) -> bool {
+        self.defer_loop_floor.is_some()
+    }
+
+    /// The loop a `break` or `continue` targets, unless that would leave the
+    /// enclosing `defer` body.
+    fn loop_exit_target(&mut self, id: HirId, span: Span, keyword: &'static str) -> Option<HirId> {
+        let &loop_id = self.loop_stack.last()?;
+        if self
+            .defer_loop_floor
+            .is_some_and(|floor| self.loop_stack.len() <= floor)
+        {
+            self.error(id, span, AnalysisErrorKind::LoopExitInsideDefer { keyword });
+            return None;
+        }
+        Some(loop_id)
     }
 
     fn coerce_to_expected(

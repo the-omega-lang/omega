@@ -2,8 +2,8 @@ use super::Lowerer;
 use crate::hir::{
     HirAddressOf, HirAssignment, HirBinaryOp, HirCast, HirCompoundAssign, HirExpr, HirExprNode,
     HirFieldSubpattern, HirFieldsPattern, HirFunctionCall, HirIf, HirLogical, HirMatch,
-    HirMatchArm, HirPattern, HirPatternValue, HirPlace, HirPlaceReveal, HirPlaceRoot,
-    HirProjection, HirRange, HirRangeEnd, HirReveal, HirSlice, HirStructLiteral,
+    HirMatchArm, HirMemberCall, HirPattern, HirPatternValue, HirPlace, HirPlaceReveal,
+    HirPlaceRoot, HirProjection, HirRange, HirRangeEnd, HirReveal, HirSlice, HirStructLiteral,
     HirStructLiteralField, HirTry,
 };
 use omega_parser::prelude::{
@@ -80,6 +80,23 @@ impl Lowerer {
                 self.node(
                     node.span,
                     HirExpr::FunctionCall(HirFunctionCall { callee, args }),
+                )
+            }
+            Expression::MemberCall(call) => {
+                let receiver = self.lower_place_chain(&call.base);
+                let callee_id = self.ids.next();
+                let args = call.args.iter().map(|a| self.lower_expr(a)).collect();
+                self.node(
+                    node.span,
+                    HirExpr::MemberCall(HirMemberCall {
+                        receiver,
+                        member: call.member.clone(),
+                        member_origin: call.member_origin,
+                        callee_id,
+                        callee_span: call.base.span.to(call.member_span),
+                        generic_args: call.generic_args.clone(),
+                        args,
+                    }),
                 )
             }
             Expression::Assignment(assign) => {
@@ -342,7 +359,6 @@ impl Lowerer {
                 place.projections.push(HirProjection::FieldAccess(
                     access.field.clone(),
                     access.field_origin,
-                    access.generic_args.clone(),
                 ));
                 place
             }

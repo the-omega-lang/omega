@@ -4,7 +4,7 @@ mod warning;
 
 pub use kind::AnalysisErrorKind;
 pub use render::resolve_error_diagnostic;
-pub use warning::{AnalysisWarning, AnalysisWarningKind, WarningPolicy};
+pub use warning::{AnalysisWarning, AnalysisWarningKind, UnreachableCause, WarningPolicy};
 
 use crate::resolved_type::{
     CallingConvention, FunctionNamespace, NumericKind, ResolvedGenericArg, ResolvedType,
@@ -104,7 +104,7 @@ pub fn raw_type_display(ty: &omega_parser::prelude::Type) -> String {
     }
 }
 
-fn generic_name(name: &Ident, generic_args: &[ResolvedGenericArg]) -> String {
+pub(crate) fn generic_name(name: &Ident, generic_args: &[ResolvedGenericArg]) -> String {
     if generic_args.is_empty() {
         return name.as_ref().to_string();
     }

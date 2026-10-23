@@ -1,0 +1,54 @@
+# With no expected type, the first `match` arm whose result participates
+# anchors the later arms, exactly as an `if`'s first branch does
+# (enums-and-pattern-matching.md, control-flow-and-operators.md).
+import std::io::println;
+
+enum Pick {
+    A,
+    B,
+    C,
+}
+
+choose(p: Pick) => usize {
+    big := match p {
+        Pick::A => 5u64,
+        Pick::B => 7,
+        Pick::C => 4000000000,
+    };
+    # A diverging first arm does not anchor; the next one does.
+    narrow := match p {
+        Pick::C => { return sizeof<u8>; },
+        Pick::A => 1u8,
+        .. => 2,
+    };
+    sizeof<u64> * 100 + sizeof<u8> * 10 + <usize>(big - <u64>narrow) % 10
+}
+
+classify(n: i32) => u64 {
+    # The `else` is reachable, so it is checked against the anchor too.
+    v := match n {
+        0 => 10u64,
+    } else {
+        20
+    };
+    v
+}
+
+@suppress(unreachable_code)
+label(p: Pick) => u8 {
+    # Every variant is covered, so the `else` is dead: it does not take part
+    # in the result and keeps not seeing the anchor.
+    match p {
+        Pick::A => 1u8,
+        Pick::B => 2,
+        Pick::C => 3,
+    } else {
+        "dead"
+    }
+}
+
+main() => void {
+    println$("anchored: ", choose(Pick::A), " ", choose(Pick::B), " ", choose(Pick::C));
+    println$("else: ", classify(0), " ", classify(3));
+    println$("dead-else: ", label(Pick::B));
+}

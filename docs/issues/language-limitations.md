@@ -55,11 +55,6 @@ struct/union-specific.
 
 Normative chapter: [`../language/enums-and-pattern-matching.md`](../language/enums-and-pattern-matching.md)
 
-- **`match` scrutinee unification is not part of literal-inference** — an
-  arm-body's own type isn't coerced against a match's other arms the way
-  `if`-branches are; this was deliberately excluded from the literal-
-  inference feature (judged too entangled with exhaustiveness/refinement to
-  fold in safely at the time).
 - A float scrutinee is explicitly unsupported in `match`
   (`UnsupportedMatchScrutinee`), not silently mishandled — `char` is
   supported (see above).
@@ -189,15 +184,10 @@ Normative chapter: [`../language/strings-casts-arrays-and-slices.md`](../languag
 
 Normative chapter: [`../language/iteration-and-ranges.md`](../language/iteration-and-ranges.md)
 
-- **`*str`/`*[]T` don't implement `ToIterator` yet.** `for c in
-  some_str { }` needs a hand-written wrapper struct today (as in the
-  example above). Wiring the built-ins up is a natural follow-up using the
-  the same generic conform mechanism collections use (see
-  [specs](../language/specs-and-conformance.md)) — not done as part of this
-  feature, to keep its own scope to the language mechanism and the two
-  specs it depends on.
-- **`Option<T>` itself has no convenience methods** (`is_some`,
-  `unwrap_or`, ...) — see [core library](../guide/core-library.md).
+- **`Option`/`Result` methods that take a callback** (`map`, `and_then`,
+  `unwrap_or_else`, `is_some_and`, ...) **await closures**, and
+  `unwrap_or_default` awaits a `Default` spec — see
+  [core library](../guide/core-library.md#option-and-result).
 - **A type implementing `ToIterator<T>` more than once, at different `T`,
   has no way to disambiguate which `for x in y` picks** — unlike an
   ordinary overloaded method call, there's no argument shape to resolve
@@ -254,7 +244,3 @@ Guide: [`../guide/standard-library.md`](../guide/standard-library.md)
 - The built-in formatter is allocation-free but float formatting is
   fixed-precision rather than shortest-round-trip; see
   [known-issues.md](known-issues.md#types).
-
-## `defer` is not allowed inside loops or another `defer`
-
-Current semantic analysis rejects a `defer` whose lexical context is inside any loop, including a `while` condition or a C-style `for` condition or post expression (evaluated once per iteration), and rejects a deferred body containing another `defer`. The language documentation describes the function-scoped FILO behavior of supported defers; lifting these restrictions requires explicit control-flow/lowering support rather than merely relaxing syntax.

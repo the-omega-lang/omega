@@ -1,0 +1,19 @@
+# Using any member of `Wrap<u8>` instantiates the signatures of all its
+# members, so `tagged`'s unsatisfied bound is reported (generics.md).
+spec Tag {}
+
+struct Need<T: Tag> {
+    exposed v: T;
+}
+
+struct Wrap<T> {
+    exposed v: T;
+
+    exposed get(*self) => T { self.v }
+    exposed tagged(*self, n: Need<T>) => T { self.v }
+}
+
+main() => void {
+    plain := Wrap<u8> { v = 3; };
+    <void>plain.get();
+}

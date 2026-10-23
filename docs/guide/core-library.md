@@ -39,7 +39,8 @@ when their definitions are used.
   result used when a value may be absent.
 - **`core::result::Result<T, E>`** is the ordinary `Ok { value: T }` /
   `Err { error: E }` enum used when a failure carries a reason. Together with
-  `Option<T>` it is what the postfix `?` operator propagates.
+  `Option<T>` it is what the postfix `?` operator propagates. Both carry the
+  methods described in "Option and Result" below.
 - **`core::cmp`** defines `Ordering`, `Eq`, and `Ord`; primitive integer and
   `str` conformances live in core because range iteration depends on them.
 - **`core::iterator`** defines `Iterator<T>::next(*mut self) => Option<T>`
@@ -79,11 +80,14 @@ when their definitions are used.
   hash, or formatting conformances — `min`/`max` in particular are `Ord`
   methods and live in `core::cmp`.
 - **`core::primitives::slices`** supplies inherent operations on `*[]T`, including
-  `is_empty` and bounds-checked out-parameter access. The out-parameter/
+  `is_empty` and bounds-checked out-parameter access, and makes `*[]T` a
+  `ToIterator<T>` so `for x in slice` yields each element by value. The out-parameter/
   `bool` form is intentional for this hot, allocation-free API; it is not a
   replacement for `Option<T>` everywhere.
 - **`core::primitives::strings`** supplies inherent byte-oriented `str` operations:
-  `is_empty`, `as_bytes`, `starts_with`, `ends_with`, and `contains`.
+  `is_empty`, `as_bytes`, `starts_with`, `ends_with`, and `contains`, and makes
+  `*str` a `ToIterator<char>` whose `Chars` cursor decodes UTF-8, yielding
+  U+FFFD for each maximal ill-formed subpart.
   Equality, hashing, and display of `str` are standard-library
   conformances.
 - **`core::primitives::chars`** supplies `from_u32`, ASCII classifiers/case
@@ -115,6 +119,57 @@ of bytes transferred. In particular, `Some(0)` is valid: it can mean EOF on
 input or a zero-progress write. Core declares these names but does not call
 them. That keeps a core-only program freestanding and free of console or
 allocator glue requirements.
+
+## Option and Result
+
+Both types are built with static constructors or, equally, with variant
+literals (`Option<i32>::Some { value = 1; }`):
+
+```omega
+present := Option<i32>::some(5);
+absent := Option<i32>::none();
+parsed := Result<i32, *str>::ok(5);
+failed := Result<i32, *str>::err("not a number");
+```
+
+`Option<T>` has:
+
+| Method | Result |
+|---|---|
+| `is_some(*self)`, `is_none(*self)` | `bool` |
+| `unwrap(self)` | the value; panics with "called \`Option::unwrap()\` on a \`None\` value" |
+| `expect(self, message: *str)` | the value; panics with `message` |
+| `unwrap_or(self, default: T)` | the value, or `default` |
+| `ok_or<E>(self, error: E)` | `Result<T, E>`: `Ok` with the value, or `Err` with `error` |
+| `and<U>(self, other: Option<U>)` | `other` when `self` is `Some`, otherwise `None` |
+| `or(self, other)` | `self` when it is `Some`, otherwise `other` |
+| `xor(self, other)` | whichever of the two is `Some` when exactly one is, otherwise `None` |
+| `take(*mut self)` | the old value, leaving `None` |
+| `replace(*mut self, value: T)` | the old value, leaving `Some` with `value` |
+| `get_or_insert(*mut self, value: T)` | `*mut T` to the value, inserting `value` first when `None` |
+| `as_ptr(*self)`, `as_mut_ptr(*mut self)` | `Option<*T>` / `Option<*mut T>` pointing at the value in place |
+
+`Result<T, E>` has:
+
+| Method | Result |
+|---|---|
+| `is_ok(*self)`, `is_err(*self)` | `bool` |
+| `ok(self)`, `err(self)` | `Option<T>` / `Option<E>` of the matching side |
+| `unwrap(self)`, `expect(self, message: *str)` | the value; panics on `Err` |
+| `unwrap_err(self)`, `expect_err(self, message: *str)` | the error; panics on `Ok` |
+| `unwrap_or(self, default: T)` | the value, or `default` |
+| `and<U>(self, other: Result<U, E>)` | `other` when `self` is `Ok`, otherwise `self`'s error |
+| `or<F>(self, other: Result<T, F>)` | `self`'s value when `Ok`, otherwise `other` |
+| `as_ptr(*self)`, `as_mut_ptr(*mut self)` | `Result<*T, *E>` / `Result<*mut T, *mut E>` pointing at the value or error in place |
+
+The static `Result::ok`/`Result::err` constructors and the member `ok()`/
+`err()` conversions share names because static and member functions live in
+separate namespaces (see
+[`functions.md`](../language/functions.md#associated-function-namespaces)).
+The panicking methods report through `panic$`, so a panic's location is the
+method in `core`, not its caller. Methods that would take a callback (`map`,
+`and_then`, `unwrap_or_else`, ...) wait for closures, and `unwrap_or_default`
+for a `Default` spec.
 
 ## Atomic operations
 

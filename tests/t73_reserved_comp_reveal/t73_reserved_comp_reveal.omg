@@ -1,0 +1,6 @@
+# `comp` and `reveal` are reserved keywords (lexical-structure.md), so
+# neither can name a binding.
+main() => void {
+	comp := 5;
+	reveal := 6;
+}

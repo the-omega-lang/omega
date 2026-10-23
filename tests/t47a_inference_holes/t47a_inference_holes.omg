@@ -193,7 +193,7 @@ main() => void {
     known_default_check : Defaulted<i32, [2]u8> = known_default;
     known_dependent : Dependent<_, u16> = Dependent { a = 1; b = 2; c = Pair { a = 3; b = [8, 9]; }; };
     known_dependent_check : Dependent<i32, u16, Pair<u16, [2]u16>> = known_dependent;
-    println$("known-parts: ", known_arr_check.b[1], " ", known_nom_check.b.b, " ", known_fn_check.b(1), " ", known_alias_check.b[1], " ", known_default_check.b[1], " ", known_dependent_check.c.b[1]);
+    println$("known-parts: ", known_arr_check.b[1], " ", known_nom_check.b.b, " ", (known_fn_check.b)(1), " ", known_alias_check.b[1], " ", known_default_check.b[1], " ", known_dependent_check.c.b[1]);
 
     over : Pair<_, u8> = hole_make(1, 2);
     over_check : Pair<i32, u8> = over;

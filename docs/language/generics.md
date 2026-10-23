@@ -47,6 +47,8 @@ An alias may also carry its own generic parameter list, making it a type alias t
 
 Unbounded generic code may call operations that successfully resolve for every concrete instantiation actually formed; this is Omega's current duck-typed behavior for unconstrained generics. Adding a spec bound makes the required capability nominal and validates the corresponding conformance.
 
+A generic struct, enum, or union's member functions are instantiated on use. Forming the type `Wrap<bool>`, whether by naming it, constructing it, or using its fields, instantiates none of its members. The first use of any member of `Wrap<bool>` instantiates the signatures of all its concrete members. Each member's body is instantiated when a call or a function value names that member. So a member whose body does not hold for `Wrap<bool>` is an error only when something uses it on `Wrap<bool>`, and a member nothing uses costs no code. A member's signature may name the owner at a type built from the owner's parameters, as in `as_ptr(*self) => Option<*T>` on `Option<T>`: that forms `Option<*T>` without instantiating its members.
+
 ## Function type inference
 
 Ordinary generic function calls infer their generic arguments.

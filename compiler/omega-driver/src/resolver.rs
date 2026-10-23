@@ -1,5 +1,6 @@
 use crate::Driver;
 use crate::anchoring::{anchor_generics, anchor_template};
+use crate::items::CheckedBody;
 use omega_analyzer::analysis::AnalysisSite;
 use omega_analyzer::analysis::item_visibility;
 use omega_analyzer::checked::{CheckedFunctionDef, CheckedItem};
@@ -839,6 +840,10 @@ impl Items for Driver {
         &mut self.items.types
     }
 
+    fn ensure_member_signatures(&mut self, nominal: &NominalRef) -> Result<(), ResolveError> {
+        Driver::ensure_member_signatures(self, nominal)
+    }
+
     fn resolve_item(
         &mut self,
         accessor_module_path: &ModulePath,
@@ -1297,6 +1302,17 @@ impl Conformances for Driver {
         )
     }
 
+    fn conformance_being_checked(
+        &mut self,
+        target: &ResolvedType,
+        spec: &NominalRef,
+        spec_args: &[ResolvedGenericArg],
+    ) -> Result<bool, ResolveError> {
+        Ok(Driver::conformance_being_checked(
+            self, target, spec, spec_args,
+        ))
+    }
+
     fn conformances_for_type(
         &mut self,
         target: &ResolvedType,
@@ -1353,6 +1369,15 @@ impl CompileTime for Driver {
         let Some(key) = key else {
             return Ok(None);
         };
+        if self.instance_member_owner(decl_id).is_some() {
+            return match self.ensure_instance_member_body(decl_id) {
+                Some(CheckedBody {
+                    item: CheckedItem::FunctionDefinition(f),
+                    ..
+                }) => Ok(Some(f)),
+                _ => Err(key.failed()),
+            };
+        }
         let Some(body) = self.ensure_item_body(&key) else {
             return Err(ResolveError::ItemFailed {
                 module: key.module().clone(),
