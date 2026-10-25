@@ -19,18 +19,18 @@ import super::alloc::free;
 import super::alloc::realloc;
 
 exposed struct List<T> {
-    shared data: *mut T;
+    shared data: ^T;
     # Named `count`, not `len` -- a field and method can't share a name,
     # and the public accessor (`list.len()`) gets the idiomatic one.
     shared count: usize;
     shared cap: usize;
 
     exposed new() => Self {
-        Self { data = <*mut T>0; count = 0; cap = 0; }
+        Self { data = <^T>0; count = 0; cap = 0; }
     }
 
     exposed with_capacity(capacity: usize) => Self {
-        mut list := Self::new();
+        ^list := Self::new();
         if capacity > 0 {
             list.reserve(capacity);
         }
@@ -45,17 +45,17 @@ exposed struct List<T> {
     # arithmetic here doesn't scale by `sizeof<T>` like C's does (see
     # docs/language/types-and-primitives.md), and `ptr[i]` only works on a slice/array,
     # never a raw pointer.
-    elem_ptr(*self, index: usize) => *mut T {
-        <*mut T>(<usize>self.data + index * sizeof<T>)
+    elem_ptr(*self, index: usize) => ^T {
+        <^T>(<usize>self.data + index * sizeof<T>)
     }
 
     # Grows to at least `min_capacity`, doubling from 4 (Rust `Vec`'s
     # amortized-O(1)-push factor). Branches `alloc` vs `realloc` explicitly
     # rather than relying on `realloc(null, size)` acting like `alloc` --
     # that's a libc property, not one `GlobalAllocator` itself promises.
-    reserve(*mut self, min_capacity: usize) => void {
+    reserve(^self, min_capacity: usize) => void {
         if self.cap < min_capacity {
-            mut new_cap : usize = if self.cap == 0 { 4 } else { self.cap * 2 };
+            ^new_cap : usize = if self.cap == 0 { 4 } else { self.cap * 2 };
             while new_cap < min_capacity {
                 new_cap = new_cap * 2;
             }
@@ -65,60 +65,60 @@ exposed struct List<T> {
             } else {
                 realloc(<*u8>self.data, new_size, alignof<T>)
             };
-            self.data = <*mut T>new_data;
+            self.data = <^T>new_data;
             self.cap = new_cap;
         }
     }
 
-    exposed push(*mut self, value: T) => void {
+    exposed push(^self, value: T) => void {
         if self.count >= self.cap {
             self.reserve(self.count + 1);
         }
-        *self.elem_ptr(self.count) = value;
+        self.elem_ptr(self.count).* = value;
         self.count += 1;
     }
 
-    exposed pop(*mut self, out: *mut T) => bool {
+    exposed pop(^self, out: ^T) => bool {
         if self.count == 0 {
             return false;
         }
         self.count -= 1;
-        *out = *self.elem_ptr(self.count);
+        out.* = self.elem_ptr(self.count).*;
         true
     }
 
-    exposed get(*self, index: usize, out: *mut T) => bool {
+    exposed get(*self, index: usize, out: ^T) => bool {
         if index >= self.count {
             return false;
         }
-        *out = *self.elem_ptr(index);
+        out.* = self.elem_ptr(index).*;
         true
     }
 
-    exposed set(*mut self, index: usize, value: T) => bool {
+    exposed set(^self, index: usize, value: T) => bool {
         if index >= self.count {
             return false;
         }
-        *self.elem_ptr(index) = value;
+        self.elem_ptr(index).* = value;
         true
     }
 
-    exposed clear(*mut self) => void {
+    exposed clear(^self) => void {
         self.count = 0;
     }
 
     # `self.data` is a bare `*T` with no indexing/slicing of its own; cast
-    # to `*mut [?]T` (Pointer <-> Array reinterpret) then range-slice to
+    # to `^[?]T` (Pointer <-> Array reinterpret) then range-slice to
     # get a real runtime-length `*[]T`; see docs/language/strings-casts-arrays-and-slices.md.
     exposed as_slice(*self) => *[]T {
         count := <i32>self.count;
-        &(<*mut [?]T>self.data)[0..<count]
+        *(<^[?]T>self.data)[0..<count]
     }
 
-    exposed free(*mut self) => void {
+    exposed free(^self) => void {
         if self.cap > 0 {
             free(<*u8>self.data);
-            self.data = <*mut T>0;
+            self.data = <^T>0;
             self.cap = 0;
             self.count = 0;
         }
@@ -136,18 +136,18 @@ meet<T> ToIterator<T> for List<T> {
 # literal from a different type's method, and hidden fields are settable
 # only within their own type's methods.
 exposed struct ListIterator<T> {
-    shared data: *mut T;
+    shared data: ^T;
     shared index: usize;
     shared remaining: usize;
 
 }
 
 meet<T> Iterator<T> for ListIterator<T> {
-    next(*mut self) => Option<T> {
+    next(^self) => Option<T> {
         if self.remaining == 0 {
             return Option<T>::None;
         }
-        value := *<*mut T>(<usize>self.data + self.index * sizeof<T>);
+        value := (<^T>(<usize>self.data + self.index * sizeof<T>)).*;
         self.index += 1;
         self.remaining -= 1;
         Option<T>::Some { value = value; }

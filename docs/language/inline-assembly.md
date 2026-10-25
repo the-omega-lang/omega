@@ -42,7 +42,7 @@ Runtime `reg` expressions are evaluated exactly once, left to right, in descript
 
 ## Operand bindings
 
-Inside the body, `$name` refers to the `reg`/`comp` descriptor whose expression is the obvious named source (`reg(x)`, `reg(&x)`, `comp(SIZE)`); `$N` refers to the zero-based position of a `reg`/`comp` descriptor (never a `clobber`) among the bindable descriptors, for expressions with no usable inferred name. Omega rewrites `$name`/`$N` occurrences to whatever the backend needs — an LLVM template slot for a `reg`, or literal constant text for a `comp` — without parsing the surrounding instruction.
+Inside the body, `$name` refers to the `reg`/`comp` descriptor whose expression is the obvious named source (`reg(x)`, `reg(*x)`, `comp(SIZE)`); `$N` refers to the zero-based position of a `reg`/`comp` descriptor (never a `clobber`) among the bindable descriptors, for expressions with no usable inferred name. Omega rewrites `$name`/`$N` occurrences to whatever the backend needs — an LLVM template slot for a `reg`, or literal constant text for a `comp` — without parsing the surrounding instruction.
 
 `$$` is the source escape for one literal `$` in the final target assembly and is recognized before `$name`/`$N` scanning, so an escaped dollar is never misread as an operand binding.
 
@@ -50,8 +50,8 @@ The binding namespace is defined purely by source descriptor order; it is indepe
 
 ## Value model
 
-- `reg(expr)` is a **by-value snapshot with no implicit writeback**. The body may freely overwrite the register that carries the value; the resulting register contents are discarded once the `asm` statement completes. To mutate Omega storage, pass its address explicitly: `reg(&mut x)`.
-- `reg(&x)` and `reg(&mut x)` are equivalent asm operands; there is no backend mutability distinction between them, and neither is treated as proof that the pointee is initialized. `asm` never observes or checks the body, so it cannot verify that the body actually writes through a mutable pointer it was given.
+- `reg(expr)` is a **by-value snapshot with no implicit writeback**. The body may freely overwrite the register that carries the value; the resulting register contents are discarded once the `asm` statement completes. To mutate Omega storage, pass its address explicitly: `reg(^x)`.
+- `reg(*x)` and `reg(^x)` are equivalent asm operands; there is no backend mutability distinction between them, and neither is treated as proof that the pointee is initialized. `asm` never observes or checks the body, so it cannot verify that the body actually writes through a mutable pointer it was given.
 - `reg(expr)` preserves the expression's real scalar/pointer-like machine type: no implicit cast to `usize`, no aggregate decomposition, no ABI flattening, and no memory fallback. Values that cannot occupy a single register on the selected target (aggregates, fat/multi-word language values, `void`/`never`) are rejected before code generation; final target-specific register representability (for example whether a given target has a floating-point register class at all) is a backend decision reported as an ordinary compiler error.
 - `comp(name)` only accepts a named `comp` binding and only when its value converts deterministically to assembler text. It is textual substitution, not a hidden runtime argument; an immediate-value prefix required by the target syntax (such as `#$NAME`) is written by the user around the binding.
 
@@ -90,9 +90,9 @@ The sole `asm` statement inside a successfully validated `@naked` function (see 
 ## Example
 
 ```omega
-mut x : i32 = 0;
+^x : i32 = 0;
 y := 20i64;
-asm(reg(&mut x, "rcx"), reg(y)) => {
+asm(reg(^x, "rcx"), reg(y)) => {
     add $y, 22
     mov dword ptr [$x], eax
 }
@@ -103,4 +103,4 @@ asm(reg(&mut x, "rcx"), reg(y)) => {
 - GCC/Rust-style `in`/`out`/`inout` operand syntax and language-level asm outputs: these imply implicit writeback, which conflicts with Omega's value/address model.
 - Treating `reg` operands as implicitly `usize`-castable: breaks natural floating-point register use and discards real type information.
 - Automatic instruction, clobber, or mutability analysis of the body: would require Omega to parse architecture-specific assembly and still would not match the constraint-based correctness model the backend actually relies on.
-- Memory operands or automatic aggregate decomposition: out of scope for this feature; addresses are passed explicitly via `reg(&x)`/`reg(&mut x)`.
+- Memory operands or automatic aggregate decomposition: out of scope for this feature; addresses are passed explicitly via `reg(*x)`/`reg(^x)`.

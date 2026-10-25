@@ -152,10 +152,19 @@ Remaining known conformance/spec issues:
 - **Macro expansion traverses the AST by hand.** See
   [compiler-limitations.md](compiler-limitations.md#parsing-macro-expansion-and-the-hir).
 
+- **Diagnostic order and IR declaration order vary between runs.**
+  Compiling the same package twice can print its warnings in a different
+  order (for example `runtime/core`'s unglued-gap and unused-import
+  warnings), and the emitted IR can declare the same external functions
+  in a different order (for example `runtime/std`'s `atomic.ll` for
+  `aarch64-linux`). The set of diagnostics and of IR lines is the same, so
+  builds link identically, but the output is not byte-for-byte
+  reproducible.
+
 ## Design debt worth watching
 
 - **The contextual-keyword set grows with every feature, with no promotion
-  policy.** Twenty-four words are now position-dependent keywords
+  policy.** Twenty-three words are now position-dependent keywords
   (`parser::contextual`). Each one is a place where a lookahead can commit
   too early and silently stop the word being usable as a name — three had
   already done exactly that. The registry plus its generated test make the
@@ -229,6 +238,12 @@ Remaining known conformance/spec issues:
   for it when adding new expression forms.
 
 ## Diagnostics
+
+- **The indexing and slicing notes swap `*[]T` and `*[?]T`.** The notes
+  for an unindexable value, an unsliceable value, and a slice with no end
+  call `*[]T` an unsized array and `*[?]T` a slice, the reverse of
+  [types-and-primitives.md](../language/types-and-primitives.md): `*[]T`
+  is the slice and `*[?]T` the unknown-size array pointer.
 
 - **No error codes, and no machine-applicable suggestions.** `Diagnostic`
   carries a message, labels, and `note:`/`help:` footers — there is no

@@ -6,5 +6,5 @@ free<T>(ptr: T) => void { }
 
 main() => void {
     value := 1u8;
-    free(&value);
+    free(*value);
 }

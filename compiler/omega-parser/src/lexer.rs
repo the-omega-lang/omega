@@ -53,6 +53,7 @@ pub enum TokenKind {
     DotDotEq,
     DotDotLt,
     DotDot,
+    DotStar,
     PlusPlus,
     MinusMinus,
     AmpAmp,
@@ -201,6 +202,7 @@ const FIXED_TOKENS: &[FixedToken] = &[
     punctuation("..=", TokenKind::DotDotEq),
     punctuation("..<", TokenKind::DotDotLt),
     punctuation("..", TokenKind::DotDot),
+    punctuation(".*", TokenKind::DotStar),
     punctuation("::", TokenKind::ColonColon),
     punctuation("=>", TokenKind::FatArrow),
     punctuation(":=", TokenKind::ColonEq),
@@ -316,7 +318,7 @@ mod identifier_tests {
 
     #[test]
     fn contextual_words_stay_valid_identifiers() {
-        // `mut` and other contextual keywords are still `Ident` tokens; only
+        // `mut` and the contextual keywords are ordinary `Ident` tokens; only
         // FIXED_TOKENS' `Keyword`-class spellings are reserved.
         assert!(is_valid_identifier("mut"));
     }

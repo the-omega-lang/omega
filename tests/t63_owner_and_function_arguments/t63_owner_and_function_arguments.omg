@@ -14,10 +14,10 @@ struct Local<T> {
 main() => void {
 	println$(Local<i32>::name<u8>(1, 2));
 	o := m::Owner<i32> { value = 5; };
-	println$(m::Owner<i32>::self::scaled<u8>(&o, 2));
+	println$(m::Owner<i32>::self::scaled<u8>(*o, 2));
 	println$(m::Owner<i16>::name<u16>(3, 4));
 	f := Local<i64>::name<i8>;
 	println$(f(10, 3));
 	g := m::Owner<i32>::self::scaled<i64>;
-	println$(g(&o, 7));
+	println$(g(*o, 7));
 }

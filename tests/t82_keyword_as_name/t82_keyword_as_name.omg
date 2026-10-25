@@ -9,5 +9,5 @@ scale(match: i32) => i32 {
 }
 
 main() => void {
-    mut loop : i32 = 1;
+    ^loop : i32 = 1;
 }

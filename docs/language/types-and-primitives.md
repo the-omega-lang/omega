@@ -93,18 +93,18 @@ Omega distinguishes these forms:
 
 ```text
 *T          immutable thin pointer to T
-*mut T      mutable thin pointer to T
+^T          mutable thin pointer to T
 [N]T        fixed-size array value containing N elements
 *[N]T       pointer to a fixed-size array
 *[?]T       thin pointer to unknown-size array storage
-*mut [?]T   mutable form of the same
+^[?]T       mutable form of the same
 *[]T        immutable slice (fat pointer)
-*mut []T    mutable slice
+^[]T        mutable slice
 *str        immutable string fat pointer
-*mut str    mutable string fat pointer
+^str        mutable string fat pointer
 ```
 
-`[?]T` cannot exist as a standalone value. Its valid use is behind a pointer (`*[?]T` / `*mut [?]T`).
+`[?]T` cannot exist as a standalone value. Its valid use is behind a pointer (`*[?]T` / `^[?]T`).
 
 `[N]T` is a fixed array only when `N` resolves at compile time to a nonnegative integer that fits the fixed-array size domain (currently a `u32`). `N` is written either as a scalar integer literal or as a path naming a `comp` binding or a `comp` generic parameter:
 
@@ -123,15 +123,15 @@ A runtime binding is never an array length, and a value that is negative or outs
 
 A bare `*T` points to one value and is not indexable as an arbitrary array. `*[?]T` is still thin and stores no length, but it may be indexed and may be range-sliced when an explicit end is available.
 
-`*mut T` implicitly widens to `*T` at ordinary coercion sites; the reverse direction is not implicit. The same directional mutability rule applies to `*mut [?]T` → `*[?]T` and mutable slices → immutable slices.
+`^T` implicitly widens to `*T` at ordinary coercion sites; the reverse direction is not implicit. The same directional mutability rule applies to `^[?]T` → `*[?]T` and mutable slices → immutable slices.
 
 ## Slice, string, and dynamic-spec-object ABI shapes
 
 The following source-level types are distinct even though each has a two-word logical representation:
 
-- `*[]T` / `*mut []T`: data pointer plus an `i32` element count, exposed as `.length`.
-- `*str` / `*mut str`: data pointer plus an `i32` UTF-8 byte count, exposed as `.size`.
-- `*spec S` / `*mut spec S`: data pointer plus a dispatch-table pointer.
+- `*[]T` / `^[]T`: data pointer plus an `i32` element count, exposed as `.length`.
+- `*str` / `^str`: data pointer plus an `i32` UTF-8 byte count, exposed as `.size`.
+- `*spec S` / `^spec S`: data pointer plus a dispatch-table pointer.
 
 There is no implicit coercion between `*str` and `*[]u8`; conversions are explicit. Dynamic spec objects are governed by [`specs-and-conformance.md`](specs-and-conformance.md).
 
@@ -139,12 +139,12 @@ These representation details are part of Omega's current observable ABI model. C
 
 ## Unknown-size array pointers
 
-`*[?]T` and `*mut [?]T` represent an address at which zero or more `T` values may be stored, without carrying a length.
+`*[?]T` and `^[?]T` represent an address at which zero or more `T` values may be stored, without carrying a length.
 
 ```omega
 sum(values: *[?]i32, count: usize) => i32 {
-    mut total := 0;
-    mut i : usize = 0;
+    ^total := 0;
+    ^i : usize = 0;
     for ; i < count; i += 1 {
         total += values[i];
     }

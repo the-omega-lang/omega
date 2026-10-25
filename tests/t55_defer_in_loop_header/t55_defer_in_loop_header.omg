@@ -5,7 +5,7 @@
 import std::io::println;
 
 in_while_condition() => void {
-	mut n := 0;
+	^n := 0;
 	while { defer { println$("while condition left at ", n); } n < 2 } {
 		println$("while body ", n);
 		n += 1;
@@ -13,13 +13,13 @@ in_while_condition() => void {
 }
 
 in_for_condition() => void {
-	for mut i := 0; { defer { println$("for condition left at ", i); } i < 2 }; ++i {
+	for ^i := 0; { defer { println$("for condition left at ", i); } i < 2 }; ++i {
 		println$("for body ", i);
 	}
 }
 
 in_for_post() => void {
-	for mut i := 0; i < 2; i = { defer { println$("post left at ", i); } i + 1 } {
+	for ^i := 0; i < 2; i = { defer { println$("post left at ", i); } i + 1 } {
 		println$("post body ", i);
 	}
 }

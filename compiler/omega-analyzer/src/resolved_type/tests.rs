@@ -73,12 +73,8 @@ fn function_display_distinguishes_self_modes() {
         ResolvedType::Function(fn_type).to_string()
     };
     assert_eq!(with_self(SelfMode::Value), "(self, x: i32) => i32");
-    assert_eq!(with_self(SelfMode::MutValue), "(mut self, x: i32) => i32");
     assert_eq!(with_self(SelfMode::Pointer), "(*self, x: i32) => i32");
-    assert_eq!(
-        with_self(SelfMode::MutPointer),
-        "(*mut self, x: i32) => i32"
-    );
+    assert_eq!(with_self(SelfMode::MutPointer), "(^self, x: i32) => i32");
 }
 
 #[test]
@@ -507,12 +503,7 @@ fn namespace_classifies_by_receiver_presence() {
         method(None, owner_pointer()).namespace(),
         FunctionNamespace::Static
     );
-    for mode in [
-        SelfMode::Value,
-        SelfMode::MutValue,
-        SelfMode::Pointer,
-        SelfMode::MutPointer,
-    ] {
+    for mode in [SelfMode::Value, SelfMode::Pointer, SelfMode::MutPointer] {
         assert_eq!(
             method(Some(mode), owner_pointer()).namespace(),
             FunctionNamespace::Member
@@ -745,7 +736,7 @@ fn nested_generic_arguments_render_recursively() {
         pointee: Box::new(outer),
         mutable: true,
     };
-    assert_eq!(pointer.to_string(), "*mut Pair<Holder<i32>, *str>");
+    assert_eq!(pointer.to_string(), "^Pair<Holder<i32>, *str>");
 }
 
 #[test]

@@ -164,7 +164,7 @@ Normative chapter: [`../language/strings-casts-arrays-and-slices.md`](../languag
   needed a cast (e.g. `*u8` text with a `\0`) had to migrate to `*str`
   instead, since there was no alternative. Body/dynamic fields, struct
   fields, and ordinary expressions have no such restriction.
-- `&[...]`/bare-array compile-time construction is deliberately **not
+- `*[...]`/bare-array compile-time construction is deliberately **not
   deduplicated** across occurrences the way string/byte-string data is —
   `ConstValue` isn't cheaply hashable (nests, and floats have no total
   order), and each occurrence is a one-shot construction site, not
@@ -173,7 +173,7 @@ Normative chapter: [`../language/strings-casts-arrays-and-slices.md`](../languag
 - A cast immediately after `..<` is genuinely ambiguous with the operator
   itself (`0..<i32>len` lexes as `0` `..<` `i32` `>` `len`, not `0` `..`
   `<i32>len`) — bind the cast to a local first (`n := <i32>len;
-  &ptr[0..<n]`) rather than writing it inline in the range. `..=`/`..`
+  *ptr[0..<n]`) rather than writing it inline in the range. `..=`/`..`
   don't share this ambiguity (neither ends in a bare `<`), so `0..=<i32>len`
   parses as written. A fully-qualified spec call
   (`0..<<S : P>::min()`) lands in the same trap, with the same

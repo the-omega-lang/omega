@@ -37,7 +37,7 @@ meet Runner for Direct {
 
 The `meet` block checks the declaration shape immediately: generic parameter kinds/count, receiver, arity, and parameter/return shapes must agree (parameter names need not). Shapes are compared by generic position, and a [`spec S` parameter](generics.md#spec-s-parameter-sugar) is a position of its own, so the sugar and an explicit bounded parameter are interchangeable: `take(*self, x: spec Show) => i32` satisfies `take<T: Show>(*self, x: T) => i32`, and the reverse. A requirement written with the sugar is therefore a generic requirement. A concrete call then infers and checks the requirement's particular arguments. A spec with any generic requirement is not object-safe, so it cannot form a `*spec Runner` object; use a generic spec such as `spec Runner<T>` when the caller's type belongs to the spec identity instead.
 
-`Self` denotes the concrete implementing type. Spec receiver parameters must use `*self` or `*mut self`; by-value `self`/`mut self` is invalid in a spec declaration.
+`Self` denotes the concrete implementing type. Spec receiver parameters must use `*self` or `^self`; a by-value `self` is invalid in a spec declaration.
 
 A spec declares only its own requirements. There is no spec-composition declaration: `spec AB = A + B;` is not valid Omega syntax, and a spec declaration never carries a dependency list (`spec X : A, B { ... }` is also invalid). A conjunction of specs is written directly at the type where it is needed -- see [Spec conjunctions in type syntax](#spec-conjunctions-in-type-syntax) below -- and is satisfied by conforming to each member separately; there is nothing to `meet` for a conjunction itself.
 
@@ -54,7 +54,7 @@ A spec function is identified by its declaring spec as well as its name/signatur
 What a `spec ...` type means depends entirely on where it appears, never on how it is spelled:
 
 - As a **bare type** (a generic bound, or the top-level type of a function parameter), it denotes a *static* constraint -- see [`spec S` as a static-dispatch type](#spec-s-as-a-static-dispatch-type-not-behind-a-pointer).
-- As the **immediate pointee of a pointer** (`*spec A + B`, `*mut spec A + B`), it denotes a *dynamic* spec object -- see [Dynamic dispatch](#dynamic-dispatch-pointer-to-spec).
+- As the **immediate pointee of a pointer** (`*spec A + B`, `^spec A + B`), it denotes a *dynamic* spec object -- see [Dynamic dispatch](#dynamic-dispatch-pointer-to-spec).
 
 A `spec ...` type appearing anywhere else (behind an array, inside another type's generic arguments, as a function type's parameter/return without being that function type's own outermost form, etc.) is not allowed; static-vs-dynamic is decided only by that one immediate structural position.
 
@@ -132,7 +132,7 @@ P::make(...)              # spec supplied; Self inferred where allowed
 For an instance function, `Spec::function(receiver, args...)` takes the receiver as the first call argument:
 
 ```omega
-Animal::make_sound(&dog);
+Animal::make_sound(*dog);
 ```
 
 For a receiverless requirement returning exactly `Self`, an expected result type may identify the concrete implementor:
@@ -175,7 +175,7 @@ arguments, so `<_ : P<_>>::f(...)` is rejected, as is `<*_ : P>::f(...)`.
 
 Conforming instance calls adapt their receiver according to the declared receiver form just like ordinary methods. A value may be referenced for `*self` when legal; a mutable receiver requires a mutable source. Pointer-shaped built-in values such as strings/slices do not gain an extra pointer layer merely because a spec receiver is written `*self`.
 
-Taking a pointer to a temporary receiver may require materializing that temporary. A `*mut self` requirement cannot use a discarded immutable temporary merely to obtain mutability.
+Taking a pointer to a temporary receiver may require materializing that temporary. A `^self` requirement cannot use a discarded immutable temporary merely to obtain mutability.
 
 ## Multiple instantiations of a generic spec
 
@@ -220,10 +220,10 @@ speak(animal: *spec Animal) => void {
     animal.make_sound();
 }
 
-speak(&dog);
+speak(*dog);
 ```
 
-`*spec S` is parsed structurally as an ordinary pointer to the static spec type `spec S` -- the grammar does not manufacture a fat pointer. Semantic type resolution recognizes an *immediate* `Pointer(spec ...)` and turns it into a dynamic spec-object type: an immutable dynamic-dispatch object, with `*mut spec S` (or `*mut spec A + B`) as its mutable counterpart. The value is a fat pointer containing:
+`*spec S` is parsed structurally as an ordinary pointer to the static spec type `spec S` -- the grammar does not manufacture a fat pointer. Semantic type resolution recognizes an *immediate* `Pointer(spec ...)` and turns it into a dynamic spec-object type: an immutable dynamic-dispatch object, with `^spec S` (or `^spec A + B`) as its mutable counterpart. The value is a fat pointer containing:
 
 1. an opaque data pointer to the concrete value, and
 2. a dispatch-table pointer for the requested spec shape.
@@ -235,7 +235,7 @@ A pointer to a conforming concrete value may be coerced to an expected dynamic s
 An explicit cast is also available:
 
 ```omega
-obj := <*spec Animal>&dog;
+obj := <*spec Animal>*dog;
 ```
 
 The cast is valid only when the concrete pointee satisfies the requested spec/conjunction.
@@ -262,7 +262,7 @@ raw := obj.ptr;
 vt := obj.vtable;
 ```
 
-- `.ptr` is `*u8` or `*mut u8` following the dynamic object's mutability.
+- `.ptr` is `*u8` or `^u8` following the dynamic object's mutability.
 - `.vtable` is always an immutable `*u8`.
 
 These access the two fat-pointer components; they are not members declared by the concrete implementor.
@@ -315,7 +315,7 @@ primitive str {
 }
 
 primitive<T> []T {
-    exposed first(*self, out: *mut T) => bool { ... }
+    exposed first(*self, out: ^T) => bool { ... }
 }
 ```
 

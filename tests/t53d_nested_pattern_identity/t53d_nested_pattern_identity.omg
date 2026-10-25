@@ -91,13 +91,13 @@ flags(f: Flags) => i32 {
 enum Res {
 	Ok { value: i32; },
 	Err { code: i32; };
-	clear(*mut self) => void { *self = Res::Err { code = 99; }; }
+	clear(^self) => void { self.* = Res::Err { code = 99; }; }
 }
 struct Pair { left: Res; right: Res; }
-replace(r: *mut Res) => void { *r = Res::Err { code = 99; }; }
+replace(r: ^Res) => void { r.* = Res::Err { code = 99; }; }
 
 sibling_and_fresh(p: Pair) => i32 {
-	mut local := p;
+	^local := p;
 	match local {
 		Pair { left = Res::Ok; right = Res::Ok; } => {
 			match local {
@@ -115,12 +115,12 @@ sibling_and_fresh(p: Pair) => i32 {
 }
 
 ordinary_shadow(p: Pair) => i32 {
-	mut local := p;
+	^local := p;
 	match local {
 		Pair { left = Res::Ok; .. } => {
 			{
-				mut local: Res = Res::Ok { value = 1; };
-				replace(&mut local);
+				^local: Res = Res::Ok { value = 1; };
+				replace(^local);
 			}
 			local.left.value
 		},
@@ -128,10 +128,10 @@ ordinary_shadow(p: Pair) => i32 {
 	}
 }
 
-pointer_fresh(local: *mut Res) => i32 {
+pointer_fresh(local: ^Res) => i32 {
 	match local {
 		Res::Ok => {
-			replace(&mut *local);
+			replace(^local.*);
 			match local {
 				Res::Err => local.code,
 				.. => 0,
@@ -179,8 +179,8 @@ main() => void {
 	pair := Pair { left = Res::Ok { value = 7; }; right = Res::Ok { value = 11; }; };
 	println$("sibling-fresh: ", sibling_and_fresh(pair));
 	println$("ordinary-shadow: ", ordinary_shadow(pair));
-	mut result: Res = Res::Ok { value = 7; };
-	println$("pointer-fresh: ", pointer_fresh(&mut result));
+	^result: Res = Res::Ok { value = 7; };
+	println$("pointer-fresh: ", pointer_fresh(^result));
 	println$("revealed-header: ", revealed(a::PublicButton::Left), " ", revealed(a::PublicButton::Right));
 	println$("revealed-member: ", revealed_member(RevealedHolder { inner = a::PublicButton::Left; }), " ", revealed_member(RevealedHolder { inner = a::PublicButton::Right; }));
 	box: a::PublicBox = make_box$();

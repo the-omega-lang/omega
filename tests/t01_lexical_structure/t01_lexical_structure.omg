@@ -90,7 +90,7 @@ second line
 	# which keeps `0..5` from being lexed as `0.` followed by `.5`.
 	one := 1.0;
 	small := 0.125f32;
-	mut hits := 0;
+	^hits := 0;
 	for i in 0..<5 { hits += 1; }
 	println$("float-lex: ", one, " ", small, " ", hits);
 

@@ -1,10 +1,10 @@
-error: cannot mutate 'x': not declared 'mut'
+error: cannot mutate 'x': not declared mutable
  --> tests/t03b_shadowing_errors/t03b_shadowing_errors.omg:8:5
   |
 8 |     x = 5;
-  |     ^^^^^ `x` is not declared `mut`
+  |     ^^^^^ `x` is not declared mutable
   |
-  = help: declare it `mut x`
+  = help: declare it `^x`
 
 error: 'a' is declared multiple times in this scope
   --> tests/t03b_shadowing_errors/t03b_shadowing_errors.omg:14:30

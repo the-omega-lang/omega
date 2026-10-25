@@ -170,7 +170,7 @@ fn receiver_spelling_alone_is_still_not_an_overload_selector() {
         struct Thing {
             exposed v: i32;
             exposed same(*self) => i32 { self.v }
-            exposed same(*mut self) => i32 { self.v }
+            exposed same(^self) => i32 { self.v }
         }
         main() => void { }
         "#,
@@ -227,8 +227,8 @@ fn an_inherent_static_does_not_hide_a_conforming_member() {
 
         main() => void {
             t := Thing { v = 1; };
-            <void>Thing::describe(&t);
-            <void>Thing::self::describe(&t);
+            <void>Thing::describe(*t);
+            <void>Thing::self::describe(*t);
         }
         "#,
     )
@@ -246,8 +246,8 @@ fn a_member_reference_links_to_the_providers_member_symbol() {
 
         main() => void {
             t := Thing { v = 1; };
-            <void>Thing::same(&t);
-            <void>Thing::self::same(&t);
+            <void>Thing::same(*t);
+            <void>Thing::self::same(*t);
         }
         "#,
     )

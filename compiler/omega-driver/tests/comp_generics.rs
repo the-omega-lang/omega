@@ -146,7 +146,7 @@ fn equal_instantiations_from_different_spellings_share_one_type() {
         {BUFFER}
         comp size := 2;
         entry_fn() => i32 {{
-            mut a := Buffer<2, i32> {{ data = [1, 2]; }};
+            ^a := Buffer<2, i32> {{ data = [1, 2]; }};
             b := Buffer<size, i32> {{ data = [3, 4]; }};
             a = b;
             a.data[0]
@@ -162,7 +162,7 @@ fn differing_comp_values_are_differing_types() {
         r#"
         {BUFFER}
         entry_fn() => i32 {{
-            mut a := Buffer<2, i32> {{ data = [1, 2]; }};
+            ^a := Buffer<2, i32> {{ data = [1, 2]; }};
             b := Buffer<3, i32> {{ data = [3, 4, 5]; }};
             a = b;
             0
@@ -311,7 +311,7 @@ fn a_comp_default_fills_an_omitted_trailing_argument() {
             exposed cols: [M]u8;
         }
         entry_fn() => i32 {
-            mut a := Block { rows = [1u8, 1u8, 1u8, 1u8]; cols = [2u8, 2u8, 2u8, 2u8]; };
+            ^a := Block { rows = [1u8, 1u8, 1u8, 1u8]; cols = [2u8, 2u8, 2u8, 2u8]; };
             b: Block<4, 4> = Block { rows = [3u8, 3u8, 3u8, 3u8]; cols = [4u8, 4u8, 4u8, 4u8]; };
             a = b;
             <i32>a.rows[0]
@@ -329,7 +329,7 @@ fn an_alias_forwards_comp_parameters_without_changing_identity() {
         alias Two<T> = Buffer<2, T>;
         alias Same<comp N: usize, T> = Buffer<N, T>;
         entry_fn() => i32 {{
-            mut a: Two<i32> = Buffer<2, i32> {{ data = [1, 2]; }};
+            ^a: Two<i32> = Buffer<2, i32> {{ data = [1, 2]; }};
             b: Same<2, i32> = Buffer<2, i32> {{ data = [3, 4]; }};
             a = b;
             a.data[1]

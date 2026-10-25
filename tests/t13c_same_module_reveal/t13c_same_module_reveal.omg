@@ -2,5 +2,5 @@ import self::vault;
 
 main() => void {
 	v := vault::make(3);
-	<void>vault::read_secret(&v);
+	<void>vault::read_secret(*v);
 }

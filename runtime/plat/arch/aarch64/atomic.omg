@@ -40,15 +40,15 @@ import core::atomic::AtomicRmwOrdering;
 # position.
 
 exclusive_load_8(location: *u8) => u8 {
-	mut result: u8 = 0;
-	asm(reg(location), reg(&mut result), clobber("x9")) => {
+	^result: u8 = 0;
+	asm(reg(location), reg(^result), clobber("x9")) => {
 		ldarb w9, [$location]
 		strb w9, [$result]
 	}
 	result
 }
 
-exclusive_store_8(location: *mut u8, value: u8) => void {
+exclusive_store_8(location: ^u8, value: u8) => void {
 	wide := <u64>value;
 	asm(reg(location), reg(wide), clobber("x9")) => {
 		mov x9, $wide
@@ -56,7 +56,7 @@ exclusive_store_8(location: *mut u8, value: u8) => void {
 	}
 }
 
-try_exclusive_cas_8(location: *mut u8, expected: u8, desired: u8, observed: *mut u8, stored: *mut u8) => void {
+try_exclusive_cas_8(location: ^u8, expected: u8, desired: u8, observed: ^u8, stored: ^u8) => void {
 	wanted := <u64>expected;
 	replacement := <u64>desired;
 	asm(
@@ -81,15 +81,15 @@ try_exclusive_cas_8(location: *mut u8, expected: u8, desired: u8, observed: *mut
 }
 
 exclusive_load_16(location: *u16) => u16 {
-	mut result: u16 = 0;
-	asm(reg(location), reg(&mut result), clobber("x9")) => {
+	^result: u16 = 0;
+	asm(reg(location), reg(^result), clobber("x9")) => {
 		ldarh w9, [$location]
 		strh w9, [$result]
 	}
 	result
 }
 
-exclusive_store_16(location: *mut u16, value: u16) => void {
+exclusive_store_16(location: ^u16, value: u16) => void {
 	wide := <u64>value;
 	asm(reg(location), reg(wide), clobber("x9")) => {
 		mov x9, $wide
@@ -97,7 +97,7 @@ exclusive_store_16(location: *mut u16, value: u16) => void {
 	}
 }
 
-try_exclusive_cas_16(location: *mut u16, expected: u16, desired: u16, observed: *mut u16, stored: *mut u8) => void {
+try_exclusive_cas_16(location: ^u16, expected: u16, desired: u16, observed: ^u16, stored: ^u8) => void {
 	wanted := <u64>expected;
 	replacement := <u64>desired;
 	asm(
@@ -122,15 +122,15 @@ try_exclusive_cas_16(location: *mut u16, expected: u16, desired: u16, observed: 
 }
 
 exclusive_load_32(location: *u32) => u32 {
-	mut result: u32 = 0;
-	asm(reg(location), reg(&mut result), clobber("x9")) => {
+	^result: u32 = 0;
+	asm(reg(location), reg(^result), clobber("x9")) => {
 		ldar w9, [$location]
 		str w9, [$result]
 	}
 	result
 }
 
-exclusive_store_32(location: *mut u32, value: u32) => void {
+exclusive_store_32(location: ^u32, value: u32) => void {
 	wide := <u64>value;
 	asm(reg(location), reg(wide), clobber("x9")) => {
 		mov x9, $wide
@@ -138,7 +138,7 @@ exclusive_store_32(location: *mut u32, value: u32) => void {
 	}
 }
 
-try_exclusive_cas_32(location: *mut u32, expected: u32, desired: u32, observed: *mut u32, stored: *mut u8) => void {
+try_exclusive_cas_32(location: ^u32, expected: u32, desired: u32, observed: ^u32, stored: ^u8) => void {
 	wanted := <u64>expected;
 	replacement := <u64>desired;
 	asm(
@@ -163,15 +163,15 @@ try_exclusive_cas_32(location: *mut u32, expected: u32, desired: u32, observed: 
 }
 
 exclusive_load_64(location: *u64) => u64 {
-	mut result: u64 = 0;
-	asm(reg(location), reg(&mut result), clobber("x9")) => {
+	^result: u64 = 0;
+	asm(reg(location), reg(^result), clobber("x9")) => {
 		ldar x9, [$location]
 		str x9, [$result]
 	}
 	result
 }
 
-exclusive_store_64(location: *mut u64, value: u64) => void {
+exclusive_store_64(location: ^u64, value: u64) => void {
 	wide := <u64>value;
 	asm(reg(location), reg(wide), clobber("x9")) => {
 		mov x9, $wide
@@ -179,7 +179,7 @@ exclusive_store_64(location: *mut u64, value: u64) => void {
 	}
 }
 
-try_exclusive_cas_64(location: *mut u64, expected: u64, desired: u64, observed: *mut u64, stored: *mut u8) => void {
+try_exclusive_cas_64(location: ^u64, expected: u64, desired: u64, observed: ^u64, stored: ^u8) => void {
 	wanted := <u64>expected;
 	replacement := <u64>desired;
 	asm(
@@ -212,16 +212,16 @@ macro width_primitives(
 	$cas: ident
 ) => {
 	# Reports whether the exchange happened and always writes what it saw.
-	$weak_cas(location: *mut $U, expected: $U, desired: $U, observed: *mut $U) => bool {
-		mut stored: u8 = 0;
-		$try_exclusive(location, expected, desired, observed, &mut stored);
+	$weak_cas(location: ^$U, expected: $U, desired: $U, observed: ^$U) => bool {
+		^stored: u8 = 0;
+		$try_exclusive(location, expected, desired, observed, ^stored);
 		stored != 0u8
 	}
 
-	$cas(location: *mut $U, expected: $U, desired: $U) => $U {
-		mut observed := <$U>0;
+	$cas(location: ^$U, expected: $U, desired: $U) => $U {
+		^observed := <$U>0;
 		loop {
-			if $weak_cas(location, expected, desired, &mut observed) { break; }
+			if $weak_cas(location, expected, desired, ^observed) { break; }
 			# A store-exclusive failure is retried; a real value change is not.
 			if observed != expected { break; }
 		}
@@ -254,12 +254,12 @@ macro width_atomicity(
 			$load(location)
 		}
 
-		store(location: *mut $U, value: $U, order: AtomicStoreOrdering) => void {
+		store(location: ^$U, value: $U, order: AtomicStoreOrdering) => void {
 			$store(location, value);
 		}
 
-		exchange(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
-			mut observed := $load(location);
+		exchange(location: ^$U, value: $U, order: AtomicRmwOrdering) => $U {
+			^observed := $load(location);
 			loop {
 				previous := $cas(location, observed, value);
 				if previous == observed { break; }
@@ -268,7 +268,7 @@ macro width_atomicity(
 			observed
 		}
 
-		compare_exchange(location: *mut $U, expected: $U, desired: $U, success: AtomicRmwOrdering, failure: AtomicLoadOrdering) => Result<$U, $U> {
+		compare_exchange(location: ^$U, expected: $U, desired: $U, success: AtomicRmwOrdering, failure: AtomicLoadOrdering) => Result<$U, $U> {
 			previous := $cas(location, expected, desired);
 			if previous == expected {
 				Result<$U, $U>::Ok { value = previous; }
@@ -277,17 +277,17 @@ macro width_atomicity(
 			}
 		}
 
-		compare_exchange_weak(location: *mut $U, expected: $U, desired: $U, success: AtomicRmwOrdering, failure: AtomicLoadOrdering) => Result<$U, $U> {
-			mut observed := <$U>0;
-			if $weak_cas(location, expected, desired, &mut observed) {
+		compare_exchange_weak(location: ^$U, expected: $U, desired: $U, success: AtomicRmwOrdering, failure: AtomicLoadOrdering) => Result<$U, $U> {
+			^observed := <$U>0;
+			if $weak_cas(location, expected, desired, ^observed) {
 				Result<$U, $U>::Ok { value = observed; }
 			} else {
 				Result<$U, $U>::Err { error = observed; }
 			}
 		}
 
-		fetch_add(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
-			mut observed := $load(location);
+		fetch_add(location: ^$U, value: $U, order: AtomicRmwOrdering) => $U {
+			^observed := $load(location);
 			loop {
 				previous := $cas(location, observed, observed + value);
 				if previous == observed { break; }
@@ -296,8 +296,8 @@ macro width_atomicity(
 			observed
 		}
 
-		fetch_sub(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
-			mut observed := $load(location);
+		fetch_sub(location: ^$U, value: $U, order: AtomicRmwOrdering) => $U {
+			^observed := $load(location);
 			loop {
 				previous := $cas(location, observed, observed - value);
 				if previous == observed { break; }
@@ -306,8 +306,8 @@ macro width_atomicity(
 			observed
 		}
 
-		fetch_and(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
-			mut observed := $load(location);
+		fetch_and(location: ^$U, value: $U, order: AtomicRmwOrdering) => $U {
+			^observed := $load(location);
 			loop {
 				previous := $cas(location, observed, observed & value);
 				if previous == observed { break; }
@@ -316,8 +316,8 @@ macro width_atomicity(
 			observed
 		}
 
-		fetch_or(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
-			mut observed := $load(location);
+		fetch_or(location: ^$U, value: $U, order: AtomicRmwOrdering) => $U {
+			^observed := $load(location);
 			loop {
 				previous := $cas(location, observed, observed | value);
 				if previous == observed { break; }
@@ -326,8 +326,8 @@ macro width_atomicity(
 			observed
 		}
 
-		fetch_xor(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
-			mut observed := $load(location);
+		fetch_xor(location: ^$U, value: $U, order: AtomicRmwOrdering) => $U {
+			^observed := $load(location);
 			loop {
 				previous := $cas(location, observed, observed ^ value);
 				if previous == observed { break; }
@@ -336,8 +336,8 @@ macro width_atomicity(
 			observed
 		}
 
-		fetch_min_unsigned(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
-			mut observed := $load(location);
+		fetch_min_unsigned(location: ^$U, value: $U, order: AtomicRmwOrdering) => $U {
+			^observed := $load(location);
 			loop {
 				chosen := if value < observed { value } else { observed };
 				previous := $cas(location, observed, chosen);
@@ -347,8 +347,8 @@ macro width_atomicity(
 			observed
 		}
 
-		fetch_max_unsigned(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
-			mut observed := $load(location);
+		fetch_max_unsigned(location: ^$U, value: $U, order: AtomicRmwOrdering) => $U {
+			^observed := $load(location);
 			loop {
 				chosen := if value > observed { value } else { observed };
 				previous := $cas(location, observed, chosen);
@@ -361,9 +361,9 @@ macro width_atomicity(
 		# The signed views share the width's storage and its primitives; only
 		# the comparison differs, which is exactly why the gap declares them
 		# separately instead of inferring a sign from a bit pattern.
-		fetch_min_signed(location: *mut $I, value: $I, order: AtomicRmwOrdering) => $I {
-			storage := <*mut $U>(<usize>location);
-			mut observed := <$I>$load(storage);
+		fetch_min_signed(location: ^$I, value: $I, order: AtomicRmwOrdering) => $I {
+			storage := <^$U>(<usize>location);
+			^observed := <$I>$load(storage);
 			loop {
 				chosen := if value < observed { value } else { observed };
 				previous := <$I>$cas(storage, <$U>observed, <$U>chosen);
@@ -373,9 +373,9 @@ macro width_atomicity(
 			observed
 		}
 
-		fetch_max_signed(location: *mut $I, value: $I, order: AtomicRmwOrdering) => $I {
-			storage := <*mut $U>(<usize>location);
-			mut observed := <$I>$load(storage);
+		fetch_max_signed(location: ^$I, value: $I, order: AtomicRmwOrdering) => $I {
+			storage := <^$U>(<usize>location);
+			^observed := <$I>$load(storage);
 			loop {
 				chosen := if value > observed { value } else { observed };
 				previous := <$I>$cas(storage, <$U>observed, <$U>chosen);

@@ -34,13 +34,15 @@ macro alias comp reveal _
 The following are lexed as ordinary identifiers and acquire special meaning only in grammar-defined positions:
 
 ```text
-mut self sizeof alignof typeinfo in as exposed shared hidden
+self sizeof alignof typeinfo in as exposed shared hidden
 marker gap glue meet primitive root super
 expr type ident path
 asm reg clobber
 ```
 
 An implementation must therefore not globally reserve contextual keywords; they remain usable as identifiers where the grammar does not consume them contextually.
+
+`mut` is neither a keyword nor a contextual keyword: mutability is spelled with the `^` token, and `mut` is an ordinary identifier everywhere.
 
 `as` is recognized only as the rename connector of an import tree; see [`modules-and-imports.md`](modules-and-imports.md). It remains an ordinary identifier everywhere else, including as a path segment or an item name.
 
@@ -202,7 +204,7 @@ Omega recognizes these compound punctuation tokens greedily:
 ```text
 ...  ::  =>  :=
 ==   !=  <=  >=
-..=  ..<  ..
+..=  ..<  ..   .*
 ++   --   &&  ||  <<  >>
 +=   -=   *=  /=  %=  &=  |=  ^=
 <<=  >>=
@@ -216,5 +218,7 @@ $ % & * + , - . / : ; < = > | ^ ~ ! @ ?
 ```
 
 `...` is distinct from range syntax and is used only in the syntactic contexts that permit variadics/repetition. `..`, `..=`, and `..<` participate in ranges/slices/patterns as specified elsewhere.
+
+`.*` is the postfix dereference. Because it is one token, `p.*=v` is `p`, `.*`, `=`, `v` and `p.**=v` is `p`, `.*`, `*=`, `v`, never `.` followed by `*=`; a range keeps its own dots, so `a...*b` is `a`, `...`, `*`, `b`.
 
 When several tokenizations are possible, the lexer chooses the longest recognized punctuation token. Parser contexts that need nested closing `>` tokens must interpret the resulting token stream according to the type/generic grammar.

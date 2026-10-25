@@ -59,7 +59,7 @@ impl<'a> EnumHeader<'a> {
 impl<'r> Analyzer<'r> {
     /// Opens a refined anonymous binding onto the member it proves, so that
     /// naming something *on* the member -- a field, an element, a method --
-    /// reaches the payload. Whole-value operations (assignment, `&mut`,
+    /// reaches the payload. Whole-value operations (assignment, `^place`,
     /// widening) deliberately never come through here and keep the anonymous
     /// root, which is what makes refinement free of representation effects.
     pub(crate) fn open_refined_anonymous(

@@ -72,7 +72,7 @@ fn members_keep_their_written_order_through_parsing() {
 
 #[test]
 fn a_member_may_be_any_type_form() {
-    let ty = alias_target("alias A = enum *mut Failure | [4]u8 | Holder<i32> | (x: i32) => bool;");
+    let ty = alias_target("alias A = enum ^Failure | [4]u8 | Holder<i32> | (x: i32) => bool;");
     let members = members(&ty);
     assert_eq!(members.len(), 4);
     assert!(matches!(members[0], Type::Pointer(_, true)));

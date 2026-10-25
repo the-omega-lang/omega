@@ -168,7 +168,7 @@ impl<'r> Analyzer<'r> {
         Some((decl_id, path))
     }
 
-    /// `&mut place`, or anything else that hands out a mutable alias to it,
+    /// `^place`, or anything else that hands out a mutable alias to it,
     /// gives up every proof at and below the place.
     pub(super) fn widen_place(&mut self, place: &HirPlace) {
         if let Some((ident, origin, ..)) = self.narrowable_place(place) {
@@ -243,7 +243,7 @@ impl<'r> Analyzer<'r> {
         // Checked before the binding's own mutability, and here rather than
         // at any one write syntax: an enum's tag and header fields are
         // per-variant compile-time constants, so *no* write reaches them --
-        // not `=`, not `+=`, not `&mut`, not a `mut self` method call. A
+        // not `=`, not `+=`, not `^place`, not a `^self` method call. A
         // check at one of those sites only would leave the others able to
         // desynchronize a live value's tag from its actual variant.
         if let Some(field) = Self::immutable_enum_member(checked_place) {
@@ -312,8 +312,8 @@ impl<'r> Analyzer<'r> {
         // genuinely write-only binding.
         //
         // Without this, every out-pointer parameter in the tree reported
-        // `UnusedParameter` -- `List::pop(*mut self, out: *mut T)` writes
-        // `*out` and still warned.
+        // `UnusedParameter` -- `List::pop(^self, out: ^T)` writes
+        // `out.*` and still warned.
         if !place.projections.is_empty()
             && let CheckedPlaceRoot::Variable { decl_id, .. } = root
         {

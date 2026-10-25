@@ -2770,7 +2770,7 @@ fn an_anchored_module_alias_is_a_module_binding_in_type_literal_and_value_paths(
 
         entry_fn() => i32 {
             value: self::kid::Public = self::kid::Public { field = 5; };
-            self::kid::read(&value)
+            self::kid::read(*value)
         }
         "#,
         &[(
@@ -2795,7 +2795,7 @@ fn a_directly_imported_module_alias_behaves_like_the_target_module() {
 
         entry_fn() => i32 {
             value: api::Public = api::Public { field = 6; };
-            api::read(&value)
+            api::read(*value)
         }
         "#,
         &[
@@ -2902,7 +2902,7 @@ fn an_import_can_traverse_an_intermediate_module_alias() {
 
         entry_fn() => i32 {
             value: Public = Public { field = 9; };
-            read(&value)
+            read(*value)
         }
         "#,
         &[

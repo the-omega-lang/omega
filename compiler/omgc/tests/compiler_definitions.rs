@@ -251,7 +251,7 @@ exposed freestanding : i32 = 1;
 @cond(not(target_freestanding))
 exposed hosted : i32 = 1;
 
-@cond(in(target_os, &["linux", "macos", "windows", "none"]))
+@cond(in(target_os, *["linux", "macos", "windows", "none"]))
 exposed known_os : i32 = 1;
 
 @cond(equals(target_arch, "x86"))

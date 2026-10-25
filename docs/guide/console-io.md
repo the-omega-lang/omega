@@ -8,11 +8,11 @@ It has no global stream object and no hidden allocation.
 
 ```omega
 exposed spec Write {
-    write(*mut self, bytes: *[]u8) => Option<usize>;
+    write(^self, bytes: *[]u8) => Option<usize>;
 }
 
 exposed spec Read {
-    read(*mut self, into: *mut []u8) => Option<usize>;
+    read(^self, into: ^[]u8) => Option<usize>;
 }
 ```
 
@@ -29,8 +29,8 @@ adapter, or a test double.
 gaps:
 
 ```omega
-mut sink := Stdout {};
-Write::write(&mut sink, b"hello\n");
+^sink := Stdout {};
+Write::write(^sink, b"hello\n");
 ```
 
 A hosted `plat` target forwards these to whatever the operating system's own
@@ -44,7 +44,7 @@ corresponding glue; linking a program that does not reach it does not.
 
 ## Caller-owned adapters
 
-`SliceWriter` writes into a supplied `*mut []u8`. It returns a partial
+`SliceWriter` writes into a supplied `^[]u8`. It returns a partial
 `Some(n)` when the final write reaches its capacity and returns `None` for a
 later non-empty write once full. Its `len()` and `as_slice()` expose the
 written prefix.
@@ -56,9 +56,9 @@ returns `None` or zero progress. It is itself a `Write`, so buffering can be
 nested without a special case.
 
 ```omega
-mut sink := Stdout {};
-mut storage: [128]u8;
-mut out := BufWriter<Stdout>::new(&mut sink, &mut storage[0..]);
+^sink := Stdout {};
+^storage: [128]u8;
+^out := BufWriter<Stdout>::new(^sink, ^storage[0..]);
 out.write(b"buffered text\n");
 out.flush();
 ```
@@ -68,18 +68,18 @@ already buffered bytes first and makes at most one inner read per call, so it
 does not hide a source's short-read behavior. A zero-length buffer simply
 delegates to its inner reader or writer.
 
-`read_line(reader: *mut spec Read, into: *mut String) => bool` is a free
+`read_line(reader: ^spec Read, into: ^String) => bool` is a free
 function rather than a required method on every reader. It appends a line to
 the caller's `String`, consumes but does not append a newline, and returns
 false only when it read no byte at all. `StringWriter` and
-`string_writer(*mut String)` are `Write` adapters for allocation-backed text;
+`string_writer(^String)` are `Write` adapters for allocation-backed text;
 `to_string<T: Display>` formats through one.
 
 ## Formatting and macros
 
 ```omega
 exposed spec Display {
-    fmt(*self, out: *mut spec Write) => void;
+    fmt(*self, out: ^spec Write) => void;
 }
 ```
 
@@ -96,7 +96,7 @@ import std::fmt::Display;
 import std::io::Write;
 
 meet Display for Pair {
-    fmt(*self, out: *mut spec Write) => void {
+    fmt(*self, out: ^spec Write) => void {
         out.write(b"pair");
     }
 }

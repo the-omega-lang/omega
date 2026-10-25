@@ -20,16 +20,16 @@ static NEXT_DIR: AtomicUsize = AtomicUsize::new(0);
 /// annotations are what decide the two symbols the linker sees.
 const PRODUCER: &str = "\
 @symbol(name = \"gm_forced_value\")\n\
-exposed mut forced_value : i32 = 10;\n\
+exposed ^forced_value : i32 = 10;\n\
 \n\
 @symbol(mangle = disabled)\n\
-exposed mut plain_value : i32 = 20;\n\
+exposed ^plain_value : i32 = 20;\n\
 \n\
 @symbol(mangle = disabled)\n\
-exposed omega_producer_forced_address() => *i32 { &forced_value }\n\
+exposed omega_producer_forced_address() => *i32 { *forced_value }\n\
 \n\
 @symbol(name = \"gm_exported_value\", export)\n\
-exposed mut exported_value : i32 = 30;\n\
+exposed ^exported_value : i32 = 30;\n\
 \n\
 @symbol(name = \"gm_exported_function\", export)\n\
 exposed exported_function() => i32 { exported_value }\n";
@@ -51,10 +51,10 @@ exposed omega_forced_value() => i32 { renamed_forced }\n\
 exposed omega_plain_value() => i32 { renamed_plain }\n\
 \n\
 @symbol(mangle = disabled)\n\
-exposed omega_forced_address() => *i32 { &renamed_forced }\n\
+exposed omega_forced_address() => *i32 { *renamed_forced }\n\
 \n\
 @symbol(mangle = disabled)\n\
-exposed omega_plain_address() => *i32 { &renamed_plain }\n";
+exposed omega_plain_address() => *i32 { *renamed_plain }\n";
 
 const HARNESS: &str = "\
 extern int gm_forced_value;\n\

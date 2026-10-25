@@ -849,7 +849,7 @@ impl fmt::Display for AnalysisErrorKind {
                 write!(f, "cannot slice a value of type '{found}'")
             }
             Self::SliceRequiresAddressOf => {
-                write!(f, "a slice expression must be prefixed with '&' or '&mut'")
+                write!(f, "a slice expression must be prefixed with '*' or '^'")
             }
             Self::ImmutableSliceSource => {
                 write!(f, "cannot take a mutable slice of an immutable slice")
@@ -1345,12 +1345,16 @@ impl fmt::Display for AnalysisErrorKind {
             Self::MultipleCatchAllPatterns { .. } => write!(f, "more than one '..' catch-all arm"),
             Self::MatchArmTypeMismatch { .. } => write!(f, "'match' arms have incompatible types"),
             Self::NotMutableBinding { ident } => {
-                write!(f, "cannot mutate '{}': not declared 'mut'", ident.as_ref())
+                write!(
+                    f,
+                    "cannot mutate '{}': not declared mutable",
+                    ident.as_ref()
+                )
             }
             Self::ForeignMutFunctionBinding => {
                 write!(
                     f,
-                    "a function-typed foreign binding cannot be declared 'mut'"
+                    "a function-typed foreign binding cannot be declared mutable ('^')"
                 )
             }
             Self::NotMutablePointer => write!(f, "cannot mutate through an immutable pointer"),
@@ -1685,7 +1689,7 @@ impl fmt::Display for AnalysisErrorKind {
                 f,
                 "cannot evaluate this expression at compile time: {reason}"
             ),
-            Self::MutCompBinding => write!(f, "a 'comp' binding cannot be 'mut'"),
+            Self::MutCompBinding => write!(f, "a 'comp' binding cannot be mutable ('^')"),
             Self::TopLevelValueNotComp => {
                 write!(f, "a top-level binding's value must be compile-time-known")
             }

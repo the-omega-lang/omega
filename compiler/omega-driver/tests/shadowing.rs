@@ -20,7 +20,7 @@ static NEXT_DIR: AtomicUsize = AtomicUsize::new(0);
 
 /// Shadowing keeps every declaration alive for diagnostics: the shadowed
 /// binding is unreachable by name afterwards, but it still answers for its own
-/// unused/`mut` warnings. These are component tests because the conformance
+/// unused/`^` warnings. These are component tests because the conformance
 /// runner only compares a successfully compiled program's *runtime* output,
 /// so compiler warnings are not observable there.
 struct TestPackage(PathBuf);
@@ -103,7 +103,7 @@ fn a_shadowing_initializer_uses_the_binding_it_shadows() {
 
 #[test]
 fn a_shadowed_binding_still_reports_its_own_unnecessary_mut() {
-    let warnings = TestPackage::new("mut x := 1; x := x + 1; x").warnings();
+    let warnings = TestPackage::new("^x := 1; x := x + 1; x").warnings();
     assert_eq!(
         unnecessary_muts(&warnings),
         vec!["x".to_string()],

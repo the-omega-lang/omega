@@ -1,0 +1,37 @@
+# Writability comes from the binding or the pointer type, never from the
+# spelling of the access (docs/language/bindings-and-mutability.md).
+
+write_through_read_only(p: *i32) => void {
+	p.* = 1;
+}
+
+assign_immutable_parameter(count: i32) => void {
+	count = 2;
+}
+
+mutable_address_of_immutable() => void {
+	x := 3;
+	<void>^x;
+}
+
+mutable_comp() => void {
+	comp ^limit := 5;
+}
+
+# A `^` parameter is not part of the signature, so these are one declaration.
+twice(^value: i32) => i32 {
+	value += value;
+	value
+}
+
+twice(value: i32) => i32 {
+	value * 2
+}
+
+main() => void {
+	^n := 0;
+	write_through_read_only(*n);
+	assign_immutable_parameter(n);
+	mutable_address_of_immutable();
+	mutable_comp();
+}

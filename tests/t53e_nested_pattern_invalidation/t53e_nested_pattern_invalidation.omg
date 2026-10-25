@@ -1,19 +1,19 @@
 enum Res {
 	Ok { value: i32; },
 	Err { code: i32; };
-	clear(*mut self) => void { *self = Res::Err { code = 99; }; }
+	clear(^self) => void { self.* = Res::Err { code = 99; }; }
 }
 enum Opt { None, Some { value: Res; }; }
 struct Holder { inner: Res; }
 enum Wrapped { Empty, Full { holder: Holder; }; }
-replace(v: *mut Res) => void { *v = Res::Err { code = 99; }; }
+replace(v: ^Res) => void { v.* = Res::Err { code = 99; }; }
 
 nested_match(o: Opt) => i32 {
-	mut local := o;
+	^local := o;
 	match local {
 		Opt::Some { value = Res::Ok; } => {
 			match local {
-				Opt::Some => { replace(&mut local.value); },
+				Opt::Some => { replace(^local.value); },
 				.. => {},
 			}
 			local.value.value
@@ -23,12 +23,12 @@ nested_match(o: Opt) => i32 {
 }
 
 conditional_mutation(o: Opt, flag: bool) => i32 {
-	mut local := o;
+	^local := o;
 	match local {
 		Opt::Some { value = Res::Ok; } => {
 			if flag {
 				match local {
-					Opt::Some => { replace(&mut local.value); },
+					Opt::Some => { replace(^local.value); },
 					.. => {},
 				}
 			}
@@ -39,7 +39,7 @@ conditional_mutation(o: Opt, flag: bool) => i32 {
 }
 
 mutable_receiver(o: Opt) => i32 {
-	mut local := o;
+	^local := o;
 	match local {
 		Opt::Some { value = Res::Ok; } => {
 			match local {
@@ -53,12 +53,12 @@ mutable_receiver(o: Opt) => i32 {
 }
 
 prefix_alias(o: Wrapped) => i32 {
-	mut local := o;
+	^local := o;
 	match local {
 		Wrapped::Full { holder = Holder { inner = Res::Ok; }; } => {
 			match local {
 				Wrapped::Full => {
-					pointer := &mut local.holder;
+					pointer := ^local.holder;
 					pointer.inner = Res::Err { code = 99; };
 				},
 				.. => {},
@@ -70,13 +70,13 @@ prefix_alias(o: Wrapped) => i32 {
 }
 
 root_alias(o: Opt) => i32 {
-	mut local := o;
+	^local := o;
 	match local {
 		Opt::Some { value = Res::Ok; } => {
 			match local {
 				Opt::Some => {
-					pointer := &mut local;
-					*pointer = Opt::None;
+					pointer := ^local;
+					pointer.* = Opt::None;
 				},
 				.. => {},
 			}
@@ -86,11 +86,11 @@ root_alias(o: Opt) => i32 {
 	}
 }
 
-pointer_root(local: *mut Res) => i32 {
+pointer_root(local: ^Res) => i32 {
 	match local {
 		Res::Ok => {
 			match local {
-				Res::Ok => { replace(&mut *local); },
+				Res::Ok => { replace(^local.*); },
 				.. => {},
 			}
 			local.value
@@ -99,7 +99,7 @@ pointer_root(local: *mut Res) => i32 {
 	}
 }
 
-pointer_receiver(local: *mut Res) => i32 {
+pointer_receiver(local: ^Res) => i32 {
 	match local {
 		Res::Ok => {
 			match local {

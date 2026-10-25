@@ -89,7 +89,7 @@ fn a_range_can_be_bound_to_a_name_and_iterated() {
         r#"
         entry_fn() => i32 {
             r := 1..<10;
-            mut total := 0;
+            ^total := 0;
             for value in r { total = total + value; }
             total
         }
@@ -117,9 +117,9 @@ fn the_same_range_value_can_be_iterated_twice() {
         r#"
         entry_fn() => i32 {
             r := 1..<4;
-            mut first := 0;
+            ^first := 0;
             for value in r { first = first + 1; }
-            mut second := 0;
+            ^second := 0;
             for value in r { second = second + 1; }
             first - second
         }
@@ -135,7 +135,7 @@ fn a_range_passes_through_a_function_boundary() {
         import core::range::Range;
         widen(r: Range<i32>) => Range<i32> { r.start..<20 }
         entry_fn() => i32 {
-            mut total := 0;
+            ^total := 0;
             for value in widen(1..<10) { total = total + value; }
             total
         }
@@ -149,7 +149,7 @@ fn an_open_ended_range_drives_a_for_loop() {
     TestPackage::new(
         r#"
         entry_fn() => i32 {
-            mut n := 0;
+            ^n := 0;
             for value in 1.. {
                 n = n + 1;
                 if n == 3 { break; }
@@ -168,7 +168,7 @@ fn a_named_end_bound_is_not_read_as_a_struct_literal() {
         entry_fn() => i32 {
             start := 3;
             stop := 7;
-            mut n := 0;
+            ^n := 0;
             for value in start..<stop { n = n + 1; }
             n
         }
@@ -189,7 +189,7 @@ fn a_dotdot_range_with_an_end_is_rejected_in_expression_position() {
 #[test]
 fn a_dotdot_range_with_an_end_is_rejected_in_slice_position() {
     let package =
-        TestPackage::new("entry_fn() => i32 { arr : [4]i32 = [1,2,3,4]; s := &arr[1..3]; 0 }");
+        TestPackage::new("entry_fn() => i32 { arr : [4]i32 = [1,2,3,4]; s := *arr[1..3]; 0 }");
     assert!(has_parse_error(
         &package.expect_errors(),
         &ParseErrorKind::OpenRangeHasEnd
@@ -238,7 +238,7 @@ fn a_slice_still_infers_its_end_from_the_container() {
         r#"
         entry_fn() => i32 {
             arr : [4]i32 = [1,2,3,4];
-            s := &arr[2..];
+            s := *arr[2..];
             <i32>s.length
         }
         "#,
@@ -251,7 +251,7 @@ fn an_open_slice_end_needs_a_base_that_has_a_length() {
     let package = TestPackage::new(
         r#"
         rest(p: *[?]i32) => i32 {
-            s := &p[2..];
+            s := *p[2..];
             0
         }
         entry_fn() => i32 { 0 }
@@ -316,7 +316,7 @@ fn a_user_type_conforming_to_successor_is_range_iterable() {
         entry_fn() => i32 {
             a := PageIndex { value = 2; };
             b := PageIndex { value = 5; };
-            mut n := 0;
+            ^n := 0;
             for p in a..<b { n = n + 1; }
             n
         }
@@ -388,7 +388,7 @@ fn usize_ranges_iterate_and_keep_their_methods() {
         entry_fn() => i32 {
             lo : usize = 1usize;
             hi : usize = 4usize;
-            mut n := 0;
+            ^n := 0;
             for v in lo..<hi { n = n + 1; }
             if lo.is_odd() { n } else { 0 }
         }
@@ -403,7 +403,7 @@ fn an_inclusive_range_reaching_the_domain_maximum_compiles() {
         r#"
         entry_fn() => i32 {
             lo : u8 = 253u8;
-            mut n := 0;
+            ^n := 0;
             for v in lo..=255u8 { n = n + 1; }
             n
         }
@@ -418,7 +418,7 @@ fn a_leading_open_range_is_valid_with_an_explicit_operator() {
         r#"
         entry_fn() => i32 {
             arr : [4]i32 = [1,2,3,4];
-            s := &arr[..<2];
+            s := *arr[..<2];
             x := 5;
             match x {
                 ..=3 => { 1 },
@@ -443,7 +443,7 @@ fn an_end_may_not_follow_bare_dotdot_in_a_pattern() {
 #[test]
 fn an_end_may_not_follow_bare_dotdot_in_a_slice() {
     let package =
-        TestPackage::new("entry_fn() => i32 { arr : [4]i32 = [1,2,3,4]; s := &arr[..2]; 0 }");
+        TestPackage::new("entry_fn() => i32 { arr : [4]i32 = [1,2,3,4]; s := *arr[..2]; 0 }");
     assert!(has_parse_error(
         &package.expect_errors(),
         &ParseErrorKind::OpenRangeHasEnd
@@ -458,7 +458,7 @@ fn char_ranges_compile_through_the_ordinary_successor_protocol() {
         import core::option::Option;
         needs_ord<T: Ord>(value: T) => T { value }
         entry_fn() => i32 {
-            mut count := 0;
+            ^count := 0;
             for c in 'a'..='z' {
                 needs_ord(c);
                 count = count + 1;

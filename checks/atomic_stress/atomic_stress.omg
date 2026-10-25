@@ -14,7 +14,7 @@ import core::atomic::AtomicLoadOrdering;
 import core::atomic::AtomicRmwOrdering;
 
 @symbol(name = "omega_fetch_add_u32")
-foreign(c) fetch_add_u32(slot: *mut u32, value: u32) => u32 {
+foreign(c) fetch_add_u32(slot: ^u32, value: u32) => u32 {
 	Atomicity32::fetch_add(slot, value, AtomicRmwOrdering::SeqConsistent)
 }
 
@@ -22,9 +22,9 @@ foreign(c) fetch_add_u32(slot: *mut u32, value: u32) => u32 {
 # compare-exchange: it must converge under contention, and must never lose an
 # increment even when the weak form reports a spurious failure.
 @symbol(name = "omega_cas_increment_u32")
-foreign(c) cas_increment_u32(slot: *mut u32) => void {
-	mut observed := Atomicity32::load(slot, AtomicLoadOrdering::Relaxed);
-	mut running := true;
+foreign(c) cas_increment_u32(slot: ^u32) => void {
+	^observed := Atomicity32::load(slot, AtomicLoadOrdering::Relaxed);
+	^running := true;
 	while running {
 		outcome := Atomicity32::compare_exchange_weak(
 			slot,
@@ -41,22 +41,22 @@ foreign(c) cas_increment_u32(slot: *mut u32) => void {
 }
 
 @symbol(name = "omega_fetch_add_u16")
-foreign(c) fetch_add_u16(slot: *mut u16, value: u16) => u16 {
+foreign(c) fetch_add_u16(slot: ^u16, value: u16) => u16 {
 	Atomicity16::fetch_add(slot, value, AtomicRmwOrdering::SeqConsistent)
 }
 
 @symbol(name = "omega_fetch_add_u64")
-foreign(c) fetch_add_u64(slot: *mut u64, value: u64) => u64 {
+foreign(c) fetch_add_u64(slot: ^u64, value: u64) => u64 {
 	Atomicity64::fetch_add(slot, value, AtomicRmwOrdering::SeqConsistent)
 }
 
 @symbol(name = "omega_fetch_or_u8")
-foreign(c) fetch_or_u8(slot: *mut u8, value: u8) => u8 {
+foreign(c) fetch_or_u8(slot: ^u8, value: u8) => u8 {
 	Atomicity8::fetch_or(slot, value, AtomicRmwOrdering::SeqConsistent)
 }
 
 @symbol(name = "omega_fetch_max_i32")
-foreign(c) fetch_max_i32(slot: *mut i32, value: i32) => i32 {
+foreign(c) fetch_max_i32(slot: ^i32, value: i32) => i32 {
 	Atomicity32::fetch_max_signed(slot, value, AtomicRmwOrdering::SeqConsistent)
 }
 

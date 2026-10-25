@@ -23,22 +23,22 @@ main() => void {
 	println$("or: ", describe(some.or(literal)), " ", describe(none.or(literal)), " ", describe(none.or(none)));
 	println$("xor: ", describe(some.xor(none)), " ", describe(none.xor(literal)), " ", describe(some.xor(literal)), " ", describe(none.xor(none)));
 
-	mut slot := Option<i32>::some(1);
+	^slot := Option<i32>::some(1);
 	taken := slot.take();
 	println$("take: ", describe(taken), " ", describe(slot));
 	previous := slot.replace(2);
 	println$("replace: ", describe(previous), " ", describe(slot));
 	inserted := slot.get_or_insert(3);
-	*inserted += 10;
-	mut empty := Option<i32>::none();
+	inserted.* += 10;
+	^empty := Option<i32>::none();
 	filled := empty.get_or_insert(4);
-	*filled += 10;
+	filled.* += 10;
 	println$("get-or-insert: ", describe(slot), " ", describe(empty));
 
-	mut held := Option<i32>::some(20);
+	^held := Option<i32>::some(20);
 	seen := held.as_ptr();
-	*held.as_mut_ptr().unwrap() += 1;
-	println$("as-ptr: ", *seen.unwrap(), " ", none.as_ptr().is_none());
+	held.as_mut_ptr().unwrap().* += 1;
+	println$("as-ptr: ", seen.unwrap().*, " ", none.as_ptr().is_none());
 
 	good := Result<i32, *str>::ok(8);
 	bad := Result<i32, *str>::err("broken");
@@ -50,7 +50,7 @@ main() => void {
 	println$("result-and: ", good.and<u8>(Result<u8, *str>::ok(2)).unwrap(), " ", bad.and<u8>(Result<u8, *str>::ok(2)).unwrap_err());
 	println$("result-or: ", good.or<i32>(Result<i32, i32>::err(3)).unwrap(), " ", bad.or<i32>(Result<i32, i32>::ok(4)).unwrap(), " ", bad.or<i32>(Result<i32, i32>::err(5)).unwrap_err());
 
-	mut outcome := Result<i32, *str>::ok(30);
-	*outcome.as_mut_ptr().unwrap() += 2;
-	println$("result-as-ptr: ", *outcome.as_ptr().unwrap(), " ", *bad.as_ptr().unwrap_err());
+	^outcome := Result<i32, *str>::ok(30);
+	outcome.as_mut_ptr().unwrap().* += 2;
+	println$("result-as-ptr: ", outcome.as_ptr().unwrap().*, " ", bad.as_ptr().unwrap_err().*);
 }

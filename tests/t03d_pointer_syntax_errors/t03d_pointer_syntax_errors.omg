@@ -1,0 +1,25 @@
+# Retired pointer and mutability spellings are each reported once, with the
+# spelling that replaces them (docs/language/bindings-and-mutability.md).
+
+retired() => void {
+	x := 1;
+	a := &x;
+	b := &mut x;
+	mut c := 1;
+	d : *mut i32 = b;
+	e := a.^;
+}
+
+alias Callback = (^value: i32) => void;
+
+foreign(c) external(^value: i32) => void;
+
+struct Counter {
+	exposed count: i32;
+
+	exposed copy_bump(mut self) => void { }
+
+	exposed bump(*mut self) => void {
+		self.count += 1;
+	}
+}

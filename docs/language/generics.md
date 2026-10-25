@@ -174,9 +174,9 @@ A hole is accepted only where leaving the thing out is already inferred:
   and `<S : P<_>>::f(...)` leave the holes to the target's conformances; see
   [`specs-and-conformance.md`](specs-and-conformance.md#calling-conforming-functions).
 - **An initialized binding's annotation**, anywhere in its type:
-  `x : _ = e`, `p : *_ = &v`, `q : Pair<_, u8> = ...`, `a : [_]u8 = [1, 2, 3]`,
+  `x : _ = e`, `p : *_ = *v`, `q : Pair<_, u8> = ...`, `a : [_]u8 = [1, 2, 3]`,
   and a `for` binding (`for x : Pair<_, u8> in source`). A whole-annotation
-  `x : _ = e` is exactly `x := e`, and `mut x : _ = e` is exactly `mut x := e`.
+  `x : _ = e` is exactly `x := e`, and `^x : _ = e` is exactly `^x := e`.
   A partial annotation is solved **top-down**: its known parts are the
   expected type of the initializer, exactly as a complete annotation's type
   would be, so `a : [_]u8 = [1, 2, 3]` is `[3]u8` with `u8` elements, and
@@ -355,7 +355,7 @@ Instantiation identity includes both lists: the owner's generic arguments and th
 
 Arguments are inferred from the call's written arguments and the expected result type exactly as for a top-level generic function. The receiver of `value.name(...)` is supplied by the instance syntax, so it is not one of the arguments inference reads; `Owner::self::name(receiver, ...)` writes it out as an ordinary argument instead. A call may fix a left-to-right prefix explicitly, on the member (`value.name<T>(...)`) or on the function segment of a type-qualified path (`Owner::name<T>(...)`, `Owner::self::name<T>(...)`). A type-qualified path may write the owner's list and the function's together -- `Owner<A>::name<B>(...)`, `m::Owner<A>::self::name<B>(...)` -- as a call or as a [function value](functions.md#selecting-a-function-value). These are the only two lists one path carries: an expression path writes at most one list per segment, and a list on any other segment -- a module, the `self` namespace segment, or a variant -- is an error.
 
-When a call leaves a generic owner's list out, or writes it with `_` holes, the owner's arguments are inferred together with the declaration's own, from the same call: the owner's parameters followed by the declaration's are one positional signature. Written owner arguments fix the owner's positions and written function arguments fix the declaration's, in any combination -- `Pair::self::with(&p, q, 7u8)`, `Pair::self::with<u8>(&p, q, 7)`, and `Pair<_>::self::with<u8>(&p, q, 7)` all infer `A` from the receiver. Positions are distinct even where a declaration's parameter shadows an owner parameter of the same name, so an owner parameter that only a shadowed name would mention is determined by nothing in the call: it takes its declared default, and without one the call is an error naming that owner parameter.
+When a call leaves a generic owner's list out, or writes it with `_` holes, the owner's arguments are inferred together with the declaration's own, from the same call: the owner's parameters followed by the declaration's are one positional signature. Written owner arguments fix the owner's positions and written function arguments fix the declaration's, in any combination -- `Pair::self::with(*p, q, 7u8)`, `Pair::self::with<u8>(*p, q, 7)`, and `Pair<_>::self::with<u8>(*p, q, 7)` all infer `A` from the receiver. Positions are distinct even where a declaration's parameter shadows an owner parameter of the same name, so an owner parameter that only a shadowed name would mention is determined by nothing in the call: it takes its declared default, and without one the call is an error naming that owner parameter.
 
 The `spec S` parameter sugar applies here as it does to a top-level function: `f(x: spec S)` is a declaration with an anonymous bounded generic parameter, and is therefore instantiated per argument type.
 

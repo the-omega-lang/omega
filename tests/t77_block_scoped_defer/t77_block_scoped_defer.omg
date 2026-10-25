@@ -6,7 +6,7 @@ import std::io::println;
 import core::option::Option;
 
 per_iteration() => void {
-	mut i := 0;
+	^i := 0;
 	while i < 3 {
 		defer { println$("  end of iteration ", i); }
 		i += 1;
@@ -30,7 +30,7 @@ breaks_out() => void {
 
 returns_through(early: bool) => i32 {
 	defer { println$("  function body left"); }
-	mut result := 1;
+	^result := 1;
 	if early {
 		defer { println$("  if body left"); }
 		result = 10;
@@ -70,7 +70,7 @@ ordered() => void {
 }
 
 header() => void {
-	mut n := 0;
+	^n := 0;
 	while { defer { println$("  condition block left"); } n < 1 } {
 		n += 1;
 	}
@@ -85,8 +85,8 @@ value_of(o: Option<i32>) => i32 {
 
 # Compile-time evaluation leaves blocks the same way.
 counted() => i32 {
-	mut total := 0;
-	mut i := 0;
+	^total := 0;
+	^i := 0;
 	while i < 3 {
 		defer { total += 10; }
 		i += 1;

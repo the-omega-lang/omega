@@ -25,16 +25,16 @@ value_or_bail(cond: bool) => i32 {
 
 # `*[?]T` is thin and unlengthed; it can be indexed given an external count.
 sum_unsized(values: *[?]i32, count: usize) => i32 {
-	mut total := 0;
-	mut i: usize = 0;
+	^total := 0;
+	^i: usize = 0;
 	for ; i < count; i += 1 {
 		total += values[i];
 	}
 	total
 }
 
-fill_unsized(values: *mut [?]i32, count: usize, with: i32) => void {
-	mut i: usize = 0;
+fill_unsized(values: ^[?]i32, count: usize, with: i32) => void {
+	^i: usize = 0;
 	for ; i < count; i += 1 {
 		values[i] = with;
 	}
@@ -70,37 +70,37 @@ main() => void {
 
 	# --- pointer/array/slice type forms ---------------------------------
 	value: i32 = 10;
-	p: *i32 = &value;
+	p: *i32 = *value;
 
-	mut other: i32 = 20;
-	pm: *mut i32 = &mut other;
-	*pm = 21;
+	^other: i32 = 20;
+	pm: ^i32 = ^other;
+	pm.* = 21;
 
-	# `*mut T` implicitly widens to `*T`.
+	# `^T` implicitly widens to `*T`.
 	widened: *i32 = pm;
 
-	mut arr: [3]i32 = [1, 2, 3];
-	parr: *[3]i32 = &arr;
+	^arr: [3]i32 = [1, 2, 3];
+	parr: *[3]i32 = *arr;
 
 	inferred: [_]i32 = [100, 200, 300];
 
-	mut bytes: [4]u8 = [10, 20, 30, 40];
-	mview: *mut []u8 = &mut bytes[0..];
+	^bytes: [4]u8 = [10, 20, 30, 40];
+	mview: ^[]u8 = ^bytes[0..];
 	# mutable slice implicitly widens to immutable slice.
 	view: *[]u8 = mview;
 
 	greeting: *str = "hi";
 
 	println$(
-		"ptr-array-slice: ", *p, " ", *pm, " ", *widened, " ",
-		arr[0] + arr[1] + arr[2], " ", (*parr)[0] + (*parr)[1] + (*parr)[2], " ",
+		"ptr-array-slice: ", p.*, " ", pm.*, " ", widened.*, " ",
+		arr[0] + arr[1] + arr[2], " ", parr.*[0] + parr.*[1] + parr.*[2], " ",
 		inferred[0] + inferred[1] + inferred[2], " ",
 		view.length, " ", view[2], " ",
 		greeting.size
 	);
 
-	println$("sum-unsized: ", sum_unsized(<*[?]i32>&arr[0], 3usize));
-	fill_unsized(<*mut [?]i32>&mut arr[0], 3usize, 7);
+	println$("sum-unsized: ", sum_unsized(<*[?]i32>*arr[0], 3usize));
+	fill_unsized(<^[?]i32>^arr[0], 3usize, 7);
 	println$("fill-unsized: ", arr[0] + arr[1] + arr[2]);
 
 	# --- char: ordering, checked construction, casts --------------------
@@ -116,11 +116,11 @@ main() => void {
 
 	# --- pointer arithmetic: byte-oriented, unscaled, produces usize ----
 	buffer: [4]u8 = [10, 20, 30, 40];
-	base: *u8 = &buffer[0];
+	base: *u8 = *buffer[0];
 	offset := base + 2usize;
 	target := <*u8>offset;
-	println$("ptr-arith-deref: ", *target);
+	println$("ptr-arith-deref: ", target.*);
 
-	tail: *u8 = &buffer[3];
+	tail: *u8 = *buffer[3];
 	println$("ptr-diff: ", tail - base);
 }

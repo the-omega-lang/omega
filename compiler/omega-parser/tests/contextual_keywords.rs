@@ -44,7 +44,7 @@ fn reserved_keywords_are_not_identifiers() {
         for source in [
             format!("{word} := 1;"),
             format!("use_it() => void {{ {word} := 2; }}"),
-            format!("use_it() => void {{ mut {word} : i32 = 2; }}"),
+            format!("use_it() => void {{ ^{word} : i32 = 2; }}"),
             format!("struct Holder {{ {word}: i32; }}"),
             format!("struct {word} {{ }}"),
             format!("takes({word}: i32) => void {{ }}"),

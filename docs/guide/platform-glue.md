@@ -172,7 +172,7 @@ is hidden in the produced image, so it links across the library's own objects
 but is not a name a loader can find; a `foreign` definition keeps the exact
 name written in source and crosses images, which makes it the entry a host
 resolves with `dlsym`. A `foreign` declaration the library does not define --
-including a `foreign mut` data symbol -- is resolved out of the loading process
+including a `foreign ^` data symbol -- is resolved out of the loading process
 in the same way, which requires that process to export its own symbols
 (`-rdynamic` when the host is a C executable).
 

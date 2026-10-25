@@ -9,7 +9,7 @@ error: generic arguments cannot follow 'm' here
 error: generic arguments cannot follow 'self' here
   --> tests/t63b_misplaced_generic_arguments/t63b_misplaced_generic_arguments.omg:15:10
    |
-15 |     b := m::Owner<i32>::self<u8>::scaled(&o, 2);
+15 |     b := m::Owner<i32>::self<u8>::scaled(*o, 2);
    |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `self` takes no generic argument list in this path
    |
    = note: a path writes generic arguments on the item it names, or on a type and its function (`Owner<A>::name<B>`)

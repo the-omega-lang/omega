@@ -187,7 +187,7 @@ fn a_mixed_generic_overload_group_selects_the_concrete_candidate() {
         free(p: *u8) => void { }
         main() => void {
             value := 1u8;
-            free(&value);
+            free(*value);
         }
         "#,
     )
@@ -202,7 +202,7 @@ fn equally_specific_generic_overloads_report_ambiguity() {
         free<T>(p: T) => void { }
         main() => void {
             value := 1u8;
-            free(&value);
+            free(*value);
         }
         "#,
     );
@@ -532,9 +532,9 @@ fn conflicting_glues_label_each_glue_block_in_its_own_source() {
 #[test]
 fn mutable_function_typed_foreign_bindings_are_rejected() {
     for source in [
-        "foreign mut fp : (i32) => void;",
-        "foreign(c) { mut fp : foreign(c) (i32) => void; }",
-        "alias Callback = (i32) => void; foreign mut fp : Callback;",
+        "foreign ^fp : (i32) => void;",
+        "foreign(c) { ^fp : foreign(c) (i32) => void; }",
+        "alias Callback = (i32) => void; foreign ^fp : Callback;",
     ] {
         let package = TestPackage::new(&format!("{source} main() => void {{ }}"));
         let errors = package.expect_errors();
@@ -549,7 +549,7 @@ fn mutable_function_typed_foreign_bindings_are_rejected() {
             AnalysisErrorKind::ForeignMutFunctionBinding
         ));
         let span = errors[0].span;
-        assert_eq!(&source[span.start..span.end], "mut");
+        assert_eq!(&source[span.start..span.end], "^");
     }
 }
 

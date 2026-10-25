@@ -28,6 +28,7 @@ pub struct Param {
     pub span: Span,
     pub origin: Origin,
     pub r#type: Type,
+    pub mutable: bool,
 }
 
 impl Param {

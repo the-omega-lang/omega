@@ -60,7 +60,7 @@ meet<T: Successor + Ord> ToIterator<T> for Range<T> {
 }
 
 meet<T: Successor + Ord> Iterator<T> for RangeIterator<T> {
-    next(*mut self) => Option<T> {
+    next(^self) => Option<T> {
         if self.done {
             return Option<T>::None;
         }

@@ -86,7 +86,7 @@ fn pointer_to_spec_conjunction_is_an_ordinary_structural_pointer() {
 
 #[test]
 fn mut_pointer_to_spec_conjunction_is_an_ordinary_structural_pointer() {
-    let ty = param_type("f(x: *mut spec A + B) => void {}");
+    let ty = param_type("f(x: ^spec A + B) => void {}");
     let Type::Pointer(inner, mutable) = ty else {
         panic!("expected an ordinary pointer, got {ty:?}");
     };
@@ -97,7 +97,7 @@ fn mut_pointer_to_spec_conjunction_is_an_ordinary_structural_pointer() {
 #[test]
 fn old_prefix_pointer_spec_object_syntax_is_rejected() {
     assert!(SourceModule::parse("f(x: spec *A) => void {}").is_err());
-    assert!(SourceModule::parse("f(x: spec *mut A) => void {}").is_err());
+    assert!(SourceModule::parse("f(x: spec ^A) => void {}").is_err());
 }
 
 #[test]

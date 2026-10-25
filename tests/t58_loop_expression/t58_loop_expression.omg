@@ -20,7 +20,7 @@ pick(c: bool) => i32 {
 main() => void {
 	println$(pick(true));
 
-	mut n := 0;
+	^n := 0;
 	# A `loop` that a `break` reaches completes with `void`.
 	takes_nothing(loop {
 		n += 1;

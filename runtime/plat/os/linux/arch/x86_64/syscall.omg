@@ -11,13 +11,13 @@
 # `asm` has no output operand, so each result is written through an explicit
 # out-pointer operand instead of read back from a register.
 raw_transfer(number: usize, fd: i32, buffer: usize, count: usize) => isize {
-	mut result: isize = 0;
+	^result: isize = 0;
 	asm(
 		reg(number, "rax"),
 		reg(fd, "edi"),
 		reg(buffer, "rsi"),
 		reg(count, "rdx"),
-		reg(&mut result),
+		reg(^result),
 		clobber("rcx"),
 		clobber("r11")
 	) => {
@@ -37,7 +37,7 @@ transferred(result: isize) => Option<usize> {
 	}
 }
 
-shared read(fd: i32, buffer: *mut u8, count: usize) => Option<usize> {
+shared read(fd: i32, buffer: ^u8, count: usize) => Option<usize> {
 	transferred(raw_transfer(0usize, fd, <usize>buffer, count))
 }
 
@@ -49,11 +49,11 @@ shared write(fd: i32, buffer: *u8, count: usize) => Option<usize> {
 # The constant arguments are written as immediates in the body rather than
 # passed as operands: they would otherwise pin six registers for values the
 # instruction stream already knows.
-shared map_anonymous(length: usize) => *mut u8 {
-	mut result: isize = 0;
+shared map_anonymous(length: usize) => ^u8 {
+	^result: isize = 0;
 	asm(
 		reg(length, "rsi"),
-		reg(&mut result),
+		reg(^result),
 		clobber("rax"),
 		clobber("rdi"),
 		clobber("rdx"),
@@ -74,7 +74,7 @@ shared map_anonymous(length: usize) => *mut u8 {
 	}
 	# The kernel reports failure as `-errno`, and a user mapping never has the
 	# sign bit set on this target.
-	if result < 0isize { <*mut u8>0usize } else { <*mut u8><usize>result }
+	if result < 0isize { <^u8>0usize } else { <^u8><usize>result }
 }
 
 shared unmap(address: *u8, length: usize) => void {

@@ -128,7 +128,7 @@ fn parse_annotation_expr_kind(p: &mut Parser) -> Option<AnnotationExprKind> {
         return Some(AnnotationExprKind::Literal(literal));
     }
     match p.peek() {
-        TokenKind::Amp => {
+        TokenKind::Star => {
             p.advance();
             p.expect(&TokenKind::LBracket, "'['");
             let elements = parse_expr_list(p, &TokenKind::RBracket, "']'")?;
@@ -168,7 +168,7 @@ fn parse_annotation_expr_kind(p: &mut Parser) -> Option<AnnotationExprKind> {
 }
 
 const ANNOTATION_ARGUMENT: &str =
-    "an annotation argument: a literal, a name, 'name(...)', '&[...]', or 'sizeof<Type>'";
+    "an annotation argument: a literal, a name, 'name(...)', '*[...]', or 'sizeof<Type>'";
 
 /// Nested argument lists accept a trailing comma so a condition can be spread
 /// over several lines and edited a line at a time. A missing separator is

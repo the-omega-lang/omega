@@ -7,27 +7,19 @@ error: a function type has no receiver
   = help: write the receiver's type as an explicit first parameter, such as `(*Thing) => void`
 
 error: a function type has no receiver
-  --> tests/t30b_function_type_receiver_errors/t30b_function_type_receiver_errors.omg:10:21
+  --> tests/t30b_function_type_receiver_errors/t30b_function_type_receiver_errors.omg:10:20
    |
-10 | alias ByMutValue = (mut self, i32) => i32;
-   |                     ^^^^^^^^ `mut self` is only valid in a method declaration
-   |
-   = help: write the receiver's type as an explicit first parameter, such as `(*Thing) => void`
-
-error: a function type has no receiver
-  --> tests/t30b_function_type_receiver_errors/t30b_function_type_receiver_errors.omg:11:20
-   |
-11 | alias ByPointer = (*self) => i32;
+10 | alias ByPointer = (*self) => i32;
    |                    ^^^^^ `*self` is only valid in a method declaration
    |
    = help: write the receiver's type as an explicit first parameter, such as `(*Thing) => void`
 
 error: a function type has no receiver
-  --> tests/t30b_function_type_receiver_errors/t30b_function_type_receiver_errors.omg:12:23
+  --> tests/t30b_function_type_receiver_errors/t30b_function_type_receiver_errors.omg:11:23
    |
-12 | alias ByMutPointer = (*mut self, i32) => i32;
-   |                       ^^^^^^^^^ `*mut self` is only valid in a method declaration
+11 | alias ByMutPointer = (^self, i32) => i32;
+   |                       ^^^^^ `^self` is only valid in a method declaration
    |
    = help: write the receiver's type as an explicit first parameter, such as `(*Thing) => void`
 
-error: could not compile the program due to 4 previous errors
+error: could not compile the program due to 3 previous errors

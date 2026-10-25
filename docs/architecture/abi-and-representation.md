@@ -135,7 +135,7 @@ A non-function `foreign name : Type;` binding becomes a real linker-visible exte
 
 ## Dynamic spec representation
 
-A dynamic `*spec T` / `*mut spec T` value is represented as a pair:
+A dynamic `*spec T` / `^spec T` value is represented as a pair:
 
 ```text
 data pointer

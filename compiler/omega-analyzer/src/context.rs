@@ -89,7 +89,7 @@ pub enum DeclarationPolicy {
 #[derive(Debug, Clone)]
 pub struct LexicalScope {
     /// Every declaration made in this scope, in source order. A shadowed
-    /// declaration stays here so it still gets its own unused/`mut`
+    /// declaration stays here so it still gets its own unused/`^`
     /// diagnostics.
     declarations: Vec<((Ident, Origin), VarBinding)>,
     /// Index into `declarations` of the binding each hygienic name currently

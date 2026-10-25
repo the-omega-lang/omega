@@ -41,7 +41,7 @@ float_label() => *str { return "float"; }
 rounded_label() => *str { return "rounded"; }
 
 # A base and a suffix survive the command line unchanged.
-@cond(in(def::mask, &[0, 255]))
+@cond(in(def::mask, *[0, 255]))
 mask_label() => *str { return "mask"; }
 
 # A definition that was never supplied is false where a boolean is expected.

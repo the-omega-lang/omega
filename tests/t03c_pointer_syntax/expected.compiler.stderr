@@ -1,0 +1,9 @@
+warning: unnecessary '^' on 'value'
+  --> tests/t03c_pointer_syntax/t03c_pointer_syntax.omg:48:11
+   |
+48 | unwritten(^value: i32) => i32 {
+   |           ^^^^^^^^^^^ `value` is declared mutable (`^`) but never reassigned
+   |
+   = help: remove the `^` -- it isn't just a hint, dropping it changes nothing about how this compiles
+   = note: suppress this with '@suppress(unnecessary_mut)'
+

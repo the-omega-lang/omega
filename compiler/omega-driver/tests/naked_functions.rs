@@ -136,12 +136,12 @@ fn naked_comp_and_clobber_descriptors_accepted() {
 }
 
 #[test]
-fn naked_method_with_mut_self_receiver_validates_as_one_asm_body() {
+fn naked_method_with_a_mutable_parameter_validates_as_one_asm_body() {
     TestPackage::new(
         "exposed struct Foo {\n\
              exposed x: i32;\n\
              @naked\n\
-             exposed magic(mut self) => i32 {\n\
+             exposed magic(self, ^x: i32) => i32 {\n\
                  asm() => {\n\
                      mov eax, 123\n\
                      ret\n\

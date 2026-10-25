@@ -48,16 +48,16 @@ main() => void {
 	foo := Foo { tally = 10; };
 
 	# --- static dispatch through a top-level conjunction parameter ---------
-	println$("static-conjunction: ", use_conjunction(&foo));
+	println$("static-conjunction: ", use_conjunction(*foo));
 
 	# --- implicit coercion to a dynamic conjunction object ------------------
-	println$("dynamic-conjunction: ", speak(&foo));
+	println$("dynamic-conjunction: ", speak(*foo));
 
 	# --- reordered spelling coerces identically (same canonical shape) -----
-	println$("reordered-conjunction: ", speak_reordered(&foo));
+	println$("reordered-conjunction: ", speak_reordered(*foo));
 
 	# --- explicit cast to a dynamic object, plus its pseudo-fields ----------
-	obj := <*spec A + B>&foo;
+	obj := <*spec A + B>*foo;
 	raw := obj.ptr;
 	vt := obj.vtable;
 	println$("object-pseudo-fields: ", <usize>raw != 0usize, " ", <usize>vt != 0usize);
@@ -68,10 +68,10 @@ main() => void {
 
 	# --- a zero-method marker member joins the shape without breaking the --
 	# --- section layout of the members after it -----------------------------
-	full := <*spec A + B + M>&foo;
+	full := <*spec A + B + M>*foo;
 	println$("marker-member-object: ", full.a(), " ", full.b());
 
 	# --- duplicate members collapse: `A + A` is exactly `A` ----------------
-	dup := <*spec A + A>&foo;
+	dup := <*spec A + A>*foo;
 	println$("duplicate-member: ", dup.a());
 }

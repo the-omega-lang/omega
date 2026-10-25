@@ -19,17 +19,17 @@ import root::range::Successor;
 macro signed_integer($T: type, $MAX: expr) => {
     meet Ord for $T {
         compare(*self, other: Self) => Ordering {
-            if *self < other { Ordering::Less }
-            else if *self > other { Ordering::Greater }
+            if self.* < other { Ordering::Less }
+            else if self.* > other { Ordering::Greater }
             else { Ordering::Equal }
         }
-        min(*self, other: Self) => Self { if *self < other { *self } else { other } }
-        max(*self, other: Self) => Self { if *self > other { *self } else { other } }
+        min(*self, other: Self) => Self { if self.* < other { self.* } else { other } }
+        max(*self, other: Self) => Self { if self.* > other { self.* } else { other } }
     }
     meet Successor for $T {
         successor(*self) => Option<Self> {
-            if *self == $MAX { Option<Self>::None }
-            else { Option<Self>::Some { value = *self + <Self>1; } }
+            if self.* == $MAX { Option<Self>::None }
+            else { Option<Self>::Some { value = self.* + <Self>1; } }
         }
     }
     meet Bounded for $T {
@@ -38,49 +38,49 @@ macro signed_integer($T: type, $MAX: expr) => {
     }
     primitive $T {
         exposed clamp(*self, lo: Self, hi: Self) => Self {
-            if *self < lo { lo } else if *self > hi { hi } else { *self }
+            if self.* < lo { lo } else if self.* > hi { hi } else { self.* }
         }
 
         exposed pow(*self, exponent: u32) => Self {
-            mut result : Self = <Self>1;
-            mut i : u32 = 0u32;
+            ^result : Self = <Self>1;
+            ^i : u32 = 0u32;
             while i < exponent {
-                result = result * *self;
+                result = result * self.*;
                 i = i + 1u32;
             }
             result
         }
 
-        exposed is_even(*self) => bool { *self % <Self>2 == <Self>0 }
-        exposed is_odd(*self) => bool { *self % <Self>2 != <Self>0 }
+        exposed is_even(*self) => bool { self.* % <Self>2 == <Self>0 }
+        exposed is_odd(*self) => bool { self.* % <Self>2 != <Self>0 }
 
         exposed abs(*self) => Self {
-            if *self < <Self>0 { -*self } else { *self }
+            if self.* < <Self>0 { -self.* } else { self.* }
         }
 
         exposed signum(*self) => Self {
-            if *self < <Self>0 { <Self>(-1) } else if *self > <Self>0 { <Self>1 } else { <Self>0 }
+            if self.* < <Self>0 { <Self>(-1) } else if self.* > <Self>0 { <Self>1 } else { <Self>0 }
         }
 
-        exposed is_negative(*self) => bool { *self < <Self>0 }
-        exposed is_positive(*self) => bool { *self > <Self>0 }
+        exposed is_negative(*self) => bool { self.* < <Self>0 }
+        exposed is_positive(*self) => bool { self.* > <Self>0 }
     }
 }
 
 macro unsigned_integer($T: type, $MAX: expr) => {
     meet Ord for $T {
         compare(*self, other: Self) => Ordering {
-            if *self < other { Ordering::Less }
-            else if *self > other { Ordering::Greater }
+            if self.* < other { Ordering::Less }
+            else if self.* > other { Ordering::Greater }
             else { Ordering::Equal }
         }
-        min(*self, other: Self) => Self { if *self < other { *self } else { other } }
-        max(*self, other: Self) => Self { if *self > other { *self } else { other } }
+        min(*self, other: Self) => Self { if self.* < other { self.* } else { other } }
+        max(*self, other: Self) => Self { if self.* > other { self.* } else { other } }
     }
     meet Successor for $T {
         successor(*self) => Option<Self> {
-            if *self == $MAX { Option<Self>::None }
-            else { Option<Self>::Some { value = *self + <Self>1; } }
+            if self.* == $MAX { Option<Self>::None }
+            else { Option<Self>::Some { value = self.* + <Self>1; } }
         }
     }
     meet Bounded for $T {
@@ -89,26 +89,26 @@ macro unsigned_integer($T: type, $MAX: expr) => {
     }
     primitive $T {
         exposed clamp(*self, lo: Self, hi: Self) => Self {
-            if *self < lo { lo } else if *self > hi { hi } else { *self }
+            if self.* < lo { lo } else if self.* > hi { hi } else { self.* }
         }
 
         exposed pow(*self, exponent: u32) => Self {
-            mut result : Self = <Self>1;
-            mut i : u32 = 0u32;
+            ^result : Self = <Self>1;
+            ^i : u32 = 0u32;
             while i < exponent {
-                result = result * *self;
+                result = result * self.*;
                 i = i + 1u32;
             }
             result
         }
 
-        exposed is_even(*self) => bool { *self % <Self>2 == <Self>0 }
-        exposed is_odd(*self) => bool { *self % <Self>2 != <Self>0 }
+        exposed is_even(*self) => bool { self.* % <Self>2 == <Self>0 }
+        exposed is_odd(*self) => bool { self.* % <Self>2 != <Self>0 }
 
         # A power of two has exactly one bit set, so clearing its lowest set
         # bit (`self & (self - 1)`) leaves zero; `0` is excluded separately.
         exposed is_power_of_two(*self) => bool {
-            if *self == <Self>0 { false } else { (*self & (*self - <Self>1)) == <Self>0 }
+            if self.* == <Self>0 { false } else { (self.* & (self.* - <Self>1)) == <Self>0 }
         }
     }
 }
@@ -117,20 +117,20 @@ macro float_ops($T: type) => {
     # `Eq` but deliberately no `Ord`: `NaN` has no correct position in a
     # total order (see `core::cmp`).
     meet Eq for $T {
-        equals(*self, other: Self) => bool { *self == other }
+        equals(*self, other: Self) => bool { self.* == other }
     }
     primitive $T {
         exposed clamp(*self, lo: Self, hi: Self) => Self {
-            if *self < lo { lo } else if *self > hi { hi } else { *self }
+            if self.* < lo { lo } else if self.* > hi { hi } else { self.* }
         }
 
         exposed abs(*self) => Self {
-            if *self < <Self>0.0 { -*self } else { *self }
+            if self.* < <Self>0.0 { -self.* } else { self.* }
         }
 
         # `NaN` is the only IEEE 754 value unequal to itself -- a portable
         # test needing no bit-level trickery.
-        exposed is_nan(*self) => bool { *self != *self }
+        exposed is_nan(*self) => bool { self.* != self.* }
     }
 }
 

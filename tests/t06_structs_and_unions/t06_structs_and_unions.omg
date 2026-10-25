@@ -9,8 +9,8 @@ struct Point<T> {
 		Point<T> { x = 0; y = 0; }
 	}
 
-	# A method with a `*mut self` receiver mutates the caller's fields.
-	exposed translate(*mut self, dx: T, dy: T) => void {
+	# A method with a `^self` receiver mutates the caller's fields.
+	exposed translate(^self, dx: T, dy: T) => void {
 		self.x += dx;
 		self.y += dy;
 	}
@@ -31,7 +31,7 @@ main() => void {
 	p := Point<i32> { x = 10; y = 20; };
 	println$("struct-literal: ", p.x, " ", p.y);
 
-	mut q := Point<i32>::origin();
+	^q := Point<i32>::origin();
 	q.translate(3, 4);
 	println$("origin-translate: ", q.x, " ", q.y);
 
@@ -39,7 +39,7 @@ main() => void {
 	# at offset zero, so writing one field is visible through another.
 	println$("union-size: ", sizeof<Raw>, " ", sizeof<[4]u8>);
 
-	mut raw := Raw { as_u32 = 0x01020304_u32; };
+	^raw := Raw { as_u32 = 0x01020304_u32; };
 	println$("union-overlap: ", raw.as_bytes[0], " ", raw.as_bytes[1], " ", raw.as_bytes[2], " ", raw.as_bytes[3]);
 
 	v := Value { as_i32 = 42; };

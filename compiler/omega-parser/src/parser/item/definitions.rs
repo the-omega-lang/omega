@@ -300,6 +300,7 @@ fn parse_spec_function(p: &mut Parser, policy: SpecMemberVisibility) -> Option<S
         Some(parse_codeblock(p)?)
     } else {
         p.expect_terminator(&TokenKind::Semi, "';'");
+        crate::parser::reject_mutable_params(p, &params, "a spec function without a body");
         None
     };
     Some(SpecFunctionStmt {

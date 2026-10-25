@@ -115,11 +115,11 @@ fn scalar_accesses_are_volatile_and_naturally_aligned() {
 import core::volatile::read_volatile;
 import core::volatile::write_volatile;
 main() => void {
-    mut register := 0u32;
-    write_volatile(&mut register, 1u32);
-    write_volatile(&mut register, 2u32);
-    first := read_volatile(&register);
-    second := read_volatile(&register);
+    ^register := 0u32;
+    write_volatile(^register, 1u32);
+    write_volatile(^register, 2u32);
+    first := read_volatile(*register);
+    second := read_volatile(*register);
 }
 ",
         HOST,
@@ -148,8 +148,8 @@ fn packed_struct_access_keeps_its_declared_alignment() {
 import core::volatile::write_volatile;
 struct Packed { exposed word: u32; exposed byte: u8; }
 main() => void {
-    mut slot := Packed { word = 0u32; byte = 0u8; };
-    write_volatile(&mut slot, Packed { word = 1u32; byte = 2u8; });
+    ^slot := Packed { word = 0u32; byte = 0u8; };
+    write_volatile(^slot, Packed { word = 1u32; byte = 2u8; });
 }
 ",
         HOST,
@@ -168,9 +168,9 @@ import core::volatile::read_volatile;
 import core::volatile::write_volatile;
 marker Token { }
 main() => void {
-    mut token := Token { };
-    write_volatile(&mut token, Token { });
-    <void>read_volatile(&token);
+    ^token := Token { };
+    write_volatile(^token, Token { });
+    <void>read_volatile(*token);
 }
 ",
         HOST,
@@ -192,8 +192,8 @@ import core::volatile::read_volatile;
 main() => void {
     size := 1usize;
     word := 2u32;
-    <void>read_volatile(&size);
-    <void>read_volatile(&word);
+    <void>read_volatile(*size);
+    <void>read_volatile(*word);
 }
 ";
     for target in [

@@ -397,7 +397,7 @@ fn a_value_and_a_call_share_one_instantiation() {
             h := Holder { value = 1; };
             taken: (*Holder, u8) => u8 = Holder::self::echo;
             called := h.echo(1u8);
-            again := taken(&h, 2u8);
+            again := taken(*h, 2u8);
         }
         "#,
     );
@@ -445,7 +445,7 @@ fn only_the_declaration_a_value_selects_is_instantiated() {
         main() => void {
             h := Holder { value = 1; };
             taken: (*Holder, u8) => i32 = Holder::self::pick;
-            used := taken(&h, 1u8);
+            used := taken(*h, 1u8);
         }
         "#,
     );
@@ -759,12 +759,12 @@ fn a_member_signature_may_name_the_owner_at_a_derived_argument() {
         "struct Cell<T> {
             exposed v: T;
             exposed get(*self) => T { self.v }
-            exposed pointing(*self) => Cell<*T> { Cell<*T> { v = &self.v; } }
+            exposed pointing(*self) => Cell<*T> { Cell<*T> { v = *self.v; } }
         }
         main() => void {
             c := Cell<u8> { v = 1; };
             p := c.pointing();
-            <void>*p.get();
+            <void>p.get().*;
         }",
     );
     let paths = defined_paths(&workspace);

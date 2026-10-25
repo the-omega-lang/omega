@@ -11,7 +11,7 @@ enum Level(tag: i16, exposed label: *str) {
 	High(1000, "high"),
 }
 
-foreign(c) set_level_tag(slot: *mut Level, tag: i16) => void;
+foreign(c) set_level_tag(slot: ^Level, tag: i16) => void;
 
 describe(level: Level) => *str {
 	match level {
@@ -21,15 +21,15 @@ describe(level: Level) => *str {
 }
 
 main() => void {
-	mut level: Level = Level::Low;
+	^level: Level = Level::Low;
 	println$("arm: ", describe(level));
-	set_level_tag(&mut level, 40i16);
+	set_level_tag(^level, 40i16);
 	println$("catch-all-mid: ", describe(level));
-	set_level_tag(&mut level, 1000i16);
+	set_level_tag(^level, 1000i16);
 	println$("catch-all-high: ", describe(level));
 	# 41 sits between two declared tags: an index-shaped check would accept
 	# it, and a domain-shaped one rejects it.
-	set_level_tag(&mut level, 41i16);
+	set_level_tag(^level, 41i16);
 	println$("before-match");
 	println$("never: ", describe(level));
 }

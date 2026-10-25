@@ -11,7 +11,7 @@ enum Signal {
 	Draining,
 }
 
-foreign(c) corrupt_signal_tag(slot: *mut Signal) => void;
+foreign(c) corrupt_signal_tag(slot: ^Signal) => void;
 
 # `Draining` is the one variant the arms leave, so this `else` is reachable
 # and is checked for exactly that tag.
@@ -25,11 +25,11 @@ classify(signal: *Signal) => *str {
 }
 
 main() => void {
-	mut signal: Signal = Signal::Ready;
-	println$("arm: ", classify(&signal));
+	^signal: Signal = Signal::Ready;
+	println$("arm: ", classify(*signal));
 	signal = Signal::Draining;
-	println$("else: ", classify(&signal));
-	corrupt_signal_tag(&mut signal);
+	println$("else: ", classify(*signal));
+	corrupt_signal_tag(^signal);
 	println$("before-match");
-	println$("never: ", classify(&signal));
+	println$("never: ", classify(*signal));
 }

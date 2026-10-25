@@ -63,6 +63,6 @@ fn the_nesting_limit_is_reported_once() {
 #[test]
 fn a_long_statement_sequence_is_not_nesting() {
     let body = "acc = acc + 1;\n".repeat(20_000);
-    let source = format!("f() => i32 {{ mut acc := 0;\n{body}acc }}");
+    let source = format!("f() => i32 {{ ^acc := 0;\n{body}acc }}");
     assert!(SourceModule::parse(&source).is_ok());
 }

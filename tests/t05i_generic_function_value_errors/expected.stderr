@@ -102,7 +102,7 @@ error: no declaration of 'deref' has type '(*i32) => *i32'
    |                                  ^^^^^ no declaration of `deref` has this type
    |
    = note: expected: (*i32) => *i32
-   = note: candidate: <T>(p: *mut T) => *mut T
+   = note: candidate: <T>(p: ^T) => ^T
    = help: a function value needs an exact signature match -- a call's argument conversions do not apply here
 
 error: no declaration of 'narrow' has type '(i32) => bool'

@@ -1,7 +1,7 @@
 import std::io::println;
 import self::helper;
 
-shared foreign mut t19_counter : i32;
+shared foreign ^t19_counter : i32;
 shared foreign(c) t19_read_counter() => i32;
 
 # A direct `foreign(c)` declaration gives a name a C-convention function type
@@ -9,7 +9,7 @@ shared foreign(c) t19_read_counter() => i32;
 # live in this case's own `native.c`, compiled freestanding and linked in:
 # what is under test is the calling convention, not a C library, and the
 # executable links without a C runtime like every other conformance case.
-shared foreign(c) t19_scratch() => *mut u8;
+shared foreign(c) t19_scratch() => ^u8;
 
 # `...` exists only for foreign conventions that support variadic arguments.
 shared foreign(c) t19_sum_ints(count: i32, ...) => i32;
@@ -85,8 +85,8 @@ main() => void {
 	println$("counter-incremented: ", t19_read_counter());
 	--t19_counter;
 	println$("counter-decremented: ", t19_read_counter());
-	counter_ptr : *mut i32 = &mut t19_counter;
-	*counter_ptr = 42;
+	counter_ptr : ^i32 = ^t19_counter;
+	counter_ptr.* = 42;
 	println$("counter-pointer: ", t19_read_counter());
 	helper::update_counter();
 	println$("counter-helper: ", t19_read_counter());
@@ -94,9 +94,9 @@ main() => void {
 	# --- foreign(c) declarations: scalars/pointers are the practical
 	# interop boundary --------------------------------------------------------
 	block := t19_scratch();
-	as_i32: *mut i32 = <*mut i32>block;
-	*as_i32 = 77;
-	println$("scratch-deref: ", *as_i32);
+	as_i32: ^i32 = <^i32>block;
+	as_i32.* = 77;
+	println$("scratch-deref: ", as_i32.*);
 
 	println$("t19_abs(-5): ", t19_abs(-5));
 

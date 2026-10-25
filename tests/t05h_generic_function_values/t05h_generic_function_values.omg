@@ -136,7 +136,7 @@ main() => void {
 	member_concrete: (*Holder, i64) => *str = Holder::self::pick;
 	member_generic: (*Holder, u8) => *str = Holder::self::pick;
 	member_written: (*Holder, i64) => *str = H::self::pick<i64>;
-	println$("member: ", member_concrete(&holder, 1i64), " ", member_generic(&holder, 2u8), " ", member_written(&holder, 3i64));
+	println$("member: ", member_concrete(*holder, 1i64), " ", member_generic(*holder, 2u8), " ", member_written(*holder, 3i64));
 
 	static_concrete: (i64) => *str = Holder::make;
 	static_generic: (u8) => *str = Holder::make;
@@ -144,14 +144,14 @@ main() => void {
 	println$("static: ", static_concrete(1i64), " ", static_generic(2u8), " ", static_written(3i64));
 
 	singleton_member: (*Holder, u8) => u8 = Holder::self::alone;
-	println$("member-singleton: ", singleton_member(&holder, 4u8));
+	println$("member-singleton: ", singleton_member(*holder, 4u8));
 
 	# --- generic arguments written on the owner, with mixed overloads ----
 	bin := BinI { value = 1; };
 	bin_concrete: (*Bin<i32>, i64) => *str = Bin<i32>::self::take;
 	bin_generic: (*Bin<i32>, u8) => *str = Bin<i32>::self::take;
 	bin_written: (*Bin<i32>, i64) => *str = BinI::self::take<i64>;
-	println$("owner: ", bin_concrete(&bin, 1i64), " ", bin_generic(&bin, 2u8), " ", bin_written(&bin, 3i64));
+	println$("owner: ", bin_concrete(*bin, 1i64), " ", bin_generic(*bin, 2u8), " ", bin_written(*bin, 3i64));
 
 	# --- expected types that reach the reference through other contexts --
 	println$("propagated: ", run(thing), " ", echoes_u16()(12u16));

@@ -39,6 +39,6 @@ repeated_key : i32 = 12;
 
 @symbol(mangle = disabled)
 @symbol(export)
-mut repeated_annotation : i32 = 13;
+^repeated_annotation : i32 = 13;
 
 main() => void {}

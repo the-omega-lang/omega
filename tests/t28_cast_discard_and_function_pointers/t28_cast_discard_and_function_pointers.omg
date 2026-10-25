@@ -1,6 +1,6 @@
 import std::io::println;
 
-mut effects: i32 = 0;
+^effects: i32 = 0;
 
 # A value-returning function whose result is intentionally thrown away at one
 # call site and used at another.

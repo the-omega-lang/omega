@@ -21,12 +21,12 @@ struct Cell<T> {
     exposed v: T;
 
     exposed get(*self) => T { self.v }
-    exposed pointing(*self) => Cell<*T> { Cell<*T> { v = &self.v; } }
+    exposed pointing(*self) => Cell<*T> { Cell<*T> { v = *self.v; } }
 }
 
 main() => void {
     plain := Wrap<u8> { v = 3; };
     cell := Cell<i32> { v = 9; };
     pointer := cell.pointing();
-    println$("on-use: ", plain.v, " ", *pointer.get(), " ", **pointer.pointing().get());
+    println$("on-use: ", plain.v, " ", pointer.get().*, " ", pointer.pointing().get().*.*);
 }

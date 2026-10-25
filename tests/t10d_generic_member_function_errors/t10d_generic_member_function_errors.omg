@@ -27,5 +27,5 @@ main() => void {
 	unbounded := holder.need(widget);
 	uninstantiated := Holder::self::alone;
 	not_generic := holder.plain<i32>(1);
-	ambiguous := holder.twin(&holder.value);
+	ambiguous := holder.twin(*holder.value);
 }

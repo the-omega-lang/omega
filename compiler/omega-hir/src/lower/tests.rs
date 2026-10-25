@@ -104,8 +104,8 @@ fn foreign_block_convention_applies_only_to_direct_function_entries() {
 }
 
 #[test]
-fn receiver_and_its_mut_shadow_point_at_the_self_token() {
-    let source = "struct S { f(*mut self) => void {} g(mut self) => void {} }";
+fn receivers_point_at_the_self_token() {
+    let source = "struct S { f(^self) => void {} g(self) => void {} }";
     let hir = lower(source);
     let HirItem::Struct(def) = &hir.items[0] else {
         panic!("expected struct");
@@ -118,16 +118,24 @@ fn receiver_and_its_mut_shadow_point_at_the_self_token() {
         );
         assert_eq!(&source[receiver.span.start..receiver.span.end], "self");
     }
-    let shadow = &def.functions[1].body.as_ref().expect("body").stmts[0];
-    let HirStmt::WalrusDeclaration(shadow) = shadow else {
-        panic!("expected the `mut self` shadow");
+}
+
+#[test]
+fn a_mutable_parameter_shadow_points_at_the_parameter() {
+    let source = "f(^a: i32) => void {}";
+    let hir = lower(source);
+    let HirItem::FunctionDefinition(f) = &hir.items[0] else {
+        panic!("expected a function");
     };
-    assert_eq!(&source[shadow.span.start..shadow.span.end], "self");
+    let HirStmt::WalrusDeclaration(shadow) = &f.body.as_ref().expect("body").stmts[0] else {
+        panic!("expected the `^a` shadow");
+    };
+    assert_eq!(&source[shadow.span.start..shadow.span.end], "^a: i32");
 }
 
 #[test]
 fn foreign_binding_mut_span_survives_lowering() {
-    let source = "foreign mut counter : i32; foreign(c) { mut other : i32; }";
+    let source = "foreign ^counter : i32; foreign(c) { ^other : i32; }";
     let hir = lower(source);
     assert_eq!(hir.items.len(), 2);
     for item in &hir.items {
@@ -135,7 +143,7 @@ fn foreign_binding_mut_span_survives_lowering() {
             panic!("expected a foreign binding");
         };
         let span = binding.mut_span.expect("expected a mut span");
-        assert_eq!(&source[span.start..span.end], "mut");
+        assert_eq!(&source[span.start..span.end], "^");
     }
 }
 

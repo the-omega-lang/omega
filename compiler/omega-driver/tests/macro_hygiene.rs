@@ -424,7 +424,7 @@ fn a_macro_repetition_may_redeclare_its_own_local_each_time() {
         # rather than colliding with it.
         exposed macro sum_each($value: expr...) => {
             {
-                mut total := 0;
+                ^total := 0;
                 $...(){
                     item := $value;
                     total += item;

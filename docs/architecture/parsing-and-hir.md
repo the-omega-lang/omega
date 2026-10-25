@@ -45,7 +45,7 @@ Contextual words are intentionally not all hard lexer keywords. The parser's `pa
 
 ### Contextual-keyword commit rule
 
-A contextual word must be treated as syntax only after the surrounding shape proves that interpretation. A bare identifier spelling such as `mut`, `self`, or `root` remains usable as a name where the contextual production does not match.
+A contextual word must be treated as syntax only after the surrounding shape proves that interpretation. A bare identifier spelling such as `self` or `root` remains usable as a name where the contextual production does not match.
 
 This rule matters because committing on the word alone silently shrinks the identifier namespace instead of merely producing a local parse error.
 
@@ -183,7 +183,7 @@ HIR lowering may perform structural transforms that require no semantic facts, b
 HIR lowering owns four important source-shape normalizations:
 
 1. **Synthetic `self` insertion.** Member functions receive the parameter shape implied by `SelfMode`.
-2. **By-value `mut self` shadowing.** It becomes an implicit mutable local shadow at the beginning of the body, avoiding a separate downstream “mutable parameter” concept.
+2. **Mutable-parameter shadowing.** Each `^name : T` parameter lowers to an immutable parameter plus a `^name := name;` shadow at the beginning of the body, avoiding a separate downstream “mutable parameter” concept: a parameter's mutability never reaches the function type. A `@naked` body gets no shadow, since its parameters are ABI-only.
 3. **Place-chain flattening.** Nested field/index/deref AST expressions that form an assignable/addressable place become `HirPlace { root, projections }`. `reveal` prefixes written directly around a place-shaped operand fold into `HirPlace::reveals` (outermost first), each keeping the id and span of the `reveal` expression it was; the place node keeps its own id, span and origin. A `reveal` around anything else stays `HirExpr::Reveal`.
 4. **Import-tree flattening.** One `ImportStmt` becomes one `HirImport` per terminal binding.
 
@@ -314,8 +314,8 @@ The macro body is not independently type-checked or semantically validated. Expa
 
 Real-source `HirId`s are minted only during post-expansion HIR lowering from a per-module counter. Downstream phases must not invent ordinary source IDs. Semantic artifacts without source HIR nodes use the driver's reserved synthetic module identity, keeping synthetic IDs disjoint from real module IDs.
 
-Synthetic nodes take the source site of the construct that implies them: the implicit `self` parameter and the `mut self` shadow take the `self` token's span, and a bare `return`'s synthetic unit block takes the `return` statement's. Nested statements (a classic `for` initializer, a `defer` body) are `StatementNode`s in the AST, so they keep their own spans rather than borrowing the enclosing statement's.
+Synthetic nodes take the source site of the construct that implies them: the implicit `self` parameter takes the `self` token's span, a `^` parameter's shadow takes the whole parameter's span (so an unnecessary-`^` warning points at the parameter), and a bare `return`'s synthetic unit block takes the `return` statement's. Nested statements (a classic `for` initializer, a `defer` body) are `StatementNode`s in the AST, so they keep their own spans rather than borrowing the enclosing statement's.
 
 ### HIR structural lowering
 
-HIR lowering may normalize source structure only when no semantic knowledge is required. Current examples include synthetic `self`, by-value `mut self` shadowing, and flattening place-shaped field/index/deref chains. If a chain is rooted in a non-place expression (for example `make().field`), that expression remains the place root and projections are appended in source order. The parser builds a distinct member-call node for `.name` (with optional generic arguments) directly followed by `(`, and HIR lowers it to `HirMemberCall`, whose receiver is the place chain before the member; `(x.f)(...)` stays an ordinary call whose callee is the field place, which is what keeps fields and member functions in separate namespaces.
+HIR lowering may normalize source structure only when no semantic knowledge is required. Current examples include synthetic `self`, mutable-parameter shadowing, and flattening place-shaped field/index/deref chains. If a chain is rooted in a non-place expression (for example `make().field`), that expression remains the place root and projections are appended in source order. The parser builds a distinct member-call node for `.name` (with optional generic arguments) directly followed by `(`, and HIR lowers it to `HirMemberCall`, whose receiver is the place chain before the member; `(x.f)(...)` stays an ordinary call whose callee is the field place, which is what keeps fields and member functions in separate namespaces.

@@ -109,13 +109,13 @@ A type argument is `GenericArg::Type`. A `comp` argument is `GenericArg::Comp`: 
 
 ### Kinds
 
-- The primitive types are `Primitive`. `*T` and `*mut T` are `Pointer`, `*[?]T` is `UnknownSizeArray`, `[N]T` is `Array`, `*[]T` is `Slice`, and `*str` is `Str`, each recording its mutability or length and describing its element.
+- The primitive types are `Primitive`. `*T` and `^T` are `Pointer`, `*[?]T` is `UnknownSizeArray`, `[N]T` is `Array`, `*[]T` is `Slice`, and `*str` is `Str`, each recording its mutability or length and describing its element.
 - A struct is `Struct`, and a union is `Union`, listing every field in declaration order — hidden and shared fields included, each with its declared `visibility`. Every union field has offset `0`.
 - A marker type is `Marker`.
 - A named enum is `Enum`. `tag_field` is a `FieldInfo` named `tag` describing the tag's real type and offset, with visibility `Exposed`; `header` lists the header fields after the tag, and `shared` lists the shared dynamic fields, each with its offset. Each `VariantInfo` gives the variant's name, its tag value as two's complement truncated to the tag type's width, its body fields with their offsets, and a `prototype`.
 - An anonymous enum is `AnonymousEnum`. `tag_field` describes its `u32` tag. Each member, in canonical member order, is a `VariantInfo` whose `name` is the member type's spelling with function parameter descriptors removed at every depth, whose `tag` is its member index, and whose single field, named `value`, holds the member at its offset.
 - A function type is `Function`: `params` describes each parameter type in order, without its descriptor, `ret` the return type, `variadic` whether it takes a variadic tail, and `convention` its calling convention (`Omega` unless written `foreign(...)`).
-- A spec object `*spec A + B` or `*mut spec A + B` is `SpecObject`: `mutable` records which, and `specs` lists each spec of the conjunction in its canonical order (see [`specs-and-conformance.md`](specs-and-conformance.md)), each as a `SpecInfo` with the spec's declared name, declaring module path, and generic arguments. Tables never list which specs a type implements.
+- A spec object `*spec A + B` or `^spec A + B` is `SpecObject`: `mutable` records which, and `specs` lists each spec of the conjunction in its canonical order (see [`specs-and-conformance.md`](specs-and-conformance.md)), each as a `SpecInfo` with the spec's declared name, declaring module path, and generic arguments. Tables never list which specs a type implements.
 
 A refined enum type such as `Shape::Circle` is described by its parent enum, because refinement never changes a value's storage.
 
@@ -147,7 +147,7 @@ A table, the strings and slices it points to, and its prototypes exist only when
 
 ```omega
 comp NODE_SIZE := typeinfo<Node>.size;
-comp SAME := Eq::equals(*typeinfo<Pair<i32>>, *typeinfo<Pair<i32>>);
+comp SAME := Eq::equals(typeinfo<Pair<i32>>.*, typeinfo<Pair<i32>>.*);
 ```
 
 `Eq for TypeInfo` is the identity test under `comp` as at run time. `==` and `!=` on two `*TypeInfo` still compare addresses there; because a compilation has exactly one table per type, that coincides with identity under `comp`.

@@ -43,15 +43,31 @@ fn a_free_function_gets_no_self_parameter() {
 }
 
 #[test]
-fn by_value_mut_self_gets_a_shadowing_binding_first() {
-    let module = lower("struct S { x: i32; take(mut self) => i32 { self.x } }");
+fn a_mutable_parameter_gets_a_shadowing_binding_first() {
+    let module = lower("take(a: i32, ^b: i32, ^c: i32) => i32 { b + c }");
     let f = only_function(&module);
-    assert_eq!(f.self_mode, Some(SelfMode::MutValue));
-    let HirStmt::WalrusDeclaration(w) = &f.body.as_ref().unwrap().stmts[0] else {
-        panic!("expected the synthesized `mut self := self;` first");
-    };
-    assert_eq!(w.ident.as_ref(), "self");
-    assert!(w.mutable, "the shadow must be a mutable binding");
+    assert_eq!(f.params.len(), 3, "parameters keep their declared count");
+    let stmts = &f.body.as_ref().unwrap().stmts;
+    let shadows: Vec<_> = stmts
+        .iter()
+        .take(2)
+        .map(|stmt| {
+            let HirStmt::WalrusDeclaration(w) = stmt else {
+                panic!("expected the synthesized `^name := name;` shadows first");
+            };
+            assert!(w.mutable, "the shadow must be a mutable binding");
+            let HirExpr::Place(place) = &w.value.expr else {
+                panic!("the shadow must copy the parameter");
+            };
+            let HirPlaceRoot::Path(path) = &place.root else {
+                panic!("the shadow must read the parameter by name");
+            };
+            assert_eq!(path.path.head, w.ident);
+            w.ident.as_ref().to_string()
+        })
+        .collect();
+    assert_eq!(shadows, ["b", "c"]);
+    assert_eq!(stmts.len(), 2, "an immutable parameter gets no shadow");
 }
 
 #[test]
@@ -293,12 +309,12 @@ fn a_field_carries_its_own_span_not_the_structs() {
 
 #[test]
 fn a_function_return_type_span_covers_the_written_type() {
-    let source = "f(a: i32) => *mut i32 { <*mut i32>0 }";
+    let source = "f(a: i32) => ^i32 { <^i32>0 }";
     let module = lower(source);
     let f = only_function(&module);
     assert_eq!(
         &source[f.return_type_span.start..f.return_type_span.end],
-        "*mut i32",
+        "^i32",
         "the whole declared type, not just its last token"
     );
     assert_eq!(&source[f.name_span.start..f.name_span.end], "f");
@@ -432,9 +448,9 @@ fn global_annotations_survive_lowering_in_every_form() {
     let cases = [
         ("@symbol(name = \"s\")\nvalue : i32;", 1),
         ("@symbol(mangle = disabled)\nvalue : i32 = 1;", 1),
-        ("@symbol(mangle = enabled)\nexposed mut value := 1;", 1),
+        ("@symbol(mangle = enabled)\nexposed ^value := 1;", 1),
         (
-            "@symbol(mangle = disabled, export)\nexposed mut value : i32 = 1;",
+            "@symbol(mangle = disabled, export)\nexposed ^value : i32 = 1;",
             2,
         ),
     ];
@@ -501,7 +517,7 @@ fn an_item_producing_macro_lowers_its_global_with_annotations() {
 
 #[test]
 fn a_whole_hole_annotation_lowers_to_a_walrus() {
-    let module = lower("f() => void { mut x : _ = 1; y : _ = 2; }");
+    let module = lower("f() => void { ^x : _ = 1; y : _ = 2; }");
     let f = only_function(&module);
     let [HirStmt::WalrusDeclaration(x), HirStmt::WalrusDeclaration(y)] =
         f.body.as_ref().unwrap().stmts.as_slice()
@@ -519,7 +535,7 @@ fn a_whole_hole_annotation_lowers_to_a_walrus() {
 
 #[test]
 fn a_global_whole_hole_annotation_lowers_to_a_walrus() {
-    let module = lower("exposed mut counter : _ = 0;");
+    let module = lower("exposed ^counter : _ = 0;");
     let [
         HirItem::Walrus {
             walrus, visibility, ..
@@ -535,7 +551,7 @@ fn a_global_whole_hole_annotation_lowers_to_a_walrus() {
 
 #[test]
 fn a_nested_hole_annotation_stays_a_typed_declaration() {
-    let module = lower("f() => void { p : *_ = &x; }");
+    let module = lower("f() => void { p : *_ = *x; }");
     let f = only_function(&module);
     assert!(matches!(
         f.body.as_ref().unwrap().stmts.as_slice(),

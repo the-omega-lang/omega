@@ -134,7 +134,7 @@ pub fn check_bounded(spec: &SpecFacts) -> Result<(), String> {
     Ok(())
 }
 
-/// `Iterator<T>`: one type parameter and a `next(*mut self)` requirement. Its
+/// `Iterator<T>`: one type parameter and a `next(^self)` requirement. Its
 /// return type is checked where a loop calls it, with [`check_option`].
 pub fn check_iterator(spec: &SpecFacts) -> Result<(), String> {
     check_cursor_spec(spec, &iterator_path(), "next", SelfMode::MutPointer)
@@ -163,7 +163,7 @@ fn check_cursor_spec(
         Ok(())
     } else {
         let receiver = if receiver == SelfMode::MutPointer {
-            "*mut self"
+            "^self"
         } else {
             "*self"
         };

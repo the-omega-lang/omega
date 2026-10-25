@@ -11,7 +11,7 @@ first_prototype_byte() => u8 {
 	info := typeinfo<Light>;
 	kind := info.kind;
 	match kind {
-		TypeKind::Enum => { *kind.variants[1].prototype },
+		TypeKind::Enum => { kind.variants[1].prototype.* },
 	} else {
 		0u8
 	}
@@ -24,6 +24,6 @@ main() => void {
 }
 
 # The table is only readable through a pointer to its own type.
-comp RETYPED := *<*u8>typeinfo<i32>;
+comp RETYPED := (<*u8>typeinfo<i32>).*;
 
 use_retyped() => u8 { RETYPED }

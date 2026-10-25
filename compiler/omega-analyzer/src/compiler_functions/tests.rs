@@ -34,7 +34,7 @@ fn recognizes_the_exact_declarations() {
     assert!(matches!(
         classify(
             VOLATILE,
-            "exposed write_volatile<T>(location: *mut T, value: T) => void;"
+            "exposed write_volatile<T>(location: ^T, value: T) => void;"
         ),
         Ok(Some(CompilerFunction::WriteVolatile))
     ));
@@ -67,19 +67,19 @@ fn bodyless_function_elsewhere_is_rejected() {
 #[test]
 fn recognized_name_with_the_wrong_shape_is_malformed() {
     for source in [
-        "exposed read_volatile<T>(location: *T) => T { *location }",
+        "exposed read_volatile<T>(location: *T) => T { location.* }",
         "read_volatile<T>(location: *T) => T;",
         "@inline exposed read_volatile<T>(location: *T) => T;",
         "exposed read_volatile<T: Copy>(location: *T) => T;",
         "exposed read_volatile<T = u8>(location: *T) => T;",
         "exposed read_volatile<T, U>(location: *T) => T;",
         "exposed read_volatile(location: *u32) => u32;",
-        "exposed read_volatile<T>(location: *mut T) => T;",
+        "exposed read_volatile<T>(location: ^T) => T;",
         "exposed read_volatile<T>(address: *T) => T;",
         "exposed read_volatile<T>(location: *T) => void;",
         "exposed write_volatile<T>(location: *T, value: T) => void;",
-        "exposed write_volatile<T>(location: *mut T, value: T) => T;",
-        "exposed write_volatile<T>(location: *mut T) => void;",
+        "exposed write_volatile<T>(location: ^T, value: T) => T;",
+        "exposed write_volatile<T>(location: ^T) => void;",
     ] {
         assert!(
             matches!(

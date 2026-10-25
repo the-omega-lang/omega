@@ -15,7 +15,7 @@ use crate::ast::r#type::{GenericArg, Type};
 use crate::diagnostics::{ParseErrorKind, Span};
 use crate::lexer::TokenKind;
 use crate::parser::{
-    Mark, Parser, contextual,
+    Mark, Parser, contextual, legacy,
     macro_syntax::parse_macro_invocation,
     statement::{parse_loop, parse_statement},
 };
@@ -184,15 +184,14 @@ fn binary_op_expr(left: ExpressionNode, op: BinaryOp, right: ExpressionNode) -> 
 }
 
 fn parse_unary(p: &mut Parser) -> Option<ExpressionNode> {
-    use crate::parser::contextual::MUT;
     let start = p.peek_span();
     // A leading `<` uniquely starts cast syntax here; comparison `<` is infix.
     if p.check(&TokenKind::Lt) {
         return parse_cast(p, start);
     }
     enum Prefix {
-        Deref,
         AddressOf { mutable: bool },
+        LegacyAddressOf { mutable: bool },
         Negate,
         BitNot,
         Not,
@@ -204,9 +203,11 @@ fn parse_unary(p: &mut Parser) -> Option<ExpressionNode> {
     let prefix = match p.peek() {
         TokenKind::PlusPlus => Prefix::Increment,
         TokenKind::MinusMinus => Prefix::Decrement,
-        TokenKind::Star => Prefix::Deref,
-        TokenKind::Amp if p.at_contextual_at(1, MUT) => Prefix::AddressOf { mutable: true },
-        TokenKind::Amp => Prefix::AddressOf { mutable: false },
+        TokenKind::Star => Prefix::AddressOf { mutable: false },
+        TokenKind::Caret => Prefix::AddressOf { mutable: true },
+        TokenKind::Amp => Prefix::LegacyAddressOf {
+            mutable: legacy::mut_at(p, 1) && expression_starts_at(p, 2),
+        },
         TokenKind::Minus => Prefix::Negate,
         TokenKind::Tilde => Prefix::BitNot,
         TokenKind::Not => Prefix::Not,
@@ -215,14 +216,19 @@ fn parse_unary(p: &mut Parser) -> Option<ExpressionNode> {
         _ => return parse_postfix(p),
     };
     let prefix_origin = p.advance().origin;
-    if matches!(prefix, Prefix::AddressOf { mutable: true }) {
-        p.advance(); // 'mut'
+    if let Prefix::LegacyAddressOf { mutable } = prefix {
+        if mutable {
+            p.advance(); // 'mut'
+        }
+        p.error_at(
+            start.to(p.last_span()),
+            ParseErrorKind::LegacyAddressOf { mutable },
+        );
     }
     let base = parse_unary(p)?;
     let span = start.to(base.span);
     let expression = match prefix {
-        Prefix::Deref => Expression::Deref(Box::new(DerefExpr { base })),
-        Prefix::AddressOf { mutable } => {
+        Prefix::AddressOf { mutable } | Prefix::LegacyAddressOf { mutable } => {
             Expression::AddressOf(Box::new(AddressOfExpr { base, mutable }))
         }
         Prefix::Negate => Expression::Negate(Box::new(NegateExpr { base })),
@@ -290,6 +296,15 @@ fn parse_postfix(p: &mut Parser) -> Option<ExpressionNode> {
 fn parse_postfix_loop(p: &mut Parser, mut expr: ExpressionNode) -> Option<ExpressionNode> {
     loop {
         match p.peek() {
+            TokenKind::DotStar => {
+                expr = finish_deref(p, expr);
+            }
+            TokenKind::Dot if p.peek_at(1) == &TokenKind::Caret => {
+                let dot_span = p.peek_span();
+                p.advance();
+                p.error_at(dot_span.to(p.peek_span()), ParseErrorKind::CaretDereference);
+                expr = finish_deref(p, expr);
+            }
             TokenKind::Dot => {
                 p.advance();
                 let field_span = p.peek_span();
@@ -342,6 +357,16 @@ fn parse_postfix_loop(p: &mut Parser, mut expr: ExpressionNode) -> Option<Expres
         }
     }
     Some(expr)
+}
+
+/// Consumes the dereference's last token (`.*`, or the `^` of a reported `.^`).
+fn finish_deref(p: &mut Parser, base: ExpressionNode) -> ExpressionNode {
+    let operator = p.advance();
+    ExpressionNode {
+        span: base.span.to(operator.span),
+        expression: Expression::Deref(Box::new(DerefExpr { base })),
+        origin: operator.origin,
+    }
 }
 
 fn parse_index_or_slice(p: &mut Parser, base: ExpressionNode) -> Option<ExpressionNode> {
@@ -447,11 +472,15 @@ pub(crate) fn parse_range_or_expression(p: &mut Parser) -> Option<ExpressionNode
 }
 
 fn expression_starts_here(p: &Parser) -> bool {
-    if p.check(&TokenKind::LBrace) {
+    expression_starts_at(p, 0)
+}
+
+fn expression_starts_at(p: &Parser, offset: usize) -> bool {
+    if p.peek_at(offset) == &TokenKind::LBrace {
         return p.struct_literals_allowed();
     }
     matches!(
-        p.peek(),
+        p.peek_at(offset),
         TokenKind::Ident(_)
             | TokenKind::Number(_)
             | TokenKind::Str(_)
@@ -464,8 +493,10 @@ fn expression_starts_here(p: &Parser) -> bool {
             | TokenKind::Loop
             | TokenKind::LParen
             | TokenKind::LBracket
-            | TokenKind::Amp
             | TokenKind::Star
+            | TokenKind::Caret
+            // Only to reach the retired-spelling diagnostic in `parse_unary`.
+            | TokenKind::Amp
             | TokenKind::Minus
             | TokenKind::Tilde
             | TokenKind::Not
@@ -1221,8 +1252,10 @@ pub fn parse_block_contents(p: &mut Parser) -> Option<CodeblockExpr> {
             break None;
         }
         let mark = p.mark();
-        // A block's own `loop` stays a statement rather than becoming its tail.
+        // A block's own `loop` stays a statement rather than becoming its tail,
+        // and so does a binding: `^loop : T` must not be read as `^(loop ...)`.
         if !p.check(&TokenKind::Loop)
+            && !crate::parser::binding_modifiers_follow(p)
             && let Some(expr) = parse_statement_leading_expression(p)
             && (p.check(&TokenKind::RBrace) || p.is_eof())
         {
@@ -1244,5 +1277,7 @@ pub fn parse_block_contents(p: &mut Parser) -> Option<CodeblockExpr> {
 
 #[cfg(test)]
 mod nesting_tests;
+#[cfg(test)]
+mod pointer_tests;
 #[cfg(test)]
 mod tests;

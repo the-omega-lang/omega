@@ -1,0 +1,44 @@
+error: 'twice' is declared multiple times in this scope
+  --> tests/t03e_pointer_mutability_errors/t03e_pointer_mutability_errors.omg:27:1
+   |
+22 | twice(^value: i32) => i32 {
+   | ----- `twice` first declared here
+...
+27 | twice(value: i32) => i32 {
+   | ^^^^^ `twice` declared again here
+   |
+   = note: this declaration context requires each name to be declared once
+
+error: cannot mutate through an immutable pointer
+ --> tests/t03e_pointer_mutability_errors/t03e_pointer_mutability_errors.omg:5:5
+  |
+5 |     p.* = 1;
+  |     ^^^^^^^ this pointer's pointee is immutable
+  |
+  = help: use `^T` instead of `*T`, and `^place` to create one
+
+error: cannot mutate 'count': not declared mutable
+ --> tests/t03e_pointer_mutability_errors/t03e_pointer_mutability_errors.omg:9:5
+  |
+9 |     count = 2;
+  |     ^^^^^^^^^ `count` is not declared mutable
+  |
+  = help: declare it `^count`
+
+error: cannot mutate 'x': not declared mutable
+  --> tests/t03e_pointer_mutability_errors/t03e_pointer_mutability_errors.omg:14:11
+   |
+14 |     <void>^x;
+   |           ^^ `x` is not declared mutable
+   |
+   = help: declare it `^x`
+
+error: a 'comp' binding cannot be mutable ('^')
+  --> tests/t03e_pointer_mutability_errors/t03e_pointer_mutability_errors.omg:18:5
+   |
+18 |     comp ^limit := 5;
+   |     ^^^^^^^^^^^^^^^^^ 'comp' binding cannot be mutable ('^')
+   |
+   = note: a 'comp' binding has no storage of its own -- every use is substituted with its already-known value at compile time, so a later mutation could never be observed
+
+error: could not compile the program due to 5 previous errors

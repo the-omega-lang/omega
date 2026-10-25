@@ -400,11 +400,7 @@ impl<'r> Analyzer<'r> {
                     },
                 );
             }
-            let by_value = matches!(
-                f.self_mode,
-                Some(SelfMode::Value) | Some(SelfMode::MutValue)
-            );
-            if by_value {
+            if f.self_mode == Some(SelfMode::Value) {
                 self.error(
                     f.id,
                     f.span,

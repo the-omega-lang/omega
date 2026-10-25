@@ -10,9 +10,9 @@ foreign outside_sym : i32;
 @symbol(name = "unmangled_symbol_with_default_value")
 my_symbol : i32 = 10;
 
-# A `mut` global under a forced name: C writes through the same storage.
+# A mutable (`^`) global under a forced name: C writes through the same storage.
 @symbol(name = "shared_counter")
-mut counter : i32 = 1;
+^counter : i32 = 1;
 
 # An inferred global keeps its annotation too.
 @symbol(name = "inferred_scale")
@@ -20,7 +20,7 @@ scale := 7;
 
 # `disabled` uses the written identifier verbatim as the symbol.
 @symbol(mangle = disabled)
-mut plain_flag : i32 = 0;
+^plain_flag : i32 = 0;
 
 # The default, and the same thing written explicitly: both keep the ordinary
 # module-qualified Omega symbol, which no C source can name by accident.

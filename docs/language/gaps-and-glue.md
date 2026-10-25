@@ -10,21 +10,21 @@ implementation across the compilation.
 ```omega
 # runtime/core/platform.omg
 gap GlobalAllocator {
-    alloc(size: usize) => *mut u8;
+    alloc(size: usize) => ^u8;
     free(ptr: *u8) => void;
-    realloc(ptr: *u8, size: usize) => *mut u8;
+    realloc(ptr: *u8, size: usize) => ^u8;
 }
 
 # Independent console capabilities use Option for an exact transfer result.
 gap StandardOutput { write(bytes: *[]u8) => Option<usize>; }
 gap StandardError  { write(bytes: *[]u8) => Option<usize>; }
-gap StandardInput  { read(into: *mut []u8) => Option<usize>; }
+gap StandardInput  { read(into: ^[]u8) => Option<usize>; }
 
 # a platform package
 glue core::platform::GlobalAllocator {
-    alloc(size: usize) => *mut u8 { libc_alloc(size) }
+    alloc(size: usize) => ^u8 { libc_alloc(size) }
     free(ptr: *u8) => void { libc_free(ptr); }
-    realloc(ptr: *u8, size: usize) => *mut u8 { libc_realloc(ptr, size) }
+    realloc(ptr: *u8, size: usize) => ^u8 { libc_realloc(ptr, size) }
 }
 ```
 

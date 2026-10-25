@@ -72,6 +72,6 @@ fn logical_operators_are_left_associative() {
 
 #[test]
 fn address_of_a_pointer_still_parses() {
-    SourceModule::parse("f() => void { x := 5; p := &x; q := &p; }")
-        .expect("`&p` must still parse as address-of");
+    SourceModule::parse("f() => void { x := 5; p := *x; q := *p; }")
+        .expect("`*p` must still parse as address-of");
 }

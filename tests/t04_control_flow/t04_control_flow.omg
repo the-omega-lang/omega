@@ -25,7 +25,7 @@ scaled(n: i32) => u64 {
 
 # `defer` runs at function exit, FILO, after the return value is fixed.
 defer_demo() => i32 {
-	mut result := 10;
+	^result := 10;
 	defer { println$("defer-a"); result = 999; }
 	defer { println$("defer-b"); }
 	result
@@ -53,25 +53,25 @@ main() => void {
 	println$("expected-arms: ", scaled(0), " ", scaled(1), " ", wide);
 
 	# --- the four loop forms -------------------------------------------------
-	mut total := 0;
-	mut i := 0;
+	^total := 0;
+	^i := 0;
 	while i < 5 {
 		total += i;
 		i += 1;
 	}
 
-	mut stop_at := 0;
+	^stop_at := 0;
 	loop {
 		if stop_at == 3 { break; }
 		stop_at += 1;
 	}
 
-	mut classic_sum := 0;
-	for mut k := 0; k < 4; k += 1 {
+	^classic_sum := 0;
+	for ^k := 0; k < 4; k += 1 {
 		classic_sum += k;
 	}
 
-	mut range_count := 0;
+	^range_count := 0;
 	for v in 0..<3 {
 		range_count += 1;
 	}
@@ -79,7 +79,7 @@ main() => void {
 	println$("loop-forms: ", total, " ", stop_at, " ", classic_sum, " ", range_count);
 
 	# --- break / continue -----------------------------------------------------
-	mut odds_below_eight := 0;
+	^odds_below_eight := 0;
 	for m in 0..<10 {
 		if m % 2 == 0 { continue; }
 		if m > 7 { break; }

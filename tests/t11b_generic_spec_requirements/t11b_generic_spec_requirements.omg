@@ -12,5 +12,5 @@ meet Runner for Direct {
 
 main() => void {
 	direct := Direct { value = 0; };
-	println$("generic-spec: ", direct.execute(7), " ", Direct::self::execute(&direct, true));
+	println$("generic-spec: ", direct.execute(7), " ", Direct::self::execute(*direct, true));
 }

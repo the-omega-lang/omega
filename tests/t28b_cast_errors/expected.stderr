@@ -34,11 +34,11 @@ error: cannot cast 'usize' to '(a: i32, b: i32) => i32'
    = note: casts are only supported between numeric types, pointers, the str/byte-slice family (*str, *[u8], *[i8]), between a function type and a thin raw pointer, into a spec object (spec *Spec) when the source genuinely implements it, and to `void` to discard a value
    = help: a function type only converts to or from a thin raw pointer; write the reinterpretation explicitly as `<*void>` and back if that is what you mean -- a cast never adapts a signature or a calling convention
 
-error: cannot cast '(a: i32, b: i32) => i32' to '*mut void': target is mutable, source is not
+error: cannot cast '(a: i32, b: i32) => i32' to '^void': target is mutable, source is not
   --> tests/t28b_cast_errors/t28b_cast_errors.omg:27:12
    |
-27 |     bad := <*mut void>add;
-   |            ^^^^^^^^^^^^^^ cannot cast '(a: i32, b: i32) => i32' to '*mut void'
+27 |     bad := <^void>add;
+   |            ^^^^^^^^^^ cannot cast '(a: i32, b: i32) => i32' to '^void'
    |
    = help: there is no writable data behind a function; cast to an immutable `*T` instead
 

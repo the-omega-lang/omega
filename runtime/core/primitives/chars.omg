@@ -21,29 +21,29 @@ primitive char {
         }
         # Pointer reinterpretation, safe here since the checks above already
         # established the bit pattern is a valid Unicode scalar.
-        Option<char>::Some { value = *<*char>&value; }
+        Option<char>::Some { value = (<*char>*value).*; }
     }
 
-    exposed is_ascii(*self) => bool { <u32>*self <= 0x7F_u32 }
+    exposed is_ascii(*self) => bool { <u32>self.* <= 0x7F_u32 }
     exposed is_digit(*self) => bool {
-        cp := <u32>*self;
+        cp := <u32>self.*;
         if cp < 0x30_u32 { false } else { cp <= 0x39_u32 }
     }
     # ASCII-only; see docs/issues/known-issues.md.
     exposed is_alphabetic(*self) => bool {
-        cp := <u32>*self;
+        cp := <u32>self.*;
         if cp >= 0x41_u32 {
             if cp <= 0x5A_u32 { return true; }
         }
         if cp >= 0x61_u32 { cp <= 0x7A_u32 } else { false }
     }
     exposed is_whitespace(*self) => bool {
-        cp := <u32>*self;
+        cp := <u32>self.*;
         if cp == 0x20_u32 { return true; }
         if cp >= 0x09_u32 { cp <= 0x0D_u32 } else { false }
     }
     exposed len_utf8(*self) => usize {
-        cp := <u32>*self;
+        cp := <u32>self.*;
         if cp < 0x80_u32 { 1usize }
         else if cp < 0x800_u32 { 2usize }
         else if cp < 0x10000_u32 { 3usize }
@@ -52,38 +52,38 @@ primitive char {
     # Reinterpret directly rather than via `from_u32`: result is always
     # ASCII, so nothing a check could reject.
     exposed to_ascii_uppercase(*self) => char {
-        mut cp := <u32>*self;
+        ^cp := <u32>self.*;
         if cp >= 0x61_u32 {
             if cp <= 0x7A_u32 {
                 cp = cp - 0x20_u32;
-                return *<*char>&cp;
+                return (<*char>*cp).*;
             }
         }
-        *self
+        self.*
     }
     exposed to_ascii_lowercase(*self) => char {
-        mut cp := <u32>*self;
+        ^cp := <u32>self.*;
         if cp >= 0x41_u32 {
             if cp <= 0x5A_u32 {
                 cp = cp + 0x20_u32;
-                return *<*char>&cp;
+                return (<*char>*cp).*;
             }
         }
-        *self
+        self.*
     }
 }
 
 meet Ord for char {
     compare(*self, other: Self) => Ordering {
-        if *self < other { Ordering::Less }
-        else if *self > other { Ordering::Greater }
+        if self.* < other { Ordering::Less }
+        else if self.* > other { Ordering::Greater }
         else { Ordering::Equal }
     }
 }
 
 meet Successor for char {
     successor(*self) => Option<Self> {
-        cp := <u32>*self;
+        cp := <u32>self.*;
         if cp == 0x10FFFF_u32 { return Option<char>::None; }
         if cp == 0xD7FF_u32 { return char::from_u32(0xE000_u32); }
         char::from_u32(cp + 1u32)
@@ -97,6 +97,6 @@ meet Bounded for char {
     # value to return.
     max() => Self {
         cp := 0x10FFFF_u32;
-        *<*char>&cp
+        (<*char>*cp).*
     }
 }

@@ -6,11 +6,11 @@ import std::io::println;
 struct Countdown {
 	exposed left: i32;
 
-	exposed next(*mut self) => i32 { 99 }
+	exposed next(^self) => i32 { 99 }
 }
 
 meet Iterator<i32> for Countdown {
-	next(*mut self) => Option<i32> {
+	next(^self) => Option<i32> {
 		if self.left == 0 { return Option<i32>::None; }
 		self.left = self.left - 1;
 		Option<i32>::Some { value = self.left; }
@@ -28,7 +28,7 @@ meet ToIterator<i32> for Launch {
 }
 
 main() => void {
-	mut c := Countdown { left = 3; };
+	^c := Countdown { left = 3; };
 	for item in c { println$(item); }
 	println$(c.next());
 	launch := Launch { from = 2; };

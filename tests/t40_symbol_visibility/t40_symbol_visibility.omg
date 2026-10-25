@@ -31,13 +31,13 @@ unmangled_hidden_add(a: i32, b: i32) => i32 { a + b + 3 }
 uncalled_exported(value: i32) => i32 { value }
 
 # Storage, with and without a name of its own.
-mut PLAIN_TOTAL : i32 = 10;
+^PLAIN_TOTAL : i32 = 10;
 
 @symbol(name = "symbol_visibility_exact_total", export)
-mut EXACT_TOTAL : i32 = 20;
+^EXACT_TOTAL : i32 = 20;
 
 @symbol(mangle = disabled)
-mut unmangled_total : i32 = 30;
+^unmangled_total : i32 = 30;
 
 struct Counter {
 	exposed value: i32;
@@ -45,7 +45,7 @@ struct Counter {
 	# `export` alone is valid on a method: it keeps the ordinary mangled name
 	# and only widens the emitted symbol's visibility.
 	@symbol(export)
-	exposed bump(*mut self, amount: i32) => void { self.value += amount; }
+	exposed bump(^self, amount: i32) => void { self.value += amount; }
 
 	# An exact name is allowed on a nongeneric method.
 	@symbol(name = "symbol_visibility_counter_get")
@@ -70,7 +70,7 @@ main() => void {
 	unmangled_total += 3;
 	println$("globals: ", PLAIN_TOTAL, " ", EXACT_TOTAL, " ", unmangled_total);
 
-	mut counter := Counter { value = 0; };
+	^counter := Counter { value = 0; };
 	counter.bump(6);
 	println$("counter: ", counter.get());
 

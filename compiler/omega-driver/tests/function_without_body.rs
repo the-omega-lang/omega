@@ -93,7 +93,7 @@ fn concrete_bodyless_function_is_rejected_once() {
 fn the_core_volatile_declarations_compile() {
     TestPackage::new(
         "import core::volatile::read_volatile;\n\
-         main() => void { x := 1u8; <void>read_volatile(&x); }",
+         main() => void { x := 1u8; <void>read_volatile(*x); }",
     )
     .compile()
     .expect("the compiler-implemented declarations are accepted");

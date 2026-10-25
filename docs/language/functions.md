@@ -26,9 +26,28 @@ function = identifier, [ generic-parameters ],
 
 A function always has a body, except the compiler-implemented `core::volatile` declarations, whose bodies the compiler supplies; see [`volatile.md`](volatile.md).
 
-Parameters are immutable bindings. Methods use the same syntax inside a nominal type, with one of the receiver forms defined in [`bindings-and-mutability.md`](bindings-and-mutability.md).
+Parameters are immutable bindings unless marked `^` (see [Mutable parameters](#mutable-parameters)). Methods use the same syntax inside a nominal type, with one of the receiver forms defined in [`bindings-and-mutability.md`](bindings-and-mutability.md).
 
-A function declared inside a struct, union, enum, marker, primitive block, or conformance block with no receiver is a static function. A declaration with `self`, `mut self`, `*self`, or `*mut self` is an instance method.
+A function declared inside a struct, union, enum, marker, primitive block, or conformance block with no receiver is a static function. A declaration with `self`, `*self`, or `^self` is an instance method.
+
+## Mutable parameters
+
+A `^` before a parameter's name makes it a mutable local of the function body, initialized from the argument:
+
+```omega
+countdown(^steps: i32) => i32 {
+    ^ticks := 0;
+    while steps > 0 {
+        steps -= 1;
+        ticks += 1;
+    }
+    ticks
+}
+```
+
+The argument is copied in, so nothing the body writes reaches the caller. The parameter's mutability belongs to the body, not to the function: it is not part of the function's type, its overload identity, or its symbol, so `f(^a: A) => R` and `f(a: A) => R` have the same type `(A) => R` and are redeclarations of each other. It costs exactly the copy the body would otherwise make itself with `^a := a;`.
+
+Because the `^` belongs to the body, only a declaration that has a body may use it. A parameter of a function type, of a foreign function declaration, of a spec requirement without a default body, or of any other declaration without a body cannot be `^`.
 
 A spec requirement uses the same optional generic-parameter syntax; see [`specs-and-conformance.md`](specs-and-conformance.md#generic-requirements) for its matching and dispatch rules.
 
@@ -82,11 +101,11 @@ Visibility is checked on the declaration the namespace selected, exactly as befo
 
 ```omega
 member : (target: *Thing) => i32 = Thing::self::same;
-println$(member(&t));            # the receiver is an ordinary argument
-println$(Thing::self::same(&t)); # the same call written directly
+println$(member(*t));            # the receiver is an ordinary argument
+println$(Thing::self::same(*t)); # the same call written directly
 ```
 
-`same(*self) => i32` on `Thing` is exposed as a function type taking `*Thing`; `*mut self` becomes `*mut Thing`, and a by-value receiver becomes a `Thing` parameter. Taking the value captures no receiver, allocates nothing, and creates no closure, thunk, or calling-convention adapter — it is the same one code address the type declares (see [`strings-casts-arrays-and-slices.md`](strings-casts-arrays-and-slices.md#function-values-and-thin-raw-pointers)).
+`same(*self) => i32` on `Thing` is exposed as a function type taking `*Thing`; `^self` becomes `^Thing`, and a by-value receiver becomes a `Thing` parameter. Taking the value captures no receiver, allocates nothing, and creates no closure, thunk, or calling-convention adapter — it is the same one code address the type declares (see [`strings-casts-arrays-and-slices.md`](strings-casts-arrays-and-slices.md#function-values-and-thin-raw-pointers)).
 
 The implicit receiver adaptation of `value.name(...)` — auto-borrow, auto-deref, mutability checking — applies to instance syntax only. Calling the acquired value, or calling `Type::self::name(receiver, ...)` directly, passes the receiver as an ordinary argument with no adaptation.
 
@@ -125,7 +144,7 @@ struct Holder {
 h.echo(1u8);                    # inferred
 h.echo<u8>(1);                  # written on the member
 Holder::make<u8>(1);            # written on the static
-Holder::self::echo<u8>(&h, 1);  # the member as an unbound value's call
+Holder::self::echo<u8>(*h, 1);  # the member as an unbound value's call
 ```
 
 A generic declaration has no signature until its generic arguments are determined. A call determines them by inference, as described below. An **expected function type** determines them too, so a generic declaration may also be named uncalled wherever one is known: `member : (*Holder, u8) => u8 = Holder::self::echo;` instantiates `echo` with `T = u8` and yields that instantiation's one address. Without an expected function type, `Holder::self::echo` still names nothing, because nothing determines its arguments. Generic member/static functions are specified in [`generics.md`](generics.md).

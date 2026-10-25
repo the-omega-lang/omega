@@ -8,13 +8,13 @@ import super::option::Option;
 # docs/language/gaps-and-glue.md), self-less (called via
 # `core::platform::GlobalAllocator::alloc(...)`, never through an instance).
 #
-# `alloc`/`realloc` return `*mut u8` since freshly allocated memory must be
-# writable, and a plain `*u8` can't cast to `*mut T`. `free` takes a plain
-# `*u8` -- freeing needs only an address, and `*mut u8` widens to it anyway.
+# `alloc`/`realloc` return `^u8` since freshly allocated memory must be
+# writable, and a plain `*u8` can't cast to `^T`. `free` takes a plain
+# `*u8` -- freeing needs only an address, and `^u8` widens to it anyway.
 gap GlobalAllocator {
-    alloc(size: usize) => *mut u8;
+    alloc(size: usize) => ^u8;
     free(ptr: *u8) => void;
-    realloc(ptr: *u8, size: usize) => *mut u8;
+    realloc(ptr: *u8, size: usize) => ^u8;
 }
 
 # Console capabilities stay separate: a platform can provide output without
@@ -28,5 +28,5 @@ gap StandardError {
 }
 
 gap StandardInput {
-    read(into: *mut []u8) => Option<usize>;
+    read(into: ^[]u8) => Option<usize>;
 }

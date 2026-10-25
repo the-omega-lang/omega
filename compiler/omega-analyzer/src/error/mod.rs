@@ -66,8 +66,8 @@ pub fn raw_type_display(ty: &omega_parser::prelude::Type) -> String {
         }
         Type::Pointer(inner, mutable) => {
             format!(
-                "*{}{}",
-                if *mutable { "mut " } else { "" },
+                "{}{}",
+                if *mutable { "^" } else { "*" },
                 raw_type_display(inner)
             )
         }

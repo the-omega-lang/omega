@@ -45,7 +45,7 @@ gap PanicHandler {
 # docs/issues/language-limitations.md.
 exposed macro panic($message: expr...) => {
 	{
-		mut info := PanicInfo {
+		^info := PanicInfo {
 			source_file = file$();
 			line = line$();
 			column = column$();
@@ -54,6 +54,6 @@ exposed macro panic($message: expr...) => {
 		$...(){
 			info.message = $message;
 		}
-		PanicHandler::panic(&info)
+		PanicHandler::panic(*info)
 	}
 }

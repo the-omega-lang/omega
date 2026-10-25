@@ -105,7 +105,7 @@ struct Twice { exposed n: i32; }
 
 struct Wide { left: i32; }
 meet Iterator<Pair<i32, u8>> for Wide {
-    next(*mut self) => Option<Pair<i32, u8>> {
+    next(^self) => Option<Pair<i32, u8>> {
         if self.left == 0 { return Option<Pair<i32, u8>>::None; }
         self.left -= 1;
         Option<Pair<i32, u8>>::Some { value = Pair<i32, u8> { a = self.left; b = 7; }; }
@@ -114,7 +114,7 @@ meet Iterator<Pair<i32, u8>> for Wide {
 
 struct Narrow { left: i32; }
 meet Iterator<i64> for Narrow {
-    next(*mut self) => Option<i64> {
+    next(^self) => Option<i64> {
         if self.left == 0 { return Option<i64>::None; }
         self.left -= 1;
         Option<i64>::Some { value = 100i64; }
@@ -131,7 +131,7 @@ meet ToIterator<i64> for Twice {
 main() => void {
     # `x : _ = e` is `x := e`.
     x : _ = 123;
-    mut y : _ = 1u8;
+    ^y : _ = 1u8;
     y += 1;
     println$("whole: ", x, " ", y);
 
@@ -164,7 +164,7 @@ main() => void {
 
     # Annotation holes are solved top-down from the annotation's known parts.
     v := 7;
-    ptr : *_ = &v;
+    ptr : *_ = *v;
     lit : Pair<_, u8> = Pair { a = 1; b = 2; };
     arr : [_]u8 = [1, 2, 3];
     buf : Buffer<_, i32> = Buffer { data = [4, 5, 6]; };
@@ -177,7 +177,7 @@ main() => void {
     same_check : Pair<u8, u8> = same;
     global_check : [2]u8 = global;
     size_same := sizeof<Pair<u8, u8>>;
-    println$("annotations: ", *ptr, " ", lit_check.b, " ", arr_check[2], " ", buf_check.data[1], " ", made_check.b, " ", same_check.a, " ", size_same, " ", global_check[1]);
+    println$("annotations: ", ptr.*, " ", lit_check.b, " ", arr_check[2], " ", buf_check.data[1], " ", made_check.b, " ", same_check.a, " ", size_same, " ", global_check[1]);
 
     # Known parts of a partial annotation are exact types, however they are
     # spelled: an array, a nominal type, a function type.
@@ -230,8 +230,8 @@ main() => void {
     dog := Dog { id = 1; };
     via_self : Widget = <_ : Make>::make();
     via_spec := <Widget : _>::make();
-    sound := <_ : Animal>::make_sound(&dog);
+    sound := <_ : Animal>::make_sound(*dog);
     via_generic := <Widget : _>::build();
-    println$("qualified: ", via_self.id, " ", via_spec.id, " ", sound, " ", <Dog : _>::make_sound(&dog), " ", dog.id, " ", via_generic.id);
+    println$("qualified: ", via_self.id, " ", via_spec.id, " ", sound, " ", <Dog : _>::make_sound(*dog), " ", dog.id, " ", via_generic.id);
     <void>n;
 }

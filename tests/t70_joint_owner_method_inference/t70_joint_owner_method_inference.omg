@@ -35,8 +35,8 @@ main() => void {
 	println$(Owner::name<u16>(3i8, 4));
 	println$(Owner<_>::name<u8>(7i64, 2));
 	p := m::Pair<i32> { first = 5; };
-	println$(m::Pair::self::scaled(&p, 3u8));
-	println$(m::Pair<_>::self::scaled<u32>(&p, 3));
+	println$(m::Pair::self::scaled(*p, 3u8));
+	println$(m::Pair<_>::self::scaled<u32>(*p, 3));
 	println$(Shadow::name(7i64));
 	println$(Defaulted::name(7i64, 2u8));
 }

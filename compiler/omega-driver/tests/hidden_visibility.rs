@@ -147,7 +147,7 @@ fn a_default_spec_body_can_call_a_hidden_sibling_member() {
 
         entry_fn() => i32 {
             dog := Dog { id = 5; };
-            Greeter::greet(&dog)
+            Greeter::greet(*dog)
         }
         "#,
     )
@@ -233,7 +233,7 @@ fn another_package_may_implement_a_shared_requirement_the_spec_s_package_calls()
         meet Api for Dog { tag(*self) => i32 { self.id } }
         entry_fn() => i32 {
             dog := Dog { id = 1; };
-            tag_of(&dog)
+            tag_of(*dog)
         }
         "#,
     );
@@ -253,7 +253,7 @@ fn a_shared_requirement_is_checked_against_the_spec_s_package_not_the_receiver_s
         local_tag_of<T: Api>(value: *T) => i32 { value.tag() }
         entry_fn() => i32 {
             dog := Dog { id = 1; };
-            local_tag_of(&dog) + Api::tag(&dog)
+            local_tag_of(*dog) + Api::tag(*dog)
         }
         "#,
     );
@@ -275,8 +275,8 @@ fn a_shared_primitive_method_is_callable_from_another_core_module() {
         "ints",
         r#"
         primitive i32 {
-            shared twice(*self) => i32 { *self * 2 }
-            hidden secret(*self) => i32 { *self }
+            shared twice(*self) => i32 { self.* * 2 }
+            hidden secret(*self) => i32 { self.* }
         }
 
         exposed use_secret() => i32 { 1i32.secret() }
@@ -298,7 +298,7 @@ fn a_hidden_primitive_method_is_not_callable_from_another_core_module() {
         "ints",
         r#"
         primitive i32 {
-            hidden secret(*self) => i32 { *self }
+            hidden secret(*self) => i32 { self.* }
         }
         "#,
     );

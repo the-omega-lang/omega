@@ -4,7 +4,7 @@ error: 'Named' is a spec -- it has no size on its own, so it can't be used as a 
 21 |     spec_member: SpecMember;
    |     ^^^^^^^^^^^^^^^^^^^^^^^ a spec has no size or representation on its own
    |
-   = help: use `spec *Named`/`spec *mut Named` for dynamic dispatch, or a generic bound (`T: Named`)
+   = help: use `*spec Named`/`^spec Named` for dynamic dispatch, or a generic bound (`T: Named`)
 
 error: 'never' is only allowed as a function/method's own return type
   --> tests/t27b_anonymous_enum_errors/t27b_anonymous_enum_errors.omg:22:5

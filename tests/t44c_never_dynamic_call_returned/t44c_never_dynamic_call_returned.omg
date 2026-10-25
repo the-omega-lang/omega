@@ -27,7 +27,7 @@ meet Terminator for Sloppy {
 
 main() => void {
 	value := Sloppy { marker = 1; };
-	obj := <*spec Terminator>&value;
+	obj := <*spec Terminator>*value;
 	println$("before-call");
 	obj.stop();
 	println$("after-call");

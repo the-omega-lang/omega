@@ -217,13 +217,13 @@ fn typeinfo_checks_the_field_types_the_table_is_built_with() {
 #[test]
 fn a_loop_uses_core_iterator_never_a_program_spec_of_that_name() {
     let errors = Workspace::new(
-        "spec Iterator<T> { next(*mut self) => Option<T>; }
+        "spec Iterator<T> { next(^self) => Option<T>; }
          struct Countdown { exposed left: i32; }
          meet Iterator<i32> for Countdown {
-             next(*mut self) => Option<i32> { Option<i32>::None }
+             next(^self) => Option<i32> { Option<i32>::None }
          }
          helper() => void {
-             mut c := Countdown { left = 3; };
+             ^c := Countdown { left = 3; };
              for item in c { }
          }
          main() => void { helper(); }",

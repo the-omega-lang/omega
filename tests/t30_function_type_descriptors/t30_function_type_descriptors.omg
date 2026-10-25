@@ -44,7 +44,7 @@ main() => void {
 	);
 
 	# --- differently described function-pointer variables are assignable --
-	mut slot: (x: i32, y: i32) => i32 = undescribed;
+	^slot: (x: i32, y: i32) => i32 = undescribed;
 	slot = described;
 	slot = renamed;
 	println$("assignments: ", slot(10, 20));
@@ -66,16 +66,16 @@ main() => void {
 	# --- an unnamed pointer-typed first parameter is not a receiver -------
 	pointer_first: (*Thing) => i32 = takes_thing;
 	t := Thing { v = 3; };
-	println$("pointer-first: ", pointer_first(&t));
+	println$("pointer-first: ", pointer_first(*t));
 
 	# An unbound member value's receiver has no descriptor at all, so it
 	# stores into both spellings of the explicit-receiver function type.
 	bare_receiver: (*Thing, i32) => i32 = Thing::self::scaled;
 	described_receiver: (target: *Thing, factor: i32) => i32 = Thing::self::scaled;
 	println$(
-		"unbound-member: ", bare_receiver(&t, 2), " ", described_receiver(&t, 2)
+		"unbound-member: ", bare_receiver(*t, 2), " ", described_receiver(*t, 2)
 	);
 
 	# --- a conformance whose binding names differ from the spec's ---------
-	println$("conformance: ", Scale::scale(&t, 4));
+	println$("conformance: ", Scale::scale(*t, 4));
 }

@@ -97,15 +97,15 @@ exposed enum Result<T, E> {
 
     exposed as_ptr(*self) => Result<*T, *E> {
         match self {
-            Result::Ok => Result<*T, *E>::Ok { value = &self.value; },
-            Result::Err => Result<*T, *E>::Err { error = &self.error; },
+            Result::Ok => Result<*T, *E>::Ok { value = *self.value; },
+            Result::Err => Result<*T, *E>::Err { error = *self.error; },
         }
     }
 
-    exposed as_mut_ptr(*mut self) => Result<*mut T, *mut E> {
+    exposed as_mut_ptr(^self) => Result<^T, ^E> {
         match self {
-            Result::Ok => Result<*mut T, *mut E>::Ok { value = &mut self.value; },
-            Result::Err => Result<*mut T, *mut E>::Err { error = &mut self.error; },
+            Result::Ok => Result<^T, ^E>::Ok { value = ^self.value; },
+            Result::Err => Result<^T, ^E>::Err { error = ^self.error; },
         }
     }
 }

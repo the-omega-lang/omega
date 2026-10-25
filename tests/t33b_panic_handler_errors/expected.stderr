@@ -1,7 +1,7 @@
 error: 'core::panic::PanicHandler::panic' is not visible here
   --> tests/t33b_panic_handler_errors/t33b_panic_handler_errors.omg:12:5
    |
-12 |     core::panic::PanicHandler::panic(&info)
+12 |     core::panic::PanicHandler::panic(*info)
    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not visible from this module
 
 error: mismatched types: cannot assign 'i32' to a target of type '*str'

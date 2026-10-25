@@ -2,6 +2,7 @@ pub mod contextual;
 mod cursor;
 pub mod expression;
 pub mod item;
+mod legacy;
 pub mod macro_syntax;
 pub mod recovery;
 pub mod statement;
@@ -289,30 +290,53 @@ pub struct BindingPrefix {
 
 pub type BindingModifiers = BindingPrefix;
 
-/// Whether a `name := ...` / `name : T` binding (with optional `mut`/`comp`)
+/// Whether a `name := ...` / `name : T` binding (with optional `comp`/`^`)
 /// begins here, without consuming the modifiers.
 pub fn binding_modifiers_follow(p: &Parser) -> bool {
     binding_prefix_here(p).is_some()
 }
 
 pub fn parse_binding_modifiers(p: &mut Parser) -> Option<BindingModifiers> {
-    let prefix = binding_prefix_here(p)?;
-    for _ in 0..usize::from(prefix.mutable) + usize::from(prefix.comp) {
+    let found = binding_prefix_here(p)?;
+    for offset in 0..found.len {
+        if found.legacy_mut == Some(offset) {
+            p.error(ParseErrorKind::LegacyMutBinding);
+        }
         p.advance();
     }
-    Some(prefix)
+    Some(found.prefix)
+}
+
+struct FoundBindingPrefix {
+    prefix: BindingPrefix,
+    len: usize,
+    legacy_mut: Option<usize>,
 }
 
 /// The modifiers of a binding that begins here, if one does. A `comp` with no
 /// name after it is the name itself (`comp := 5`), so that it is reported as a
-/// keyword used as a name rather than as a malformed `comp` expression.
-fn binding_prefix_here(p: &Parser) -> Option<BindingPrefix> {
-    let mutable = p.at_contextual(contextual::MUT) && !declaration_follows(p, 0);
-    let comp_offset = usize::from(mutable);
-    let comp =
-        matches!(p.peek_at(comp_offset), TokenKind::Comp) && !declaration_follows(p, comp_offset);
-    let name_offset = comp_offset + usize::from(comp);
-    declaration_follows(p, name_offset).then_some(BindingPrefix { mutable, comp })
+/// keyword used as a name rather than as a malformed `comp` expression. A
+/// retired `mut` (`mut x`, `mut comp x`, `comp mut x`) is recognised so that
+/// it can be reported, and stands for `^`.
+fn binding_prefix_here(p: &Parser) -> Option<FoundBindingPrefix> {
+    let retired_mut_at = |offset| legacy::mut_at(p, offset) && !declaration_follows(p, offset);
+    let mut legacy_mut = retired_mut_at(0).then_some(0);
+    let mut len = usize::from(legacy_mut.is_some());
+    let comp = matches!(p.peek_at(len), TokenKind::Comp) && !declaration_follows(p, len);
+    len += usize::from(comp);
+    let caret = p.peek_at(len) == &TokenKind::Caret;
+    if caret {
+        len += 1;
+    } else if legacy_mut.is_none() && retired_mut_at(len) {
+        legacy_mut = Some(len);
+        len += 1;
+    }
+    let mutable = caret || legacy_mut.is_some();
+    declaration_follows(p, len).then_some(FoundBindingPrefix {
+        prefix: BindingPrefix { mutable, comp },
+        len,
+        legacy_mut,
+    })
 }
 
 fn declaration_follows(p: &Parser, offset: usize) -> bool {
@@ -372,12 +396,12 @@ pub fn parse_path(p: &mut Parser) -> Option<crate::ast::identifier::Path> {
 
 pub fn parse_param_decls(p: &mut Parser) -> Vec<crate::ast::r#type::Param> {
     let mut params = Vec::new();
-    if !p.declared_name_at(0) {
+    if !param_decl_at(p, 0) {
         return params;
     }
     while let Some(param) = parse_param_decl(p) {
         params.push(param);
-        if matches!(p.peek(), TokenKind::Comma) && p.declared_name_at(1) {
+        if matches!(p.peek(), TokenKind::Comma) && param_decl_at(p, 1) {
             p.advance();
         } else {
             break;
@@ -386,7 +410,17 @@ pub fn parse_param_decls(p: &mut Parser) -> Vec<crate::ast::r#type::Param> {
     params
 }
 
+fn param_decl_at(p: &Parser, offset: usize) -> bool {
+    let marker = usize::from(p.peek_at(offset) == &TokenKind::Caret);
+    p.declared_name_at(offset + marker)
+}
+
 fn parse_param_decl(p: &mut Parser) -> Option<crate::ast::r#type::Param> {
+    let start = p.peek_span();
+    let mutable = p.eat(&TokenKind::Caret)
+        || legacy::eat_mut_before(p, |p, offset| {
+            p.declared_name_at(offset) && p.peek_at(offset + 1) == &TokenKind::Colon
+        });
     let (ident, origin) = p.expect_ident_with_origin()?;
     let name_span = p.last_span();
     p.expect(&TokenKind::Colon, "':'");
@@ -394,10 +428,26 @@ fn parse_param_decl(p: &mut Parser) -> Option<crate::ast::r#type::Param> {
     Some(crate::ast::r#type::Param {
         ident,
         name_span,
-        span: name_span.to(p.last_span()),
+        span: start.to(p.last_span()),
         origin,
         r#type,
+        mutable,
     })
+}
+
+/// `^` declares a mutable local of the function's body, so a declaration
+/// without one cannot carry it.
+pub fn reject_mutable_params(
+    p: &mut Parser,
+    params: &[crate::ast::r#type::Param],
+    context: &'static str,
+) {
+    for param in params.iter().filter(|param| param.mutable) {
+        p.error_at(
+            Span::new(param.span.start, param.name_span.end),
+            ParseErrorKind::MutableParamWithoutBody { context },
+        );
+    }
 }
 
 pub fn parse_param_list(
@@ -419,36 +469,53 @@ pub fn parse_param_list(
     }
 }
 
+/// `self`, `*self`, or `^self`. The pointer receivers mirror the address a
+/// call site takes, so `^self` is `self : ^Self` -- the one place where `^`
+/// before a parameter name does not declare a mutable binding.
 pub fn parse_self_param(p: &mut Parser) -> Option<crate::ast::self_mode::SelfParam> {
     use crate::ast::self_mode::{SelfMode, SelfParam};
-    use crate::parser::contextual::{MUT, SELF};
+    use crate::parser::contextual::SELF;
 
-    // Leading `*` uniquely commits to pointer-`self`; reject any other continuation precisely.
-    let by_pointer = p.eat(&TokenKind::Star);
-    // Do not consume contextual `mut` until the following `self` confirms this form.
-    let mutable = if p.at_contextual(MUT) && p.at_contextual_at(1, SELF) {
-        p.advance(); // 'mut'
-        true
-    } else {
-        false
+    let start = p.peek_span();
+    let pointer_mutable = match p.peek() {
+        TokenKind::Star if p.at_contextual_at(1, SELF) || legacy::mut_self_at(p, 1) => Some(false),
+        TokenKind::Caret if p.at_contextual_at(1, SELF) => Some(true),
+        _ => None,
     };
-    if p.eat_contextual(SELF) {
-        let mode = match (by_pointer, mutable) {
-            (false, false) => SelfMode::Value,
-            (false, true) => SelfMode::MutValue,
-            (true, false) => SelfMode::Pointer,
-            (true, true) => SelfMode::MutPointer,
-        };
-        return Some(SelfParam {
-            mode,
-            span: p.last_span(),
-        });
+    let legacy_mut = legacy::mut_self_at(p, usize::from(pointer_mutable.is_some()));
+    if pointer_mutable.is_none() && !legacy_mut && !p.at_contextual(SELF) {
+        // A leading `*` can only begin a receiver: parameters are `name : T`.
+        if p.eat(&TokenKind::Star) {
+            p.error(ParseErrorKind::Expected {
+                expected: "'self' after '*'",
+                found: p.peek().describe(),
+            });
+        }
+        return None;
     }
-    if by_pointer {
-        p.error(ParseErrorKind::Expected {
-            expected: "'self' after '*'/'*mut'",
-            found: p.peek().describe(),
-        });
+    if pointer_mutable.is_some() {
+        p.advance();
     }
-    None
+    if legacy_mut {
+        p.advance(); // 'mut'
+    }
+    p.advance(); // 'self'
+    let span = p.last_span();
+    let mode = match (pointer_mutable, legacy_mut) {
+        (None, false) => SelfMode::Value,
+        (None, true) => {
+            p.error_at(start.to(span), ParseErrorKind::LegacyMutSelf);
+            SelfMode::Value
+        }
+        (Some(false), false) => SelfMode::Pointer,
+        (Some(false), true) => {
+            p.error_at(
+                start.to(span),
+                ParseErrorKind::LegacyMutPointer { receiver: true },
+            );
+            SelfMode::MutPointer
+        }
+        (Some(true), _) => SelfMode::MutPointer,
+    };
+    Some(SelfParam { mode, span })
 }

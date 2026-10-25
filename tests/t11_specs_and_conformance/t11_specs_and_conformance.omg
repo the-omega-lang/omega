@@ -82,7 +82,7 @@ meet Consumer<i32> for Multi {
 }
 
 meet Consumer<*u8> for Multi {
-	consume(*self, value: *u8) => i32 { self.tally + <i32>*value }
+	consume(*self, value: *u8) => i32 { self.tally + <i32>value.* }
 }
 
 main() => void {
@@ -91,31 +91,31 @@ main() => void {
 
 	# --- explicit conformance, and a spec default method's own logic -------
 	println$("explicit-conformance: ",
-		Animal::make_sound(&dog), " ", Animal::make_sound(&cat), " ",
-		Animal::is_dog(&dog), " ", Animal::is_dog(&cat)
+		Animal::make_sound(*dog), " ", Animal::make_sound(*cat), " ",
+		Animal::is_dog(*dog), " ", Animal::is_dog(*cat)
 	);
 
 	# --- three qualification levels for calling conforming functions -------
-	println$("spec-supplied-receiver: ", Animal::make_sound(&dog));      # spec supplied, receiver given
+	println$("spec-supplied-receiver: ", Animal::make_sound(*dog));      # spec supplied, receiver given
 	direct := Widget::make();                # target type supplied
 	via_spec: Widget = Make::make();          # spec supplied, Self inferred
 	via_both := <Widget : Make>::make();      # both supplied explicitly
 	println$("qualification-levels: ", direct.id, " ", via_spec.id, " ", via_both.id);
 
 	# --- blanket vs. concrete specificity, and entailment through a bound --
-	println$("blanket-vs-concrete: ", Tagged::tag_name(&dog), " ", Tagged::tag_name(&cat));
-	println$("entailment-via-bound: ", describe_tag(&dog), " ", describe_tag(&cat));
+	println$("blanket-vs-concrete: ", Tagged::tag_name(*dog), " ", Tagged::tag_name(*cat));
+	println$("entailment-via-bound: ", describe_tag(*dog), " ", describe_tag(*cat));
 
 	# --- multiple instantiations of a generic spec, disambiguated by type --
 	multi := Multi { tally = 10; };
 	byte: u8 = 5u8;
-	println$("multi-instantiation-spec: ", Consumer<i32>::consume(&multi, 1), " ", Consumer<*u8>::consume(&multi, &byte));
+	println$("multi-instantiation-spec: ", Consumer<i32>::consume(*multi, 1), " ", Consumer<*u8>::consume(*multi, *byte));
 
 	# --- dynamic dispatch: implicit coercion, explicit cast, pseudo-fields -
-	speak(&dog);
-	speak(&cat);
+	speak(*dog);
+	speak(*cat);
 
-	obj := <*spec Animal>&dog;
+	obj := <*spec Animal>*dog;
 	println$("dynamic-dispatch-call: ", obj.make_sound());
 	raw := obj.ptr;
 	vt := obj.vtable;

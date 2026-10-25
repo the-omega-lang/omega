@@ -7,6 +7,6 @@ stop() => void {
 main() => void {
 	# A function-typed binding is storage like any other, so it has an address.
 	indirect: () => void = stop;
-	through := &indirect;
-	(*through)();
+	through := *indirect;
+	through.*();
 }

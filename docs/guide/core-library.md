@@ -43,7 +43,7 @@ when their definitions are used.
   methods described in "Option and Result" below.
 - **`core::cmp`** defines `Ordering`, `Eq`, and `Ord`; primitive integer and
   `str` conformances live in core because range iteration depends on them.
-- **`core::iterator`** defines `Iterator<T>::next(*mut self) => Option<T>`
+- **`core::iterator`** defines `Iterator<T>::next(^self) => Option<T>`
   and `ToIterator<T>`, the protocols behind `for`.
 - **`core::atomic`** owns the three ordering types and the per-width atomic
   capability gaps. See "Atomic operations" below.
@@ -104,14 +104,14 @@ one.
 
 ```omega
 gap GlobalAllocator {
-    alloc(size: usize) => *mut u8;
+    alloc(size: usize) => ^u8;
     free(ptr: *u8) => void;
-    realloc(ptr: *u8, size: usize) => *mut u8;
+    realloc(ptr: *u8, size: usize) => ^u8;
 }
 
 gap StandardOutput { write(bytes: *[]u8) => Option<usize>; }
 gap StandardError  { write(bytes: *[]u8) => Option<usize>; }
-gap StandardInput  { read(into: *mut []u8) => Option<usize>; }
+gap StandardInput  { read(into: ^[]u8) => Option<usize>; }
 ```
 
 For the console gaps, `None` means failure and `Some(n)` is the exact number
@@ -144,10 +144,10 @@ failed := Result<i32, *str>::err("not a number");
 | `and<U>(self, other: Option<U>)` | `other` when `self` is `Some`, otherwise `None` |
 | `or(self, other)` | `self` when it is `Some`, otherwise `other` |
 | `xor(self, other)` | whichever of the two is `Some` when exactly one is, otherwise `None` |
-| `take(*mut self)` | the old value, leaving `None` |
-| `replace(*mut self, value: T)` | the old value, leaving `Some` with `value` |
-| `get_or_insert(*mut self, value: T)` | `*mut T` to the value, inserting `value` first when `None` |
-| `as_ptr(*self)`, `as_mut_ptr(*mut self)` | `Option<*T>` / `Option<*mut T>` pointing at the value in place |
+| `take(^self)` | the old value, leaving `None` |
+| `replace(^self, value: T)` | the old value, leaving `Some` with `value` |
+| `get_or_insert(^self, value: T)` | `^T` to the value, inserting `value` first when `None` |
+| `as_ptr(*self)`, `as_mut_ptr(^self)` | `Option<*T>` / `Option<^T>` pointing at the value in place |
 
 `Result<T, E>` has:
 
@@ -160,7 +160,7 @@ failed := Result<i32, *str>::err("not a number");
 | `unwrap_or(self, default: T)` | the value, or `default` |
 | `and<U>(self, other: Result<U, E>)` | `other` when `self` is `Ok`, otherwise `self`'s error |
 | `or<F>(self, other: Result<T, F>)` | `self`'s value when `Ok`, otherwise `other` |
-| `as_ptr(*self)`, `as_mut_ptr(*mut self)` | `Result<*T, *E>` / `Result<*mut T, *mut E>` pointing at the value or error in place |
+| `as_ptr(*self)`, `as_mut_ptr(^self)` | `Result<*T, *E>` / `Result<^T, ^E>` pointing at the value or error in place |
 
 The static `Result::ok`/`Result::err` constructors and the member `ok()`/
 `err()` conversions share names because static and member functions live in
@@ -177,11 +177,11 @@ for a `Default` spec.
 platform capability: one gap per storage width, filled by the platform.
 
 ```omega
-mut slot: u32 = 0;
+^slot: u32 = 0;
 
-Atomicity32::store(&mut slot, 7u32, AtomicStoreOrdering::Release);
-previous := Atomicity32::exchange(&mut slot, 9u32, AtomicRmwOrdering::AcquireRelease);
-current := Atomicity32::load(&slot, AtomicLoadOrdering::Acquire);
+Atomicity32::store(^slot, 7u32, AtomicStoreOrdering::Release);
+previous := Atomicity32::exchange(^slot, 9u32, AtomicRmwOrdering::AcquireRelease);
+current := Atomicity32::load(*slot, AtomicLoadOrdering::Acquire);
 ```
 
 `Atomicity8`, `Atomicity16`, `Atomicity32`, and `Atomicity64` each provide
@@ -197,7 +197,7 @@ Three points about using them:
   a convenience, not the source of atomicity — `std::atomic` is built on
   exactly these calls.
 - Only `load` takes `*T`; everything that can modify the location takes
-  `*mut T`. Atomicity is not a way to write through an immutable binding, so
+  `^T`. Atomicity is not a way to write through an immutable binding, so
   callers supply mutable storage.
 - Each operation category has its own ordering type
   (`AtomicLoadOrdering`, `AtomicStoreOrdering`, `AtomicRmwOrdering`), and a
@@ -228,9 +228,9 @@ struct Uart {
     exposed status: u32;
 }
 
-transmit(uart: *mut Uart, byte: u8) => void {
-    while (read_volatile(&uart.status) & 0x1_u32) == 0u32 { }
-    write_volatile(&mut uart.data, <u32>byte);
+transmit(uart: ^Uart, byte: u8) => void {
+    while (read_volatile(*uart.status) & 0x1_u32) == 0u32 { }
+    write_volatile(^uart.data, <u32>byte);
 }
 ```
 
@@ -256,7 +256,7 @@ print_fields(info: *TypeInfo) => void {
     kind := info.kind;
     match kind {
         TypeKind::Struct => {
-            for mut i := 0; i < kind.fields.length; ++i {
+            for ^i := 0; i < kind.fields.length; ++i {
                 field := kind.fields[i];
                 println$(field.name, " @", field.offset, ": ", field.type.name);
             }

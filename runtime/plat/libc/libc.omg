@@ -9,11 +9,11 @@
 # renaming the file. The two `free`s below (raw foreign declaration and glue
 # function) are an intentional, confirmed-safe name collision.
 
-shared foreign(c) malloc(size: usize) => *mut u8;
+shared foreign(c) malloc(size: usize) => ^u8;
 shared foreign(c) free(ptr: *u8) => void;
-shared foreign(c) realloc(ptr: *u8, size: usize) => *mut u8;
+shared foreign(c) realloc(ptr: *u8, size: usize) => ^u8;
 shared foreign(c) write(fd: i32, buf: *u8, count: usize) => isize;
-shared foreign(c) read(fd: i32, buf: *mut u8, count: usize) => isize;
+shared foreign(c) read(fd: i32, buf: ^u8, count: usize) => isize;
 
 # Omega's root `main` is never itself the platform's native entry-point
 # symbol (see docs/language/foreign-function-interface.md, "Program entry
@@ -32,7 +32,7 @@ foreign(c) platform_main() => i32 {
 }
 
 glue core::platform::GlobalAllocator {
-    alloc(size: usize) => *mut u8 {
+    alloc(size: usize) => ^u8 {
         return malloc(size);
     }
 
@@ -40,7 +40,7 @@ glue core::platform::GlobalAllocator {
         free(ptr);
     }
 
-    realloc(ptr: *u8, size: usize) => *mut u8 {
+    realloc(ptr: *u8, size: usize) => ^u8 {
         return realloc(ptr, size);
     }
 }
@@ -64,8 +64,8 @@ glue core::platform::StandardError {
 }
 
 glue core::platform::StandardInput {
-    read(into: *mut []u8) => Option<usize> {
-        read_count := read(0, <*mut u8>into, <usize>into.length);
+    read(into: ^[]u8) => Option<usize> {
+        read_count := read(0, <^u8>into, <usize>into.length);
         if read_count < 0isize { Option<usize>::None } else {
             Option<usize>::Some { value = <usize>read_count; }
         }
@@ -85,9 +85,9 @@ shared foreign(c) abort() => never;
 # exists to report. A handler that is already terminating has nowhere to
 # report a failed write, so it stops instead of retrying forever.
 panic_write(bytes: *[]u8) => void {
-    mut written: i32 = 0;
+    ^written: i32 = 0;
     while written < bytes.length {
-        rest := &bytes[written..];
+        rest := *bytes[written..];
         count := write(2, <*u8>rest, <usize>rest.length);
         if count <= 0isize { break; }
         written = written + <i32>count;
@@ -98,16 +98,16 @@ panic_write(bytes: *[]u8) => void {
 # end of the buffer and sliced from there. `plat` sits below `std` and cannot
 # reach `std::fmt`, and a `u32` needs at most ten decimal digits.
 panic_write_u32(value: u32) => void {
-    mut digits: [10]u8;
-    mut start: i32 = 10;
-    mut current := value;
+    ^digits: [10]u8;
+    ^start: i32 = 10;
+    ^current := value;
     loop {
         start = start - 1;
         digits[start] = 48u8 + <u8>(current % 10u32);
         current = current / 10u32;
         if current == 0u32 { break; }
     }
-    panic_write(&digits[start..]);
+    panic_write(*digits[start..]);
 }
 
 glue core::panic::PanicHandler {

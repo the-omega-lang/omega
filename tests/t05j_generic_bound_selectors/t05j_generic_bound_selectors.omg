@@ -153,7 +153,7 @@ main() => void {
     owner := Owner { value = 1; };
     println$("member: ", owner.take<Mark: A>(mark), " ", owner.take<_ : B>(mark));
     println$("static: ", Owner::make<Mark: A>(mark), " ", Owner::make<_ : B>(mark));
-    println$("unbound: ", Owner::self::take<_ : A>(&owner, mark));
+    println$("unbound: ", Owner::self::take<_ : A>(*owner, mark));
 
     # --- module-qualified, imported, and declared-alias spellings ---------
     println$("paths: ", provider::shared<Mark: A>(mark), " ", imported_shared<_ : A>(mark), " ", aliased_shared<Mark: A>(mark), " ", provider::shared<_ : B>(mark));

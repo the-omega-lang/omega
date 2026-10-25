@@ -4,6 +4,6 @@ import std::io::println;
 
 main() => void {
     unused := 1;
-    mut value := 2;
+    ^value := 2;
     value;
 }

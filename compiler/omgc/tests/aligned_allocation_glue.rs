@@ -19,25 +19,25 @@ static NEXT_DIR: AtomicUsize = AtomicUsize::new(0);
 const FIXTURE: &str = r#"
 import std::alloc;
 
-mut arena: [16384]u8;
-mut used: usize = 0;
-mut last_raw: usize = 0;
-mut last_freed: usize = 0;
-mut fail_next: bool = false;
-mut raw_realloc_calls: usize = 0;
+^arena: [16384]u8;
+^used: usize = 0;
+^last_raw: usize = 0;
+^last_freed: usize = 0;
+^fail_next: bool = false;
+^raw_realloc_calls: usize = 0;
 
-arena_base() => usize { <usize>&arena }
+arena_base() => usize { <usize>*arena }
 
 glue core::platform::GlobalAllocator {
-    alloc(size: usize) => *mut u8 {
-        if fail_next { return <*mut u8>0; }
+    alloc(size: usize) => ^u8 {
+        if fail_next { return <^u8>0; }
         base := arena_base();
-        mut start := base + used;
+        ^start := base + used;
         start = start + (64 - start % 64) + 8;
-        if start + size > base + 16384 { return <*mut u8>0; }
+        if start + size > base + 16384 { return <^u8>0; }
         used = start + size - base;
         last_raw = start;
-        <*mut u8>start
+        <^u8>start
     }
 
     free(ptr: *u8) => void {
@@ -46,7 +46,7 @@ glue core::platform::GlobalAllocator {
 
     # `std::alloc` reallocates by allocate-copy-free, so it must never hand
     # an adjusted pointer back to the raw gap.
-    realloc(ptr: *u8, size: usize) => *mut u8 {
+    realloc(ptr: *u8, size: usize) => ^u8 {
         raw_realloc_calls = raw_realloc_calls + 1;
         last_freed = <usize>ptr;
         GlobalAllocator::alloc(size)
@@ -102,11 +102,11 @@ exposed fixture_never_reaches_the_raw_realloc() => i64 {
 @symbol(mangle = disabled)
 exposed fixture_failed_realloc_keeps_the_old_block() => i64 {
     block := alloc::alloc(8, 64);
-    *<*mut u8>(<usize>block) = 42u8;
+    (<^u8>(<usize>block)).* = 42u8;
     fail_next = true;
     replacement := alloc::realloc(block, 4096, 64);
     fail_next = false;
-    if <usize>replacement == 0 && *<*u8>(<usize>block) == 42u8 { 1i64 } else { 0i64 }
+    if <usize>replacement == 0 && (<*u8>(<usize>block)).* == 42u8 { 1i64 } else { 0i64 }
 }
 "#;
 

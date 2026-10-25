@@ -26,41 +26,41 @@ import core::atomic::AtomicRmwOrdering;
 # are part of the instruction, not of the Omega call.
 
 load_8(location: *u8) => u8 {
-	mut result: u8 = 0;
-	asm(reg(location), reg(&mut result), clobber("rax")) => {
+	^result: u8 = 0;
+	asm(reg(location), reg(^result), clobber("rax")) => {
 		mov al, byte ptr [$location]
 		mov byte ptr [$result], al
 	}
 	result
 }
 
-store_8(location: *mut u8, value: u8) => void {
+store_8(location: ^u8, value: u8) => void {
 	asm(reg(location), reg(value)) => {
 		mov byte ptr [$location], $value
 	}
 }
 
-swap_8(location: *mut u8, value: u8) => u8 {
-	mut result: u8 = 0;
-	asm(reg(location), reg(value), reg(&mut result)) => {
+swap_8(location: ^u8, value: u8) => u8 {
+	^result: u8 = 0;
+	asm(reg(location), reg(value), reg(^result)) => {
 		xchg byte ptr [$location], $value
 		mov byte ptr [$result], $value
 	}
 	result
 }
 
-cas_8(location: *mut u8, expected: u8, desired: u8) => u8 {
-	mut result: u8 = 0;
-	asm(reg(expected, "al"), reg(location), reg(desired), reg(&mut result)) => {
+cas_8(location: ^u8, expected: u8, desired: u8) => u8 {
+	^result: u8 = 0;
+	asm(reg(expected, "al"), reg(location), reg(desired), reg(^result)) => {
 		lock cmpxchg byte ptr [$location], $desired
 		mov byte ptr [$result], al
 	}
 	result
 }
 
-xadd_8(location: *mut u8, value: u8) => u8 {
-	mut result: u8 = 0;
-	asm(reg(location), reg(value), reg(&mut result)) => {
+xadd_8(location: ^u8, value: u8) => u8 {
+	^result: u8 = 0;
+	asm(reg(location), reg(value), reg(^result)) => {
 		lock xadd byte ptr [$location], $value
 		mov byte ptr [$result], $value
 	}
@@ -68,41 +68,41 @@ xadd_8(location: *mut u8, value: u8) => u8 {
 }
 
 load_16(location: *u16) => u16 {
-	mut result: u16 = 0;
-	asm(reg(location), reg(&mut result), clobber("rax")) => {
+	^result: u16 = 0;
+	asm(reg(location), reg(^result), clobber("rax")) => {
 		mov ax, word ptr [$location]
 		mov word ptr [$result], ax
 	}
 	result
 }
 
-store_16(location: *mut u16, value: u16) => void {
+store_16(location: ^u16, value: u16) => void {
 	asm(reg(location), reg(value)) => {
 		mov word ptr [$location], $value
 	}
 }
 
-swap_16(location: *mut u16, value: u16) => u16 {
-	mut result: u16 = 0;
-	asm(reg(location), reg(value), reg(&mut result)) => {
+swap_16(location: ^u16, value: u16) => u16 {
+	^result: u16 = 0;
+	asm(reg(location), reg(value), reg(^result)) => {
 		xchg word ptr [$location], $value
 		mov word ptr [$result], $value
 	}
 	result
 }
 
-cas_16(location: *mut u16, expected: u16, desired: u16) => u16 {
-	mut result: u16 = 0;
-	asm(reg(expected, "ax"), reg(location), reg(desired), reg(&mut result)) => {
+cas_16(location: ^u16, expected: u16, desired: u16) => u16 {
+	^result: u16 = 0;
+	asm(reg(expected, "ax"), reg(location), reg(desired), reg(^result)) => {
 		lock cmpxchg word ptr [$location], $desired
 		mov word ptr [$result], ax
 	}
 	result
 }
 
-xadd_16(location: *mut u16, value: u16) => u16 {
-	mut result: u16 = 0;
-	asm(reg(location), reg(value), reg(&mut result)) => {
+xadd_16(location: ^u16, value: u16) => u16 {
+	^result: u16 = 0;
+	asm(reg(location), reg(value), reg(^result)) => {
 		lock xadd word ptr [$location], $value
 		mov word ptr [$result], $value
 	}
@@ -110,41 +110,41 @@ xadd_16(location: *mut u16, value: u16) => u16 {
 }
 
 load_32(location: *u32) => u32 {
-	mut result: u32 = 0;
-	asm(reg(location), reg(&mut result), clobber("rax")) => {
+	^result: u32 = 0;
+	asm(reg(location), reg(^result), clobber("rax")) => {
 		mov eax, dword ptr [$location]
 		mov dword ptr [$result], eax
 	}
 	result
 }
 
-store_32(location: *mut u32, value: u32) => void {
+store_32(location: ^u32, value: u32) => void {
 	asm(reg(location), reg(value)) => {
 		mov dword ptr [$location], $value
 	}
 }
 
-swap_32(location: *mut u32, value: u32) => u32 {
-	mut result: u32 = 0;
-	asm(reg(location), reg(value), reg(&mut result)) => {
+swap_32(location: ^u32, value: u32) => u32 {
+	^result: u32 = 0;
+	asm(reg(location), reg(value), reg(^result)) => {
 		xchg dword ptr [$location], $value
 		mov dword ptr [$result], $value
 	}
 	result
 }
 
-cas_32(location: *mut u32, expected: u32, desired: u32) => u32 {
-	mut result: u32 = 0;
-	asm(reg(expected, "eax"), reg(location), reg(desired), reg(&mut result)) => {
+cas_32(location: ^u32, expected: u32, desired: u32) => u32 {
+	^result: u32 = 0;
+	asm(reg(expected, "eax"), reg(location), reg(desired), reg(^result)) => {
 		lock cmpxchg dword ptr [$location], $desired
 		mov dword ptr [$result], eax
 	}
 	result
 }
 
-xadd_32(location: *mut u32, value: u32) => u32 {
-	mut result: u32 = 0;
-	asm(reg(location), reg(value), reg(&mut result)) => {
+xadd_32(location: ^u32, value: u32) => u32 {
+	^result: u32 = 0;
+	asm(reg(location), reg(value), reg(^result)) => {
 		lock xadd dword ptr [$location], $value
 		mov dword ptr [$result], $value
 	}
@@ -152,41 +152,41 @@ xadd_32(location: *mut u32, value: u32) => u32 {
 }
 
 load_64(location: *u64) => u64 {
-	mut result: u64 = 0;
-	asm(reg(location), reg(&mut result), clobber("rax")) => {
+	^result: u64 = 0;
+	asm(reg(location), reg(^result), clobber("rax")) => {
 		mov rax, qword ptr [$location]
 		mov qword ptr [$result], rax
 	}
 	result
 }
 
-store_64(location: *mut u64, value: u64) => void {
+store_64(location: ^u64, value: u64) => void {
 	asm(reg(location), reg(value)) => {
 		mov qword ptr [$location], $value
 	}
 }
 
-swap_64(location: *mut u64, value: u64) => u64 {
-	mut result: u64 = 0;
-	asm(reg(location), reg(value), reg(&mut result)) => {
+swap_64(location: ^u64, value: u64) => u64 {
+	^result: u64 = 0;
+	asm(reg(location), reg(value), reg(^result)) => {
 		xchg qword ptr [$location], $value
 		mov qword ptr [$result], $value
 	}
 	result
 }
 
-cas_64(location: *mut u64, expected: u64, desired: u64) => u64 {
-	mut result: u64 = 0;
-	asm(reg(expected, "rax"), reg(location), reg(desired), reg(&mut result)) => {
+cas_64(location: ^u64, expected: u64, desired: u64) => u64 {
+	^result: u64 = 0;
+	asm(reg(expected, "rax"), reg(location), reg(desired), reg(^result)) => {
 		lock cmpxchg qword ptr [$location], $desired
 		mov qword ptr [$result], rax
 	}
 	result
 }
 
-xadd_64(location: *mut u64, value: u64) => u64 {
-	mut result: u64 = 0;
-	asm(reg(location), reg(value), reg(&mut result)) => {
+xadd_64(location: ^u64, value: u64) => u64 {
+	^result: u64 = 0;
+	asm(reg(location), reg(value), reg(^result)) => {
 		lock xadd qword ptr [$location], $value
 		mov qword ptr [$result], $value
 	}
@@ -213,7 +213,7 @@ macro width_atomicity(
 			$load(location)
 		}
 
-		store(location: *mut $U, value: $U, order: AtomicStoreOrdering) => void {
+		store(location: ^$U, value: $U, order: AtomicStoreOrdering) => void {
 			match order {
 				# `xchg` is locked, so the store cannot be reordered after a
 				# later load the way a plain `mov` could.
@@ -223,11 +223,11 @@ macro width_atomicity(
 			}
 		}
 
-		exchange(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
+		exchange(location: ^$U, value: $U, order: AtomicRmwOrdering) => $U {
 			$swap(location, value)
 		}
 
-		compare_exchange(location: *mut $U, expected: $U, desired: $U, success: AtomicRmwOrdering, failure: AtomicLoadOrdering) => Result<$U, $U> {
+		compare_exchange(location: ^$U, expected: $U, desired: $U, success: AtomicRmwOrdering, failure: AtomicLoadOrdering) => Result<$U, $U> {
 			previous := $cas(location, expected, desired);
 			if previous == expected {
 				Result<$U, $U>::Ok { value = previous; }
@@ -236,20 +236,20 @@ macro width_atomicity(
 			}
 		}
 
-		compare_exchange_weak(location: *mut $U, expected: $U, desired: $U, success: AtomicRmwOrdering, failure: AtomicLoadOrdering) => Result<$U, $U> {
+		compare_exchange_weak(location: ^$U, expected: $U, desired: $U, success: AtomicRmwOrdering, failure: AtomicLoadOrdering) => Result<$U, $U> {
 			$Gap::compare_exchange(location, expected, desired, success, failure)
 		}
 
-		fetch_add(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
+		fetch_add(location: ^$U, value: $U, order: AtomicRmwOrdering) => $U {
 			$xadd(location, value)
 		}
 
-		fetch_sub(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
+		fetch_sub(location: ^$U, value: $U, order: AtomicRmwOrdering) => $U {
 			$xadd(location, <$U>0 - value)
 		}
 
-		fetch_and(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
-			mut observed := $Gap::load(location, AtomicLoadOrdering::Relaxed);
+		fetch_and(location: ^$U, value: $U, order: AtomicRmwOrdering) => $U {
+			^observed := $Gap::load(location, AtomicLoadOrdering::Relaxed);
 			loop {
 				previous := $cas(location, observed, observed & value);
 				if previous == observed { break; }
@@ -258,8 +258,8 @@ macro width_atomicity(
 			observed
 		}
 
-		fetch_or(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
-			mut observed := $Gap::load(location, AtomicLoadOrdering::Relaxed);
+		fetch_or(location: ^$U, value: $U, order: AtomicRmwOrdering) => $U {
+			^observed := $Gap::load(location, AtomicLoadOrdering::Relaxed);
 			loop {
 				previous := $cas(location, observed, observed | value);
 				if previous == observed { break; }
@@ -268,8 +268,8 @@ macro width_atomicity(
 			observed
 		}
 
-		fetch_xor(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
-			mut observed := $Gap::load(location, AtomicLoadOrdering::Relaxed);
+		fetch_xor(location: ^$U, value: $U, order: AtomicRmwOrdering) => $U {
+			^observed := $Gap::load(location, AtomicLoadOrdering::Relaxed);
 			loop {
 				previous := $cas(location, observed, observed ^ value);
 				if previous == observed { break; }
@@ -278,8 +278,8 @@ macro width_atomicity(
 			observed
 		}
 
-		fetch_min_unsigned(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
-			mut observed := $Gap::load(location, AtomicLoadOrdering::Relaxed);
+		fetch_min_unsigned(location: ^$U, value: $U, order: AtomicRmwOrdering) => $U {
+			^observed := $Gap::load(location, AtomicLoadOrdering::Relaxed);
 			loop {
 				chosen := if value < observed { value } else { observed };
 				previous := $cas(location, observed, chosen);
@@ -289,8 +289,8 @@ macro width_atomicity(
 			observed
 		}
 
-		fetch_max_unsigned(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
-			mut observed := $Gap::load(location, AtomicLoadOrdering::Relaxed);
+		fetch_max_unsigned(location: ^$U, value: $U, order: AtomicRmwOrdering) => $U {
+			^observed := $Gap::load(location, AtomicLoadOrdering::Relaxed);
 			loop {
 				chosen := if value > observed { value } else { observed };
 				previous := $cas(location, observed, chosen);
@@ -303,9 +303,9 @@ macro width_atomicity(
 		# The signed views share the width's storage and its primitives; only
 		# the comparison differs, which is exactly why the gap declares them
 		# separately instead of inferring a sign from a bit pattern.
-		fetch_min_signed(location: *mut $I, value: $I, order: AtomicRmwOrdering) => $I {
-			storage := <*mut $U>(<usize>location);
-			mut observed := <$I>$Gap::load(storage, AtomicLoadOrdering::Relaxed);
+		fetch_min_signed(location: ^$I, value: $I, order: AtomicRmwOrdering) => $I {
+			storage := <^$U>(<usize>location);
+			^observed := <$I>$Gap::load(storage, AtomicLoadOrdering::Relaxed);
 			loop {
 				chosen := if value < observed { value } else { observed };
 				previous := <$I>$cas(storage, <$U>observed, <$U>chosen);
@@ -315,9 +315,9 @@ macro width_atomicity(
 			observed
 		}
 
-		fetch_max_signed(location: *mut $I, value: $I, order: AtomicRmwOrdering) => $I {
-			storage := <*mut $U>(<usize>location);
-			mut observed := <$I>$Gap::load(storage, AtomicLoadOrdering::Relaxed);
+		fetch_max_signed(location: ^$I, value: $I, order: AtomicRmwOrdering) => $I {
+			storage := <^$U>(<usize>location);
+			^observed := <$I>$Gap::load(storage, AtomicLoadOrdering::Relaxed);
 			loop {
 				chosen := if value > observed { value } else { observed };
 				previous := <$I>$cas(storage, <$U>observed, <$U>chosen);

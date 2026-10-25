@@ -152,8 +152,8 @@ main() => void {
 	println$("defaulted-alias-generic: ", defaulted.b);
 
 	# --- structural target ------------------------------------------------
-	mut storage: [4]u8;
-	view: Bytes = &storage[0..];
+	^storage: [4]u8;
+	view: Bytes = *storage[0..];
 	println$("structural-target: ", view.length);
 
 	# --- specialized alias: construction and static method ----------------
@@ -181,7 +181,7 @@ main() => void {
 
 	# --- module alias and re-exported hidden declaration ------------------
 	item := kid::Public::new(3);
-	println$("module-alias: ", child::describe(&item), " ", item.reveal_secret());
+	println$("module-alias: ", child::describe(*item), " ", item.reveal_secret());
 
 	# --- an alias imported directly, used bare ------------------------------
 	direct := Public::new(9);
@@ -203,9 +203,9 @@ main() => void {
 
 	# --- spec conjunction aliases -----------------------------------------
 	foo := Foo { tally = 10; };
-	println$("bound-alias: ", bounded(&foo));
+	println$("bound-alias: ", bounded(*foo));
 	println$("static-param-alias: ", static_param(foo));
-	println$("dynamic-alias: ", dynamic_param(&foo));
+	println$("dynamic-alias: ", dynamic_param(*foo));
 
 	hidden_ambient: Result = 4;
 	println$(

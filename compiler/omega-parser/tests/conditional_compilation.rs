@@ -67,7 +67,7 @@ fn every_literal_kind_parses_as_a_condition_operand() {
 #[test]
 fn calls_and_lists_nest_to_any_depth() {
     let expr = condition(&on_global(
-        "all(not(def::a), any(def::b, in(target_arch, &[\"x86_64\", \"aarch64\"])))",
+        "all(not(def::a), any(def::b, in(target_arch, *[\"x86_64\", \"aarch64\"])))",
     ));
     let AnnotationExprKind::Call { name, args } = &expr.kind else {
         panic!("expected a call");
@@ -105,9 +105,9 @@ fn a_qualified_reference_has_exactly_two_segments() {
 fn a_nested_list_or_call_may_end_with_a_trailing_comma() {
     for source in [
         "all(\n\tdef::a,\n\tdef::b,\n)",
-        "in(target_os, &[\n\t\"linux\",\n])",
+        "in(target_os, *[\n\t\"linux\",\n])",
         "all()",
-        "in(target_os, &[])",
+        "in(target_os, *[])",
     ] {
         condition(&on_global(source));
     }
@@ -117,7 +117,7 @@ fn a_nested_list_or_call_may_end_with_a_trailing_comma() {
 fn a_missing_separator_is_still_an_error() {
     for source in [
         "all(def::a def::b)",
-        "in(target_os, &[\"linux\" \"macos\"])",
+        "in(target_os, *[\"linux\" \"macos\"])",
         "all(def::a,, def::b)",
     ] {
         assert!(
@@ -133,10 +133,10 @@ fn an_argument_that_is_not_an_annotation_expression_is_rejected() {
         "1 + 1",
         "(true)",
         "[1]",
-        "&1",
+        "*1",
         "def::flag()",
         "flag$()",
-        "*flag",
+        "flag.*",
     ] {
         assert!(
             !errors(&on_global(source)).is_empty(),
@@ -319,7 +319,7 @@ fn a_standalone_literal_decodes_without_a_surrounding_module() {
         Ok(AnnotationLiteral::ByteStr(_))
     ));
 
-    for invalid in ["", "name", "1 2", "1 + 1", "\"a\" \"b\"", "&[1]", "-", "-x"] {
+    for invalid in ["", "name", "1 2", "1 + 1", "\"a\" \"b\"", "*[1]", "-", "-x"] {
         assert!(
             parse_literal(invalid).is_err(),
             "{invalid:?} is not one literal"

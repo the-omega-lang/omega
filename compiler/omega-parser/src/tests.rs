@@ -46,8 +46,8 @@ fn errors(source: &str) -> Vec<ParseErrorKind> {
 #[test]
 fn parses_first_class_gap_and_glue_items() {
     let module = SourceModule::parse(
-        "gap Allocator { alloc(size: usize) => *mut u8; }\n\
-         glue core::platform::Allocator { alloc(size: usize) => *mut u8 { <*mut u8>0 } }",
+        "gap Allocator { alloc(size: usize) => ^u8; }\n\
+         glue core::platform::Allocator { alloc(size: usize) => ^u8 { <^u8>0 } }",
     )
     .expect("gap and glue declarations should parse");
     assert!(matches!(module.nodes[0].item, Item::Gap(_)));

@@ -35,35 +35,35 @@ main() => void {
 
 	# Enough pushes to outgrow the initial capacity several times, so the
 	# allocator's `realloc` path -- allocate, copy, release -- really runs.
-	mut numbers := List<i32>::new();
+	^numbers := List<i32>::new();
 	defer numbers.free();
-	for mut i := 0; i < 64; ++i {
+	for ^i := 0; i < 64; ++i {
 		numbers.push(i * i);
 	}
-	mut last: i32 = 0;
-	numbers.get(63, &mut last);
+	^last: i32 = 0;
+	numbers.get(63, ^last);
 	println$("smoke-alloc: ", numbers.len(), " ", last);
 
-	mut line := String::new();
+	^line := String::new();
 	defer line.free();
-	mut source := Stdin {};
-	saw := read_line(&mut source, &mut line);
+	^source := Stdin {};
+	saw := read_line(^source, ^line);
 	println$("smoke-stdin: ", saw, " ", line.as_str());
 
 	# Reached through the `std` wrapper rather than the raw gap: the wrapper's
 	# own `@layout(align)` is what makes the location naturally aligned, which
 	# docs/language/atomics.md requires of every caller.
-	mut counter := AtomicU32::new(0u32);
+	^counter := AtomicU32::new(0u32);
 	counter.store(7u32, AtomicStoreOrdering::SeqConsistent);
 	loaded := counter.load(AtomicLoadOrdering::SeqConsistent);
 	previous := counter.fetch_add(5u32, AtomicRmwOrdering::SeqConsistent);
 	println$("smoke-atomic: ", loaded, " ", previous, " ", counter.load(AtomicLoadOrdering::SeqConsistent));
 
-	block := <*mut Outer>alloc(sizeof<Outer>, alignof<Outer>);
-	*block = Outer { lead = 1u8; slot = Slot { pad = 2u8; counter = AtomicU32::new(3u32); }; };
-	aligned := <usize>&(*block).slot.counter % sizeof<u32> == 0;
-	(*block).slot.counter.fetch_add(4u32, AtomicRmwOrdering::SeqConsistent);
-	println$("smoke-aligned: ", aligned, " ", (*block).slot.counter.load(AtomicLoadOrdering::SeqConsistent));
+	block := <^Outer>alloc(sizeof<Outer>, alignof<Outer>);
+	block.* = Outer { lead = 1u8; slot = Slot { pad = 2u8; counter = AtomicU32::new(3u32); }; };
+	aligned := <usize>*block.*.slot.counter % sizeof<u32> == 0;
+	block.*.slot.counter.fetch_add(4u32, AtomicRmwOrdering::SeqConsistent);
+	println$("smoke-aligned: ", aligned, " ", block.*.slot.counter.load(AtomicLoadOrdering::SeqConsistent));
 	free(<*u8>block);
 
 	eprintln$("smoke-stderr: reached");

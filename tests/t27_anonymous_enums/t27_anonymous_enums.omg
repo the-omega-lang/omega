@@ -109,7 +109,7 @@ pointer_anonymous_tag(value: *Errors) => u32 {
 through_pointer(value: *Errors) => i32 {
 	match value {
 		Failure => value.code,
-		*str => <i32>(*value).size,
+		*str => <i32>value.*.size,
 	}
 }
 
@@ -254,13 +254,13 @@ main() => void {
 
 	# --- catch-all and `else` complete coverage ---------------------------
 	println$("catch-all: ", only_str(text), " ", only_str(failure), " ", tag_of(failure), " ", tag_of(text));
-	println$("anonymous-tag: ", anonymous_tag(failure) != anonymous_tag(text), " ", anonymous_tag(failure) == refined_anonymous_tag(failure), " ", anonymous_tag(text) == pointer_anonymous_tag(&text));
+	println$("anonymous-tag: ", anonymous_tag(failure) != anonymous_tag(text), " ", anonymous_tag(failure) == refined_anonymous_tag(failure), " ", anonymous_tag(text) == pointer_anonymous_tag(*text));
 
 	# --- a refined binding reaches the member's own fields and methods ----
 	println$("member-access: ", describe(failure), " ", reordered(failure));
 
 	# --- pointer scrutinee, refined through the pointer -------------------
-	println$("pointer-match: ", through_pointer(&failure), " ", through_pointer(&text));
+	println$("pointer-match: ", through_pointer(*failure), " ", through_pointer(*text));
 
 	# --- a nested anonymous member flattens into leaf members -------------
 	kind: Nested = Kind::Large;

@@ -177,7 +177,6 @@ fn write_function(out: &mut String, fn_type: &ResolvedFunctionType) {
     out.push(match fn_type.self_mode {
         None => 'n',
         Some(SelfMode::Value) => 'v',
-        Some(SelfMode::MutValue) => 'V',
         Some(SelfMode::Pointer) => 'p',
         Some(SelfMode::MutPointer) => 'P',
     });

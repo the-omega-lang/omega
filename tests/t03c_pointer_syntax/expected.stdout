@@ -1,0 +1,12 @@
+pointers: 7 21 21
+widened: 21
+place-paths: 30 14 50
+prefix-precedence: 14
+slices: 3 2 40 2
+comp-slice: 4 7
+mutable-param: 3 3
+mutable-param-type: 2
+mutable-struct-param: 0 8 9
+unwritten-param: 3
+for-in-and-global: 30
+receivers: 2 2 4

@@ -61,7 +61,7 @@ fn binding_warnings(warnings: &[AnalysisWarning]) -> Vec<&AnalysisWarningKind> {
 
 #[test]
 fn a_mutable_slice_of_an_otherwise_unread_array_uses_and_writes_it() {
-    let warnings = warnings("mut a: [4]i32; s := &mut a[0..]; s[0] = 1; 0");
+    let warnings = warnings("^a: [4]i32; s := ^a[0..]; s[0] = 1; 0");
     assert!(
         binding_warnings(&warnings).is_empty(),
         "slicing reads `a` and `&mut` needs its `mut`: {warnings:#?}"
@@ -70,7 +70,7 @@ fn a_mutable_slice_of_an_otherwise_unread_array_uses_and_writes_it() {
 
 #[test]
 fn an_immutable_slice_of_an_otherwise_unread_array_uses_it() {
-    let warnings = warnings("a: [4]i32 = [1, 2, 3, 4]; s := &a[1..]; s[0]");
+    let warnings = warnings("a: [4]i32 = [1, 2, 3, 4]; s := *a[1..]; s[0]");
     assert!(
         binding_warnings(&warnings).is_empty(),
         "slicing reads `a`: {warnings:#?}"
@@ -79,7 +79,7 @@ fn an_immutable_slice_of_an_otherwise_unread_array_uses_it() {
 
 #[test]
 fn an_immutable_slice_does_not_excuse_an_unwritten_mut() {
-    let warnings = warnings("mut a: [4]i32 = [1, 2, 3, 4]; s := &a[1..]; s[0]");
+    let warnings = warnings("^a: [4]i32 = [1, 2, 3, 4]; s := *a[1..]; s[0]");
     assert!(
         matches!(
             binding_warnings(&warnings).as_slice(),

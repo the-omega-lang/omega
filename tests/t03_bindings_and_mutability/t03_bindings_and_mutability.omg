@@ -13,10 +13,11 @@ struct Counter {
 		Self { value = start; }
 	}
 
-	# By-value receiver: mutation stays local to this copy.
-	exposed bumped_copy(mut self) => i32 {
-		self.value += 1;
-		self.value
+	# By-value receiver: mutating a local copy leaves the caller's value alone.
+	exposed bumped_copy(self) => i32 {
+		^copy := self;
+		copy.value += 1;
+		copy.value
 	}
 
 	# By-value receiver, read-only: proves auto-deref-and-copy on a pointer.
@@ -30,32 +31,32 @@ struct Counter {
 	}
 
 	# Pointer receiver, mutable pointee: mutates the caller's value.
-	exposed bump(*mut self) => void {
+	exposed bump(^self) => void {
 		self.value += 1;
 	}
 }
 
 main() => void {
 	# --- binding forms ----------------------------------------------------
-	mut a: i32;
+	^a: i32;
 	a = 10;
 	b: i32 = 20;
 	c := 30;
-	mut d: i32 = 40;
-	mut e := 50;
+	^d: i32 = 40;
+	^e := 50;
 	d += 1;
 	e += 1;
 	println$("binding-forms: ", a, " ", b, " ", c, " ", d, " ", e);
 
-	# `mut` stays an ordinary identifier outside binding-modifier position.
-	mut mut := 5;
+	# `mut` is an ordinary identifier.
+	^mut := 5;
 	mut += 1;
 	println$("mut-identifier: ", mut);
 
 	# --- receiver forms and their mutation scope ---------------------------
-	mut counter := Counter::new(0);
+	^counter := Counter::new(0);
 
-	# `mut self` mutates only its local by-value copy.
+	# A by-value receiver's local copy leaves the caller's value alone.
 	copy_result := counter.bumped_copy();
 	println$("bumped-copy: ", copy_result, " ", counter.value);
 
@@ -63,27 +64,27 @@ main() => void {
 	# reference automatically.
 	println$("peek-auto-ref: ", counter.peek());
 
-	# `*mut self` mutates the caller's value through the receiver pointer.
+	# `^self` mutates the caller's value through the receiver pointer.
 	counter.bump();
 	counter.bump();
 	println$("bump-mut-self: ", counter.value);
 
 	# A by-value-receiver method called through a pointer dereferences
 	# and copies automatically.
-	ptr := &counter;
+	ptr := *counter;
 	println$("value-of-deref: ", ptr.value_of());
 
-	# --- mutable places: &place vs &mut place -------------------------------
+	# --- mutable places: *place vs ^place -----------------------------------
 	value: i32 = 100;
-	immutable_ptr: *i32 = &value;
+	immutable_ptr: *i32 = *value;
 
-	mut other: i32 = 200;
-	mutable_ptr: *mut i32 = &mut other;
-	*mutable_ptr += 1;
-	println$("mutable-places: ", *immutable_ptr, " ", *mutable_ptr);
+	^other: i32 = 200;
+	mutable_ptr: ^i32 = ^other;
+	mutable_ptr.* += 1;
+	println$("mutable-places: ", immutable_ptr.*, " ", mutable_ptr.*);
 
 	# --- compound assignment and increment/decrement ------------------------
-	mut n: i32 = 10;
+	^n: i32 = 10;
 	n += 5;   # 15
 	n -= 2;   # 13
 	n *= 3;   # 39
@@ -101,8 +102,8 @@ main() => void {
 
 	# --- shadowing ----------------------------------------------------------
 	# A declaration is a fresh binding whose initializer is analyzed before
-	# the new binding exists, so this reads the previous `s` and drops `mut`.
-	mut s := 1;
+	# the new binding exists, so this reads the previous `s` and drops `^`.
+	^s := 1;
 	s += 1;
 	s := s + 10;
 	println$("shadow-privilege-drop: ", s);

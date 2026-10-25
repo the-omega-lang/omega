@@ -65,7 +65,7 @@ Implementation caveats migrated out of architecture chapters. These are non-norm
   through its `defer` exit chain) is an ordinary local instead, with the
   fast path above recovering the common case's cost back.
 - **`MirItem::Declaration`/`MirPlaceRoot::Global` are fully implemented**
-  (an ordinary top-level global, `mut` included, with or without a
+  (an ordinary top-level global, `^` included, with or without a
   compile-time-known initial value — see
   [compile-time-evaluation.md](../language/compile-time-evaluation.md)).
   `MirItem::ForeignBinding` for non-function data is also implemented: a

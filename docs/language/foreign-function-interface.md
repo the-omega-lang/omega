@@ -14,29 +14,29 @@ An ordinary Omega function type always uses the implicit Omega convention, wheth
 `foreign name : Type;` binds an external symbol whose type is `Type`. Any function calling convention comes from `Type` itself and defaults to Omega for an ordinary function type:
 
 ```omega
-shared foreign malloc_omega_abi : (size: usize) => *mut u8;
+shared foreign malloc_omega_abi : (size: usize) => ^u8;
 ```
 
 This is rare in practice -- most external functions use a non-Omega ABI, spelled explicitly (see "Direct foreign functions" below). A non-function `Type` binds an external data symbol; it becomes a real linker-visible global with no initializer/storage allocated in the current object.
 
-`foreign mut name : Type;` makes an external data symbol a mutable place. Omega code may assign to it, use compound assignment or `++`/`--`, and take `&mut` to its storage, including through imports from other modules or separately compiled packages. Inside a foreign block, write `mut name : Type;` (after any visibility).
+`foreign ^name : Type;` makes an external data symbol a mutable place. Omega code may assign to it, use compound assignment or `++`/`--`, and take `^` of its storage, including through imports from other modules or separately compiled packages. Inside a foreign block, write `^name : Type;` (after any visibility).
 
 For a counter defined in C as `int counter;`:
 
 ```omega
-shared foreign mut counter : i32;
+shared foreign ^counter : i32;
 
 increment_counter() => void {
 	counter += 1;
 
-	p : *mut i32 = &mut counter;
-	*p += 1;
+	p : ^i32 = ^counter;
+	p.* += 1;
 }
 ```
 
-**Omitting `mut` is not a claim that the external value is constant.** It only denies writes through this binding in Omega code. A shared library or another object may write the symbol; Omega derives no immutability optimization from a non-`mut` foreign binding. Neither form can be read during compile-time evaluation. `foreign` and `mut` do not imply volatile access or synchronization; concurrent access follows the rules in [`atomics.md`](atomics.md).
+**Omitting `^` is not a claim that the external value is constant.** It only denies writes through this binding in Omega code. A shared library or another object may write the symbol; Omega derives no immutability optimization from a non-`^` foreign binding. Neither form can be read during compile-time evaluation. `foreign` and `mut` do not imply volatile access or synchronization; concurrent access follows the rules in [`atomics.md`](atomics.md).
 
-`mut` is rejected on every foreign function form: direct declarations, definitions with a body, direct function entries in a foreign block, and bindings whose resolved type is a function type (including through an alias). Such a binding names a function symbol, not writable data storage. Put any calling convention on its type; use a `*mut` type when the intended binding holds a mutable function pointer instead.
+`^` is rejected on every foreign function form: direct declarations, definitions with a body, direct function entries in a foreign block, and bindings whose resolved type is a function type (including through an alias). Such a binding names a function symbol, not writable data storage. Put any calling convention on its type; use a `^` type when the intended binding holds a mutable function pointer instead.
 
 The definition on the other side must satisfy the layout the Omega declaration states, including its effective alignment: Omega accesses the symbol as storage for `Type`, and an external definition that is laid out or aligned differently is a program error rather than something the access adapts to. See [`annotations-and-sizeof.md`](annotations-and-sizeof.md).
 
@@ -51,7 +51,7 @@ shared foreign printf : foreign(c) (format: *u8, ...) => i32;
 `foreign(cc) name(args) => T;` declares a foreign function directly, with `cc` selecting its calling convention:
 
 ```omega
-shared foreign(c) malloc(size: usize) => *mut u8;
+shared foreign(c) malloc(size: usize) => ^u8;
 shared foreign(c) printf(format: *u8, ...) => i32;
 ```
 
@@ -74,7 +74,7 @@ This is still a foreign item (its default naming is `mangle = disabled`, not the
 
 ```omega
 foreign(c) {
-	malloc(size: usize) => *mut u8;
+	malloc(size: usize) => ^u8;
 	free(ptr: *u8) => void;
 	fp : (i32) => void;              # stays Omega -- the explicit type is authoritative
 	typed_fp : foreign(c) (i32) => void;  # explicitly C
@@ -120,7 +120,7 @@ Ordinary Omega functions and ordinary module-level storage bindings default to `
 Foreign items (bindings and direct foreign functions/definitions alike) default to `mangle = disabled` instead: the bare source name is the linker symbol, matching how an external declaration usually needs to name an exact existing symbol. `@symbol(mangle = enabled)` opts back into ordinary Omega symbol construction (needed, for example, for a generic foreign definition, since a disabled bare name cannot distinguish instantiations); `@symbol(name = "...")` uses the given name exactly, foreign or not.
 
 ```omega
-foreign(c) malloc(size: usize) => *mut u8;      # linker symbol: "malloc"
+foreign(c) malloc(size: usize) => ^u8;      # linker symbol: "malloc"
 
 @symbol(mangle = enabled)
 foreign(c) callback(a: i32, b: i32) => i32 { a * b }   # ordinary Omega symbol
@@ -152,7 +152,7 @@ See [`annotations-and-sizeof.md`](annotations-and-sizeof.md) for annotation synt
 An Omega-declared item's symbol is hidden by default: it links within the image it is compiled into and is not exported out of it. A `foreign` item is the opposite, because `foreign` is already the statement that the symbol is looked up in, or defined for, something outside this compilation. It therefore needs no annotation to resolve out of a different shared image:
 
 ```omega
-shared foreign(c) malloc(size: usize) => *mut u8;   # resolved from libc
+shared foreign(c) malloc(size: usize) => ^u8;   # resolved from libc
 ```
 
 `@symbol(export = disabled)` is available for the narrower case: a foreign declaration whose symbol really is resolved inside this image, and which should be diagnosed if it ever is not.

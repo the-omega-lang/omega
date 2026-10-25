@@ -9,8 +9,8 @@ use crate::hir::{
 use omega_parser::prelude::{
     AnnotationNode, DeclarationStmt, EnumStmt, ExpressionNode, ForeignBindingItem,
     ForeignBlockEntry, ForeignBlockItem, ForeignFunctionItem, FunctionDefinitionStmt, GenericParam,
-    Ident, Item, ItemNode, Param, Path, SelfMode, SelfParam, Span, SpecFunctionStmt, SpecStmt,
-    StructStmt, Type, UnionStmt,
+    Ident, Item, ItemNode, Param, Path, SelfParam, Span, SpecFunctionStmt, SpecStmt, StructStmt,
+    Type, UnionStmt,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -229,7 +229,11 @@ impl Lowerer {
         span: Span,
     ) -> HirForeignFunction {
         let params = f.params.iter().map(|p| self.lower_param(p)).collect();
-        let body = f.body.as_ref().map(|block| self.lower_block(block));
+        let body = f.body.as_ref().map(|block| {
+            let mut body = self.lower_block(block);
+            self.prepend_mutable_param_shadows(&mut body, &f.params);
+            body
+        });
         HirForeignFunction {
             id: self.ids.next(),
             span,
@@ -277,11 +281,11 @@ impl Lowerer {
         let body = f.codeblock.as_ref().map(|codeblock| {
             let mut body = self.lower_block(codeblock);
             // A naked function's body must stay exactly the user-authored `asm`
-            // statement for later naked-body validation; the synthetic `mut self`
-            // shadow is meaningless for an ABI-only receiver anyway.
+            // statement for later naked-body validation; a synthetic `^`
+            // parameter shadow is meaningless for ABI-only parameters anyway.
             let is_naked = f.annotations.iter().any(|a| a.name.as_ref() == "naked");
             if !is_naked {
-                self.prepend_mut_self_shadow(&mut body, f.self_param);
+                self.prepend_mutable_param_shadows(&mut body, &f.params);
             }
             body
         });
@@ -323,12 +327,16 @@ impl Lowerer {
         lowered
     }
 
-    fn prepend_mut_self_shadow(&mut self, body: &mut HirBlock, receiver: Option<SelfParam>) {
-        if let Some(receiver) = receiver
-            && receiver.mode == SelfMode::MutValue
-        {
-            body.stmts.insert(0, self.self_shadow_stmt(receiver.span));
-        }
+    /// A `^` parameter is an immutable parameter plus a `^name := name;`
+    /// shadow at the top of the body, so its mutability stays a property of
+    /// the body's local and never of the function's type.
+    fn prepend_mutable_param_shadows(&mut self, body: &mut HirBlock, params: &[Param]) {
+        let shadows: Vec<HirStmt> = params
+            .iter()
+            .filter(|param| param.mutable)
+            .map(|param| self.param_shadow_stmt(param))
+            .collect();
+        body.stmts.splice(0..0, shadows);
     }
 
     fn self_param(&mut self, receiver: SelfParam) -> HirParam {
@@ -349,19 +357,25 @@ impl Lowerer {
         }
     }
 
-    fn self_shadow_stmt(&mut self, span: Span) -> HirStmt {
-        let self_ident = Ident("self".to_string());
+    fn param_shadow_stmt(&mut self, param: &Param) -> HirStmt {
+        let span = param.span;
+        let path = Path {
+            anchor: None,
+            head: param.ident.clone(),
+            tail: vec![],
+            origin: param.origin,
+        };
         HirStmt::WalrusDeclaration(HirWalrusDeclaration {
             id: self.ids.next(),
             span,
-            ident: self_ident.clone(),
-            origin: omega_parser::prelude::Origin::default(),
+            ident: param.ident.clone(),
+            origin: param.origin,
             value: HirExprNode {
                 id: self.ids.next(),
                 span,
-                origin: omega_parser::prelude::Origin::default(),
+                origin: param.origin,
                 expr: HirExpr::Place(HirPlace {
-                    root: HirPlaceRoot::Path(Path::from(self_ident).into()),
+                    root: HirPlaceRoot::Path(path.into()),
                     projections: vec![],
                     reveals: vec![],
                 }),
@@ -423,7 +437,7 @@ impl Lowerer {
         let params = self.lower_callable_params(&f.params, f.self_param, FunctionKind::Member);
         let mut body = f.body.as_ref().map(|block| self.lower_block(block));
         if let Some(body) = &mut body {
-            self.prepend_mut_self_shadow(body, f.self_param);
+            self.prepend_mutable_param_shadows(body, &f.params);
         }
 
         HirSpecFunction {

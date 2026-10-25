@@ -6,8 +6,8 @@ A `marker` declares a nominal zero-sized type.
 
 ```omega
 marker NullSink {
-    exposed write(*mut self, bytes: *[]u8) => void { ... }
-    exposed flush(*mut self) => void { ... }
+    exposed write(^self, bytes: *[]u8) => void { ... }
+    exposed flush(^self) => void { ... }
 }
 ```
 
@@ -49,7 +49,7 @@ struct HasMarkerField {
 }
 
 hv : HasMarkerField;
-&hv.m == &hv.x   # may be true because m consumes zero bytes
+*hv.m == *hv.x   # may be true because m consumes zero bytes
 ```
 
 The same place/address rule applies to marker locals, fields, array elements, values materialized from compile-time data, and data pointers used for dynamic dispatch.
@@ -58,4 +58,4 @@ The same place/address rule applies to marker locals, fields, array elements, va
 
 Passing a marker by value transfers no payload bytes, but otherwise follows normal by-value call semantics. Pointer receivers operate on the marker place's real address.
 
-A marker may conform to a spec and be coerced to `*spec Spec` / `*mut spec Spec` in the same way as any other concrete type. The data pointer identifies the concrete marker place; the dispatch metadata follows the ordinary dynamic-spec-object rules in [`specs-and-conformance.md`](specs-and-conformance.md).
+A marker may conform to a spec and be coerced to `*spec Spec` / `^spec Spec` in the same way as any other concrete type. The data pointer identifies the concrete marker place; the dispatch metadata follows the ordinary dynamic-spec-object rules in [`specs-and-conformance.md`](specs-and-conformance.md).

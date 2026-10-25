@@ -243,7 +243,7 @@ fn a_function_does_not_cast_to_or_from_an_integer() {
 
 #[test]
 fn a_function_does_not_cast_to_a_mutable_pointer() {
-    let package = TestPackage::new(&in_main("writable := <*mut void>add;"));
+    let package = TestPackage::new(&in_main("writable := <^void>add;"));
     assert!(
         has_analysis_error(&package.expect_errors(), |kind| matches!(
             kind,
@@ -302,8 +302,8 @@ as_bytes<T>(p: *T) => *u8 {{ <*u8>p }}
 main() => void {{
     byte : u8 = 0;
     word : i32 = 0;
-    <void>as_bytes(&byte);
-    <void>as_bytes(&word);
+    <void>as_bytes(*byte);
+    <void>as_bytes(*word);
 }}
 "
     ))

@@ -5,7 +5,7 @@
 # Every potentially-out-of-bounds read reports success through a returned
 # `bool` and writes the value through an `out` pointer, rather than
 # trusting the caller or aborting -- there is no panic mechanism at this
-# layer (nothing to call on a target with no libc). `false` leaves `*out`
+# layer (nothing to call on a target with no libc). `false` leaves `out.*`
 # untouched.
 
 import root::iterator::Iterator;
@@ -17,22 +17,22 @@ primitive<T> []T {
         self.length == 0
     }
 
-    exposed get(*self, index: i32, out: *mut T) => bool {
+    exposed get(*self, index: i32, out: ^T) => bool {
         if index < 0 {
             false
         } else if index >= self.length {
             false
         } else {
-            *out = self[index];
+            out.* = self[index];
             true
         }
     }
 
-    exposed first(*self, out: *mut T) => bool {
+    exposed first(*self, out: ^T) => bool {
         self.get(0, out)
     }
 
-    exposed last(*self, out: *mut T) => bool {
+    exposed last(*self, out: ^T) => bool {
         self.get(self.length - 1, out)
     }
 }
@@ -51,7 +51,7 @@ meet<T> ToIterator<T> for []T {
 }
 
 meet<T> Iterator<T> for SliceIterator<T> {
-    next(*mut self) => Option<T> {
+    next(^self) => Option<T> {
         if self.index >= self.items.length {
             return Option<T>::None;
         }

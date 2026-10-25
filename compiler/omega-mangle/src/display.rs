@@ -135,15 +135,15 @@ fn render_template_type(ty: &MangleTemplateType) -> String {
         MangleTemplateType::Fixed(fixed) => render_type(fixed),
         MangleTemplateType::Pointer(inner, false) => format!("*{}", render_template_type(inner)),
         MangleTemplateType::Pointer(inner, true) => {
-            format!("*mut {}", render_template_type(inner))
+            format!("^{}", render_template_type(inner))
         }
         MangleTemplateType::Slice(inner, false) => format!("*[]{}", render_template_type(inner)),
         MangleTemplateType::Slice(inner, true) => {
-            format!("*mut []{}", render_template_type(inner))
+            format!("^[]{}", render_template_type(inner))
         }
         MangleTemplateType::Array(inner, false) => format!("*[?]{}", render_template_type(inner)),
         MangleTemplateType::Array(inner, true) => {
-            format!("*mut [?]{}", render_template_type(inner))
+            format!("^[?]{}", render_template_type(inner))
         }
         MangleTemplateType::SizedArray(inner, length) => format!(
             "[{}]{}",
@@ -151,8 +151,8 @@ fn render_template_type(ty: &MangleTemplateType) -> String {
             render_template_type(inner)
         ),
         MangleTemplateType::SpecObject(members, mutable) => format!(
-            "*{}spec {}",
-            if *mutable { "mut " } else { "" },
+            "{}spec {}",
+            if *mutable { "^" } else { "*" },
             members
                 .iter()
                 .map(render_bound)
@@ -217,19 +217,19 @@ fn render_type(ty: &MangleType) -> String {
         MangleType::F32 => "f32".to_string(),
         MangleType::F64 => "f64".to_string(),
         MangleType::Pointer(inner, false) => format!("*{}", render_type(inner)),
-        MangleType::Pointer(inner, true) => format!("*mut {}", render_type(inner)),
+        MangleType::Pointer(inner, true) => format!("^{}", render_type(inner)),
         MangleType::Slice(inner, false) => format!("*[]{}", render_type(inner)),
-        MangleType::Slice(inner, true) => format!("*mut []{}", render_type(inner)),
+        MangleType::Slice(inner, true) => format!("^[]{}", render_type(inner)),
         MangleType::Array(inner, false) => format!("*[?]{}", render_type(inner)),
-        MangleType::Array(inner, true) => format!("*mut [?]{}", render_type(inner)),
+        MangleType::Array(inner, true) => format!("^[?]{}", render_type(inner)),
         MangleType::Str(false) => "*str".to_string(),
-        MangleType::Str(true) => "*mut str".to_string(),
+        MangleType::Str(true) => "^str".to_string(),
         MangleType::SizedArray(inner, len) => format!("[{len}]{}", render_type(inner)),
         MangleType::SpecObject(members, mutable) => {
             let members: Vec<String> = members.iter().map(render_type).collect();
             format!(
-                "*{}spec {}",
-                if *mutable { "mut " } else { "" },
+                "{}spec {}",
+                if *mutable { "^" } else { "*" },
                 members.join(" + ")
             )
         }

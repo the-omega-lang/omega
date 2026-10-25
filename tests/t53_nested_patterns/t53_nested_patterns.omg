@@ -191,7 +191,7 @@ main() => void {
 
 	clicked := Event::Click { pos = Point { x = 9; y = 1; }; button = Button::Middle; };
 	at_origin := Event::Click { pos = Point { x = 0; y = 1; }; button = Button::Middle; };
-	println$("pointer-scrutinee: ", through_pointer(&clicked), " ", through_pointer(&at_origin));
+	println$("pointer-scrutinee: ", through_pointer(*clicked), " ", through_pointer(*at_origin));
 
 	println$("anonymous-member: ",
 		holder_label(Holder { value = Point { x = 0; y = 2; }; }), " / ",
@@ -211,7 +211,7 @@ main() => void {
 		maybe_label(Maybe<i32>::Just { value = 4; }), " ",
 		maybe_label(Maybe<i32>::Nothing));
 
-	mut counter: Opt = Opt::Some { value = Res::Ok { value = 1; }; };
+	^counter: Opt = Opt::Some { value = Res::Ok { value = 1; }; };
 	match counter {
 		Opt::Some { value = Res::Ok; } => {
 			counter.value.value = 41;

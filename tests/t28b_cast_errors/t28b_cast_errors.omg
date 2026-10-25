@@ -24,7 +24,7 @@ from_integer() => void {
 
 # A function has no writable data behind it.
 to_mutable_pointer() => void {
-	bad := <*mut void>add;
+	bad := <^void>add;
 }
 
 # Only a thin raw pointer is the one-address bridge.

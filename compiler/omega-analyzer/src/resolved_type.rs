@@ -138,8 +138,7 @@ impl ResolvedFunctionType {
 pub enum FunctionNamespace {
     /// `Type::name` -- receiverless associated functions.
     Static,
-    /// `Type::self::name` -- functions declaring `self`, `mut self`, `*self`,
-    /// or `*mut self`.
+    /// `Type::self::name` -- functions declaring `self`, `*self`, or `^self`.
     Member,
 }
 
@@ -940,9 +939,8 @@ impl Hash for ResolvedType {
 fn self_mode_spelling(self_mode: SelfMode) -> &'static str {
     match self_mode {
         SelfMode::Value => "self",
-        SelfMode::MutValue => "mut self",
         SelfMode::Pointer => "*self",
-        SelfMode::MutPointer => "*mut self",
+        SelfMode::MutPointer => "^self",
     }
 }
 
@@ -1062,7 +1060,7 @@ impl ResolvedType {
                 pointee,
                 mutable: true,
             } => {
-                write!(f, "*mut ")?;
+                write!(f, "^")?;
                 pointee.write(f, spelling)
             }
             Self::Function(fn_type) => {
@@ -1105,7 +1103,7 @@ impl ResolvedType {
                 inner.write(f, spelling)
             }
             Self::Array(inner, true) => {
-                write!(f, "*mut [?]")?;
+                write!(f, "^[?]")?;
                 inner.write(f, spelling)
             }
             Self::SizedArray(inner, size) => {
@@ -1123,11 +1121,11 @@ impl ResolvedType {
                 item,
                 mutable: true,
             } => {
-                write!(f, "*mut []")?;
+                write!(f, "^[]")?;
                 item.write(f, spelling)
             }
             Self::Str { mutable: false } => write!(f, "*str"),
-            Self::Str { mutable: true } => write!(f, "*mut str"),
+            Self::Str { mutable: true } => write!(f, "^str"),
             Self::Struct(nominal) | Self::Union(nominal) | Self::Spec(nominal) => {
                 Self::write_nominal(f, nominal, spelling)
             }
@@ -1139,7 +1137,7 @@ impl ResolvedType {
                 Ok(())
             }
             Self::SpecObject { shape, mutable } => {
-                write!(f, "*{}spec ", if *mutable { "mut " } else { "" })?;
+                write!(f, "{}spec ", if *mutable { "^" } else { "*" })?;
                 shape.write(f, spelling)
             }
             Self::AnonymousEnum { shape, variant } => match variant {
@@ -1352,7 +1350,7 @@ impl ResolvedType {
             // No `item` to recurse on, unlike `Slice` above -- and
             // deliberately its own arm, not folded into `Slice`'s: `*str`
             // and `*[u8]` must never accept one another implicitly (see
-            // `Str`'s own doc comment), only `*mut str` -> `*str` widening.
+            // `Str`'s own doc comment), only `^str` -> `*str` widening.
             (Self::Str { mutable: false }, Self::Str { .. }) => true,
             (Self::Function(expected), Self::Function(found)) => expected.accepts(found),
             _ => false,

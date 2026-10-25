@@ -1,4 +1,3 @@
-pub const MUT: &str = "mut";
 pub const SELF: &str = "self";
 pub const SIZEOF: &str = "sizeof";
 pub const ALIGNOF: &str = "alignof";
@@ -24,6 +23,6 @@ pub const REG: &str = "reg";
 pub const CLOBBER: &str = "clobber";
 
 pub const ALL: &[&str] = &[
-    MUT, SELF, SIZEOF, ALIGNOF, TYPEINFO, IN, AS, EXPOSED, SHARED, HIDDEN, MARKER, GAP, GLUE, MEET,
+    SELF, SIZEOF, ALIGNOF, TYPEINFO, IN, AS, EXPOSED, SHARED, HIDDEN, MARKER, GAP, GLUE, MEET,
     PRIMITIVE, ROOT, SUPER, EXPR, TYPE, IDENT, PATH, ASM, REG, CLOBBER,
 ];

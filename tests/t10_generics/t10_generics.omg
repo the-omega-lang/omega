@@ -89,12 +89,12 @@ main() => void {
 	# --- explicit type arguments bind left to right; the rest is inferred ----
 	stored: i32 = 7;
 	# `T` is written, `S` comes from the argument, in both directions.
-	round_trip := ptr_cast<i32>(ptr_cast<u8>(&stored));
+	round_trip := ptr_cast<i32>(ptr_cast<u8>(*stored));
 	# The written `u8` binds `A`, so `B` is still inferred from `2i64`.
 	explicit_prefix: i64 = second<u8>(1, 2i64);
 	# An explicit argument outranks the declared default.
 	narrow := add<u32>(10, 20);
-	println$("explicit-generic-prefix: ", *round_trip, " ", explicit_prefix, " ", expect_u32(narrow));
+	println$("explicit-generic-prefix: ", round_trip.*, " ", explicit_prefix, " ", expect_u32(narrow));
 
 	# --- a fully explicit generic function value at an expression boundary ---
 	pick := sum<i32>;

@@ -209,8 +209,8 @@ const PRELUDE: &str = r#"
     struct Mark { exposed value: i32; }
     meet A for Mark { a_mark(*self) => i32 { 1 } }
     meet B for Mark { b_mark(*self) => i32 { 2 } }
-    meet Holds<Mark, 2> for Mark { held(*self) => Mark { *self } }
-    meet Holds<Mark, 3> for Mark { held(*self) => Mark { *self } }
+    meet Holds<Mark, 2> for Mark { held(*self) => Mark { self.* } }
+    meet Holds<Mark, 3> for Mark { held(*self) => Mark { self.* } }
     alias Marked = A;
 "#;
 

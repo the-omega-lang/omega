@@ -17,7 +17,7 @@ meet Eq for str {
         if self.size != other.size { return false; }
         a := <*[]u8>self;
         b := <*[]u8>other;
-        mut i : i32 = 0;
+        ^i : i32 = 0;
         while i < self.size {
             if a[i] != b[i] { return false; }
             i = i + 1;
@@ -43,7 +43,7 @@ primitive str {
         }
         a := <*[]u8>self;
         b := <*[]u8>prefix;
-        mut i : i32 = 0;
+        ^i : i32 = 0;
         while i < prefix.size {
             if a[i] != b[i] {
                 return false;
@@ -60,7 +60,7 @@ primitive str {
         offset := self.size - suffix.size;
         a := <*[]u8>self;
         b := <*[]u8>suffix;
-        mut i : i32 = 0;
+        ^i : i32 = 0;
         while i < suffix.size {
             if a[offset + i] != b[i] {
                 return false;
@@ -82,10 +82,10 @@ primitive str {
         }
         a := <*[]u8>self;
         b := <*[]u8>needle;
-        mut start : i32 = 0;
+        ^start : i32 = 0;
         while start <= self.size - needle.size {
-            mut matched := true;
-            mut i : i32 = 0;
+            ^matched := true;
+            ^i : i32 = 0;
             while i < needle.size {
                 if a[start + i] != b[i] {
                     matched = false;
@@ -118,7 +118,7 @@ meet ToIterator<char> for str {
 }
 
 meet Iterator<char> for Chars {
-    next(*mut self) => Option<char> {
+    next(^self) => Option<char> {
         if self.index >= self.bytes.length {
             return Option<char>::None;
         }
@@ -131,10 +131,10 @@ meet Iterator<char> for Chars {
         # continuation must fall in -- narrower than 0x80..=0xBF exactly where
         # a wider one would admit an overlong form, a surrogate, or a value
         # past U+10FFFF.
-        mut remaining := 0;
-        mut scalar := 0_u32;
-        mut low := 0x80_u32;
-        mut high := 0xBF_u32;
+        ^remaining := 0;
+        ^scalar := 0_u32;
+        ^low := 0x80_u32;
+        ^high := 0xBF_u32;
         match lead {
             0xC2..=0xDF => { remaining = 1; scalar = lead & 0x1F_u32; },
             0xE0 => { remaining = 2; scalar = lead & 0x0F_u32; low = 0xA0_u32; },

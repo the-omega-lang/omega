@@ -55,8 +55,8 @@ main() => void {
 	println$(z.tag);
 	w : W = Make<_>::make(6);
 	println$(w.tag);
-	println$(Describe::describe(&x, 1));
-	println$(<W : Describe<_>>::describe(&x, 2));
+	println$(Describe::describe(*x, 1));
+	println$(<W : Describe<_>>::describe(*x, 2));
 	a : Both = Make::make(7i32);
 	println$(a.tag);
 	b : Both = Make::make(8u8);

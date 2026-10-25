@@ -1,0 +1,77 @@
+error: `&` does not take an address
+ --> tests/t03d_pointer_syntax_errors/t03d_pointer_syntax_errors.omg:6:10
+  |
+6 |     a := &x;
+  |          ^ `&` is not a prefix operator
+  |
+  = help: write `*` for a read-only pointer (`*T`), or `^` for a mutable one (`^T`)
+
+error: `&mut` does not take an address
+ --> tests/t03d_pointer_syntax_errors/t03d_pointer_syntax_errors.omg:7:10
+  |
+7 |     b := &mut x;
+  |          ^^^^ `&mut` is not a prefix operator
+  |
+  = help: write `^` in place of `&mut` to take a mutable pointer (`^T`)
+
+error: `mut` is not a keyword; mutability is spelled `^`
+ --> tests/t03d_pointer_syntax_errors/t03d_pointer_syntax_errors.omg:8:5
+  |
+8 |     mut c := 1;
+  |     ^^^ `mut` here is read as a name
+  |
+  = note: a mutable binding is declared with `^` directly before its name, as in `^count := 0`
+  = help: write `^` directly before the name in place of `mut`
+
+error: `*mut` is not a pointer type; a mutable pointer is spelled `^`
+ --> tests/t03d_pointer_syntax_errors/t03d_pointer_syntax_errors.omg:9:9
+  |
+9 |     d : *mut i32 = b;
+  |         ^^^^ `*` is a read-only pointer, and `mut` here is read as a name
+  |
+  = help: write `^T` for a mutable pointer
+
+error: `.^` is not a dereference
+  --> tests/t03d_pointer_syntax_errors/t03d_pointer_syntax_errors.omg:10:11
+   |
+10 |     e := a.^;
+   |           ^^ a dereference is always `.*`
+   |
+   = note: a write through a pointer is `p.* = value`; whether it may write comes from the pointer's type (`^T`)
+   = help: write `.*`
+
+error: a parameter of a function type cannot be mutable
+  --> tests/t03d_pointer_syntax_errors/t03d_pointer_syntax_errors.omg:13:19
+   |
+13 | alias Callback = (^value: i32) => void;
+   |                   ^^^^^^ a function type has no body to own a mutable local
+   |
+   = note: a `^` parameter's mutability belongs to the function body, not to the function's type
+   = help: remove the `^`
+
+error: a parameter of a foreign function declaration cannot be mutable
+  --> tests/t03d_pointer_syntax_errors/t03d_pointer_syntax_errors.omg:15:21
+   |
+15 | foreign(c) external(^value: i32) => void;
+   |                     ^^^^^^ a foreign function declaration has no body to own a mutable local
+   |
+   = note: a `^` parameter's mutability belongs to the function body, not to the function's type
+   = help: remove the `^`
+
+error: the by-value `mut self` receiver was removed
+  --> tests/t03d_pointer_syntax_errors/t03d_pointer_syntax_errors.omg:20:23
+   |
+20 |     exposed copy_bump(mut self) => void { }
+   |                       ^^^^^^^^ `mut` here is read as a name
+   |
+   = help: take `self` and declare a mutable copy in the body (`^copy := self;`), or take `^self` to mutate the caller's value
+
+error: `*mut` is not a pointer type; a mutable pointer is spelled `^`
+  --> tests/t03d_pointer_syntax_errors/t03d_pointer_syntax_errors.omg:22:18
+   |
+22 |     exposed bump(*mut self) => void {
+   |                  ^^^^^^^^^ `*` is a read-only pointer, and `mut` here is read as a name
+   |
+   = help: write `^self` for a mutable pointer receiver
+
+error: could not compile the program due to 9 previous errors

@@ -161,7 +161,7 @@ fn a_malformed_or_non_literal_value_is_rejected() {
         "0x1.5",
         "",
         "sizeof<u32>",
-        "&[1]",
+        "*[1]",
         "\"unterminated",
     ] {
         assert!(

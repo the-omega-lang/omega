@@ -63,7 +63,7 @@ propagate() => Result<i32, *str> {
 first(a: i32, b: i32) => i32 { a }
 
 preserve_operand(flag: bool) => i32 {
-    mut value := 7;
+    ^value := 7;
     first(value, if flag { value = 9; 0 } else { 0 })
 }
 

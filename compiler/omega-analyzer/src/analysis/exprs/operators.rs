@@ -281,7 +281,7 @@ impl<'r> Analyzer<'r> {
         }
 
         // Generalized over `Pointer`/`Slice`/`Str` alike, and checked before
-        // either cast-kind path below, so e.g. `<*mut str>` on an immutable
+        // either cast-kind path below, so e.g. `<^str>` on an immutable
         // `*str` is caught here rather than silently succeeding as a
         // `Reinterpret`.
         if target_type.pointer_like_mutable() == Some(true)
@@ -468,7 +468,7 @@ impl<'r> Analyzer<'r> {
             // arbitrary function <-> function conversions.
             let Some(kind) = Self::function_cast_kind(&checked_base.r#type, &target_type) else {
                 // A function value has no writable data behind it, so a
-                // `*mut T` destination is a mutability violation rather than
+                // `^T` destination is a mutability violation rather than
                 // a merely missing cast.
                 let error = if matches!(checked_base.r#type, ResolvedType::Function(_))
                     && matches!(target_type, ResolvedType::Pointer { mutable: true, .. })

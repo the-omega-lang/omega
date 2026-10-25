@@ -11,20 +11,20 @@
 # `HANDLE` is an opaque pointer-sized token, `DWORD` a `u32`, `BOOL` an `i32`
 # and `SIZE_T` a `usize`. They are spelled with Omega types rather than
 # re-exported Windows names so nothing outside this module has to know them.
-shared alias Handle = *mut u8;
+shared alias Handle = ^u8;
 
 shared comp STD_INPUT := 0xFFFFFFF6_u32;
 shared comp STD_OUTPUT := 0xFFFFFFF5_u32;
 shared comp STD_ERROR := 0xFFFFFFF4_u32;
 
 shared foreign(c) GetProcessHeap() => Handle;
-shared foreign(c) HeapAlloc(heap: Handle, flags: u32, bytes: usize) => *mut u8;
-shared foreign(c) HeapReAlloc(heap: Handle, flags: u32, block: *mut u8, bytes: usize) => *mut u8;
+shared foreign(c) HeapAlloc(heap: Handle, flags: u32, bytes: usize) => ^u8;
+shared foreign(c) HeapReAlloc(heap: Handle, flags: u32, block: ^u8, bytes: usize) => ^u8;
 shared foreign(c) HeapFree(heap: Handle, flags: u32, block: *u8) => i32;
 
 shared foreign(c) GetStdHandle(which: u32) => Handle;
-shared foreign(c) ReadFile(handle: Handle, buffer: *mut u8, count: u32, read: *mut u32, overlapped: *mut u8) => i32;
-shared foreign(c) WriteFile(handle: Handle, buffer: *u8, count: u32, written: *mut u32, overlapped: *mut u8) => i32;
+shared foreign(c) ReadFile(handle: Handle, buffer: ^u8, count: u32, read: ^u32, overlapped: ^u8) => i32;
+shared foreign(c) WriteFile(handle: Handle, buffer: *u8, count: u32, written: ^u32, overlapped: ^u8) => i32;
 
 shared foreign(c) ExitProcess(status: u32) => never;
 

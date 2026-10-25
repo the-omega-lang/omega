@@ -32,7 +32,7 @@ import core::atomic::AtomicRmwOrdering;
 # output operand. The operand is left unpinned: a pointer lands in one of the
 # X/Y/Z pairs, which is exactly what the plain `st` addressing modes accept,
 # and `$saved` prints as whichever pair the backend chose.
-disable_interrupts(saved: *mut u8) => void {
+disable_interrupts(saved: ^u8) => void {
 	asm(reg(saved), clobber("r18")) => {
 		in r18, 0x3f
 		cli
@@ -53,35 +53,35 @@ restore_interrupts(saved: u8) => void {
 macro width_atomicity($Gap: path, $U: type, $I: type) => {
 	glue $Gap {
 		load(location: *$U, order: AtomicLoadOrdering) => $U {
-			mut saved: u8 = 0;
-			disable_interrupts(&mut saved);
-			value := *location;
+			^saved: u8 = 0;
+			disable_interrupts(^saved);
+			value := location.*;
 			restore_interrupts(saved);
 			value
 		}
 
-		store(location: *mut $U, value: $U, order: AtomicStoreOrdering) => void {
-			mut saved: u8 = 0;
-			disable_interrupts(&mut saved);
-			*location = value;
+		store(location: ^$U, value: $U, order: AtomicStoreOrdering) => void {
+			^saved: u8 = 0;
+			disable_interrupts(^saved);
+			location.* = value;
 			restore_interrupts(saved);
 		}
 
-		exchange(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
-			mut saved: u8 = 0;
-			disable_interrupts(&mut saved);
-			previous := *location;
-			*location = value;
+		exchange(location: ^$U, value: $U, order: AtomicRmwOrdering) => $U {
+			^saved: u8 = 0;
+			disable_interrupts(^saved);
+			previous := location.*;
+			location.* = value;
 			restore_interrupts(saved);
 			previous
 		}
 
-		compare_exchange(location: *mut $U, expected: $U, desired: $U, success: AtomicRmwOrdering, failure: AtomicLoadOrdering) => Result<$U, $U> {
-			mut saved: u8 = 0;
-			disable_interrupts(&mut saved);
-			previous := *location;
+		compare_exchange(location: ^$U, expected: $U, desired: $U, success: AtomicRmwOrdering, failure: AtomicLoadOrdering) => Result<$U, $U> {
+			^saved: u8 = 0;
+			disable_interrupts(^saved);
+			previous := location.*;
 			exchanged := previous == expected;
-			if exchanged { *location = desired; }
+			if exchanged { location.* = desired; }
 			restore_interrupts(saved);
 			if exchanged {
 				Result<$U, $U>::Ok { value = previous; }
@@ -90,69 +90,69 @@ macro width_atomicity($Gap: path, $U: type, $I: type) => {
 			}
 		}
 
-		compare_exchange_weak(location: *mut $U, expected: $U, desired: $U, success: AtomicRmwOrdering, failure: AtomicLoadOrdering) => Result<$U, $U> {
+		compare_exchange_weak(location: ^$U, expected: $U, desired: $U, success: AtomicRmwOrdering, failure: AtomicLoadOrdering) => Result<$U, $U> {
 			$Gap::compare_exchange(location, expected, desired, success, failure)
 		}
 
-		fetch_add(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
-			mut saved: u8 = 0;
-			disable_interrupts(&mut saved);
-			previous := *location;
-			*location = previous + value;
+		fetch_add(location: ^$U, value: $U, order: AtomicRmwOrdering) => $U {
+			^saved: u8 = 0;
+			disable_interrupts(^saved);
+			previous := location.*;
+			location.* = previous + value;
 			restore_interrupts(saved);
 			previous
 		}
 
-		fetch_sub(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
-			mut saved: u8 = 0;
-			disable_interrupts(&mut saved);
-			previous := *location;
-			*location = previous - value;
+		fetch_sub(location: ^$U, value: $U, order: AtomicRmwOrdering) => $U {
+			^saved: u8 = 0;
+			disable_interrupts(^saved);
+			previous := location.*;
+			location.* = previous - value;
 			restore_interrupts(saved);
 			previous
 		}
 
-		fetch_and(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
-			mut saved: u8 = 0;
-			disable_interrupts(&mut saved);
-			previous := *location;
-			*location = previous & value;
+		fetch_and(location: ^$U, value: $U, order: AtomicRmwOrdering) => $U {
+			^saved: u8 = 0;
+			disable_interrupts(^saved);
+			previous := location.*;
+			location.* = previous & value;
 			restore_interrupts(saved);
 			previous
 		}
 
-		fetch_or(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
-			mut saved: u8 = 0;
-			disable_interrupts(&mut saved);
-			previous := *location;
-			*location = previous | value;
+		fetch_or(location: ^$U, value: $U, order: AtomicRmwOrdering) => $U {
+			^saved: u8 = 0;
+			disable_interrupts(^saved);
+			previous := location.*;
+			location.* = previous | value;
 			restore_interrupts(saved);
 			previous
 		}
 
-		fetch_xor(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
-			mut saved: u8 = 0;
-			disable_interrupts(&mut saved);
-			previous := *location;
-			*location = previous ^ value;
+		fetch_xor(location: ^$U, value: $U, order: AtomicRmwOrdering) => $U {
+			^saved: u8 = 0;
+			disable_interrupts(^saved);
+			previous := location.*;
+			location.* = previous ^ value;
 			restore_interrupts(saved);
 			previous
 		}
 
-		fetch_min_unsigned(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
-			mut saved: u8 = 0;
-			disable_interrupts(&mut saved);
-			previous := *location;
-			if value < previous { *location = value; }
+		fetch_min_unsigned(location: ^$U, value: $U, order: AtomicRmwOrdering) => $U {
+			^saved: u8 = 0;
+			disable_interrupts(^saved);
+			previous := location.*;
+			if value < previous { location.* = value; }
 			restore_interrupts(saved);
 			previous
 		}
 
-		fetch_max_unsigned(location: *mut $U, value: $U, order: AtomicRmwOrdering) => $U {
-			mut saved: u8 = 0;
-			disable_interrupts(&mut saved);
-			previous := *location;
-			if value > previous { *location = value; }
+		fetch_max_unsigned(location: ^$U, value: $U, order: AtomicRmwOrdering) => $U {
+			^saved: u8 = 0;
+			disable_interrupts(^saved);
+			previous := location.*;
+			if value > previous { location.* = value; }
 			restore_interrupts(saved);
 			previous
 		}
@@ -160,20 +160,20 @@ macro width_atomicity($Gap: path, $U: type, $I: type) => {
 		# The signed views share the width's storage; only the comparison
 		# differs, which is exactly why the gap declares them separately
 		# instead of inferring a sign from a bit pattern.
-		fetch_min_signed(location: *mut $I, value: $I, order: AtomicRmwOrdering) => $I {
-			mut saved: u8 = 0;
-			disable_interrupts(&mut saved);
-			previous := *location;
-			if value < previous { *location = value; }
+		fetch_min_signed(location: ^$I, value: $I, order: AtomicRmwOrdering) => $I {
+			^saved: u8 = 0;
+			disable_interrupts(^saved);
+			previous := location.*;
+			if value < previous { location.* = value; }
 			restore_interrupts(saved);
 			previous
 		}
 
-		fetch_max_signed(location: *mut $I, value: $I, order: AtomicRmwOrdering) => $I {
-			mut saved: u8 = 0;
-			disable_interrupts(&mut saved);
-			previous := *location;
-			if value > previous { *location = value; }
+		fetch_max_signed(location: ^$I, value: $I, order: AtomicRmwOrdering) => $I {
+			^saved: u8 = 0;
+			disable_interrupts(^saved);
+			previous := location.*;
+			if value > previous { location.* = value; }
 			restore_interrupts(saved);
 			previous
 		}

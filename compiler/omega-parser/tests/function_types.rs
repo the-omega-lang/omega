@@ -44,7 +44,7 @@ fn descriptors_are_not_part_of_the_written_type() {
 
 #[test]
 fn a_pointer_typed_first_parameter_is_not_a_receiver() {
-    for target in ["(*Thing) => void", "(*mut Thing) => void"] {
+    for target in ["(*Thing) => void", "(^Thing) => void"] {
         let f = function_type(target);
         assert_eq!(f.self_mode, None);
         assert_eq!(descriptors(&f), [None]);
@@ -56,9 +56,8 @@ fn a_pointer_typed_first_parameter_is_not_a_receiver() {
 fn a_receiver_is_rejected_in_every_spelling() {
     for (target, spelling) in [
         ("(self, i32) => void", "self"),
-        ("(mut self, i32) => void", "mut self"),
         ("(*self) => void", "*self"),
-        ("(*mut self, i32) => void", "*mut self"),
+        ("(^self, i32) => void", "^self"),
     ] {
         let errors = SourceModule::parse(&format!("alias F = {target};"))
             .expect_err("a function type has no receiver");

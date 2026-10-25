@@ -9,8 +9,8 @@ returns_anyway() => never {
 
 main() => void {
     indirect: () => never = returns_anyway;
-    pointer: *() => never = &indirect;
+    pointer: *() => never = *indirect;
     println$("before-call");
-    (*pointer)();
+    pointer.*();
     println$("after-call");
 }

@@ -237,7 +237,7 @@ fn an_avr_pointer_asm_operand_takes_the_pointer_register_class() {
     // pinned `{r26}` silently loads half an address. Only the pointer class
     // `e` yields a usable `ld`/`st` operand.
     const AVR_ASM: &str = "\
-save(slot: *mut u8, flags: u8) => void {\n\
+save(slot: ^u8, flags: u8) => void {\n\
     asm(reg(slot), reg(flags)) => {\n\
         st $slot, $flags\n\
     }\n\
@@ -266,10 +266,10 @@ exposed hidden_function(x: i32) => i32 { x }\n\
 @symbol(export)\n\
 exposed exported_function(x: i32) => i32 { x }\n\
 \n\
-exposed mut HIDDEN_TOTAL : i32 = 1;\n\
+exposed ^HIDDEN_TOTAL : i32 = 1;\n\
 \n\
 @symbol(export)\n\
-exposed mut EXPORTED_TOTAL : i32 = 2;\n\
+exposed ^EXPORTED_TOTAL : i32 = 2;\n\
 \n\
 main() => void {\n\
     HIDDEN_TOTAL += hidden_function(1);\n\

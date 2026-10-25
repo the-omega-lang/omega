@@ -55,8 +55,8 @@ main() => void {
 
 	# A marker may conform to a spec and dispatch statically or dynamically.
 	beacon := Beacon {};
-	println$("marker-static-dispatch: ", Pingable::ping(&beacon));
-	obj := <*spec Pingable>&beacon;
+	println$("marker-static-dispatch: ", Pingable::ping(*beacon));
+	obj := <*spec Pingable>*beacon;
 	println$("marker-dynamic-dispatch: ", obj.ping());
 
 	# A marker in return position: direct, generic and dynamically dispatched.
@@ -64,12 +64,12 @@ main() => void {
 	println$("marker-return: ", returned.write(3));
 	println$("marker-return-generic: ", forward<NullSink>(make_marker()).write(4));
 	echoed := obj.echo();
-	println$("marker-return-dynamic: ", Pingable::ping(&echoed));
+	println$("marker-return-dynamic: ", Pingable::ping(*echoed));
 
 	# A zero-sized field does not advance the containing object's offset,
 	# so an adjacent zero-sized and non-zero-sized field may share an
 	# address even though each has its own real place.
 	hv := HasMarkerField { m = NullSink {}; x = 5; };
-	same_address := <usize>&hv.m == <usize>&hv.x;
+	same_address := <usize>*hv.m == <usize>*hv.x;
 	println$("zero-sized-offset: ", same_address, " ", hv.x);
 }

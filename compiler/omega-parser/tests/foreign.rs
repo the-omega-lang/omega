@@ -23,13 +23,13 @@ fn foreign_binding_parses() {
 
 #[test]
 fn mutable_foreign_binding_parses() {
-    let source = "foreign mut errno : i32;";
+    let source = "foreign ^errno : i32;";
     let Item::ForeignBinding(binding) = parse_item(source) else {
         panic!("expected a foreign binding");
     };
     assert_eq!(binding.ident.0, "errno");
     let span = binding.mut_span.expect("expected a mut span");
-    assert_eq!(&source[span.start..span.end], "mut");
+    assert_eq!(&source[span.start..span.end], "^");
 }
 
 #[test]
@@ -49,7 +49,7 @@ fn foreign_mut_remains_an_identifier_without_a_following_name() {
 #[test]
 fn foreign_block_accepts_mutable_data_and_contextual_mut() {
     let Item::ForeignBlock(block) =
-        parse_item("foreign(c) { shared mut errno : i32; f(a: i32) => void; mut : i32; }")
+        parse_item("foreign(c) { shared ^errno : i32; f(a: i32) => void; mut : i32; }")
     else {
         panic!("expected a foreign block");
     };
@@ -73,12 +73,12 @@ fn foreign_block_accepts_mutable_data_and_contextual_mut() {
 #[test]
 fn foreign_function_forms_reject_mut_and_continue_parsing() {
     for source in [
-        "foreign mut f(a: i32) => void;",
-        "foreign(c) mut f(a: i32) => void { }",
-        "foreign mut f<T>(a: T) => void;",
-        "foreign(c) { mut f(a: i32) => void; }",
-        "foreign(c) { mut f(a: i32) => void { } }",
-        "foreign(c) { mut f<T>(a: T) => void; }",
+        "foreign ^f(a: i32) => void;",
+        "foreign(c) ^f(a: i32) => void { }",
+        "foreign ^f<T>(a: T) => void;",
+        "foreign(c) { ^f(a: i32) => void; }",
+        "foreign(c) { ^f(a: i32) => void { } }",
+        "foreign(c) { ^f<T>(a: T) => void; }",
     ] {
         let errors = SourceModule::parse(&format!("{source} foreign(c) errno : i32;")).unwrap_err();
         assert_eq!(
@@ -91,7 +91,7 @@ fn foreign_function_forms_reject_mut_and_continue_parsing() {
             ParseErrorKind::ForeignMutOnFunction
         ));
         let span = errors[0].span;
-        assert_eq!(&source[span.start..span.end], "mut");
+        assert_eq!(&source[span.start..span.end], "^");
         assert!(matches!(
             errors[1].kind,
             ParseErrorKind::ForeignConventionOnBinding

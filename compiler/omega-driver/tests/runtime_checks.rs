@@ -850,7 +850,7 @@ fn never_calls_are_guarded_in_expected_value_positions() {
         "value: Pair = Pair { a = before(); b = stop(); };",
         "value: [2]i32 = [before(), stop()];",
         "value: i32 = stop();",
-        "mut value: i32 = 0; value = stop();",
+        "^value: i32 = 0; value = stop();",
         "return stop();",
         "value := flag && stop();",
         "value := flag || stop();",

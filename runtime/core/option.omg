@@ -82,41 +82,41 @@ exposed enum Option<T> {
         }
     }
 
-    exposed take(*mut self) => Option<T> {
-        taken := *self;
-        *self = Option<T>::None;
+    exposed take(^self) => Option<T> {
+        taken := self.*;
+        self.* = Option<T>::None;
         taken
     }
 
-    exposed replace(*mut self, value: T) => Option<T> {
-        replaced := *self;
-        *self = Option<T>::Some { value = value; };
+    exposed replace(^self, value: T) => Option<T> {
+        replaced := self.*;
+        self.* = Option<T>::Some { value = value; };
         replaced
     }
 
-    exposed get_or_insert(*mut self, value: T) => *mut T {
+    exposed get_or_insert(^self, value: T) => ^T {
         if self.is_none() {
-            *self = Option<T>::Some { value = value; };
+            self.* = Option<T>::Some { value = value; };
         }
         # A store through `self` proves no variant, so the `Some` it just
         # made is matched again; the other arm cannot run.
         match self {
-            Option::Some => &mut self.value,
+            Option::Some => ^self.value,
             Option::None => panic$("`Option::get_or_insert()` found no value after inserting one"),
         }
     }
 
     exposed as_ptr(*self) => Option<*T> {
         match self {
-            Option::Some => Option<*T>::Some { value = &self.value; },
+            Option::Some => Option<*T>::Some { value = *self.value; },
             Option::None => Option<*T>::None,
         }
     }
 
-    exposed as_mut_ptr(*mut self) => Option<*mut T> {
+    exposed as_mut_ptr(^self) => Option<^T> {
         match self {
-            Option::Some => Option<*mut T>::Some { value = &mut self.value; },
-            Option::None => Option<*mut T>::None,
+            Option::Some => Option<^T>::Some { value = ^self.value; },
+            Option::None => Option<^T>::None,
         }
     }
 }

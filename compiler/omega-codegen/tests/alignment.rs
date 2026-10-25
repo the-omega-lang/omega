@@ -138,18 +138,18 @@ struct Wide { exposed value: i64; }\n\
 \n\
 struct Holder { exposed lead: u8; exposed inner: Wide; exposed trail: u8; }\n\
 \n\
-exposed mut GLOBAL: Holder;\n\
+exposed ^GLOBAL: Holder;\n\
 \n\
 consume(value: Holder) => i64 { value.inner.value }\n\
 \n\
 main() => void {\n\
-    mut local := Holder { lead = 1u8; inner = Wide { value = 2i64; }; trail = 3u8; };\n\
+    ^local := Holder { lead = 1u8; inner = Wide { value = 2i64; }; trail = 3u8; };\n\
     local.inner.value = 4i64;\n\
     GLOBAL = local;\n\
-    address := &mut local.inner;\n\
+    address := ^local.inner;\n\
     consume(local);\n\
     consume(GLOBAL);\n\
-    (*address).value = 5i64;\n\
+    address.*.value = 5i64;\n\
 }\n";
 
 #[test]
@@ -204,9 +204,9 @@ comp WIDE := Wide { value = 7i64; };\n\
 comp ROW := [Wide { value = 7i64; }, Wide { value = 8i64; }];\n\
 \n\
 main() => void {\n\
-    reference: *Wide = &WIDE;\n\
-    view := &ROW[0..];\n\
-    let_it_live(<i64>(*reference).value + <i64>view[1].value);\n\
+    reference: *Wide = *WIDE;\n\
+    view := *ROW[0..];\n\
+    let_it_live(<i64>reference.*.value + <i64>view[1].value);\n\
 }\n\
 \n\
 let_it_live(value: i64) => i64 { value }\n";
@@ -241,11 +241,11 @@ fn constant_identity_separates_incompatible_materializations() {
 @layout(align = 64)\n\
 exposed struct Wide { exposed value: i64; }\n\
 exposed comp WIDE := Wide { value = 7i64; };\n\
-exposed aligned_address() => usize { <usize>&WIDE }\n";
+exposed aligned_address() => usize { <usize>*WIDE }\n";
     const PACKED: &str = "\
 exposed struct Narrow { exposed value: i64; }\n\
 exposed comp NARROW := Narrow { value = 7i64; };\n\
-exposed packed_address() => usize { <usize>&NARROW }\n";
+exposed packed_address() => usize { <usize>*NARROW }\n";
     const MAIN: &str = "\
 import root::aligned;\n\
 import root::packed;\n\
@@ -296,7 +296,7 @@ fn alignment_survives_narrow_pointer_targets() {
 struct Wide { exposed value: u16; }\n\
 struct Holder { exposed lead: u8; exposed inner: Wide; }\n\
 main() => void {\n\
-    mut local := Holder { lead = 1u8; inner = Wide { value = 2u16; }; };\n\
+    ^local := Holder { lead = 1u8; inner = Wide { value = 2u16; }; };\n\
     local.inner.value = 3u16;\n\
 }\n";
 
@@ -328,7 +328,7 @@ fn access_alignment_claims_stay_bounded_by_the_proven_address() {
 struct Wide { exposed value: i64; }\n\
 struct Holder { exposed lead: u8; exposed inner: Wide; exposed trail: u8; }\n\
 main() => void {\n\
-    mut local := Holder { lead = 1u8; inner = Wide { value = 2i64; }; trail = 3u8; };\n\
+    ^local := Holder { lead = 1u8; inner = Wide { value = 2i64; }; trail = 3u8; };\n\
     local.trail = 4u8;\n\
 }\n";
 

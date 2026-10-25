@@ -20,7 +20,7 @@ exposed struct String {
 
     # Copies `source`'s bytes -- this type always owns its storage.
     exposed from_str(source: *str) => Self {
-        mut s := Self::new();
+        ^s := Self::new();
         s.push_str(source);
         s
     }
@@ -28,9 +28,9 @@ exposed struct String {
     exposed len(*self) => usize { self.bytes.len() }
     exposed is_empty(*self) => bool { self.bytes.is_empty() }
 
-    exposed push_str(*mut self, s: *str) => void {
+    exposed push_str(^self, s: *str) => void {
         source_bytes := <*[]u8>s;
-        mut i : i32 = 0;
+        ^i : i32 = 0;
         while i < s.size {
             self.bytes.push(source_bytes[i]);
             i += 1;
@@ -40,7 +40,7 @@ exposed struct String {
     # Encodes `c` as 1-4 UTF-8 bytes by hand: codepoint width picks the byte
     # count, each continuation byte carries 6 low bits (`10xxxxxx`), the lead
     # byte carries the rest tagged with the right number of leading 1s.
-    exposed push(*mut self, c: char) => void {
+    exposed push(^self, c: char) => void {
         cp := <u32>c;
         if cp < 0x80_u32 {
             self.bytes.push(<u8>cp);
@@ -59,7 +59,7 @@ exposed struct String {
         }
     }
 
-    exposed clear(*mut self) => void {
+    exposed clear(^self) => void {
         self.bytes.clear();
     }
 
@@ -68,7 +68,7 @@ exposed struct String {
         <*str>self.bytes.as_slice()
     }
 
-    exposed free(*mut self) => void {
+    exposed free(^self) => void {
         self.bytes.free();
     }
 }

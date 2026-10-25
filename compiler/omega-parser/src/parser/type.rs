@@ -3,11 +3,11 @@ use crate::ast::r#type::{
 };
 use crate::diagnostics::ParseErrorKind;
 use crate::lexer::TokenKind;
-use crate::parser::{Parser, contextual, parse_path};
+use crate::parser::{Parser, contextual, legacy, parse_path};
 
 pub fn parse_type(p: &mut Parser) -> Option<Type> {
     p.descend(|p| match p.peek() {
-        TokenKind::Star => parse_pointer_type(p),
+        TokenKind::Star | TokenKind::Caret => parse_pointer_type(p),
         TokenKind::LBracket => parse_bracket_type(p),
         TokenKind::LParen => parse_function_type(p),
         TokenKind::Spec => parse_spec_static_type(p),
@@ -29,8 +29,16 @@ pub fn parse_type(p: &mut Parser) -> Option<Type> {
 }
 
 fn parse_pointer_type(p: &mut Parser) -> Option<Type> {
-    p.advance(); // '*'
-    let mutable = p.eat_contextual(contextual::MUT);
+    let start = p.peek_span();
+    let mut mutable = p.advance().kind == TokenKind::Caret;
+    if !mutable && legacy::mut_pointer_at(p, 0) {
+        p.advance(); // 'mut'
+        p.error_at(
+            start.to(p.last_span()),
+            ParseErrorKind::LegacyMutPointer { receiver: false },
+        );
+        mutable = true;
+    }
     let inner = parse_type(p)?;
     Some(Type::Pointer(Box::new(inner), mutable))
 }
@@ -177,37 +185,52 @@ fn parse_function_type(p: &mut Parser) -> Option<Type> {
 
 /// Reports and skips a receiver written where a function type's parameters
 /// begin, returning whether one was there. Only the exact receiver
-/// spellings match, so a leading `*` still begins an ordinary pointer-typed
-/// parameter such as `*Thing`.
+/// spellings match, so a leading `*` or `^` still begins an ordinary
+/// pointer-typed parameter such as `*Thing`.
 fn reject_function_type_receiver(p: &mut Parser) -> bool {
-    use contextual::{MUT, SELF};
-
-    let by_pointer = p.check(&TokenKind::Star);
-    let head = usize::from(by_pointer);
-    let mutable = p.at_contextual_at(head, MUT) && p.at_contextual_at(head + 1, SELF);
-    if !mutable && !p.at_contextual_at(head, SELF) {
+    let pointer = matches!(p.peek(), TokenKind::Star | TokenKind::Caret);
+    let head = usize::from(pointer);
+    let legacy_mut = legacy::mut_self_at(p, head);
+    if !legacy_mut && !p.at_contextual_at(head, contextual::SELF) {
         return false;
     }
     let start = p.peek_span();
-    for _ in 0..head + usize::from(mutable) + 1 {
+    let kind = match (p.peek(), legacy_mut) {
+        (TokenKind::Star, true) => ParseErrorKind::LegacyMutPointer { receiver: true },
+        (_, true) => ParseErrorKind::LegacyMutSelf,
+        (TokenKind::Star, false) => receiver_in_function_type("*self"),
+        (TokenKind::Caret, false) => receiver_in_function_type("^self"),
+        _ => receiver_in_function_type("self"),
+    };
+    for _ in 0..head + usize::from(legacy_mut) + 1 {
         p.advance();
     }
-    let spelling = format!(
-        "{}{}self",
-        if by_pointer { "*" } else { "" },
-        if mutable { "mut " } else { "" }
-    );
-    p.error_at(
-        start.to(p.last_span()),
-        ParseErrorKind::ReceiverInFunctionType { spelling },
-    );
+    p.error_at(start.to(p.last_span()), kind);
     true
+}
+
+fn receiver_in_function_type(spelling: &str) -> ParseErrorKind {
+    ParseErrorKind::ReceiverInFunctionType {
+        spelling: spelling.to_string(),
+    }
 }
 
 /// `name : type` is the described form; anything else is a bare type. The
 /// name is metadata, so only `identifier ":"` -- never `identifier "::"` --
 /// distinguishes it from a parameter whose type is a plain path.
 fn parse_function_type_param(p: &mut Parser) -> Option<FunctionTypeParam> {
+    if p.check(&TokenKind::Caret)
+        && matches!(p.peek_at(1), TokenKind::Ident(_))
+        && p.peek_at(2) == &TokenKind::Colon
+    {
+        let caret = p.advance().span;
+        p.error_at(
+            caret.to(p.peek_span()),
+            ParseErrorKind::MutableParamWithoutBody {
+                context: "a function type",
+            },
+        );
+    }
     let start = p.peek_span();
     let name = if matches!(p.peek(), TokenKind::Ident(_)) && p.peek_at(1) == &TokenKind::Colon {
         let ident = p.expect_ident()?;

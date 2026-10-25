@@ -11,7 +11,7 @@ import super::option::Option;
 # `ToIterator<T>` not object-safe, a deliberate tradeoff (docs/language/specs-and-conformance.md's
 # object-safety caveat).
 exposed spec Iterator<T> {
-    next(*mut self) => Option<T>;
+    next(^self) => Option<T>;
 }
 
 exposed spec ToIterator<T> {

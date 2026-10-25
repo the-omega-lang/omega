@@ -4,12 +4,12 @@
 import root::os::api;
 
 glue core::platform::GlobalAllocator {
-	alloc(size: usize) => *mut u8 {
+	alloc(size: usize) => ^u8 {
 		heap := api::GetProcessHeap();
 		if api::usable(heap) {
 			api::HeapAlloc(heap, 0u32, size)
 		} else {
-			<*mut u8>0usize
+			<^u8>0usize
 		}
 	}
 
@@ -24,15 +24,15 @@ glue core::platform::GlobalAllocator {
 
 	# `HeapReAlloc` already returns null and leaves the original block valid
 	# when it cannot satisfy the request, which is exactly the contract.
-	realloc(ptr: *u8, size: usize) => *mut u8 {
+	realloc(ptr: *u8, size: usize) => ^u8 {
 		if <usize>ptr == 0usize {
 			GlobalAllocator::alloc(size)
 		} else {
 			heap := api::GetProcessHeap();
 			if api::usable(heap) {
-				api::HeapReAlloc(heap, 0u32, <*mut u8>(<usize>ptr), size)
+				api::HeapReAlloc(heap, 0u32, <^u8>(<usize>ptr), size)
 			} else {
-				<*mut u8>0usize
+				<^u8>0usize
 			}
 		}
 	}

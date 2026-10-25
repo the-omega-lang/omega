@@ -37,8 +37,8 @@ item = import
      | global-declaration, ";"
      | global-binding, ";" ;
 
-global-declaration = [ visibility ], [ "mut" ], identifier, ":", type, [ "=", expression ] ;
-global-binding = [ visibility ], [ "mut" ], [ "comp" ], identifier, ":=", expression ;
+global-declaration = [ visibility ], [ "^" ], identifier, ":", type, [ "=", expression ] ;
+global-binding = [ visibility ], [ "comp" ], [ "^" ], identifier, ":=", expression ;
 ```
 
 Source annotations (`@[...]`) occur only in the compilation-unit prologue, before any item or item annotation. They are forbidden inside macro bodies. Node-level annotations are syntactically accepted only before supported item kinds; semantic applicability is defined in [`annotations-and-sizeof.md`](annotations-and-sizeof.md). `@cond` is the one annotation every `item` above accepts, and it is accepted nowhere else in this grammar: a condition selects a whole item, so an `annotation-list` attached to a member, field, variant, or statement rejects it.
@@ -103,7 +103,7 @@ navigation; elsewhere (including the final segment of an unanchored path)
 they remain ordinary identifiers. Anchor meaning is specified in
 [`modules-and-imports.md`](modules-and-imports.md).
 
-Expression-path generic arguments are committed purely syntactically, by what follows the closing `>`: a path continuation (`Type<T>::member`), a generic struct-literal brace (`Type<T> { ... }`), a call suffix (`f<T>(...)`), or an expression boundary (`;`, `,`, `)`, `]`, `}`, end of input), as in `&foo<T>;` or `[foo<T>, bar<T>]`. Anything else after `>` starts a fresh operand, so the attempt is rolled back and `a < b > c` stays a chained comparison. Commitment never depends on name or type resolution: `a<b>(c)` is a generic call whose failure is a generic/name/callee error, never a re-reading as comparisons. Omega has no turbofish spelling; `::<...>` is not syntax. Syntactically a list may follow any segment of the path; which segments take one is the semantic rule in [`generics.md`](generics.md#generic-member-and-static-functions).
+Expression-path generic arguments are committed purely syntactically, by what follows the closing `>`: a path continuation (`Type<T>::member`), a generic struct-literal brace (`Type<T> { ... }`), a call suffix (`f<T>(...)`), or an expression boundary (`;`, `,`, `)`, `]`, `}`, end of input), as in `*foo<T>;` or `[foo<T>, bar<T>]`. Anything else after `>` starts a fresh operand, so the attempt is rolled back and `a < b > c` stays a chained comparison. Commitment never depends on name or type resolution: `a<b>(c)` is a generic call whose failure is a generic/name/callee error, never a re-reading as comparisons. Omega has no turbofish spelling; `::<...>` is not syntax. Syntactically a list may follow any segment of the path; which segments take one is the semantic rule in [`generics.md`](generics.md#generic-member-and-static-functions).
 
 ## Imports
 
@@ -131,7 +131,7 @@ path segments or by a group. Module/import meaning is specified in [`modules-and
 ## Foreign items
 
 ```ebnf
-foreign-binding = [ visibility ], "foreign", [ "mut" ], identifier, ":", type, ";" ;
+foreign-binding = [ visibility ], "foreign", [ "^" ], identifier, ":", type, ";" ;
 
 foreign-function-item = [ visibility ], "foreign", [ calling-convention ],
                         identifier, [ generic-parameters ],
@@ -140,14 +140,14 @@ foreign-function-item = [ visibility ], "foreign", [ calling-convention ],
 
 foreign-block = "foreign", calling-convention, "{", { foreign-block-entry }, "}" ;
 
-foreign-block-entry = [ visibility ], [ "mut" ], identifier,
+foreign-block-entry = [ visibility ], [ "^" ], identifier,
                       ( ":", type, ";"
                       | "(", [ parameter-list-rest ], ")", "=>", type, ( ";" | code-block ) ) ;
 ```
 
 `foreign-binding`'s `identifier, ":"` and `foreign-function-item`'s `identifier, "("`/`"<"` are unambiguous on the token right after the name. `foreign(cc) name : Type;` (a `calling-convention` directly on a binding) is rejected -- see [`foreign-function-interface.md`](foreign-function-interface.md) for the exact rule and the equivalent unambiguous spelling. Inside a `foreign-block`, `calling-convention` is never written again; the block's own applies to each direct function-signature entry (not to a `":", type` entry), and blocks do not nest.
 
-`mut` is valid only on the `":", type` form for a non-function type. A `mut` modifier before an identifier followed by `"("` or `"<"` is rejected, including on a function definition with a body. The modifier is contextual: it is consumed only when another identifier follows, so `foreign mut : i32;` still declares an unmodifiable binding named `mut`.
+`^` is valid only on the `":", type` form for a non-function type. A `^` before an identifier followed by `"("` or `"<"` is rejected, including on a function definition with a body.
 
 ## Generic parameters and bounds
 
@@ -188,7 +188,7 @@ type = pointer-type
      | type-path
      | "_" ;
 
-pointer-type            = "*", [ "mut" ], type ;
+pointer-type            = ( "*" | "^" ), type ;
 fixed-array-type        = "[", array-length, "]", type ;
 array-length            = comp-value-literal | path | "_" ;
 slice-array-type        = "[", "]", type ;
@@ -200,7 +200,7 @@ spec-member = type-path | "_" ;
 anonymous-enum-type = "enum", type, { "|", type } ;
 ```
 
-`spec-type` parses one static conjunction of members; there is no `spec *...` prefix-pointer spelling. `pointer-type = "*", ["mut"], type` already covers a dynamic spec object structurally: `*spec A + B` and `*mut spec A + B` are ordinary `pointer-type`s whose `type` is a `spec-type`. Semantic type resolution recognizes that specific immediate combination and turns it into a dynamic spec-object type; the grammar itself does not distinguish "static" from "dynamic" spec types. See [`specs-and-conformance.md`](specs-and-conformance.md).
+`spec-type` parses one static conjunction of members; there is no `spec *...` prefix-pointer spelling. `pointer-type = ("*" | "^"), type` already covers a dynamic spec object structurally: `*spec A + B` and `^spec A + B` are ordinary `pointer-type`s whose `type` is a `spec-type`. Semantic type resolution recognizes that specific immediate combination and turns it into a dynamic spec-object type; the grammar itself does not distinguish "static" from "dynamic" spec types. See [`specs-and-conformance.md`](specs-and-conformance.md).
 
 `"_"` is an inference hole. The grammar accepts it wherever a `type`, an
 `array-length`, a `spec-member`, or a selector's bound list may appear, and
@@ -225,7 +225,7 @@ expression: a scalar literal, or a `path` naming a `comp` binding or a `comp`
 generic parameter. Its semantic requirements are in
 [`types-and-primitives.md`](types-and-primitives.md).
 
-`[]T` is syntactically a type form used where array length is inferred; its legal semantic positions are restricted by [`types-and-primitives.md`](types-and-primitives.md). Slice values use pointer forms such as `*[]T`/`*mut []T`.
+`[]T` is syntactically a type form used where array length is inferred; its legal semantic positions are restricted by [`types-and-primitives.md`](types-and-primitives.md). Slice values use pointer forms such as `*[]T`/`^[]T`.
 
 ### Function types and receivers
 
@@ -241,13 +241,16 @@ parameter-list-rest = function-type-parameter, { ",", function-type-parameter },
 
 function-type-parameter = [ identifier, ":" ], type ;
 
-parameter = identifier, ":", type ;
+parameter = [ "^" ], identifier, ":", type ;
 
 receiver = "self"
-         | "mut", "self"
          | "*", "self"
-         | "*", "mut", "self" ;
+         | "^", "self" ;
 ```
+
+`*` makes a read-only pointer type and `^` a mutable one. A `^` before a `parameter`'s name makes that parameter a mutable local of the function body; it is accepted only on a declaration that has a `code-block`, so a function type, a foreign function declaration, and any other bodyless declaration reject it (see [`functions.md`](functions.md#mutable-parameters)).
+
+The receivers are the one exception to "`^` before a name declares a mutable binding": `*self` and `^self` mirror the address a call site takes, and mean `self : *Self` and `self : ^Self`. There is no by-value mutable receiver; a body that needs a mutable copy of `self` declares one (`^copy := self;`).
 
 A `function-type-parameter`'s `identifier` is optional descriptive metadata and is not part of the type; `parameter` (used by declarations, spec/gap/glue members, and every other binding position) still requires it. A function type has no `receiver`: the receiver forms belong to method declarations (`function-parameters` below), and a function type states the receiver's type as an ordinary parameter, as in `(*Thing) => void` (see [`functions.md`](functions.md#unbound-member-function-values)). `function-type` always denotes the implicit Omega calling convention; `foreign-function-type` names an explicit non-Omega one (currently `c` or `sysv64`). Bare `"foreign", function-type` (no `calling-convention`) is not a valid type -- `calling-convention` is mandatory in `foreign-function-type` and immediately follows the keyword, which is also what keeps this production unambiguous with a plain `function-type`'s own leading `"("`. `...` is legal in `parameter-list-rest` only where the enclosing function type's convention supports variadics; an ordinary Omega-convention function is never variadic. See [`functions.md`](functions.md) and [`foreign-function-interface.md`](foreign-function-interface.md).
 
@@ -420,7 +423,7 @@ annotation-value = annotation-literal
                  | identifier
                  | identifier, "::", identifier
                  | identifier, "(", [ annotation-value-list ], ")"
-                 | "&", "[", [ annotation-value-list ], "]"
+                 | "*", "[", [ annotation-value-list ], "]"
                  | "sizeof", "<", type, ">" ;
 annotation-value-list = annotation-value, { ",", annotation-value }, [ "," ] ;
 annotation-literal = "true" | "false" | [ "-" ], number-literal
@@ -446,8 +449,8 @@ statement = local-declaration, ";"
           | asm-statement
           | expression-statement ;
 
-local-declaration = [ "mut" ], identifier, ":", type, [ "=", expression ] ;
-inferred-binding  = [ "mut" ], [ "comp" ], identifier, ":=", expression ;
+local-declaration = [ "^" ], identifier, ":", type, [ "=", expression ] ;
+inferred-binding  = [ "comp" ], [ "^" ], identifier, ":=", expression ;
 
 return-statement   = "return", [ expression ] ;
 break-statement    = "break" ;
@@ -471,7 +474,7 @@ for-statement = c-for | for-in ;
 c-for = "for", [ for-init ], ";", [ expression ], ";", [ expression ], code-block ;
 for-init = local-declaration | inferred-binding | expression ;
 
-for-in = "for", [ "mut" ], identifier, [ ":", type ], "in", expression-no-leading-struct-literal, code-block ;
+for-in = "for", [ "^" ], identifier, [ ":", type ], "in", expression-no-leading-struct-literal, code-block ;
 ```
 
 A `{` right after a classic `for`'s second `;` begins its `code-block`, never a block-expression post clause; parenthesize such a post.
@@ -520,8 +523,7 @@ additive    = multiplicative, { ( "+" | "-" ), multiplicative } ;
 multiplicative = unary, { ( "*" | "/" | "%" ), unary } ;
 
 unary = "*", unary
-      | "&", unary
-      | "&", "mut", unary
+      | "^", unary
       | "-", unary
       | "~", unary
       | "!", unary
@@ -537,6 +539,7 @@ qualified-spec-member = "<", type, ":", type, ">", "::", identifier, { postfix-s
 
 postfix = primary, { postfix-suffix } ;
 postfix-suffix = ".", identifier, [ expression-generic-arguments ]
+               | ".*"
                | "[", ( expression | range-expression ), "]"
                | "(", [ argument-list ], ")"
                | "?" ;
@@ -617,10 +620,12 @@ bitwise and:      &
 shift:            << >>
 additive:         + -
 multiplicative:   * / %
-unary:            - ! * & &mut ~ ++ -- reveal comp
+unary:            - ! * ^ ~ ++ -- reveal comp
 cast:             <Type>expression
-postfix:          call, index/slice, field/member access, try (?)
+postfix:          call, index/slice, field/member access, dereference (.*), try (?)
 ```
+
+Prefix `*` and `^` take a read-only and a mutable address; postfix `.*` dereferences. Because postfix binds tighter than prefix, `*a.b.c` is `*(a.b.c)` and `a.b.*.c` reaches through the pointer `a.b`. `.*` is a single token, so `p.*= v` is `p.* = v`; `.^` is not syntax. The rationale for these spellings is recorded in [`syntax-principles.md`](syntax-principles.md).
 
 Assignments require an assignable place. Comparison operators are non-associative, so chained comparison syntax is rejected.
 

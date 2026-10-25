@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 #[test]
 fn classic_for_uses_the_same_comp_binding_grammar_as_statements() {
-    for binding in ["comp i := 0", "mut comp i := 0"] {
+    for binding in ["comp i := 0", "comp ^i := 0"] {
         let source = format!("main() => void {{ for {binding}; ; {{ }} }}");
         SourceModule::parse(&source)
             .expect("classic for initializers should accept statement binding modifiers");
@@ -155,11 +155,11 @@ fn a_global_binding_keeps_its_annotations_in_every_written_form() {
             "@symbol(mangle = disabled)",
         ),
         (
-            "@symbol(mangle = enabled)\nexposed mut value := 1;",
+            "@symbol(mangle = enabled)\nexposed ^value := 1;",
             "@symbol(mangle = enabled)",
         ),
         (
-            "@symbol(mangle = disabled)\nexposed mut value : i32 = 1;",
+            "@symbol(mangle = disabled)\nexposed ^value : i32 = 1;",
             "@symbol(mangle = disabled)",
         ),
     ];

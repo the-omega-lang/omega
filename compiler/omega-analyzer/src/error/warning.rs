@@ -73,8 +73,8 @@ impl AnalysisWarning {
                 d.with_label(self.span, format!("`{}` is never read", name.as_ref()))
             }
             AnalysisWarningKind::UnnecessaryMut { name } => d
-                .with_label(self.span, format!("`{}` is declared `mut` but never reassigned", name.as_ref()))
-                .with_help("remove `mut` -- it isn't just a hint, dropping it changes nothing about how this compiles"),
+                .with_label(self.span, format!("`{}` is declared mutable (`^`) but never reassigned", name.as_ref()))
+                .with_help("remove the `^` -- it isn't just a hint, dropping it changes nothing about how this compiles"),
             AnalysisWarningKind::UnnecessaryReveal => d
                 .with_label(self.span, "this 'reveal' never suppresses anything")
                 .with_help("remove 'reveal' -- every check inside it would already pass without it"),
@@ -223,7 +223,7 @@ impl fmt::Display for AnalysisWarningKind {
             Self::InlineNotEnforced => write!(f, "'@inline' is not enforced by this backend yet"),
             Self::UnusedVariable { name } => write!(f, "unused variable '{}'", name.as_ref()),
             Self::UnusedParameter { name } => write!(f, "unused parameter '{}'", name.as_ref()),
-            Self::UnnecessaryMut { name } => write!(f, "unnecessary 'mut' on '{}'", name.as_ref()),
+            Self::UnnecessaryMut { name } => write!(f, "unnecessary '^' on '{}'", name.as_ref()),
             Self::UnnecessaryReveal => write!(f, "unnecessary 'reveal'"),
             Self::UnusedImport { alias } => write!(f, "unused import '{}'", alias.as_ref()),
             Self::UnusedField { owner, field } => {

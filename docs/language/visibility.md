@@ -48,7 +48,7 @@ For a field or an inherent method, the declaring module is the module that decla
 ```omega
 reveal base.hidden_method();
 reveal value.hidden_field = 10;
-p := &mut reveal value.hidden_field;
+p := ^reveal value.hidden_field;
 ```
 
 It can also be used in imports, where it authorizes binding a name the
@@ -94,7 +94,7 @@ A macro's `hidden`/`shared`/`exposed` modifier says who may name and invoke the 
 # macro body is authored inside `core::panic`, so it may call the handler
 # while application source may only reach it through `panic$`.
 exposed macro panic($message: expr...) => {
-    { ... PanicHandler::panic(&info) }
+    { ... PanicHandler::panic(*info) }
 }
 ```
 

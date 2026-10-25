@@ -36,10 +36,10 @@ main() => void {
 	# From another module, the hidden field/method require an exposed
 	# accessor from their declaring module, or an explicit `reveal` at this
 	# use site.
-	mut box := child::Box::new(5, 6);
+	^box := child::Box::new(5, 6);
 	println$("box-visible-hidden: ", box.visible_field, " ", box.call_hidden_double());
-	println$("box-module-internals: ", child::read_box_internals(&box), " ", child::make_box_directly(7, 8).visible_field);
-	println$("meet-reads-hidden-field: ", Mammal::breathe(&box));
+	println$("box-module-internals: ", child::read_box_internals(*box), " ", child::make_box_directly(7, 8).visible_field);
+	println$("meet-reads-hidden-field: ", Mammal::breathe(*box));
 	println$("reveal-hidden-field: ", reveal box.hidden_field);
 	reveal box.hidden_field = 99;
 	println$("reveal-after-mutate: ", reveal box.hidden_field);
@@ -47,11 +47,11 @@ main() => void {
 	# A spec requirement's effective visibility is the declaring spec's
 	# visibility; `shared` here is still package-wide.
 	dog := Dog { id = 1; };
-	println$("spec-req-visibility: ", Mammal::breathe(&dog));
+	println$("spec-req-visibility: ", Mammal::breathe(*dog));
 
 	# Dynamic dispatch does not widen visibility: `Mammal` stays shared
 	# whether `breathe` is reached through static or dynamic dispatch.
-	obj := <*spec Mammal>&dog;
+	obj := <*spec Mammal>*dog;
 	println$("dynamic-dispatch-visibility: ", obj.breathe());
 
 	# `greet` has no modifier, so it inherits `Greeter`'s own visibility
@@ -62,17 +62,17 @@ main() => void {
 	# hidden struct member would.
 	println$(
 		"spec-hidden-member-visibility: ",
-		Greeter::greet(&dog),
+		Greeter::greet(*dog),
 		" ",
-		child::call_double_name_generically(&dog),
+		child::call_double_name_generically(*dog),
 		" ",
-		reveal Greeter::double_name(&dog)
+		reveal Greeter::double_name(*dog)
 	);
 
 	# This module implements `Counter` but only `child` calls its hidden
 	# `scaled` hook, whose default body resolves in `child`.
 	tally := Tally { n = 5; };
-	println$("cross-module-default-body: ", child::scaled_total(&tally));
+	println$("cross-module-default-body: ", child::scaled_total(*tally));
 
 	# `reveal` on an import is the whole gate: the alias's own visibility is
 	# not checked a second time when the lazily-bound name is finally

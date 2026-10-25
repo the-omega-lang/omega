@@ -142,7 +142,7 @@ fn symbol_containing(ir: &str, name: &str) -> String {
 }
 
 const OWNER: &str = "\
-exposed mut TOTAL: i32 = 0;\n\
+exposed ^TOTAL: i32 = 0;\n\
 exposed bump(amount: i32) => void { TOTAL += amount; }\n";
 
 const USER: &str = "\
@@ -241,7 +241,7 @@ fn a_forced_global_is_defined_once_under_its_selected_name() {
         (
             "owner.omg",
             "@symbol(name = \"unmangled_symbol_with_default_value\")\n\
-             exposed mut TOTAL: i32 = 10;\n\
+             exposed ^TOTAL: i32 = 10;\n\
              exposed bump(amount: i32) => void { TOTAL += amount; }\n",
         ),
     ]);
@@ -274,7 +274,7 @@ fn a_forced_global_is_defined_once_under_its_selected_name() {
 fn a_disabled_global_uses_its_written_identifier() {
     let artifacts = artifacts(&[(
         "main.omg",
-        "@symbol(mangle = disabled)\nmut plain_flag: i32 = 3;\nmain() => void { plain_flag += 1; }\n",
+        "@symbol(mangle = disabled)\n^plain_flag: i32 = 3;\nmain() => void { plain_flag += 1; }\n",
     )]);
 
     assert!(
@@ -331,7 +331,7 @@ gap Capability {\n\
     provide(value: i32) => i32;\n\
 }\n\
 \n\
-exposed mut TOTAL: i32 = 0;\n\
+exposed ^TOTAL: i32 = 0;\n\
 exposed bump(amount: i32) => void { TOTAL += amount; }\n\
 \n\
 @symbol(export)\n\
@@ -344,7 +344,7 @@ exposed uncalled(x: i32) => i32 { x }\n\
 exposed explicitly_hidden(x: i32) => i32 { x }\n\
 \n\
 @symbol(export)\n\
-exposed mut EXPORTED_TOTAL: i32 = 1;\n\
+exposed ^EXPORTED_TOTAL: i32 = 1;\n\
 \n\
 exposed foreign imported_data : i32;\n\
 \n\
@@ -362,14 +362,14 @@ exposed struct Counter {\n\
     exposed value: i32;\n\
 \n\
     @symbol(export)\n\
-    exposed bump_it(*mut self, amount: i32) => void { self.value += amount; }\n\
+    exposed bump_it(^self, amount: i32) => void { self.value += amount; }\n\
 \n\
     exposed hidden_method(*self) => i32 { self.value }\n\
 }\n\
 \n\
 exposed greet() => *str {\n\
     <void>Capability::provide(1);\n\
-    mut counter := Counter { value = 0; };\n\
+    ^counter := Counter { value = 0; };\n\
     counter.bump_it(1);\n\
     <void>counter.hidden_method();\n\
     <void>imported_data;\n\
@@ -413,7 +413,7 @@ main() => void {\n\
     <void>hidden_generic(1);\n\
     <void>exported_generic(2);\n\
     thing := Thing { value = 3; };\n\
-    <void>describe_any(&thing);\n\
+    <void>describe_any(*thing);\n\
     <void>owner::greet();\n\
 }\n";
 

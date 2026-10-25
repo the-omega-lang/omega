@@ -45,30 +45,30 @@ exposed enum AtomicRmwOrdering {
 # tag would turn a compile-time-known operation into a dispatch branch inside
 # the platform.
 #
-# Every modifying operation takes `*mut`, so an atomic call never becomes a
+# Every modifying operation takes a `^` pointer, so an atomic call never becomes a
 # way to write through an immutable Omega binding.
 macro atomicity($Gap: ident, $Unsigned: type, $Signed: type) => {
     gap $Gap {
         load(location: *$Unsigned, order: AtomicLoadOrdering) => $Unsigned;
-        store(location: *mut $Unsigned, value: $Unsigned, order: AtomicStoreOrdering) => void;
-        exchange(location: *mut $Unsigned, value: $Unsigned, order: AtomicRmwOrdering) => $Unsigned;
+        store(location: ^$Unsigned, value: $Unsigned, order: AtomicStoreOrdering) => void;
+        exchange(location: ^$Unsigned, value: $Unsigned, order: AtomicRmwOrdering) => $Unsigned;
 
         # `Ok` carries the previous value on exchange, `Err` the value actually
         # observed on failure. Failure is a load and requests its own ordering
         # independently of the success path.
-        compare_exchange(location: *mut $Unsigned, expected: $Unsigned, desired: $Unsigned, success: AtomicRmwOrdering, failure: AtomicLoadOrdering) => Result<$Unsigned, $Unsigned>;
-        compare_exchange_weak(location: *mut $Unsigned, expected: $Unsigned, desired: $Unsigned, success: AtomicRmwOrdering, failure: AtomicLoadOrdering) => Result<$Unsigned, $Unsigned>;
+        compare_exchange(location: ^$Unsigned, expected: $Unsigned, desired: $Unsigned, success: AtomicRmwOrdering, failure: AtomicLoadOrdering) => Result<$Unsigned, $Unsigned>;
+        compare_exchange_weak(location: ^$Unsigned, expected: $Unsigned, desired: $Unsigned, success: AtomicRmwOrdering, failure: AtomicLoadOrdering) => Result<$Unsigned, $Unsigned>;
 
-        fetch_add(location: *mut $Unsigned, value: $Unsigned, order: AtomicRmwOrdering) => $Unsigned;
-        fetch_sub(location: *mut $Unsigned, value: $Unsigned, order: AtomicRmwOrdering) => $Unsigned;
-        fetch_and(location: *mut $Unsigned, value: $Unsigned, order: AtomicRmwOrdering) => $Unsigned;
-        fetch_or(location: *mut $Unsigned, value: $Unsigned, order: AtomicRmwOrdering) => $Unsigned;
-        fetch_xor(location: *mut $Unsigned, value: $Unsigned, order: AtomicRmwOrdering) => $Unsigned;
+        fetch_add(location: ^$Unsigned, value: $Unsigned, order: AtomicRmwOrdering) => $Unsigned;
+        fetch_sub(location: ^$Unsigned, value: $Unsigned, order: AtomicRmwOrdering) => $Unsigned;
+        fetch_and(location: ^$Unsigned, value: $Unsigned, order: AtomicRmwOrdering) => $Unsigned;
+        fetch_or(location: ^$Unsigned, value: $Unsigned, order: AtomicRmwOrdering) => $Unsigned;
+        fetch_xor(location: ^$Unsigned, value: $Unsigned, order: AtomicRmwOrdering) => $Unsigned;
 
-        fetch_min_unsigned(location: *mut $Unsigned, value: $Unsigned, order: AtomicRmwOrdering) => $Unsigned;
-        fetch_max_unsigned(location: *mut $Unsigned, value: $Unsigned, order: AtomicRmwOrdering) => $Unsigned;
-        fetch_min_signed(location: *mut $Signed, value: $Signed, order: AtomicRmwOrdering) => $Signed;
-        fetch_max_signed(location: *mut $Signed, value: $Signed, order: AtomicRmwOrdering) => $Signed;
+        fetch_min_unsigned(location: ^$Unsigned, value: $Unsigned, order: AtomicRmwOrdering) => $Unsigned;
+        fetch_max_unsigned(location: ^$Unsigned, value: $Unsigned, order: AtomicRmwOrdering) => $Unsigned;
+        fetch_min_signed(location: ^$Signed, value: $Signed, order: AtomicRmwOrdering) => $Signed;
+        fetch_max_signed(location: ^$Signed, value: $Signed, order: AtomicRmwOrdering) => $Signed;
     }
 }
 

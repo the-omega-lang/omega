@@ -9,7 +9,7 @@ grammar at each invocation site to determine what that template must mean.
 ```
 macro signed_integer($T: type) => {
     primitive $T {
-        exposed equals(*self, other: Self) => bool { *self == other }
+        exposed equals(*self, other: Self) => bool { self.* == other }
         ...
     }
     meet Eq for $T {}

@@ -41,7 +41,7 @@ The meaning of an omitted bound depends on context:
 | indexing/slicing | inferred from the container's bounds/length |
 | match pattern | inferred from the unmatched portion of the scrutinee domain |
 
-Container/match context takes precedence over ordinary range-domain inference. Therefore `&items[5..]` means “from index 5 through the end of `items`”, not “through `usize::MAX`”.
+Container/match context takes precedence over ordinary range-domain inference. Therefore `*items[5..]` means “from index 5 through the end of `items`”, not “through `usize::MAX`”.
 
 A stored range cannot later mean “the rest of whichever container uses me”; its inferred bounds were determined when the range value was formed.
 
@@ -63,11 +63,11 @@ An inclusive range must terminate safely at the maximum representable value with
 
 ```omega
 for value in source { ... }
-for mut value in source { ... }
+for ^value in source { ... }
 for value : SomeType in source { ... }
 ```
 
-The loop binding is one identifier, optionally `mut` and optionally explicitly typed. Omega has no destructuring loop-binding syntax.
+The loop binding is one identifier, optionally `^` and optionally explicitly typed. Omega has no destructuring loop-binding syntax.
 
 This form is distinct from the classic three-clause loop:
 
@@ -81,7 +81,7 @@ The protocol is `core::iterator`'s two specs, equivalent to:
 
 ```omega
 spec Iterator<T> {
-    next(*mut self) => Option<T>;
+    next(^self) => Option<T>;
 }
 
 spec ToIterator<T> {
@@ -105,11 +105,11 @@ for value : u8 in source { ... }
 
 `core` conforms the two built-in sequence types:
 
-- A slice `*[]T` (or `*mut []T`) is a `ToIterator<T>`. Its cursor, `core::primitives::slices::SliceIterator<T>`, yields each element **by value**, in index order, so the loop binding is a copy and writing to it never changes the slice.
+- A slice `*[]T` (or `^[]T`) is a `ToIterator<T>`. Its cursor, `core::primitives::slices::SliceIterator<T>`, yields each element **by value**, in index order, so the loop binding is a copy and writing to it never changes the slice.
 - A string `*str` is a `ToIterator<char>`. Its cursor, `core::primitives::strings::Chars`, decodes the string's UTF-8 bytes one `char` at a time. A `*str` is not validated on construction, so ill-formed input is decoded leniently: each **maximal subpart** of an ill-formed sequence — the longest prefix of a well-formed sequence that is present — yields one U+FFFD REPLACEMENT CHARACTER, and decoding resumes at the next byte. This is Unicode's "substitution of maximal subparts", the same result as Rust's lossy UTF-8 decoding.
 
 ```omega
-for n in &numbers[0..] { total += n; }
+for n in *numbers[0..] { total += n; }
 for c in "aé€" { ... }        # 'a', 'é', '€'
 ```
 
@@ -121,7 +121,7 @@ A protocol-driven loop behaves as if it repeatedly calls the iterator and matche
 
 ```omega
 {
-    mut $iter := <_ : core::iterator::ToIterator<T>>::to_iterator(source);
+    ^$iter := <_ : core::iterator::ToIterator<T>>::to_iterator(source);
     while true {
         $next := <_ : core::iterator::Iterator<T>>::next($iter);
         match $next {
@@ -139,7 +139,7 @@ When `source` is already an `Iterator<T>`, `$iter` is initialized directly from 
 
 Both calls are [fully qualified spec calls](specs-and-conformance.md#calling-conforming-functions): they reach `to_iterator` and `next` through the conformance, so an inherent function of the same name takes no part, and the loop body gains no bound context from the conformance.
 
-The user loop binding is freshly assigned each iteration. If written `mut`, mutating it does not mutate the iterator's internal cursor unless the loop body separately accesses the source.
+The user loop binding is freshly assigned each iteration. If written `^`, mutating it does not mutate the iterator's internal cursor unless the loop body separately accesses the source.
 
 `break` and `continue` target the `for ... in` loop normally.
 

@@ -2,11 +2,11 @@ stop() => void {}
 
 # A function value is already its address; there is no storage to point at.
 shared_address() => void {
-	p := &stop;
+	p := *stop;
 }
 
 mutable_address() => void {
-	p := &mut stop;
+	p := ^stop;
 }
 
 main() => void {}

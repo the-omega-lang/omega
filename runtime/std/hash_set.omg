@@ -26,7 +26,7 @@ exposed struct HashSet<T: Hash> {
     exposed len(*self) => usize { self.inner.len() }
     exposed is_empty(*self) => bool { self.inner.is_empty() }
 
-    exposed insert(*mut self, value: T) => bool {
+    exposed insert(^self, value: T) => bool {
         old := self.inner.insert(value, Unit {});
         match old {
             Option::None => {
@@ -42,7 +42,7 @@ exposed struct HashSet<T: Hash> {
         self.inner.contains_key(value)
     }
 
-    exposed remove(*mut self, value: T) => bool {
+    exposed remove(^self, value: T) => bool {
         old := self.inner.remove(value);
         match old {
             Option::Some => {
@@ -54,11 +54,11 @@ exposed struct HashSet<T: Hash> {
         }
     }
 
-    exposed clear(*mut self) => void {
+    exposed clear(^self) => void {
         self.inner.clear();
     }
 
-    exposed free(*mut self) => void {
+    exposed free(^self) => void {
         self.inner.free();
     }
 
@@ -76,7 +76,7 @@ exposed struct HashSetIterator<T> {
 }
 
 meet<T> Iterator<T> for HashSetIterator<T> {
-    next(*mut self) => Option<T> {
+    next(^self) => Option<T> {
         kv := self.inner.next();
         match kv {
             Option::Some => {

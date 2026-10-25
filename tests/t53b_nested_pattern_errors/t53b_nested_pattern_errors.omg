@@ -130,7 +130,7 @@ missing_field(p: Point) => i32 {
 }
 
 assign_refined_path(o: Opt) => void {
-	mut local := o;
+	^local := o;
 	match local {
 		Opt::Some { value = Res::Ok; } => {
 			local.value = Res::Err { code = 1; };
@@ -140,10 +140,10 @@ assign_refined_path(o: Opt) => void {
 }
 
 widened_by_mutable_alias(o: Opt) => i32 {
-	mut local := o;
+	^local := o;
 	match local {
 		Opt::Some { value = Res::Ok; } => {
-			pointer := &mut local.value;
+			pointer := ^local.value;
 			local.value.value
 		},
 		.. => 0,

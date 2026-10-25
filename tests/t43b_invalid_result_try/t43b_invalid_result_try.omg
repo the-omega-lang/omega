@@ -4,7 +4,7 @@
 # payload, no error conversion and none of the caller's deferred work with it.
 import std::io::println;
 
-foreign(c) set_result_tag(slot: *mut Result<i32, *str>, tag: u32) => void;
+foreign(c) set_result_tag(slot: ^Result<i32, *str>, tag: u32) => void;
 
 double(value: Result<i32, *str>) => Result<i32, *str> {
 	defer { println$("defer-ran"); }
@@ -22,10 +22,10 @@ report(outcome: Result<i32, *str>, label: *str) => void {
 main() => void {
 	ok: Result<i32, *str> = Result<i32, *str>::Ok { value = 21; };
 	report(double(ok), "ok");
-	mut err: Result<i32, *str> = Result<i32, *str>::Err { error = "denied"; };
+	^err: Result<i32, *str> = Result<i32, *str>::Err { error = "denied"; };
 	report(double(err), "err");
 	# `Ok` is 0 and `Err` is 1, so 7 belongs to neither.
-	set_result_tag(&mut err, 7u32);
+	set_result_tag(^err, 7u32);
 	println$("before-try");
 	report(double(err), "never");
 }

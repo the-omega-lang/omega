@@ -3,13 +3,13 @@ import core::panic::PanicInfo;
 # The handler is `shared` to core, so `panic$` stays the only ordinary source
 # entry point: an application cannot call the raw gap function itself.
 raw_handler_call() => never {
-	mut info := PanicInfo {
+	^info := PanicInfo {
 		source_file = "here";
 		line = 1;
 		column = 1;
 		message = "direct";
 	};
-	core::panic::PanicHandler::panic(&info)
+	core::panic::PanicHandler::panic(*info)
 }
 
 # The message is an ordinary `*str` field assignment, checked by the ordinary

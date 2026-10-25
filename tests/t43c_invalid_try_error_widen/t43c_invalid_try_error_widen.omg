@@ -11,7 +11,7 @@ struct Denied { exposed code: i32; }
 alias Narrow = enum NotFound | Denied;
 alias Wide = enum NotFound | Denied | *str;
 
-foreign(c) set_error_tag(slot: *mut Result<i32, Narrow>, tag: u32) => void;
+foreign(c) set_error_tag(slot: ^Result<i32, Narrow>, tag: u32) => void;
 
 lookup(value: Result<i32, Narrow>) => Result<i32, Wide> {
 	defer { println$("defer-ran"); }
@@ -35,13 +35,13 @@ report(outcome: Result<i32, Wide>, label: *str) => void {
 main() => void {
 	ok: Result<i32, Narrow> = Result<i32, Narrow>::Ok { value = 3; };
 	report(lookup(ok), "ok");
-	mut err: Result<i32, Narrow> = Result<i32, Narrow>::Err {
+	^err: Result<i32, Narrow> = Result<i32, Narrow>::Err {
 		error = <Narrow>Denied { code = 4; };
 	};
 	report(lookup(err), "err");
 	# The narrow error shape has two members, so this leaves the `Err`
 	# variant intact and only the payload's own tag invalid.
-	set_error_tag(&mut err, 2u32);
+	set_error_tag(^err, 2u32);
 	println$("before-try");
 	report(lookup(err), "never");
 }

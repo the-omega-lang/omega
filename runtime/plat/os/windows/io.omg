@@ -19,8 +19,8 @@ shared write_standard(which: u32, bytes: *[]u8) => Option<usize> {
 	if !api::usable(handle) {
 		Option<usize>::None
 	} else {
-		mut written: u32 = 0;
-		ok := api::WriteFile(handle, <*u8>bytes, transferable(<usize>bytes.length), &mut written, <*mut u8>0usize);
+		^written: u32 = 0;
+		ok := api::WriteFile(handle, <*u8>bytes, transferable(<usize>bytes.length), ^written, <^u8>0usize);
 		if ok == 0 {
 			Option<usize>::None
 		} else {
@@ -42,13 +42,13 @@ glue core::platform::StandardError {
 }
 
 glue core::platform::StandardInput {
-	read(into: *mut []u8) => Option<usize> {
+	read(into: ^[]u8) => Option<usize> {
 		handle := api::GetStdHandle(api::STD_INPUT);
 		if !api::usable(handle) {
 			Option<usize>::None
 		} else {
-			mut read: u32 = 0;
-			ok := api::ReadFile(handle, <*mut u8>into, transferable(<usize>into.length), &mut read, <*mut u8>0usize);
+			^read: u32 = 0;
+			ok := api::ReadFile(handle, <^u8>into, transferable(<usize>into.length), ^read, <^u8>0usize);
 			if ok == 0 {
 				Option<usize>::None
 			} else {

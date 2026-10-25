@@ -61,7 +61,7 @@ pub enum AnnotationExprKind {
         name: Ident,
         args: Vec<AnnotationExpr>,
     },
-    /// `&[a, b]` -- a membership list. It has no allocation, address, or
+    /// `*[a, b]` -- a membership list. It has no allocation, address, or
     /// slice semantics; the spelling only borrows the familiar shape.
     List(Vec<AnnotationExpr>),
     Sizeof(Type),

@@ -119,10 +119,10 @@ fn every_global_form_keeps_its_resolved_policy_and_initializer() {
         typed : u32 = 1;
 
         @symbol(mangle = disabled)
-        mut bare : u32;
+        ^bare : u32;
 
         @symbol(name = "forced_inferred")
-        mut inferred := 3u32;
+        ^inferred := 3u32;
 
         @symbol(mangle = enabled)
         explicit : u32 = 4;
@@ -133,7 +133,7 @@ fn every_global_form_keeps_its_resolved_policy_and_initializer() {
         exported : u32 = 6;
 
         @symbol(export = enabled, name = "exported_exact")
-        mut exported_exact : u32 = 7;
+        ^exported_exact : u32 = 7;
 
         main() => void {}
         "#,

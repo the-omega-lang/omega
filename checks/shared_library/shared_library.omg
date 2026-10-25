@@ -15,7 +15,7 @@ import std::io::println;
 # against the process image when the library is loaded. That only works if
 # the host exports its own symbols; an executable linked without
 # `-rdynamic` keeps them out of its dynamic table and the load fails here.
-foreign mut host_secret : i32;
+foreign ^host_secret : i32;
 foreign(c) host_bump(amount: i32) => void;
 
 # An ordinary Omega item: linked into the library and called below, but

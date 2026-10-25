@@ -23,10 +23,10 @@ exposed exported_value() => i32 { hidden_value() + 40 }\n\
 exposed hidden_value() => i32 { 2 }\n\
 \n\
 @symbol(name = \"shared_exported_data\", export)\n\
-exposed mut exported_data : i32 = 11;\n\
+exposed ^exported_data : i32 = 11;\n\
 \n\
 @symbol(name = \"shared_hidden_data\")\n\
-exposed mut hidden_data : i32 = 13;\n\
+exposed ^hidden_data : i32 = 13;\n\
 \n\
 @symbol(name = \"shared_read_hidden_data\", export)\n\
 exposed read_hidden_data() => i32 { hidden_data }\n";

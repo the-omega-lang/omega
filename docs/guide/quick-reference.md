@@ -11,7 +11,12 @@ This is **not** the normative language definition. For exact rules, follow the l
 | comment | `# text` | `// text` |
 | function | `add(a: i32) => i32 { ... }` | `fn add(...) -> i32` |
 | inferred binding | `x := value;` | `let x = value;` |
-| mutable binding | `mut x := value;` | `let mut x = value;` |
+| mutable binding | `^x := value;` | `let mut x = value;` |
+| mutable parameter | `f(^a: i32)` | `fn f(mut a: i32)` |
+| pointer types | `*T` (read-only), `^T` (mutable) | `&T`, `&mut T`, `*mut T` |
+| take an address | `*x`, `^x` | `&x`, `&mut x` |
+| dereference | `p.*`, `p.* = v`, `p.*.field` | `*p`, `(*p).field`, `p->field` |
+| mutating method | `bump(^self)` | `fn bump(&mut self)` |
 | public visibility | `exposed` | `pub` |
 | interface | `spec` | `trait` / `interface` |
 | implementation | `meet S for T { ... }` | `impl S for T` |
@@ -74,13 +79,15 @@ The final expression of a block can provide its value.
 
 ## Bindings and mutability
 
+`^` before a name makes a binding (or a parameter) mutable:
+
 ```omega
 x := 10;
-mut y := 20;
+^y := 20;
 
 name: *str = "Omega";
-mut count: i32 = 0;
-mut buffer: [64]u8;
+^count: i32 = 0;
+^buffer: [64]u8;
 ```
 
 Mutation is explicit:
@@ -117,24 +124,29 @@ bool char str void never
 
 ```omega
 value: i32 = 10;
-p: *i32 = &value;
+p: *i32 = *value;
 
-mut other: i32 = 20;
-pm: *mut i32 = &mut other;
+^other: i32 = 20;
+pm: ^i32 = ^other;
 
-mut bytes: [64]u8;
-view: *mut []u8 = &mut bytes[0..];
+^bytes: [64]u8;
+view: ^[]u8 = ^bytes[0..];
+
+pm.* = 21;          # dereference is postfix `.*`, for reads and writes
+total := p.* + pm.*;
 ```
+
+`*x` / `^x` take an address spelled like the pointer type they produce. Dereference is always `.*`, and a path through a pointer reads left to right (`node.*.next.*.value`); there is no `->`. A write through a pointer needs a `^T`. `&` never takes an address, and `mut` is an ordinary name.
 
 Observed type spellings:
 
 ```text
 *T          pointer
-*mut T      mutable pointer
+^T          mutable pointer
 [N]T        fixed-size array
 *[?]T       unknown-size array pointer
 *[]T        slice pointer
-*mut []T    mutable slice pointer
+^[]T        mutable slice pointer
 ```
 
 See [`../language/types-and-primitives.md`](../language/types-and-primitives.md) and [`../language/strings-casts-arrays-and-slices.md`](../language/strings-casts-arrays-and-slices.md).
@@ -161,7 +173,7 @@ struct Vec2 {
         Vec2 { x = 0; y = 0; }
     }
 
-    exposed translate(*mut self, dx: i32, dy: i32) => void {
+    exposed translate(^self, dx: i32, dy: i32) => void {
         self.x += dx;
         self.y += dy;
     }
@@ -183,14 +195,15 @@ h.echo<u8>(1);
 Holder::make<u8>(1);
 ```
 
-Receiver forms that exist in repository source:
+Receiver forms (`*self` is `self : *Self`, `^self` is `self : ^Self`):
 
 ```omega
 method(self) => T { ... }
-method(mut self) => void { ... }
 method(*self) => T { ... }
-method(*mut self) => void { ... }
+method(^self) => void { ... }
 ```
+
+There is no by-value mutable receiver; a method that needs a mutable copy writes `^copy := self;`.
 
 ## Unions
 
@@ -265,7 +278,7 @@ loop {
     if done { break; }
 }
 
-for mut i := 0; i < n; ++i {
+for ^i := 0; i < n; ++i {
     work(i);
 }
 
@@ -322,8 +335,8 @@ defer {
 import core::volatile::read_volatile;
 import core::volatile::write_volatile;
 
-write_volatile(&mut uart.data, 0x41_u32);   # never removed, repeated, or merged
-status := read_volatile(&uart.status);
+write_volatile(^uart.data, 0x41_u32);   # never removed, repeated, or merged
+status := read_volatile(*uart.status);
 ```
 
 See [`../language/volatile.md`](../language/volatile.md).
@@ -341,15 +354,15 @@ comp BYTES := typeinfo<Header>.size;
 ## Inline assembly
 
 ```omega
-mut x : i32 = 0;
+^x : i32 = 0;
 y := 20i32;
-asm(reg(&mut x, "rcx"), reg(y)) => {
+asm(reg(^x, "rcx"), reg(y)) => {
     add $y, 22
     mov dword ptr [$x], $y
 }
 ```
 
-`reg(expr)` is a by-value snapshot with no implicit writeback; mutate Omega storage explicitly with `reg(&mut x)`. `comp(NAME)` substitutes a `comp` value as literal assembler text. The body is raw backend assembly (X86/X86-64 uses Intel syntax), not Omega syntax -- full rules, including `$$`/`clobber`/dialect/optimization-opacity, are in [`../language/inline-assembly.md`](../language/inline-assembly.md).
+`reg(expr)` is a by-value snapshot with no implicit writeback; mutate Omega storage explicitly with `reg(^x)`. `comp(NAME)` substitutes a `comp` value as literal assembler text. The body is raw backend assembly (X86/X86-64 uses Intel syntax), not Omega syntax -- full rules, including `$$`/`clobber`/dialect/optimization-opacity, are in [`../language/inline-assembly.md`](../language/inline-assembly.md).
 
 A `@naked` function's body is exactly one `asm` statement that owns the whole function, with no Omega-generated prologue/epilogue:
 
@@ -444,8 +457,8 @@ See [`../language/generics.md`](../language/generics.md).
 Static member access uses `::`; a receiver-bearing function is named through `::self::` instead:
 
 ```omega
-writer := BufWriter<Stdout>::new(&mut stdout, &mut buf[0..]);
-Vec2::self::translate(&mut p, 1, 2);    # the same function `p.translate(1, 2)` calls
+writer := BufWriter<Stdout>::new(^stdout, ^buf[0..]);
+Vec2::self::translate(^p, 1, 2);    # the same function `p.translate(1, 2)` calls
 ```
 
 The two spellings are separate namespaces and `Type::self::name` hands back an ordinary function value with the receiver as an explicit first parameter; see [`../language/functions.md`](../language/functions.md#associated-function-namespaces).
@@ -456,7 +469,7 @@ A `spec` is Omega's interface-like construct:
 
 ```omega
 exposed spec Iterator<T> {
-    next(*mut self) => Option<T>;
+    next(^self) => Option<T>;
 }
 ```
 
@@ -494,7 +507,7 @@ Repository runtime source adds methods/conformances to compiler primitive types 
 ```omega
 primitive char {
     exposed is_ascii(*self) => bool {
-        <u32>*self <= 0x7F_u32
+        <u32>self.* <= 0x7F_u32
     }
 }
 
@@ -511,11 +524,11 @@ A capability required from the platform/runtime can be declared as a `gap`, and 
 
 ```omega
 gap GlobalAllocator {
-    alloc(size: usize) => *mut u8;
+    alloc(size: usize) => ^u8;
 }
 
 glue core::platform::GlobalAllocator {
-    alloc(size: usize) => *mut u8 {
+    alloc(size: usize) => ^u8 {
         ...
     }
 }
@@ -551,7 +564,7 @@ struct Header {
 @symbol(name = "symbol_from_outside")
 foreign outside_sym : i32;
 
-foreign mut shared_counter : i32;
+foreign ^shared_counter : i32;
 
 @symbol(name = "unmangled_symbol_with_default_value")
 my_symbol : i32 = 10;
@@ -560,7 +573,7 @@ my_symbol : i32 = 10;
 exposed exported_api() => void { }
 ```
 
-The foreign bindings name storage another object owns; `foreign mut` permits Omega to write that storage. Omitting `mut` does not promise that another object will leave it unchanged. `my_symbol` is an ordinary Omega global that owns and initializes its own storage under an exact external name. A `comp` binding and a local take no `@symbol`; a top-level `comp` binding still takes `@cond`, and a local takes no annotation at all.
+The foreign bindings name storage another object owns; `foreign ^` permits Omega to write that storage. Omitting `^` does not promise that another object will leave it unchanged. `my_symbol` is an ordinary Omega global that owns and initializes its own storage under an exact external name. A `comp` binding and a local take no `@symbol`; a top-level `comp` binding still takes `@cond`, and a local takes no annotation at all.
 
 An Omega-declared symbol is hidden by default -- still linkable across source files and separately compiled objects of one program, but not exported out of a shared library; `export` is what changes that. A `foreign` item defaults the other way, since declaring one already says the symbol crosses a boundary. None of this is `exposed`/`shared`/`hidden`, which decide what Omega *source* may name.
 
@@ -573,7 +586,7 @@ exposed buffer_bytes : usize = 256;
 @cond(not(def::small_build))
 exposed buffer_bytes : usize = 65536;
 
-@cond(all(target_freestanding, in(target_arch, &["thumbv7em", "riscv32"])))
+@cond(all(target_freestanding, in(target_arch, *["thumbv7em", "riscv32"])))
 exposed reset_handler() => never { ... }
 ```
 

@@ -53,6 +53,6 @@ main() => void {
 	e := Explicit { base = 4; };
 	println$(s.take(n));
 	println$(e.take(n));
-	println$(total(&s, n));
-	println$(product(&e, n));
+	println$(total(*s, n));
+	println$(product(*e, n));
 }

@@ -15,15 +15,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 static NEXT_DIR: AtomicUsize = AtomicUsize::new(0);
 
 const PROVIDER: &str = "\
-exposed mut counter : i32 = 5;\n\
+exposed ^counter : i32 = 5;\n\
 \n\
 @symbol(name = \"egl_named\")\n\
-exposed mut named : i32 = 7;\n\
+exposed ^named : i32 = 7;\n\
 \n\
 @symbol(mangle = disabled)\n\
-exposed mut egl_plain : i32 = 9;\n\
+exposed ^egl_plain : i32 = 9;\n\
 \n\
-exposed foreign mut egl_fcounter : i32;\n\
+exposed foreign ^egl_fcounter : i32;\n\
 \n\
 @symbol(mangle = disabled)\n\
 exposed provider_counter() => i32 { counter }\n";

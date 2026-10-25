@@ -16,48 +16,48 @@ import root::os::syscall;
 # rounds the address up itself.
 comp HEADER := 16usize;
 
-length_of(block: *u8) => *mut usize {
-	<*mut usize>(<usize>block - HEADER)
+length_of(block: *u8) => ^usize {
+	<^usize>(<usize>block - HEADER)
 }
 
-copy_bytes(destination: *mut u8, source: *u8, count: usize) => void {
-	mut index: usize = 0;
+copy_bytes(destination: ^u8, source: *u8, count: usize) => void {
+	^index: usize = 0;
 	while index < count {
-		*<*mut u8>(<usize>destination + index) = *<*u8>(<usize>source + index);
+		(<^u8>(<usize>destination + index)).* = (<*u8>(<usize>source + index)).*;
 		index = index + 1;
 	}
 }
 
 glue core::platform::GlobalAllocator {
-	alloc(size: usize) => *mut u8 {
+	alloc(size: usize) => ^u8 {
 		total := size + HEADER;
 		# A request large enough to wrap the header addition would otherwise
 		# map far less memory than the caller asked for.
-		if total < size { return <*mut u8>0usize; }
+		if total < size { return <^u8>0usize; }
 
 		base := syscall::map_anonymous(total);
-		if <usize>base == 0usize { return <*mut u8>0usize; }
+		if <usize>base == 0usize { return <^u8>0usize; }
 
-		*<*mut usize>base = total;
-		<*mut u8>(<usize>base + HEADER)
+		(<^usize>base).* = total;
+		<^u8>(<usize>base + HEADER)
 	}
 
 	free(ptr: *u8) => void {
 		if <usize>ptr != 0usize {
-			total := *length_of(ptr);
+			total := length_of(ptr).*;
 			syscall::unmap(<*u8>(<usize>ptr - HEADER), total);
 		}
 	}
 
 	# The replacement is allocated before the original is released, so a
 	# failed `realloc` returns null with the old block still valid.
-	realloc(ptr: *u8, size: usize) => *mut u8 {
+	realloc(ptr: *u8, size: usize) => ^u8 {
 		if <usize>ptr == 0usize { return GlobalAllocator::alloc(size); }
 
 		replacement := GlobalAllocator::alloc(size);
-		if <usize>replacement == 0usize { return <*mut u8>0usize; }
+		if <usize>replacement == 0usize { return <^u8>0usize; }
 
-		previous_size := *length_of(ptr) - HEADER;
+		previous_size := length_of(ptr).* - HEADER;
 		kept := if previous_size < size { previous_size } else { size };
 		copy_bytes(replacement, ptr, kept);
 		GlobalAllocator::free(ptr);

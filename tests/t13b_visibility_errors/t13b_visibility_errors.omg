@@ -38,5 +38,5 @@ call_through_conforming_type(dog: *Dog) => i32 {
 
 main() => void {
 	dog := Dog { id = 1; };
-	call_through_bound(&dog);
+	call_through_bound(*dog);
 }

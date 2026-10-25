@@ -101,7 +101,7 @@ fn bound_and_spec_qualified_dispatch_compile() {
         call_bound<T: Speak>(value: *T) => i32 { value.speak() }
         entry_fn() => i32 {
             dog := Dog { value = 7; };
-            call_bound(&dog) + Speak::speak(&dog)
+            call_bound(*dog) + Speak::speak(*dog)
         }
         "#,
     );
@@ -122,7 +122,7 @@ fn a_conjunction_bound_requires_every_member() {
         use_both<T: A + B>(value: *T) => i32 { value.a() + value.b() }
         entry_fn() => i32 {
             half := Half { value = 1; };
-            use_both(&half)
+            use_both(*half)
         }
         "#,
     );
@@ -150,7 +150,7 @@ fn a_three_way_conjunction_bound_requires_all_members() {
         use_all<T: A + B + C>(value: *T) => i32 { value.a() + value.b() + value.c() }
         entry_fn() => i32 {
             full := Full { value = 1; };
-            use_all(&full)
+            use_all(*full)
         }
         "#,
     );
@@ -172,7 +172,7 @@ fn a_bound_spelled_either_member_order_admits_the_same_types() {
         use_ba<T: B + A>(value: *T) => i32 { value.a() + value.b() }
         entry_fn() => i32 {
             full := Full { value = 1; };
-            use_ab(&full) + use_ba(&full)
+            use_ab(*full) + use_ba(*full)
         }
         "#;
     let package = TestPackage::new(source);
@@ -190,7 +190,7 @@ fn a_bound_spelled_either_member_order_admits_the_same_types() {
         use_ba<T: B + A>(value: *T) => i32 { value.a() }
         entry_fn() => i32 {
             half := Half { value = 1; };
-            use_ba(&half)
+            use_ba(*half)
         }
         "#,
     );
@@ -220,7 +220,7 @@ fn a_conjunction_with_a_repeated_member_collapses_to_the_member() {
         via_object(x: *spec A + A) => i32 { x.a() }
         entry_fn() => i32 {
             s := S { v = 5; };
-            use_repeated(&s) + via_object(&s)
+            use_repeated(*s) + via_object(*s)
         }
         "#,
     );
@@ -246,7 +246,7 @@ fn a_blanket_bounded_on_a_conjunction_applies_conditionally() {
         use_sum<T: Sum>(value: *T) => i32 { value.sum() }
         entry_fn() => i32 {
             full := Full { value = 2; };
-            use_sum(&full)
+            use_sum(*full)
         }
         "#,
     );
@@ -269,7 +269,7 @@ fn same_named_spec_functions_keep_their_own_spec_identity() {
         via_b<T: B>(x: *T) => i32 { x.tag() }
         entry_fn() => i32 {
             t := Thing { a = 1; b = 2; };
-            via_a(&t) + via_b(&t)
+            via_a(*t) + via_b(*t)
         }
         "#,
     );
@@ -291,7 +291,7 @@ fn a_colliding_method_on_a_conjunction_object_is_ambiguous() {
         via_ab(x: *spec A + B) => i32 { x.tag() }
         entry_fn() => i32 {
             t := Thing { a = 1; b = 2; };
-            via_ab(&t)
+            via_ab(*t)
         }
         "#,
     );
@@ -320,7 +320,7 @@ fn a_narrowing_cast_disambiguates_a_conjunction_object() {
         via_b(x: *spec A + B) => i32 { (<*spec B>x).tag() }
         entry_fn() => i32 {
             t := Thing { a = 1; b = 2; };
-            via_a(&t) + via_b(&t)
+            via_a(*t) + via_b(*t)
         }
         "#,
     );
@@ -343,7 +343,7 @@ fn a_spec_object_type_is_identical_regardless_of_member_order() {
         via_b_a(x: *spec B + A) => i32 { x.a() + x.b() }
         entry_fn() => i32 {
             full := Full { value = 3; };
-            obj : *spec A + B = &full;
+            obj : *spec A + B = *full;
             via_a_b(obj) + via_b_a(obj)
         }
         "#,
@@ -368,7 +368,7 @@ fn widening_and_unrelated_spec_object_casts_are_rejected() {
         widen(x: *spec A) => *spec A + B { <*spec A + B>x }
         entry_fn() => i32 {
             t := Thing { a = 1; };
-            widen(&t).tag()
+            widen(*t).tag()
         }
         "#,
     );
@@ -399,7 +399,7 @@ fn a_fully_qualified_spec_call_resolves_an_ambiguous_static() {
         label_p(s: *S) => i32 { <S : P>::label(s) }
         entry_fn() => i32 {
             s := S { v = 3; };
-            via_p() + via_q() + label_p(&s)
+            via_p() + via_q() + label_p(*s)
         }
         "#,
     );
@@ -673,7 +673,7 @@ fn dependency_conformances_satisfy_the_dependency_bound() {
         meet Animal for Dog { sound(*self) => i32 { self.value } }
         meet Mammal for Dog { fur(*self) => i32 { 1 } }
         call<T: Animal>(value: *T) => i32 { value.sound() }
-        entry_fn() => i32 { dog := Dog { value = 4; }; call(&dog) }
+        entry_fn() => i32 { dog := Dog { value = 4; }; call(*dog) }
         "#,
     );
     package
@@ -685,7 +685,7 @@ fn dependency_conformances_satisfy_the_dependency_bound() {
 fn primitive_blocks_are_core_only() {
     let package = TestPackage::new(
         r#"
-        primitive i32 { exposed identity(*self) => i32 { *self } }
+        primitive i32 { exposed identity(*self) => i32 { self.* } }
         entry_fn() => i32 { 0 }
         "#,
     );
@@ -698,7 +698,7 @@ fn primitive_blocks_are_core_only() {
 
 #[test]
 fn external_non_generic_primitive_is_imported_not_redefined() {
-    let core = TestPackage::new("primitive i32 { exposed identity(*self) => i32 { *self } }");
+    let core = TestPackage::new("primitive i32 { exposed identity(*self) => i32 { self.* } }");
     let local = TestPackage::new("entry_fn() => i32 { 7i32.identity() }");
     let driver = Driver::new(
         local.0.clone(),
@@ -790,7 +790,7 @@ fn extern_owned_concrete_conform_is_imported_not_reemitted() {
 
         entry_fn() => i32 {
             value := Value { n = 7; };
-            Show::show(&value)
+            Show::show(*value)
         }
         "#,
     );
@@ -866,10 +866,10 @@ fn externally_owned_stdout_cannot_conform_to_externally_owned_write() {
     let core = option_core();
     let library = TestPackage::new(
         r#"
-        exposed spec Write { write(*mut self, bytes: *[?]u8) => Option<usize>; }
+        exposed spec Write { write(^self, bytes: *[?]u8) => Option<usize>; }
         exposed marker Stdout {}
         meet Write for Stdout {
-            write(*mut self, bytes: *[?]u8) => Option<usize> {
+            write(^self, bytes: *[?]u8) => Option<usize> {
                 Option<usize>::Some { value = <usize>bytes.length; }
             }
         }
@@ -881,7 +881,7 @@ fn externally_owned_stdout_cannot_conform_to_externally_owned_write() {
         import lib::Write;
 
         meet Write for Stdout {
-            write(*mut self, bytes: *[?]u8) => Option<usize> {
+            write(^self, bytes: *[?]u8) => Option<usize> {
                 Option<usize>::Some { value = <usize>bytes.length; }
             }
         }
@@ -1155,7 +1155,7 @@ fn spec_qualified_calls_adapt_a_non_place_receiver() {
         entry_fn() => i32 {
             dog := Dog { value = 7; };
             Speak::speak(dog)
-                + Speak::speak(&dog)
+                + Speak::speak(*dog)
                 + Speak::speak(Dog { value = 1; })
                 + Speak::speak(make())
         }
@@ -1192,7 +1192,7 @@ fn unconstrained_conformance_parameters_are_rejected() {
         struct Box<T> { exposed value: T; }
         meet<T> Sum for Box<T> { sum(*self) => i32 { 1 } }
         use_sum<X: Sum>(value: *X) => i32 { value.sum() }
-        entry_fn() => i32 { boxed := Box<i32> { value = 1; }; use_sum(&boxed) }
+        entry_fn() => i32 { boxed := Box<i32> { value = 1; }; use_sum(*boxed) }
         "#,
     );
     generic_target
@@ -1211,7 +1211,7 @@ fn blanket_conformances_materialize_and_explicit_blocks_win() {
         meet<T: Numeric> Sum for T { sum(*self) => i32 { 1 } }
         meet Sum for Number { sum(*self) => i32 { 99 } }
         call<T: Sum>(value: *T) => i32 { value.sum() }
-        entry_fn() => i32 { number := Number { value = 7; }; call(&number) + Sum::sum(&number) }
+        entry_fn() => i32 { number := Number { value = 7; }; call(*number) + Sum::sum(*number) }
         "#,
     );
     package
@@ -1232,7 +1232,7 @@ fn a_superseded_blanket_body_is_not_type_checked() {
             sum(*self) => i32 { self.this_member_does_not_exist }
         }
         call<T: Sum>(value: *T) => i32 { value.sum() }
-        entry_fn() => i32 { number := Number { value = 1; }; call(&number) }
+        entry_fn() => i32 { number := Number { value = 1; }; call(*number) }
         "#,
     );
     package
@@ -1253,7 +1253,7 @@ fn a_more_specific_blanket_bound_wins() {
         meet<T: A> Show for T { show(*self) => i32 { 1 } }
         meet<T: A + B> Show for T { show(*self) => i32 { 2 } }
         call<T: Show>(value: *T) => i32 { value.show() }
-        entry_fn() => i32 { value := Number { value = 7; }; call(&value) }
+        entry_fn() => i32 { value := Number { value = 7; }; call(*value) }
         "#,
     );
     let program = package
@@ -1279,7 +1279,7 @@ fn a_bounded_blanket_wins_over_an_unbounded_one() {
         meet<T> Show for T { show(*self) => i32 { 1 } }
         meet<T: Numeric> Show for T { show(*self) => i32 { 2 } }
         call<T: Show>(value: *T) => i32 { value.show() }
-        entry_fn() => i32 { value := Number { value = 7; }; call(&value) }
+        entry_fn() => i32 { value := Number { value = 7; }; call(*value) }
         "#,
     );
     let program = package
@@ -1309,7 +1309,7 @@ fn incomparable_blanket_bound_sets_are_ambiguous() {
         meet<T: A + B> Show for T { show(*self) => i32 { 1 } }
         meet<T: A + C> Show for T { show(*self) => i32 { 2 } }
         call<T: Show>(value: *T) => i32 { value.show() }
-        entry_fn() => i32 { value := Number { value = 7; }; call(&value) }
+        entry_fn() => i32 { value := Number { value = 7; }; call(*value) }
         "#,
     );
     let errors = compile_errors(
@@ -1335,7 +1335,7 @@ fn an_explicit_conform_displaces_a_blanket_registered_before_it() {
         meet<T: Marker> Base for T { b(*self) => i32 { 111 } }
         meet Producer for Gen { make(*self) => Foo { Foo { value = 1; } } }
         meet Base for Foo { b(*self) => i32 { 222 } }
-        entry_fn() => i32 { value := Foo { value = 1; }; Base::b(&value) }
+        entry_fn() => i32 { value := Foo { value = 1; }; Base::b(*value) }
         "#,
     );
     let program = package
@@ -1372,7 +1372,7 @@ fn unrelated_matching_blankets_are_ambiguous() {
         meet<T: A> Show for T { show(*self) => i32 { 1 } }
         meet<T: B> Show for T { show(*self) => i32 { 2 } }
         call<T: Show>(value: *T) => i32 { value.show() }
-        entry_fn() => i32 { value := Number { value = 7; }; call(&value) }
+        entry_fn() => i32 { value := Number { value = 7; }; call(*value) }
         "#,
     );
     let errors = compile_errors(
@@ -1395,7 +1395,7 @@ fn cyclic_blanket_bounds_report_an_error_without_recursing() {
         meet<T: A> B for T { b(*self) => i32 { 1 } }
         meet<T: B> A for T { a(*self) => i32 { 2 } }
         call<T: A>(value: *T) => i32 { value.a() }
-        entry_fn() => i32 { value := Number { value = 7; }; call(&value) }
+        entry_fn() => i32 { value := Number { value = 7; }; call(*value) }
         "#,
     );
     let errors = compile_errors(&package, "cyclic blanket bounds must terminate");
@@ -1431,9 +1431,9 @@ fn generic_conform_bounds_seed_the_body_context() {
         entry_fn() => i32 {
             one := One { value = 1; };
             two := Two { value = 2; };
-            first := Buf<One> { inner = &one; };
-            second := Buf<Two> { inner = &two; };
-            use_sum(&first) + use_qualified_sum(&first) + use_sum(&second)
+            first := Buf<One> { inner = *one; };
+            second := Buf<Two> { inner = *two; };
+            use_sum(*first) + use_qualified_sum(*first) + use_sum(*second)
         }
         "#,
     );
@@ -1453,8 +1453,8 @@ fn generic_conform_bounds_reject_unsatisfied_conformance_at_the_declaration() {
 
         entry_fn() => i32 {
             value := NotW { value = 0; };
-            buf := Buf<NotW> { inner = &value; };
-            Show::show(&buf)
+            buf := Buf<NotW> { inner = *value; };
+            Show::show(*buf)
         }
         "#;
     let package = TestPackage::new(source);
@@ -1495,8 +1495,8 @@ fn an_unrelated_spec_query_does_not_report_a_foreign_template_bound() {
         as_w(value: *Buf<NotW>) => *spec W { value }
         entry_fn() => i32 {
             value := NotW { value = 0; };
-            buf := Buf<NotW> { inner = &value; };
-            as_w(&buf).w()
+            buf := Buf<NotW> { inner = *value; };
+            as_w(*buf).w()
         }
         "#,
     );
@@ -1530,8 +1530,8 @@ fn generic_conform_bounds_expand_conjunctions() {
         use_sum<T: Sum>(value: *T) => i32 { value.sum() }
         entry_fn() => i32 {
             value := Value { value = 1; };
-            buf := Buf<Value> { inner = &value; };
-            use_sum(&buf)
+            buf := Buf<Value> { inner = *value; };
+            use_sum(*buf)
         }
         "#,
     );
@@ -1556,8 +1556,8 @@ fn an_unbounded_generic_conform_gains_no_bound_context() {
         use_show<T: Show>(value: *T) => i32 { value.show() }
         entry_fn() => i32 {
             value := Value { value = 1; };
-            boxed := Box<Value> { inner = &value; };
-            use_show(&boxed)
+            boxed := Box<Value> { inner = *value; };
+            use_show(*boxed)
         }
         "#,
     );
@@ -1608,7 +1608,7 @@ fn distinct_generic_spec_conformances_emit_distinct_bodies() {
         }
         entry_fn() => i32 {
             value := Multi { base = 1; };
-            Consume<i32>::consume(&value, 2) + Consume<u8>::consume(&value, 3u8)
+            Consume<i32>::consume(*value, 2) + Consume<u8>::consume(*value, 3u8)
         }
         "#,
     );
@@ -1638,7 +1638,7 @@ fn a_bound_on_a_conjunction_reaches_its_members_conformances() {
         meet B for Foo { }
 
         use_conjunction<T: A + B>(x: *T) => i32 { x.a() + x.b() }
-        entry_fn() => i32 { f := Foo { v = 0; }; use_conjunction(&f) }
+        entry_fn() => i32 { f := Foo { v = 0; }; use_conjunction(*f) }
         "#,
     );
     package
@@ -1657,7 +1657,7 @@ fn an_unbounded_spec_is_still_out_of_scope_under_another_bound() {
         meet Secret for Dog { secret(*self) => i32 { 999 } }
 
         leak<T: Speak>(x: *T) => i32 { x.secret() }
-        entry_fn() => i32 { d := Dog { id = 7; }; leak(&d) }
+        entry_fn() => i32 { d := Dog { id = 7; }; leak(*d) }
         "#,
     );
     let errors = compile_errors(&package, "an unbounded spec's method must not be in scope");
@@ -1675,8 +1675,8 @@ fn slice_conformances_are_callable_not_merely_declarable() {
             exposed spec Show {{ show(*self) => i32; }}
             meet{generics} Show for {target} {{ show(*self) => i32 {{ self.length }} }}
             entry_fn() => i32 {{
-                mut a: [2]u8;
-                s := &a[0..];
+                ^a: [2]u8;
+                s := *a[0..];
                 Show::show(s)
             }}
             "#,
@@ -1695,8 +1695,8 @@ fn inferred_arrays_slices_and_unsized_array_pointers_have_distinct_spellings() {
         takes_unsized(value: *[?]i32) => i32 { value[1] }
         entry_fn() => i32 {
             inferred: [_]i32 = [10, 20, 30];
-            unsized := <*[?]i32>&inferred;
-            slice := &inferred[0..];
+            unsized := <*[?]i32>*inferred;
+            slice := *inferred[0..];
             takes_slice(slice) + takes_unsized(unsized)
         }
         "#,
@@ -1749,7 +1749,7 @@ fn a_spec_return_type_on_a_method_is_rejected_not_inferred() {
             exposed helper(*self) => i32 { 5 }
             exposed make(*self) => spec Countable { Wrap { n = self.helper(); } }
         }
-        entry_fn() => i32 { z := Zoo { n = 1; }; Countable::count(&z.make()) }
+        entry_fn() => i32 { z := Zoo { n = 1; }; Countable::count(*z.make()) }
         "#,
     );
     let errors = compile_errors(&package, "a `spec T`-returning method must be rejected");
@@ -1770,7 +1770,7 @@ fn a_spec_return_type_on_a_free_function_is_rejected_not_inferred() {
         struct Dog { exposed v: i32; }
         meet Animal for Dog { speak(*self) => i32 { self.v } }
         make() => spec Animal { Dog { v = 1; } }
-        entry_fn() => i32 { Animal::speak(&make()) }
+        entry_fn() => i32 { Animal::speak(*make()) }
         "#,
     );
     let errors = compile_errors(
@@ -1791,7 +1791,7 @@ fn a_mismatched_for_loop_element_annotation_reports_what_is_available() {
     let package = TestPackage::new(
         r#"
         exposed struct BagIter { exposed i: i32; }
-        meet Iterator<u8> for BagIter { next(*mut self) => Option<u8> { Option<u8>::None } }
+        meet Iterator<u8> for BagIter { next(^self) => Option<u8> { Option<u8>::None } }
         exposed struct Bag { exposed n: i32; }
         meet ToIterator<u8> for Bag { to_iterator(*self) => BagIter { BagIter { i = 0; } } }
         entry_fn() => i32 { b := Bag { n = 0; }; for x : u64 in b { } 0 }
@@ -2211,9 +2211,9 @@ fn an_argument_conflicting_with_the_expected_seed_is_rejected() {
 fn a_mut_self_call_on_a_temporary_reports_mutate_temporary() {
     let package = TestPackage::new(
         r#"
-        exposed spec Bumpable { bump(*mut self) => void; }
+        exposed spec Bumpable { bump(^self) => void; }
         struct Bump { exposed n: i32; }
-        meet Bumpable for Bump { bump(*mut self) => void { self.n = self.n + 1; } }
+        meet Bumpable for Bump { bump(^self) => void { self.n = self.n + 1; } }
         make() => Bump { Bump { n = 0; } }
         entry_fn() => i32 { Bumpable::bump(make()); 0 }
         "#,
@@ -2255,7 +2255,7 @@ fn a_thin_pointer_generic_against_a_fat_pointer_teaches_the_rule() {
         use_it<T: Show>(x: *T) => i32 { 1 }
         entry_fn() => i32 {
             arr := [1, 2, 3];
-            slice := &arr[0..<3];
+            slice := *arr[0..<3];
             use_it(slice)
         }
         "#,
@@ -2282,7 +2282,7 @@ fn a_by_value_generic_still_binds_a_slice() {
         use_it<T: Show>(s: T) => i32 { 1 }
         entry_fn() => i32 {
             arr := [1, 2, 3];
-            slice := &arr[0..<3];
+            slice := *arr[0..<3];
             use_it(slice)
         }
         "#,
@@ -2485,7 +2485,7 @@ sum(a: i32, b: i32) => i32 {
 struct Holder {
     v: i32;
 
-    get(*self) => *mut i32 {
+    get(*self) => ^i32 {
         self.v;
     }
 }
@@ -2498,7 +2498,7 @@ entry_fn() => i32 { 0 }
     });
     assert_eq!(
         texts,
-        ["i32", "*mut i32"],
+        ["i32", "^i32"],
         "the label must cover the whole declared return type and nothing else"
     );
 }
@@ -2620,7 +2620,7 @@ fn an_explicit_generic_argument_still_faces_its_bound() {
 
         entry_fn() => i32 {
             cat := Cat { value = 1; };
-            call_bound<Cat>(&cat)
+            call_bound<Cat>(*cat)
         }
         "#,
     );

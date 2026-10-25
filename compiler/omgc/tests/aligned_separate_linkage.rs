@@ -25,7 +25,7 @@ exposed struct Holder {\n\
     exposed trail: u8;\n\
 }\n\
 \n\
-exposed mut SHARED: Holder;\n\
+exposed ^SHARED: Holder;\n\
 \n\
 exposed comp WIDE_CONST := Wide { value = 7i64; };\n\
 \n\
@@ -37,7 +37,7 @@ exposed sum(value: Holder) => i64 {\n\
     value.inner.value + <i64>value.lead + <i64>value.trail\n\
 }\n\
 \n\
-exposed constant_address() => usize { <usize>&WIDE_CONST }\n";
+exposed constant_address() => usize { <usize>*WIDE_CONST }\n";
 
 /// Compiled into its own object: every layout fact it uses about `Holder`
 /// comes from the shared semantic layout, not from the producer's emission.
@@ -52,7 +52,7 @@ exposed omega_roundtrip(value: i64) => i64 {\n\
 @symbol(mangle = disabled)\n\
 exposed omega_shared_address(value: i64) => usize {\n\
     producer::SHARED = producer::make(value);\n\
-    <usize>&producer::SHARED.inner\n\
+    <usize>*producer::SHARED.inner\n\
 }\n\
 \n\
 @symbol(mangle = disabled)\n\
@@ -62,7 +62,7 @@ exposed omega_shared_value() => i64 { producer::SHARED.inner.value }\n\
 exposed omega_producer_constant() => usize { producer::constant_address() }\n\
 \n\
 @symbol(mangle = disabled)\n\
-exposed omega_consumer_constant() => usize { <usize>&producer::WIDE_CONST }\n\
+exposed omega_consumer_constant() => usize { <usize>*producer::WIDE_CONST }\n\
 \n\
 @symbol(mangle = disabled)\n\
 exposed omega_constant_value() => i64 { producer::WIDE_CONST.value }\n";

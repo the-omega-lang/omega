@@ -5,7 +5,7 @@ import std::io::println;
 
 alias Reading = enum i32 | bool | *str;
 
-foreign(c) set_reading_tag(slot: *mut Reading, tag: u32) => void;
+foreign(c) set_reading_tag(slot: ^Reading, tag: u32) => void;
 
 describe(reading: Reading) => *str {
 	match reading {
@@ -17,12 +17,12 @@ describe(reading: Reading) => *str {
 }
 
 main() => void {
-	mut reading: Reading = <Reading>7;
+	^reading: Reading = <Reading>7;
 	println$("arm: ", describe(reading));
 	reading = <Reading>"text";
 	println$("else: ", describe(reading));
 	# The canonical list has three members, so 3 is one past the last tag.
-	set_reading_tag(&mut reading, 3u32);
+	set_reading_tag(^reading, 3u32);
 	println$("before-match");
 	println$("never: ", describe(reading));
 }

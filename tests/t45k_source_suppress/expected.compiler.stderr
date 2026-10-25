@@ -1,9 +1,9 @@
-warning: unnecessary 'mut' on 'value'
+warning: unnecessary '^' on 'value'
  --> tests/t45k_source_suppress/t45k_source_suppress.omg:7:5
   |
-7 |     mut value := 2;
-  |     ^^^^^^^^^^^^^^^ `value` is declared `mut` but never reassigned
+7 |     ^value := 2;
+  |     ^^^^^^^^^^^^ `value` is declared mutable (`^`) but never reassigned
   |
-  = help: remove `mut` -- it isn't just a hint, dropping it changes nothing about how this compiles
+  = help: remove the `^` -- it isn't just a hint, dropping it changes nothing about how this compiles
   = note: suppress this with '@suppress(unnecessary_mut)'
 

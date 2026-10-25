@@ -734,7 +734,7 @@ impl<'r> Analyzer<'r> {
             (_, true) => {
                 if wants_mutable {
                     self.require_mutable_place(id, span, &place.root, &checked, mutable)?;
-                    // De-assumption, like an explicit `&mut`.
+                    // De-assumption, like an explicit `^place`.
                     self.widen_place(&place);
                 }
                 let pointer = ResolvedType::Pointer {

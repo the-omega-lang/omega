@@ -38,7 +38,7 @@ same<T>(a: T, b: T) => T { a }
 stride<comp N: usize, T>(value: T) => usize { N }
 
 # --- a mutable pointer nested in the parameter ---------------------------
-deref<T>(p: *mut T) => *mut T { p }
+deref<T>(p: ^T) => ^T { p }
 
 # --- an anonymous enum a call would inject into --------------------------
 narrow<T>(value: enum T | bool) => bool { true }

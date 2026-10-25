@@ -174,11 +174,38 @@ impl ParseError {
                 .with_label(self.span, "'foreign(cc)' is not allowed directly on a 'name : Type' binding")
                 .with_help("write 'foreign name : foreign(cc) (...) => T;' instead -- the convention belongs to the type"),
             ParseErrorKind::ForeignMutOnFunction => Diagnostic::error(self.kind.message())
-                .with_label(self.span, "'mut' applies to data storage, not a function symbol")
-                .with_help("remove 'mut' from this function declaration or definition"),
+                .with_label(self.span, "'^' applies to data storage, not a function symbol")
+                .with_help("remove '^' from this function declaration or definition"),
             ParseErrorKind::NestedForeignBlock => Diagnostic::error(self.kind.message())
                 .with_label(self.span, "this 'foreign' block is inside another foreign block")
                 .with_help("flatten this into a direct entry of the enclosing block"),
+            ParseErrorKind::LegacyAddressOf { mutable: false } => Diagnostic::error(self.kind.message())
+                .with_label(self.span, "`&` is not a prefix operator")
+                .with_help("write `*` for a read-only pointer (`*T`), or `^` for a mutable one (`^T`)"),
+            ParseErrorKind::LegacyAddressOf { mutable: true } => Diagnostic::error(self.kind.message())
+                .with_label(self.span, "`&mut` is not a prefix operator")
+                .with_help("write `^` in place of `&mut` to take a mutable pointer (`^T`)"),
+            ParseErrorKind::LegacyMutBinding => Diagnostic::error(self.kind.message())
+                .with_label(self.span, "`mut` here is read as a name")
+                .with_note("a mutable binding is declared with `^` directly before its name, as in `^count := 0`")
+                .with_help("write `^` directly before the name in place of `mut`"),
+            ParseErrorKind::LegacyMutPointer { receiver: false } => Diagnostic::error(self.kind.message())
+                .with_label(self.span, "`*` is a read-only pointer, and `mut` here is read as a name")
+                .with_help("write `^T` for a mutable pointer"),
+            ParseErrorKind::LegacyMutPointer { receiver: true } => Diagnostic::error(self.kind.message())
+                .with_label(self.span, "`*` is a read-only pointer, and `mut` here is read as a name")
+                .with_help("write `^self` for a mutable pointer receiver"),
+            ParseErrorKind::LegacyMutSelf => Diagnostic::error(self.kind.message())
+                .with_label(self.span, "`mut` here is read as a name")
+                .with_help("take `self` and declare a mutable copy in the body (`^copy := self;`), or take `^self` to mutate the caller's value"),
+            ParseErrorKind::CaretDereference => Diagnostic::error(self.kind.message())
+                .with_label(self.span, "a dereference is always `.*`")
+                .with_note("a write through a pointer is `p.* = value`; whether it may write comes from the pointer's type (`^T`)")
+                .with_help("write `.*`"),
+            ParseErrorKind::MutableParamWithoutBody { context } => Diagnostic::error(self.kind.message())
+                .with_label(self.span, format!("{context} has no body to own a mutable local"))
+                .with_note("a `^` parameter's mutability belongs to the function body, not to the function's type")
+                .with_help("remove the `^`"),
         }
     }
 }
@@ -268,6 +295,18 @@ pub enum ParseErrorKind {
     ForeignConventionOnBinding,
     ForeignMutOnFunction,
     NestedForeignBlock,
+    LegacyAddressOf {
+        mutable: bool,
+    },
+    LegacyMutBinding,
+    LegacyMutPointer {
+        receiver: bool,
+    },
+    LegacyMutSelf,
+    CaretDereference,
+    MutableParamWithoutBody {
+        context: &'static str,
+    },
 }
 
 impl ParseErrorKind {
@@ -325,8 +364,15 @@ impl ParseErrorKind {
             ParseErrorKind::UnterminatedAsmBody => "unterminated inline assembly body".to_owned(),
             ParseErrorKind::ChainedComparison => "comparison operators are non-associative".to_owned(),
             ParseErrorKind::ForeignConventionOnBinding => "a foreign binding cannot carry its own calling convention".to_owned(),
-            ParseErrorKind::ForeignMutOnFunction => "a foreign function cannot be declared 'mut'".to_owned(),
+            ParseErrorKind::ForeignMutOnFunction => "a foreign function cannot be declared mutable ('^')".to_owned(),
             ParseErrorKind::NestedForeignBlock => "foreign blocks cannot nest".to_owned(),
+            ParseErrorKind::LegacyAddressOf { mutable: false } => "`&` does not take an address".to_owned(),
+            ParseErrorKind::LegacyAddressOf { mutable: true } => "`&mut` does not take an address".to_owned(),
+            ParseErrorKind::LegacyMutBinding => "`mut` is not a keyword; mutability is spelled `^`".to_owned(),
+            ParseErrorKind::LegacyMutPointer { .. } => "`*mut` is not a pointer type; a mutable pointer is spelled `^`".to_owned(),
+            ParseErrorKind::LegacyMutSelf => "the by-value `mut self` receiver was removed".to_owned(),
+            ParseErrorKind::CaretDereference => "`.^` is not a dereference".to_owned(),
+            ParseErrorKind::MutableParamWithoutBody { context } => format!("a parameter of {context} cannot be mutable"),
         }
     }
 }

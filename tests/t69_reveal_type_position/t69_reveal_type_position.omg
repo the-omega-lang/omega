@@ -7,9 +7,9 @@ size_of<T>() => usize { sizeof<T> }
 # the spelling resolve, so none of these warns.
 main() => void {
 	word: i32 = 41;
-	secret := reveal <*vault::Secret>&word;
+	secret := reveal <*vault::Secret>*word;
 	back := <*i32>secret;
-	println$("cast-target: ", *back + 1);
+	println$("cast-target: ", back.* + 1);
 
 	size := reveal sizeof<vault::Secret>;
 	println$("sizeof-operand: ", size);

@@ -11,9 +11,9 @@ import root::os::process;
 # to report. A handler that is already terminating has nowhere to report a
 # failed write, so it stops instead of retrying forever.
 panic_write(bytes: *[]u8) => void {
-	mut written: i32 = 0;
+	^written: i32 = 0;
 	while written < bytes.length {
-		rest := &bytes[written..];
+		rest := *bytes[written..];
 		result := StandardError::write(rest);
 		match result {
 			Option::Some => {
@@ -29,16 +29,16 @@ panic_write(bytes: *[]u8) => void {
 # end of the buffer and sliced from there. `plat` sits below `std` and cannot
 # reach `std::fmt`, and a `u32` needs at most ten decimal digits.
 panic_write_u32(value: u32) => void {
-	mut digits: [10]u8;
-	mut start: i32 = 10;
-	mut current := value;
+	^digits: [10]u8;
+	^start: i32 = 10;
+	^current := value;
 	loop {
 		start = start - 1;
 		digits[start] = 48u8 + <u8>(current % 10u32);
 		current = current / 10u32;
 		if current == 0u32 { break; }
 	}
-	panic_write(&digits[start..]);
+	panic_write(*digits[start..]);
 }
 
 glue core::panic::PanicHandler {

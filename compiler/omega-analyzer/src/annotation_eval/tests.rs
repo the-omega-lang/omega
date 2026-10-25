@@ -93,7 +93,7 @@ fn empty_all_is_true_and_empty_any_is_false() {
 fn every_operand_is_checked_even_when_the_answer_is_already_decided() {
     assert!(error(&[], "any(true, equals(def::missing, 123))").contains("not defined"));
     assert!(error(&[], "all(false, bad_call())").contains("not a condition operator"));
-    assert!(error(&[], "any(false, true, in(1, &[\"a\"]))").contains("cannot be compared"));
+    assert!(error(&[], "any(false, true, in(1, *[\"a\"]))").contains("cannot be compared"));
 }
 
 #[test]
@@ -159,14 +159,14 @@ fn mixed_kinds_never_compare() {
 
 #[test]
 fn membership_checks_every_element_against_the_first_operand() {
-    assert!(eval("in(target_os, &[\"linux\", \"openbsd\"])"));
-    assert!(!eval("in(target_os, &[\"windows\"])"));
-    assert!(!eval("in(target_os, &[])"));
-    assert!(eval_defined(&["n=200u8"], "in(def::n, &[100, 200])"));
-    assert!(error(&[], "in(target_os, &[1])").contains("cannot be compared"));
+    assert!(eval("in(target_os, *[\"linux\", \"openbsd\"])"));
+    assert!(!eval("in(target_os, *[\"windows\"])"));
+    assert!(!eval("in(target_os, *[])"));
+    assert!(eval_defined(&["n=200u8"], "in(def::n, *[100, 200])"));
+    assert!(error(&[], "in(target_os, *[1])").contains("cannot be compared"));
     assert!(error(&[], "in(1, \"linux\")").contains("expected a list"));
     assert!(
-        error(&[], "in(bad_name, &[1])").contains("not a compiler definition"),
+        error(&[], "in(bad_name, *[1])").contains("not a compiler definition"),
         "the first operand is checked before an empty or matching list can decide"
     );
 }
@@ -174,7 +174,7 @@ fn membership_checks_every_element_against_the_first_operand() {
 #[test]
 fn a_boolean_call_is_also_a_value() {
     assert!(eval("equals(all(), true)"));
-    assert!(eval("in(any(), &[false])"));
+    assert!(eval("in(any(), *[false])"));
     assert!(eval_defined(&["flag"], "equals(def::flag, all(true))"));
 }
 
@@ -269,8 +269,8 @@ fn evaluating_an_item_consumes_its_conditions() {
 #[test]
 fn a_value_position_rejects_syntax_that_is_not_a_value() {
     assert!(error(&[], "equals(sizeof<u32>, 4)").contains("expected a value"));
-    assert!(error(&[], "equals(&[1], &[1])").contains("expected a value"));
-    assert!(error(&[], "&[true]").contains("expected a boolean"));
+    assert!(error(&[], "equals(*[1], *[1])").contains("expected a value"));
+    assert!(error(&[], "*[true]").contains("expected a boolean"));
     assert!(error(&[], "sizeof<u32>").contains("expected a boolean"));
 }
 
@@ -390,7 +390,7 @@ fn an_operator_call_is_a_boolean_value() {
 fn a_value_position_needs_a_supplied_definition() {
     assert!(value_error(&[], "def::missing").contains("not defined"));
     assert!(value_error(&[], "equals(def::missing, 1)").contains("not defined"));
-    assert!(value_error(&[], "&[1]").contains("expected a value"));
+    assert!(value_error(&[], "*[1]").contains("expected a value"));
     assert!(value_error(&[], "core::x").contains("not a condition namespace"));
     assert!(value_error(&[], "default(def::n, 300u8)").contains("does not fit"));
     assert!(

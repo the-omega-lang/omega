@@ -26,7 +26,7 @@ The word `spec` in Omega source means the interface-like language construct. “
 ### Types and declarations
 
 5. [`types-and-primitives.md`](types-and-primitives.md) — primitive set, pointers, arrays, slices, literals, `never`, size/layout-visible rules.
-6. [`bindings-and-mutability.md`](bindings-and-mutability.md) — declarations, inference, `mut`, scope, receiver forms.
+6. [`bindings-and-mutability.md`](bindings-and-mutability.md) — declarations, inference, `^`, scope, receiver forms.
 7. [`functions.md`](functions.md) — functions, returns, overloading, generics, `defer`, C-only variadics.
 8. [`structs-and-unions.md`](structs-and-unions.md) — aggregates, fields, literals, methods.
 9. [`enums-and-pattern-matching.md`](enums-and-pattern-matching.md) — enum representation-visible semantics, construction, narrowing, matching.
@@ -48,6 +48,10 @@ The word `spec` in Omega source means the interface-like language construct. “
 22. [`atomics.md`](atomics.md) — atomic locations, modification order, ordering categories, and the platform obligation behind them.
 23. [`volatile.md`](volatile.md) — compiler-implemented `core::volatile` accesses: access count, alignment, and what they do not synchronize.
 24. [`reflection.md`](reflection.md) — the `typeinfo<Type>` operator and `core::reflection` tables: layout facts, structural identity, and on-demand emission.
+
+### Rationale (non-normative)
+
+25. [`syntax-principles.md`](syntax-principles.md) — why mutability is `^`, read-only pointers are `*`, and dereference is the postfix `.*`.
 
 ## Completeness rule
 

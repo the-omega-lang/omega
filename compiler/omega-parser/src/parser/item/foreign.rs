@@ -10,7 +10,7 @@ use crate::diagnostics::{ParseErrorKind, Span};
 use crate::lexer::TokenKind;
 use crate::parser::expression::parse_codeblock;
 use crate::parser::r#type::{parse_raw_convention, parse_type};
-use crate::parser::{Parser, contextual, parse_param_decls, recovery};
+use crate::parser::{Parser, legacy, parse_param_decls, recovery, reject_mutable_params};
 
 pub(super) fn parse_foreign_item(
     p: &mut Parser,
@@ -65,8 +65,11 @@ fn parse_optional_convention(p: &mut Parser) -> Option<Option<RawConvention>> {
 }
 
 fn parse_optional_mut(p: &mut Parser) -> Option<Span> {
-    if p.at_contextual(contextual::MUT) && matches!(p.peek_at(1), TokenKind::Ident(_)) {
-        p.advance();
+    if p.eat(&TokenKind::Caret)
+        || legacy::eat_mut_before(p, |p, offset| {
+            matches!(p.peek_at(offset), TokenKind::Ident(_))
+        })
+    {
         Some(p.last_span())
     } else {
         None
@@ -132,6 +135,7 @@ fn parse_foreign_function_tail(
         Some(parse_codeblock(p)?)
     } else {
         p.expect_terminator(&TokenKind::Semi, "';'");
+        reject_mutable_params(p, &params, "a foreign function declaration");
         None
     };
     Some(ForeignFunctionItem {

@@ -89,11 +89,11 @@ exposed spec Ord {
     }
 
     min(*self, other: Self) => Self {
-        if self.less_or_equal(other) { *self } else { other }
+        if self.less_or_equal(other) { self.* } else { other }
     }
 
     max(*self, other: Self) => Self {
-        if self.greater_or_equal(other) { *self } else { other }
+        if self.greater_or_equal(other) { self.* } else { other }
     }
 }
 

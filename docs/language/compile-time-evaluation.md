@@ -17,7 +17,7 @@ There are three independent uses:
 - `comp name := initializer;` declares a storage-less compile-time binding. References to the binding denote its already-known value.
 - `comp NAME: TYPE` in a generic parameter list declares a compile-time value parameter. See [`generics.md`](generics.md).
 
-A `comp` binding is immutable. `mut comp name := ...` is invalid because a substituted value has no mutable runtime storage.
+A `comp` binding is immutable. `comp ^name := ...` is invalid because a substituted value has no mutable runtime storage.
 
 A non-`comp` binding may still have a `comp` initializer; in that case only the initializer is evaluated at compile time and the binding itself is an ordinary runtime place.
 
@@ -33,7 +33,7 @@ Module-scope bindings may be storage-less `comp` values or real globals:
 comp SIZE := comp add(10, 20);
 
 value := 10;                 # compile-time-known initializer, real storage
-mut count : i32 = 0;         # mutable real global
+^count : i32 = 0;         # mutable real global
 state : SomeType;            # zero-initialized real global
 ```
 
@@ -42,14 +42,14 @@ If a top-level binding has an initializer, that initializer must be compile-time
 ```omega
 x := 10;                     # valid
 name := "omega";            # valid
-items := &[1, 2, 3];         # valid
+items := *[1, 2, 3];         # valid
 
 x := 10 + 20;                # invalid without comp evaluation
 x := make_value();           # invalid without comp evaluation
 x := comp make_value();      # valid if evaluation succeeds
 ```
 
-A top-level declaration without an initializer has real zero-initialized storage. `mut` controls whether that storage may subsequently be written.
+A top-level declaration without an initializer has real zero-initialized storage. `^` controls whether that storage may subsequently be written.
 
 ## Evaluation model
 
@@ -78,7 +78,7 @@ A `comp` operand that itself exits the enclosing *runtime* function — a bare `
 The following operations are not currently evaluable by `comp`:
 
 - calling a `foreign` function;
-- dynamic dispatch through `*spec S` / `*mut spec S`;
+- dynamic dispatch through `*spec S` / `^spec S`;
 - indirect calls through a function-typed variable or field;
 - reading a non-`comp` global from within compile-time evaluation.
 - a `core::volatile` access (see [`volatile.md`](volatile.md));
@@ -110,10 +110,10 @@ A `comp` binding has no ordinary runtime storage. When immutable addressable sto
 
 ```omega
 comp DATA := comp make_data();
-ptr := &DATA;
+ptr := *DATA;
 ```
 
-This materialization never grants mutability. Taking `&mut` of a `comp` binding or calling a `*mut self` method that would require writable storage is invalid.
+This materialization never grants mutability. Taking `^` of a `comp` binding or calling a `^self` method that would require writable storage is invalid.
 
 A materialization is storage for the value's type, so its address satisfies `alignof<Type>` exactly as any other compiler-created storage does.
 
@@ -129,7 +129,7 @@ Mutable references into compile-time-only data are not produced: compile-time pr
 
 Some language positions require compile-time values even without an explicit `comp` prefix. In those positions, an expression may be evaluated at compile time as required by the construct.
 
-Examples include a fixed array's length, a `comp` generic argument, enum tag/header values, and `&[...]` compile-time slice contents:
+Examples include a fixed array's length, a `comp` generic argument, enum tag/header values, and `*[...]` compile-time slice contents:
 
 ```omega
 compute_default_limit() => i32 { 10 + 5 }

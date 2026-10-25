@@ -157,14 +157,14 @@ fn alignof_reports_the_effective_alignment_of_every_inline_shape() {
         comp A_GENERIC := alignof<Wrapper<Wide>>;
         "#,
         r#"
-        mut wide: [A_WIDE]u8;
-        mut holder: [A_HOLDER]u8;
-        mut weak: [A_WEAK]u8;
-        mut bag: [A_BAG]u8;
-        mut shape: [A_SHAPE]u8;
-        mut row: [A_ARRAY]u8;
-        mut alias_of: [A_ALIAS]u8;
-        mut generic: [A_GENERIC]u8;
+        ^wide: [A_WIDE]u8;
+        ^holder: [A_HOLDER]u8;
+        ^weak: [A_WEAK]u8;
+        ^bag: [A_BAG]u8;
+        ^shape: [A_SHAPE]u8;
+        ^row: [A_ARRAY]u8;
+        ^alias_of: [A_ALIAS]u8;
+        ^generic: [A_GENERIC]u8;
         takes32(wide);
         takes32(holder);
         takes32(weak);
@@ -193,13 +193,13 @@ fn alignof_reports_omega_alignment_not_natural_alignment() {
         comp A_FN := alignof<(a: i32) => i32>;
         "#,
         r#"
-        mut a: [A_U64]u8;
-        mut b: [A_F64]u8;
-        mut c: [A_USIZE]u8;
-        mut d: [A_POINTER]u8;
-        mut e: [A_SLICE]u8;
-        mut f: [A_VOID]u8;
-        mut g: [A_FN]u8;
+        ^a: [A_U64]u8;
+        ^b: [A_F64]u8;
+        ^c: [A_USIZE]u8;
+        ^d: [A_POINTER]u8;
+        ^e: [A_SLICE]u8;
+        ^f: [A_VOID]u8;
+        ^g: [A_FN]u8;
         takes1(a);
         takes1(b);
         takes1(c);
@@ -228,7 +228,7 @@ fn a_pointer_width_dependent_annotation_follows_the_target() {
         assert_alignment(
             "comp A_POINTER_WIDE := alignof<PointerWide>;",
             r#"
-            mut value: [A_POINTER_WIDE]u8;
+            ^value: [A_POINTER_WIDE]u8;
             takes_pointer_wide(value);
             "#,
             target,

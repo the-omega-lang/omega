@@ -18,7 +18,7 @@ glue core::platform::StandardError {
 }
 
 glue core::platform::StandardInput {
-	read(into: *mut []u8) => Option<usize> {
-		syscall::read(0, <*mut u8>into, <usize>into.length)
+	read(into: ^[]u8) => Option<usize> {
+		syscall::read(0, <^u8>into, <usize>into.length)
 	}
 }

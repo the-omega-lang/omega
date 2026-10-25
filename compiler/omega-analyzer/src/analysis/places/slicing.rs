@@ -24,8 +24,8 @@ impl<'r> Analyzer<'r> {
         // writable (the place's own mutability); for re-slicing an
         // existing `Slice` value, that slice's own flag -- a property of
         // the value being sliced, independent of whether the *variable*
-        // holding it happens to be `mut`. `requested_mutable` (from the
-        // `&`/`&mut` the user actually wrote) may never exceed this: you
+        // holding it happens to be mutable. `requested_mutable` (from the
+        // `*`/`^` the user actually wrote) may never exceed this: you
         // can't get a mutable slice out of an immutable array or an
         // already-immutable slice.
         // `is_str` tracks whether the *result* should be a `Str` instead of
@@ -159,8 +159,8 @@ impl<'r> Analyzer<'r> {
         // kind -- but a missing `end` only has something to default to
         // when `base_lacks_length` is `false` (`SizedArray`'s compile-time
         // `N`, or `Slice`/`Str`'s own runtime length leaf). `*[?]T` (`Array`)
-        // has no such fallback anywhere, so `&arr[a..]` must name its own
-        // end explicitly; `&arr[a..<b]`/`&arr[..<b]` are unaffected.
+        // has no such fallback anywhere, so `*arr[a..]` must name its own
+        // end explicitly; `*arr[a..<b]`/`*arr[..<b]` are unaffected.
         if matches!(checked_end, CheckedRangeEnd::Open) && base_lacks_length {
             self.error(node_id, span, AnalysisErrorKind::MissingSliceEnd);
             return None;

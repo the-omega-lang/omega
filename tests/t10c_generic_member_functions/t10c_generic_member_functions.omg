@@ -76,7 +76,7 @@ main() => void {
 		"explicit-arguments: ",
 		holder.pick<u8>(1, 2),
 		" ",
-		Holder::self::pick<u8>(&holder, 3, 4)
+		Holder::self::pick<u8>(*holder, 3, 4)
 	);
 
 	# a bound, an expected result type, a `comp` parameter, and `spec S`

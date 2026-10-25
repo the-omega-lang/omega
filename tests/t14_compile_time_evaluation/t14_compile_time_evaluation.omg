@@ -5,8 +5,8 @@ add(a: i32, b: i32) => i32 { a + b }
 # `comp` evaluation supports blocks, `if`, `while`, and ordinary control flow.
 factorial(n: i32) => i32 {
 	if n <= 1 { return 1; }
-	mut result := 1;
-	mut i := 2;
+	^result := 1;
+	^i := 2;
 	while i <= n {
 		result *= i;
 		i += 1;
@@ -37,7 +37,7 @@ value := comp add(20, 30);
 # Ordinary globals: compile-time-known literal initializer, mutable, and
 # zero-initialized with no initializer at all.
 literal_global := 10;
-mut counter: i32 = 0;
+^counter: i32 = 0;
 state: i32;
 
 main() => void {
@@ -50,8 +50,8 @@ main() => void {
 
 	# A `comp` binding has no runtime storage; `&DATA` materializes it as
 	# immutable static data to produce an addressable pointer.
-	ptr := &DATA;
-	println$("comp-materialized-ptr: ", (*ptr)[0]);
+	ptr := *DATA;
+	println$("comp-materialized-ptr: ", ptr.*[0]);
 
 	setting := Setting::Default;
 	println$("enum-comp-default: ", setting.limit);

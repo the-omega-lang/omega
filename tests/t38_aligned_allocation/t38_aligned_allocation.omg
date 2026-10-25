@@ -26,7 +26,7 @@ struct Key {
 # `HashMap` compares a stored key through `*self`, so this conformance sees
 # the entry's own address -- the only way a program can observe where the
 # map put it.
-mut probed_entry: usize = 0;
+^probed_entry: usize = 0;
 
 meet Eq for Key {
 	equals(*self, other: Self) => bool {
@@ -44,25 +44,25 @@ meet Hash for Key {
 @suppress(unused_field, dead_code)
 struct NodeShape {
 	exposed value: Cell;
-	exposed prev: *mut u8;
-	exposed next: *mut u8;
+	exposed prev: ^u8;
+	exposed next: ^u8;
 }
 
 usize_max() => usize { <usize>0 - 1usize }
 
-fill(ptr: *mut u8, count: usize, base: u8) => void {
-	mut i: usize = 0;
+fill(ptr: ^u8, count: usize, base: u8) => void {
+	^i: usize = 0;
 	while i < count {
-		*<*mut u8>(<usize>ptr + i) = base + <u8>i;
+		(<^u8>(<usize>ptr + i)).* = base + <u8>i;
 		i += 1;
 	}
 }
 
 holds(ptr: *u8, count: usize, base: u8) => bool {
-	mut i: usize = 0;
-	mut ok := true;
+	^i: usize = 0;
+	^ok := true;
 	while i < count {
-		if *<*u8>(<usize>ptr + i) != base + <u8>i { ok = false; }
+		if (<*u8>(<usize>ptr + i)).* != base + <u8>i { ok = false; }
 		i += 1;
 	}
 	ok
@@ -131,16 +131,16 @@ reallocation() => void {
 }
 
 collections() => void {
-	mut cells := List<Cell>::new();
+	^cells := List<Cell>::new();
 	defer cells.free();
 
-	mut i: i64 = 0;
-	mut all_aligned := true;
+	^i: i64 = 0;
+	^all_aligned := true;
 	# Well past the initial capacity of 4, so growth reallocates repeatedly.
 	while i < 20 {
 		cells.push(Cell { value = i; });
 		view := cells.as_slice();
-		if <usize>&view[0] % 64 != 0 { all_aligned = false; }
+		if <usize>*view[0] % 64 != 0 { all_aligned = false; }
 		i += 1;
 	}
 	last := cells.as_slice();
@@ -148,7 +148,7 @@ collections() => void {
 		" first=", last[0].value, " last=", last[19].value,
 		" element-stride=", sizeof<Cell>);
 
-	mut nodes := LinkedList<Cell>::new();
+	^nodes := LinkedList<Cell>::new();
 	defer nodes.free();
 	nodes.push_back(Cell { value = 100i64; });
 	nodes.push_front(Cell { value = 200i64; });
@@ -157,7 +157,7 @@ collections() => void {
 		" node-aligned=", <usize>node_block % alignof<NodeShape> == 0);
 	free(node_block);
 
-	mut map := HashMap<Key, i64>::new();
+	^map := HashMap<Key, i64>::new();
 	defer map.free();
 	map.insert(Key { id = 1i64; }, 11i64);
 	map.insert(Key { id = 2i64; }, 22i64);

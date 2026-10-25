@@ -22,8 +22,8 @@ struct Header {
     shared size: usize;
 }
 
-header_of(ptr: *u8) => *mut Header {
-    <*mut Header>(<usize>ptr - sizeof<Header>)
+header_of(ptr: *u8) => ^Header {
+    <^Header>(<usize>ptr - sizeof<Header>)
 }
 
 is_power_of_two(value: usize) => bool {
@@ -44,38 +44,38 @@ round_up(offset: usize, align: usize) => usize {
 #
 # A zero-size request still yields a distinct, aligned, freeable address.
 # Overhead is one header plus up to `align - 1` bytes of slack.
-exposed alloc(size: usize, align: usize) => *mut u8 {
+exposed alloc(size: usize, align: usize) => ^u8 {
     if !is_power_of_two(align) {
-        return <*mut u8>0;
+        return <^u8>0;
     }
 
     payload := if size == 0 { 1usize } else { size };
     slack := sizeof<Header> + (align - 1);
     if slack < sizeof<Header> {
-        return <*mut u8>0;
+        return <^u8>0;
     }
     total := slack + payload;
     if total < slack {
-        return <*mut u8>0;
+        return <^u8>0;
     }
 
     raw := GlobalAllocator::alloc(total);
     if <usize>raw == 0 {
-        return <*mut u8>0;
+        return <^u8>0;
     }
 
     address := round_up(<usize>raw + sizeof<Header>, align);
-    header := <*mut Header>(address - sizeof<Header>);
-    (*header).raw = <usize>raw;
-    (*header).size = size;
-    <*mut u8>address
+    header := <^Header>(address - sizeof<Header>);
+    header.*.raw = <usize>raw;
+    header.*.size = size;
+    <^u8>address
 }
 
 # Frees an address obtained from this module's `alloc`/`realloc`. Freeing
 # null is a no-op.
 exposed free(ptr: *u8) => void {
     if <usize>ptr != 0 {
-        GlobalAllocator::free(<*u8>(*header_of(ptr)).raw);
+        GlobalAllocator::free(<*u8>header_of(ptr).*.raw);
     }
 }
 
@@ -87,21 +87,21 @@ exposed free(ptr: *u8) => void {
 # On failure the old block is left allocated and untouched. Relocating
 # storage another thread is accessing remains the caller's error --
 # alignment does not make moving a live atomic safe.
-exposed realloc(ptr: *u8, size: usize, align: usize) => *mut u8 {
+exposed realloc(ptr: *u8, size: usize, align: usize) => ^u8 {
     if <usize>ptr == 0 {
         return alloc(size, align);
     }
 
     fresh := alloc(size, align);
     if <usize>fresh == 0 {
-        return <*mut u8>0;
+        return <^u8>0;
     }
 
-    old_size := (*header_of(ptr)).size;
+    old_size := header_of(ptr).*.size;
     copied := if old_size < size { old_size } else { size };
-    mut i : usize = 0;
+    ^i : usize = 0;
     while i < copied {
-        *<*mut u8>(<usize>fresh + i) = *<*u8>(<usize>ptr + i);
+        (<^u8>(<usize>fresh + i)).* = (<*u8>(<usize>ptr + i)).*;
         i += 1;
     }
 

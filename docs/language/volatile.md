@@ -12,7 +12,7 @@ The two operations are declared in `core::volatile`:
 
 ```omega
 exposed read_volatile<T>(location: *T) => T;
-exposed write_volatile<T>(location: *mut T, value: T) => void;
+exposed write_volatile<T>(location: ^T, value: T) => void;
 ```
 
 These are the only functions in Omega without a body (see [`grammar.md`](grammar.md#functions)). The compiler supplies each instance's body. Recognition is by declaration identity: the module `core::volatile` and the exact name. A declaration there with one of these names must have exactly the shape above: `exposed`, no annotations, one type parameter with no bound and no default, the parameter names and types shown, and no body. Any other shape is rejected. A bodyless function anywhere else is rejected, including a generic one that is never instantiated.
@@ -23,12 +23,12 @@ Apart from where their bodies come from, they are ordinary generic functions. Na
 import core::volatile::read_volatile;
 import core::volatile::write_volatile;
 
-write_volatile(&mut register.control, 1u32);   # T = u32, inferred
-status := read_volatile<u16>(&register.status);
+write_volatile(^register.control, 1u32);   # T = u32, inferred
+status := read_volatile<u16>(*register.status);
 read: (*u32) => u32 = read_volatile<u32>;
 ```
 
-`write_volatile` requires a `*mut T` location. A `*T` is a type mismatch, since Omega has no implicit conversions.
+`write_volatile` requires a `^T` location. A `*T` is a type mismatch, since Omega has no implicit conversions.
 
 ## Access semantics
 

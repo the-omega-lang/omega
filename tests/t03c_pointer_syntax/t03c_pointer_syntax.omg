@@ -1,0 +1,120 @@
+import std::io::println;
+
+# Pointer and mutability spelling (docs/language/bindings-and-mutability.md,
+# functions.md, control-flow-and-operators.md): `*x` takes a read-only
+# address of type `*T`, `^x` a mutable one of type `^T`, and the postfix `.*`
+# reaches through a pointer to its pointee.
+
+^total: i32 = 0;
+
+struct Point {
+	exposed x: i32;
+	exposed y: i32;
+}
+
+struct Node {
+	exposed value: i32;
+	exposed point: Point;
+}
+
+struct Counter {
+	exposed count: i32;
+
+	exposed peek(*self) => i32 {
+		self.count
+	}
+
+	exposed bump(^self) => void {
+		self.count += 1;
+	}
+
+	exposed doubled(self) => i32 {
+		self.count * 2
+	}
+}
+
+# A `^` parameter is a mutable local of the body; the caller's argument is a
+# copy and stays as it was.
+countdown(^steps: i32) => i32 {
+	^ticks := 0;
+	while steps > 0 {
+		steps -= 1;
+		ticks += 1;
+	}
+	ticks
+}
+
+# A `^` parameter that is never written is reported at the parameter.
+unwritten(^value: i32) => i32 {
+	value
+}
+
+clear(^point: Point) => i32 {
+	point.x = 0;
+	point.y = 0;
+	point.x + point.y
+}
+
+main() => void {
+	# --- address-taking is spelled like the pointer type it produces --------
+	value: i32 = 7;
+	^other: i32 = 1;
+	read_only: *i32 = *value;
+	writable: ^i32 = ^other;
+	writable.* = 20;
+	writable.* += 1;
+	println$("pointers: ", read_only.*, " ", writable.*, " ", other);
+
+	# A mutable pointer widens to a read-only one.
+	widened: *i32 = writable;
+	println$("widened: ", widened.*);
+
+	# --- `.*` is a postfix place step: paths chain left to right ------------
+	^node := Node { value = 3; point = Point { x = 4; y = 5; }; };
+	np := ^node;
+	np.*.value = 30;
+	np.*.point.x += 10;
+	pp := ^np.*.point;
+	pp.*.y = 50;
+	npp := *np;
+	println$("place-paths: ", npp.*.*.value, " ", node.point.x, " ", node.point.y);
+
+	# Prefix binds looser than postfix: `*node.point.x` is `*(node.point.x)`.
+	field_ptr := *node.point.x;
+	println$("prefix-precedence: ", field_ptr.*);
+
+	# --- slices take their address the same way ----------------------------
+	^data: [5]i32 = [1, 2, 3, 4, 5];
+	window := *data[1..<4];
+	tail := ^data[3..];
+	tail[0] = 40;
+	println$("slices: ", window.length, " ", window[0], " ", data[3], " ", tail.length);
+
+	# A `*[...]` literal is a compile-time slice.
+	primes := *[2, 3, 5, 7];
+	println$("comp-slice: ", primes.length, " ", primes[3]);
+
+	# --- mutable parameters copy the argument ------------------------------
+	steps := 3;
+	println$("mutable-param: ", countdown(steps), " ", steps);
+	# The `^` is not part of the function's type.
+	as_value : (i32) => i32 = countdown;
+	println$("mutable-param-type: ", as_value(2));
+	origin := Point { x = 8; y = 9; };
+	println$("mutable-struct-param: ", clear(origin), " ", origin.x, " ", origin.y);
+	println$("unwritten-param: ", unwritten(steps));
+
+	# --- `for ^x in` and a `^` global ---------------------------------------
+	for ^item in 0..<3 {
+		item *= 10;
+		total += item;
+	}
+	println$("for-in-and-global: ", total);
+
+	# --- receivers mirror the address the call site takes ------------------
+	^counter := Counter { count = 0; };
+	counter.bump();
+	cp := ^counter;
+	cp.bump();
+	println$("receivers: ", counter.peek(), " ", cp.peek(), " ", cp.doubled());
+}

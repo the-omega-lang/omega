@@ -41,7 +41,7 @@ Omega has four loop forms:
 ```omega
 while condition { ... }
 loop { ... }
-for mut i := 0; i < 10; i += 1 { ... }
+for ^i := 0; i < 10; i += 1 { ... }
 for value in source { ... }
 ```
 
@@ -63,11 +63,11 @@ for [init] ; [condition] ; [post] { body }
 
 The initializer and post clauses are optional. The parser accepts an omitted condition, but a valid Omega program currently requires the condition to be present and `bool`; `for ;; { ... }` is therefore rejected. There are no parentheses around the clauses. The initializer may use ordinary binding/statement forms.
 
-A `{` directly after the second `;` always begins the body, because the post clause is optional. A block expression used as the post clause is therefore parenthesized: `for mut i := 0; i < n; ({ ...; ++i; }) { ... }`.
+A `{` directly after the second `;` always begins the body, because the post clause is optional. A block expression used as the post clause is therefore parenthesized: `for ^i := 0; i < n; ({ ...; ++i; }) { ... }`.
 
 ### `for ... in`
 
-`for [mut] name [: Type] in expression { body }` uses Omega's iteration/range rules. See [`iteration-and-ranges.md`](iteration-and-ranges.md).
+`for [^]name [: Type] in expression { body }` uses Omega's iteration/range rules. See [`iteration-and-ranges.md`](iteration-and-ranges.md).
 
 ## `break`, `continue`, and `defer`
 
@@ -76,7 +76,7 @@ A `{` directly after the second `;` always begins the body, because the post cla
 `defer statement` registers the statement for its **innermost enclosing block**: a function body, a `{ }` block expression, an `if` or `else` body, a `match` arm or `else` block, a loop body, or another `defer`'s body. When control leaves that block, by any route, the deferred statements registered in it so far run in reverse order of registration (LIFO). The routes out of a block are falling off its end, `break`, `continue`, `return`, and a failing `?`; leaving several nested blocks at once runs the inner block's defers before the outer one's.
 
 ```omega
-for mut i := 0; i < 3; ++i {
+for ^i := 0; i < 3; ++i {
     defer { println$("end of iteration ", i); }   # runs once per iteration
     if i == 1 {
         continue;                                 # still runs the defer
@@ -187,23 +187,31 @@ bitwise and (&)
 shift (<< >>)
 additive (+ -)
 multiplicative (* / %)
-unary (- ! * & &mut ~ ++ -- reveal comp)
+unary (- ! * ^ ~ ++ -- reveal comp)
 cast (<Type>expr)
-postfix (call, index/slice, field access, try `?`)
+postfix (call, index/slice, field access, dereference `.*`, try `?`)
 ```
 
 Comparison is non-associative: `a == b == c` is invalid without explicitly grouping into boolean operations.
 
 Bitwise operators bind more tightly than comparisons, so `a & b == c` means `(a & b) == c`. `&&` and `||` bind more loosely than comparisons, so `a >= x && a <= y` needs no extra grouping.
 
-`&` is address-of in prefix position and bitwise-and in infix position. `*` and `-` similarly have prefix/infix meanings according to position. The token `&&` is always logical-and; write `& &p` when two consecutive address-of operations are intended.
+`*`, `^`, and `-` are prefix operators in prefix position and binary operators in infix position, so `a * b`, `a ^ b`, and `a - b` keep their arithmetic and bitwise meanings. `&` is only ever binary; it takes no address. The token `&&` is always logical-and.
+
+## Address-of and dereference
+
+Prefix `*place` takes a read-only address and produces a `*T`; prefix `^place` takes a mutable address, requires a mutable place, and produces a `^T`. Each address-taking expression is spelled like the pointer type it produces. A slice is taken the same way from an index range: `*arr[a..<b]` produces a `*[]T` and `^arr[a..<b]` a `^[]T` (see [`strings-casts-arrays-and-slices.md`](strings-casts-arrays-and-slices.md)).
+
+Postfix `.*` dereferences a pointer. `p.*` is a place at the same postfix tier as field access, indexing, calls, and `?`, so a path reads left to right: `p.*.field`, `node.next.*.value`, `table.*[i]`. Reading through any pointer is allowed; writing is allowed only through a `^T` (see [`bindings-and-mutability.md`](bindings-and-mutability.md#mutable-places)). A write is therefore always `p.* = value`, and there is no separate mutable dereference.
+
+Because postfix binds tighter than prefix, `*a.b.c` is `*(a.b.c)` and `^a[i]` is `^(a[i])`. `.*` is a single token, so `p.*= v` is `p.* = v` and `p.**= v` is `p.* *= v`. The reasoning behind these spellings is recorded in [`syntax-principles.md`](syntax-principles.md).
 
 ## Binary-operand literal inference
 
 For non-comparison arithmetic/bitwise expressions, an expected type for the whole expression may flow to adaptable operands. Otherwise the left operand is analyzed first and can provide an expected type for an adaptable right-hand literal.
 
 ```omega
-mut i : u32 = 0;
+^i : u32 = 0;
 i = i + 1;            # 1 adapts to u32
 ```
 

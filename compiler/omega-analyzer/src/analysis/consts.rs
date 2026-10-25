@@ -66,7 +66,7 @@ impl<'r> Analyzer<'r> {
                 }
                 _ => mismatch(self, "an array literal"),
             },
-            // `&[...]` is the only recognized spelling for a compile-time
+            // `*[...]` is the only recognized spelling for a compile-time
             // slice -- a bare `[...]` is never treated as one, to avoid
             // confusion with an ordinary array. Recurses through
             // `const_eval` itself, so nesting falls out for free.
@@ -263,7 +263,7 @@ impl<'r> Analyzer<'r> {
                     }
                 }
             }
-            // See `const_eval`'s identical fallback -- a `&[...]` compile-
+            // See `const_eval`'s identical fallback -- a `*[...]` compile-
             // time slice's elements are just as inherently compile-time-
             // only as an enum header's, so anything the interpreter can
             // resolve is as legitimate an element as a bare literal.

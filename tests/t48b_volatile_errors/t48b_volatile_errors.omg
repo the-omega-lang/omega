@@ -5,7 +5,7 @@ import core::volatile::write_volatile;
 # evaluation does not have.
 peek() => u32 {
 	local := 5u32;
-	read_volatile(&local)
+	read_volatile(*local)
 }
 
 comp PEEKED := comp peek();

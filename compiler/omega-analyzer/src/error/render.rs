@@ -180,11 +180,11 @@ impl AnalysisErrorKind {
                 .with_label(span, format!("this has type `{found}`, which cannot be sliced"))
                 .with_note("only sized arrays (`[N]T`), unsized arrays (`*[]T`), slices (`*[?]T`), and strings (`*str`) support `[start..end]`"),
             Self::SliceRequiresAddressOf => d
-                .with_label(span, "a slice expression must be prefixed with `&` or `&mut`")
-                .with_note("write `&base[start..end]` for an immutable slice, or `&mut base[start..end]` for a mutable one"),
+                .with_label(span, "a slice expression must be prefixed with `*` or `^`")
+                .with_note("write `*base[start..end]` for an immutable slice, or `^base[start..end]` for a mutable one"),
             Self::ImmutableSliceSource => d
                 .with_label(span, "cannot take a mutable slice of an immutable slice")
-                .with_note("this slice value is immutable, regardless of whether the binding holding it is `mut`"),
+                .with_note("this slice value is immutable, regardless of whether the binding holding it is mutable (`^`)"),
             Self::InvalidSliceBound { r#type } => {
                 d.with_label(span, format!("slice bounds must be `i32`, found `{}`", r#type))
             }
@@ -194,7 +194,7 @@ impl AnalysisErrorKind {
             Self::MissingSliceEnd => d
                 .with_label(span, "this range has no end bound")
                 .with_note("an unsized array (`*[]T`) has no length to default a missing end to -- unlike a sized array or an existing slice")
-                .with_help("write an explicit end, e.g. `&arr[start..<end]`"),
+                .with_help("write an explicit end, e.g. `*arr[start..<end]`"),
             Self::CompPointerSliceNotSupported => {
                 d.with_label(span, "slicing a 'comp'-bound unsized array is not supported")
             }
@@ -216,7 +216,7 @@ impl AnalysisErrorKind {
             Self::ConstSliceCannotBeMutable => d
                 .with_label(span, "a compile-time slice cannot be mutable")
                 .with_note("compile-time slice data is embedded directly in the binary, like a string literal")
-                .with_help("write `&[...]` (without `mut`)"),
+                .with_help("write `*[...]` (not `^[...]`)"),
             Self::ConstSliceElementNotConstant => d
                 .with_label(span, "not a literal constant")
                 .with_note(
@@ -402,7 +402,7 @@ impl AnalysisErrorKind {
             }
             Self::EnumValueNotConstant => d
                 .with_label(span, "not a literal constant")
-                .with_note("a variant's tag and header values are baked in at the definition,\nso they must be literals (a number, string, bool, char, or `&[...]` compile-time slice)"),
+                .with_note("a variant's tag and header values are baked in at the definition,\nso they must be literals (a number, string, bool, char, or `*[...]` compile-time slice)"),
             Self::EnumValueTypeMismatch { expected, found } => {
                 d.with_label(span, format!("expected `{expected}`, found {found}"))
             }
@@ -574,18 +574,18 @@ impl AnalysisErrorKind {
                 .with_note("every arm of a `match` used as an expression must produce the same type"),
 
             Self::NotMutableBinding { ident } => d
-                .with_label(span, format!("`{}` is not declared `mut`", ident.as_ref()))
-                .with_help(format!("declare it `mut {}`", ident.as_ref())),
+                .with_label(span, format!("`{}` is not declared mutable", ident.as_ref()))
+                .with_help(format!("declare it `^{}`", ident.as_ref())),
             Self::ForeignMutFunctionBinding => d
                 .with_label(span, "this binding names an external function symbol, not data storage")
-                .with_help("remove `mut` and put any calling convention on the function type; use a `*mut` type if you meant a mutable function pointer variable"),
+                .with_help("remove `^` and put any calling convention on the function type; use a `^` pointer type if you meant a mutable function pointer variable"),
             Self::NotMutablePointer => d
                 .with_label(span, "this pointer's pointee is immutable")
-                .with_help("use `*mut T` instead of `*T`, and `&mut` to create one"),
+                .with_help("use `^T` instead of `*T`, and `^place` to create one"),
             Self::MutateTemporary => d
                 .with_label(span, "this value has no storage to write to")
                 .with_note("a write needs a place; a freshly-produced value is discarded at the end of the expression, so the write could never be observed")
-                .with_help("bind it to a `mut` local first"),
+                .with_help("bind it to a mutable (`^`) local first"),
             Self::UnionLiteralMissingField { r#union } => d
                 .with_label(span, "no field set")
                 .with_help(format!("set exactly one of `{}`'s fields", r#union.as_ref())),
@@ -749,7 +749,7 @@ impl AnalysisErrorKind {
             Self::SpecSelfMustBePointer { name } => d
                 .with_label(span, format!("`{}` receives `self` by value", name.as_ref()))
                 .with_help(
-                    "spec functions must receive `self` by pointer (`*self`/`*mut self`) -- `spec *T` dynamic \
+                    "spec functions must receive `self` by pointer (`*self`/`^self`) -- `*spec T` dynamic \
                      dispatch erases the concrete type down to a bare data pointer, which can't carry a \
                      by-value copy",
                 ),
@@ -790,7 +790,7 @@ impl AnalysisErrorKind {
                     "a spec object's vtable is sectioned per spec, and only narrowing onto an \
                      existing section is a real offset",
                 )
-                .with_help("keep the concrete pointer (`&value`) and coerce it to the wanted spec directly"),
+                .with_help("keep the concrete pointer (`*value`) and coerce it to the wanted spec directly"),
             Self::SpecStaticNeedsExpectedType { spec, function } => d
                 .with_label(span, format!("nothing at this call site names the implementing type"))
                 .with_note(format!("'{spec}::{function}' is receiverless, so 'Self' can only come from the expected type"))
@@ -981,13 +981,13 @@ impl AnalysisErrorKind {
                 d
             }
             Self::MutCompBinding => d
-                .with_label(span, "'comp' binding cannot be 'mut'")
+                .with_label(span, "'comp' binding cannot be mutable ('^')")
                 .with_note("a 'comp' binding has no storage of its own -- every use is substituted with its already-known value at compile time, so a later mutation could never be observed"),
             Self::TopLevelValueNotComp => d
                 .with_label(span, "this value isn't known at compile time")
                 .with_help(
                     "write 'comp value' (e.g. 'ident := comp value;' or 'ident : Type = comp value;') if the value \
-                     should be computed at compile time but still get real, mutable-if-'mut' storage, or 'comp \
+                     should be computed at compile time but still get real, mutable-if-'^' storage, or 'comp \
                      ident := comp value;' for a no-storage substituted binding instead -- a runtime-computed \
                      top-level global isn't supported",
                 ),
@@ -1006,7 +1006,7 @@ impl AnalysisErrorKind {
             }
             Self::AsmRegNotOneRegisterOperand { .. } => d
                 .with_label(span, "cannot occupy a single register")
-                .with_help("pass an aggregate through 'reg(&x)'/'reg(&mut x)' instead of by value"),
+                .with_help("pass an aggregate through 'reg(*x)'/'reg(^x)' instead of by value"),
             Self::AsmCompNotCompBinding => d
                 .with_label(span, "not a 'comp' binding")
                 .with_help("'comp(...)' only substitutes a compile-time-known 'comp' value"),
@@ -1120,7 +1120,7 @@ fn type_resolution_diagnostic(error: &TypeResolutionError, span: Span) -> Diagno
             .with_help("name the concrete type this returns, or take the caller's choice as a bound generic parameter (`f<T: Animal>() => T`)"),
         TypeResolutionError::SpecUsedAsValueType(name) => d
             .with_label(span, "a spec has no size or representation on its own")
-            .with_help(format!("use `spec *{0}`/`spec *mut {0}` for dynamic dispatch, or a generic bound (`T: {0}`)", name.as_ref())),
+            .with_help(format!("use `*spec {0}`/`^spec {0}` for dynamic dispatch, or a generic bound (`T: {0}`)", name.as_ref())),
         TypeResolutionError::NeverNotAllowedHere => d
             .with_label(span, "`never` used outside a function's own return type")
             .with_help("there is no such thing as a `never`-typed value -- only a function/method/foreign/gap may declare `=> never`"),

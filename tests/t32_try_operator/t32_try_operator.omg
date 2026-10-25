@@ -20,8 +20,8 @@ struct Denied {
 
 alias AnyError = enum NotFound | Denied;
 
-mut option_calls: i32 = 0;
-mut cleanups: i32 = 0;
+^option_calls: i32 = 0;
+^cleanups: i32 = 0;
 
 # --- Option ------------------------------------------------------------------
 

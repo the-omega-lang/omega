@@ -15,59 +15,59 @@ import super::alloc::free;
 # within its own type's methods.
 struct Node<T> {
     shared value: T;
-    shared prev: *mut Node<T>;
-    shared next: *mut Node<T>;
+    shared prev: ^Node<T>;
+    shared next: ^Node<T>;
 }
 
 exposed struct LinkedList<T> {
-    shared head: *mut Node<T>;
-    shared tail: *mut Node<T>;
+    shared head: ^Node<T>;
+    shared tail: ^Node<T>;
     shared count: usize;
 
     exposed new() => Self {
-        Self { head = <*mut Node<T>>0; tail = <*mut Node<T>>0; count = 0; }
+        Self { head = <^Node<T>>0; tail = <^Node<T>>0; count = 0; }
     }
 
     exposed len(*self) => usize { self.count }
     exposed is_empty(*self) => bool { self.count == 0 }
 
-    exposed push_back(*mut self, value: T) => void {
-        new_node := <*mut Node<T>>alloc(sizeof<Node<T>>, alignof<Node<T>>);
+    exposed push_back(^self, value: T) => void {
+        new_node := <^Node<T>>alloc(sizeof<Node<T>>, alignof<Node<T>>);
         old_tail := self.tail;
-        *new_node = Node<T> { value = value; prev = old_tail; next = <*mut Node<T>>0; };
-        if old_tail == <*mut Node<T>>0 {
+        new_node.* = Node<T> { value = value; prev = old_tail; next = <^Node<T>>0; };
+        if old_tail == <^Node<T>>0 {
             self.head = new_node;
         } else {
-            (*old_tail).next = new_node;
+            old_tail.*.next = new_node;
         }
         self.tail = new_node;
         self.count += 1;
     }
 
-    exposed push_front(*mut self, value: T) => void {
-        new_node := <*mut Node<T>>alloc(sizeof<Node<T>>, alignof<Node<T>>);
+    exposed push_front(^self, value: T) => void {
+        new_node := <^Node<T>>alloc(sizeof<Node<T>>, alignof<Node<T>>);
         old_head := self.head;
-        *new_node = Node<T> { value = value; prev = <*mut Node<T>>0; next = old_head; };
-        if old_head == <*mut Node<T>>0 {
+        new_node.* = Node<T> { value = value; prev = <^Node<T>>0; next = old_head; };
+        if old_head == <^Node<T>>0 {
             self.tail = new_node;
         } else {
-            (*old_head).prev = new_node;
+            old_head.*.prev = new_node;
         }
         self.head = new_node;
         self.count += 1;
     }
 
-    exposed pop_back(*mut self) => Option<T> {
-        if self.tail == <*mut Node<T>>0 {
+    exposed pop_back(^self) => Option<T> {
+        if self.tail == <^Node<T>>0 {
             return Option<T>::None;
         }
         old_tail := self.tail;
-        value := (*old_tail).value;
-        new_tail := (*old_tail).prev;
-        if new_tail == <*mut Node<T>>0 {
-            self.head = <*mut Node<T>>0;
+        value := old_tail.*.value;
+        new_tail := old_tail.*.prev;
+        if new_tail == <^Node<T>>0 {
+            self.head = <^Node<T>>0;
         } else {
-            (*new_tail).next = <*mut Node<T>>0;
+            new_tail.*.next = <^Node<T>>0;
         }
         self.tail = new_tail;
         self.count -= 1;
@@ -75,17 +75,17 @@ exposed struct LinkedList<T> {
         Option<T>::Some { value = value; }
     }
 
-    exposed pop_front(*mut self) => Option<T> {
-        if self.head == <*mut Node<T>>0 {
+    exposed pop_front(^self) => Option<T> {
+        if self.head == <^Node<T>>0 {
             return Option<T>::None;
         }
         old_head := self.head;
-        value := (*old_head).value;
-        new_head := (*old_head).next;
-        if new_head == <*mut Node<T>>0 {
-            self.tail = <*mut Node<T>>0;
+        value := old_head.*.value;
+        new_head := old_head.*.next;
+        if new_head == <^Node<T>>0 {
+            self.tail = <^Node<T>>0;
         } else {
-            (*new_head).prev = <*mut Node<T>>0;
+            new_head.*.prev = <^Node<T>>0;
         }
         self.head = new_head;
         self.count -= 1;
@@ -93,19 +93,19 @@ exposed struct LinkedList<T> {
         Option<T>::Some { value = value; }
     }
 
-    exposed clear(*mut self) => void {
-        mut current := self.head;
-        while current != <*mut Node<T>>0 {
-            next := (*current).next;
+    exposed clear(^self) => void {
+        ^current := self.head;
+        while current != <^Node<T>>0 {
+            next := current.*.next;
             free(<*u8>current);
             current = next;
         }
-        self.head = <*mut Node<T>>0;
-        self.tail = <*mut Node<T>>0;
+        self.head = <^Node<T>>0;
+        self.tail = <^Node<T>>0;
         self.count = 0;
     }
 
-    exposed free(*mut self) => void {
+    exposed free(^self) => void {
         self.clear();
     }
 
@@ -118,17 +118,17 @@ meet<T> ToIterator<T> for LinkedList<T> {
 }
 
 exposed struct LinkedListIterator<T> {
-    shared current: *mut Node<T>;
+    shared current: ^Node<T>;
 
 }
 
 meet<T> Iterator<T> for LinkedListIterator<T> {
-    next(*mut self) => Option<T> {
-        if self.current == <*mut Node<T>>0 {
+    next(^self) => Option<T> {
+        if self.current == <^Node<T>>0 {
             return Option<T>::None;
         }
-        value := (*self.current).value;
-        self.current = (*self.current).next;
+        value := self.current.*.value;
+        self.current = self.current.*.next;
         Option<T>::Some { value = value; }
     }
 }

@@ -12,7 +12,7 @@ enum Opt<T> {
 main() => void {
 	o := m::Owner<i32> { value = 5; };
 	a := m<i32>::Owner::name<u8>(1, 2);
-	b := m::Owner<i32>::self<u8>::scaled(&o, 2);
+	b := m::Owner<i32>::self<u8>::scaled(*o, 2);
 	c := m<u8>::Owner<i32>::name<u8>(1, 2);
 	e := m<i32>::Owner::name(1, 2);
 	f := m<i32>::Owner::name<u8>;

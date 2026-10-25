@@ -77,18 +77,18 @@ main() => void {
     println$("losing-body: ", safe(10));
     println$("bounds: ", bound<Value: AB>(Value { value = 1; }));
     box := Box<i32> { value = 1; };
-    println$("nominal: ", nominal(box), " ", nominal(&box));
+    println$("nominal: ", nominal(box), " ", nominal(*box));
     println$("array: ", array([1, 2, 3]));
     println$("defaults: ", defaults(1, 2u32));
     holder := H { value = 1; };
     println$("member: ", holder.pick(10), " ", holder.pick(10i64), " ", holder.pick<i64>(10i64));
     println$("static: ", H::make(10), " ", H::make(10i64), " ", H::make<i64>(10i64));
-    println$("unbound: ", H::self::pick(&holder, 10), " ", H::self::pick(&holder, 10i64));
+    println$("unbound: ", H::self::pick(*holder, 10), " ", H::self::pick(*holder, 10i64));
     println$("holes: ", holes(42u8));
     println$("type-default: ", with_default(DefaultBox<i32> { first = 1; second = 2; }));
     println$("nested: ", nested(1, 2));
     println$("callback: ", callback(1, accept_box));
-    println$("isolation: ", isolated(1, &box));
+    println$("isolation: ", isolated(1, *box));
     fnptr: (i64) => i32 = pick;
     println$("uncalled: ", fnptr(10i64));
 }

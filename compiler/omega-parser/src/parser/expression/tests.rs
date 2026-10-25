@@ -133,7 +133,7 @@ fn nested_generic_args_close_a_call_application() {
 
 #[test]
 fn generic_args_commit_at_an_expression_boundary() {
-    let stmts = body_statements("f() => void { p := &foo<i32>; a := [foo<i32>, bar<i32>]; }");
+    let stmts = body_statements("f() => void { p := *foo<i32>; a := [foo<i32>, bar<i32>]; }");
     let Statement::Walrus(w) = &stmts[0] else {
         panic!("expected a walrus statement")
     };
@@ -567,7 +567,7 @@ fn an_owner_and_its_function_each_carry_a_generic_list() {
     for (source, owner, function) in [
         ("f() => void { Owner<i32>::name<u8>(1, 2); }", 0, 1),
         (
-            "f() => void { m::Owner<i32>::self::name<u8>(&o, 2); }",
+            "f() => void { m::Owner<i32>::self::name<u8>(*o, 2); }",
             1,
             3,
         ),

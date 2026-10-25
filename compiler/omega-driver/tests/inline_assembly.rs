@@ -81,9 +81,9 @@ fn all_descriptor_forms_type_check() {
     TestPackage::new(
         "entry_fn() => void { \
             comp SIZE := 4i32; \
-            mut x : i32 = 0; \
+            ^x : i32 = 0; \
             y := 1i32; \
-            asm(reg(&mut x, \"rcx\"), reg(y), comp(SIZE), clobber(\"rax\")) => { nop } \
+            asm(reg(^x, \"rcx\"), reg(y), comp(SIZE), clobber(\"rax\")) => { nop } \
         }",
     )
     .expect_ok();
@@ -108,8 +108,8 @@ fn reg_by_address_of_an_aggregate_is_still_allowed() {
     TestPackage::new(
         "exposed struct Pair { exposed a: i32; exposed b: i32; } \
          entry_fn() => void { \
-            mut p := Pair { a = 1; b = 2; }; \
-            asm(reg(&mut p)) => { nop } \
+            ^p := Pair { a = 1; b = 2; }; \
+            asm(reg(^p)) => { nop } \
          }",
     )
     .expect_ok();

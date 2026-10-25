@@ -15,7 +15,7 @@ import super::io::Write;
 # SplitMix64's fixed-cost finalizer, shared by integer and float `Hash`
 # conformances rather than copied into every generated block.
 mix64(x: u64) => u64 {
-    mut z := x + 0x9E3779B97F4A7C15_u64;
+    ^z := x + 0x9E3779B97F4A7C15_u64;
     z = (z ^ (z >> 30u64)) * 0xBF58476D1CE4E5B9_u64;
     z = (z ^ (z >> 27u64)) * 0x94D049BB133111EB_u64;
     z ^ (z >> 31u64)
@@ -24,20 +24,20 @@ mix64(x: u64) => u64 {
 macro signed_integer($T: type) => {
     meet Default for $T { default() => Self { 0 } }
     meet Hash for $T {
-        hash(*self) => u64 { mix64(<u64>*self) }
+        hash(*self) => u64 { mix64(<u64>self.*) }
     }
     meet Display for $T {
-        fmt(*self, out: *mut spec Write) => void { write_int(out, <i64>*self, 10u32); }
+        fmt(*self, out: ^spec Write) => void { write_int(out, <i64>self.*, 10u32); }
     }
 }
 
 macro unsigned_integer($T: type) => {
     meet Default for $T { default() => Self { 0 } }
     meet Hash for $T {
-        hash(*self) => u64 { mix64(<u64>*self) }
+        hash(*self) => u64 { mix64(<u64>self.*) }
     }
     meet Display for $T {
-        fmt(*self, out: *mut spec Write) => void { write_uint(out, <u64>*self, 10u32); }
+        fmt(*self, out: ^spec Write) => void { write_uint(out, <u64>self.*, 10u32); }
     }
 }
 
@@ -45,14 +45,14 @@ macro float_ops($T: type) => {
     meet Default for $T { default() => Self { 0.0 } }
     meet Hash for $T {
         hash(*self) => u64 {
-            bits := if *self == <Self>0.0 { 0u64 }
-            else if sizeof<Self> == 4 { <u64>*<*u32>self }
-            else { *<*u64>self };
+            bits := if self.* == <Self>0.0 { 0u64 }
+            else if sizeof<Self> == 4 { <u64>(<*u32>self).* }
+            else { (<*u64>self).* };
             mix64(bits)
         }
     }
     meet Display for $T {
-        fmt(*self, out: *mut spec Write) => void { write_float(out, <f64>*self); }
+        fmt(*self, out: ^spec Write) => void { write_float(out, <f64>self.*); }
     }
 }
 
@@ -73,9 +73,9 @@ float_ops$(f64);
 
 meet Hash for str {
     hash(*self) => u64 {
-        mut h : u64 = 0xcbf29ce484222325_u64;
+        ^h : u64 = 0xcbf29ce484222325_u64;
         bytes := <*[]u8>self;
-        mut i : i32 = 0;
+        ^i : i32 = 0;
         while i < self.size {
             h = h ^ <u64>bytes[i];
             h = h * 0x100000001b3_u64;
@@ -86,19 +86,19 @@ meet Hash for str {
 }
 
 meet Display for str {
-    fmt(*self, out: *mut spec Write) => void {
+    fmt(*self, out: ^spec Write) => void {
         out.write(<*[]u8>self);
     }
 }
 
 meet Display for char {
-    fmt(*self, out: *mut spec Write) => void {
-        write_char(out, *self);
+    fmt(*self, out: ^spec Write) => void {
+        write_char(out, self.*);
     }
 }
 
 meet Display for bool {
-    fmt(*self, out: *mut spec Write) => void {
-        write_bool(out, *self);
+    fmt(*self, out: ^spec Write) => void {
+        write_bool(out, self.*);
     }
 }

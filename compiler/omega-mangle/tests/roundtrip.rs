@@ -245,7 +245,7 @@ fn mut_str_round_trips_and_demangles() {
     let mangled = assert_round_trips(&sym);
     assert_eq!(
         demangle(&mangled).unwrap(),
-        "mymod::takes_mut_str(*mut str) -> *str"
+        "mymod::takes_mut_str(^str) -> *str"
     );
 }
 

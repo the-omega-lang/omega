@@ -45,16 +45,16 @@ through_x(object: *spec x::P) => i32 { object.f() }\n\
 through_y(object: *spec y::P) => i32 { object.f() }\n\
 \n\
 @symbol(mangle = disabled)\n\
-exposed static_x() => i32 { s := S { tag = 0; }; <S : x::P>::f(&s) }\n\
+exposed static_x() => i32 { s := S { tag = 0; }; <S : x::P>::f(*s) }\n\
 \n\
 @symbol(mangle = disabled)\n\
-exposed static_y() => i32 { s := S { tag = 0; }; <S : y::P>::f(&s) }\n\
+exposed static_y() => i32 { s := S { tag = 0; }; <S : y::P>::f(*s) }\n\
 \n\
 @symbol(mangle = disabled)\n\
-exposed object_x() => i32 { s := S { tag = 0; }; through_x(&s) }\n\
+exposed object_x() => i32 { s := S { tag = 0; }; through_x(*s) }\n\
 \n\
 @symbol(mangle = disabled)\n\
-exposed object_y() => i32 { s := S { tag = 0; }; through_y(&s) }\n";
+exposed object_y() => i32 { s := S { tag = 0; }; through_y(*s) }\n";
 
 const HARNESS: &str = "\
 int static_x(void);\n\

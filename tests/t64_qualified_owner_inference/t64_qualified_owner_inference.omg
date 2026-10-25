@@ -15,7 +15,7 @@ main() => void {
 	println$(c.value);
 	d := Shortcut::make(8u16);
 	println$(d.value);
-	println$(m::Box::self::get(&a));
+	println$(m::Box::self::get(*a));
 	e : m::Box<i16> = m::Box::make(9);
 	println$(e.value);
 }

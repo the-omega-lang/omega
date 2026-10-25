@@ -10,23 +10,23 @@ struct Point {
 
 main() => void {
     numbers := [3, 1, 4];
-    mut total := 0;
-    for n in &numbers[0..] {
+    ^total := 0;
+    for n in *numbers[0..] {
         total += n;
     }
     println$("slice-sum: ", total);
 
     points := [Point { x = 1; y = 2; }, Point { x = 3; y = 4; }];
-    for p in &points[0..] {
+    for p in *points[0..] {
         println$("point: ", p.x, " ", p.y);
     }
 
-    mut bytes : [_]u8 = [10, 20];
-    for b in &mut bytes[0..] {
+    ^bytes : [_]u8 = [10, 20];
+    for b in ^bytes[0..] {
         println$("mutable-slice: ", b);
     }
 
-    empty := &numbers[0..<0];
+    empty := *numbers[0..<0];
     for n in empty {
         println$("never: ", n);
     }
@@ -38,8 +38,8 @@ main() => void {
     # 'a', a truncated 4-byte sequence, 'b', two invalid leads, a surrogate
     # encoding, and a truncated 3-byte sequence at the end.
     raw : [_]u8 = [0x61, 0xF0, 0x9F, 0x80, 0x62, 0xC0, 0x80, 0xED, 0xA0, 0x80, 0xE2, 0x82];
-    mut decoded := 0;
-    for c in <*str>&raw[0..] {
+    ^decoded := 0;
+    for c in <*str>*raw[0..] {
         println$("decoded: ", <u32>c);
         decoded += 1;
     }

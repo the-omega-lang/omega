@@ -66,7 +66,7 @@ A function value and a thin raw pointer are both exactly one address, so a cast 
 - thin `*T` -> a function type, ordinary or `foreign(cc)`;
 - a function type -> an immutable thin `*T`.
 
-A function value can never be cast to `*mut T`. There is no writable data behind a function, and a cast never manufactures mutability.
+A function value can never be cast to `^T`. There is no writable data behind a function, and a cast never manufactures mutability.
 
 ```omega
 address := <*void>handler;                  # a callable address as raw data
@@ -81,7 +81,7 @@ as_c := <foreign(c) (a: i32, b: i32) => i32><*void>omega_handler;
 
 The destination function type is what a later indirect call obeys; the cast itself neither converts nor validates an ABI. A `foreign(cc)` function pointer's signature is checked where the ABI is actually relied upon -- at the declaration and at the call.
 
-Taking a member function's address through `Type::self::name` (see [`functions.md`](functions.md#unbound-member-function-values)) produces exactly this one address too. It builds no adapter: the receiver the declaration wrote as `self` is already an ordinary leading parameter in the compiled signature, so the acquired value's function type just states it explicitly. Receiver *metadata* -- the `self`/`*mut self` form a declaration writes -- belongs to the ordinary method-call adaptation of `value.name(...)` and is not part of the acquired value's type.
+Taking a member function's address through `Type::self::name` (see [`functions.md`](functions.md#unbound-member-function-values)) produces exactly this one address too. It builds no adapter: the receiver the declaration wrote as `self` is already an ordinary leading parameter in the compiled signature, so the acquired value's function type just states it explicitly. Receiver *metadata* -- the `self`/`^self` form a declaration writes -- belongs to the ordinary method-call adaptation of `value.name(...)` and is not part of the acquired value's type.
 
 Function values do not participate in numeric casts: `<usize>handler` and `<(i32) => void>some_address_integer` are both invalid. Going through a thin raw pointer expresses either direction explicitly.
 
@@ -110,9 +110,9 @@ The following explicit conversions are supported:
 A bare thin `*T` cannot be cast directly to `*[]T`, because no length exists to place in the resulting slice. It can be reinterpreted as `*[?]T`, then explicitly sliced with a runtime range to construct a real slice.
 
 ```omega
-p : *mut i32 = &mut first;
-array_ptr := <*mut [?]i32>p;
-slice := &array_ptr[0..<count];
+p : ^i32 = ^first;
+array_ptr := <^[?]i32>p;
+slice := *array_ptr[0..<count];
 ```
 
 ## Fixed arrays
@@ -135,24 +135,24 @@ See [`types-and-primitives.md`](types-and-primitives.md) for the complete array/
 
 ## Compile-time slice literals
 
-`&[...]` constructs a slice whose elements are compile-time data:
+`*[...]` constructs a slice whose elements are compile-time data:
 
 ```omega
-names := &["alice", "bob", "carol"];
+names := *["alice", "bob", "carol"];
 ```
 
-The resulting value is a fat slice pointer. This spelling is distinct from a bare array literal: `[a, b, c]` is an inline fixed array, while `&[a, b, c]` denotes a slice referring to compile-time-stored elements.
+The resulting value is a fat slice pointer. This spelling is distinct from a bare array literal: `[a, b, c]` is an inline fixed array, while `*[a, b, c]` denotes a slice referring to compile-time-stored elements.
 
-`&[...]` is also the required slice-literal form in compile-time aggregate positions such as enum header values; a bare `[...]` there does not mean a slice.
+`*[...]` is also the required slice-literal form in compile-time aggregate positions such as enum header values; a bare `[...]` there does not mean a slice.
 
 ## Indexing and slicing
 
 Fixed arrays, slices, strings, and unknown-size array pointers support their applicable indexing operations. A range slice uses the range syntax from [`iteration-and-ranges.md`](iteration-and-ranges.md):
 
 ```omega
-part := &items[start..<end];
-rest := &items[start..];
-prefix := &items[..<end];
+part := *items[start..<end];
+rest := *items[start..];
+prefix := *items[..<end];
 ```
 
 An index is an expression of any signed or unsigned integer type, including `isize` and `usize`; any other type is a compile-time error. A slice bound is an `i32` expression.

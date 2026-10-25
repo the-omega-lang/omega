@@ -1,54 +1,21 @@
 import std::io::println;
 
-spec A {
-	a() => void;
-}
+struct Thing {
+	number : i32;
 
-spec B {
-	b() => void;
-}
-
-marker MyMarker {}
-
-meet A for MyMarker {
-	a() => void {
-		println$("a() called");
+	myfn(^self) => void {
+		self.number = 42;
 	}
-}
-
-meet B for MyMarker {
-	b() => void {
-		println$("b() called");
-	}
-}
-
-some_fn<T : A>() => void {
-	T::a();
-}
-
-some_fn<T : B>() => void {
-	T::b();
-}
-
-some_fn_with_value<T : A>(value : T) => T {
-	T::a();
-	value
-}
-
-some_fn_with_value<T : B>(value : T) => T {
-	T::b();
-	value
 }
 
 main() => void {
-	MyMarker{};
-	MyMarker::a();
-	MyMarker::b();
-	some_fn<MyMarker : A>();
-	some_fn<MyMarker : B>();
-	some_fn_with_value<_ : A>(MyMarker{});
-	some_fn_with_value<_ : B>(MyMarker{});
+	a := 10;
+	^b := 10;
+	ptr_b := ^b;
+	ptr_b.* = 25;
+	println$("b=",b);
 
-	type := typeinfo<MyMarker>;
-	println$("type=", type.name);
+	^thing := Thing { number = 10; };
+	thing.myfn();
+	println$("number=", thing.number);
 }

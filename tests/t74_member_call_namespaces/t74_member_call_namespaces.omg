@@ -33,5 +33,5 @@ main() => void {
     println$("nested: ", h.thing.scale(5), " ", (h.thing.scale)(5));
 
     member : (target: *Thing, x: i32) => i32 = Thing::self::apply;
-    println$("method-value: ", member(&t, 3), " ", Thing::self::scale(&t, 2));
+    println$("method-value: ", member(*t, 3), " ", Thing::self::scale(*t, 2));
 }

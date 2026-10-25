@@ -62,7 +62,7 @@ import std::atomic::AtomicU32;
 import std::atomic::AtomicRmwOrdering;
 import std::atomic::AtomicLoadOrdering;
 
-mut counter := AtomicU32::new(0u32);
+^counter := AtomicU32::new(0u32);
 previous := counter.fetch_add(1u32, AtomicRmwOrdering::AcquireRelease);
 current := counter.load(AtomicLoadOrdering::Acquire);
 ```
@@ -81,7 +81,7 @@ have. Omega declarations are packed by default, so code calling a
 `core::atomic` width gap on storage of its own must state that alignment
 itself; see [the language specification](../language/atomics.md).
 
-Mutating methods take `*mut self` and `load` takes `*self`, matching the
+Mutating methods take `^self` and `load` takes `*self`, matching the
 pointer mutability the gaps require. The backing field is not part of the
 public surface: this first surface has no `get_mut` or non-atomic accessor.
 
@@ -127,8 +127,8 @@ not.
 collections use:
 
 ```omega
-alloc(size: usize, align: usize) => *mut u8
-realloc(ptr: *u8, size: usize, align: usize) => *mut u8
+alloc(size: usize, align: usize) => ^u8
+realloc(ptr: *u8, size: usize, align: usize) => ^u8
 free(ptr: *u8) => void
 ```
 
@@ -159,7 +159,7 @@ resize.
 
 ## Formatting and I/O
 
-`std::fmt::Display` formats into a dynamic `*mut spec std::io::Write`.
+`std::fmt::Display` formats into a dynamic `^spec std::io::Write`.
 `std::io` provides the byte I/O contracts, console marker implementations,
 caller-owned buffering, `read_line`, `String` formatting, and the print
 macros. No old broad `Writer` or `Reader` type exists. The complete API and

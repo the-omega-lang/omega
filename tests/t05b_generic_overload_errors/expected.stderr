@@ -1,7 +1,7 @@
 error: ambiguous reference to overloaded 'free'
  --> tests/t05b_generic_overload_errors/t05b_generic_overload_errors.omg:9:5
   |
-9 |     free(&value);
+9 |     free(*value);
   |     ^^^^^^^^^^^^ reference to `free` is ambiguous
   |
   = note: candidate: <T>(ptr: *T) => void

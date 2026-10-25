@@ -38,5 +38,5 @@ quiet(c: *Code) => i32 {
 main() => void {
     second := Code::Second;
     flag : Either = true;
-    println$("tag-match: ", describe(Code::First), " ", describe(second), " ", member(flag), " ", quiet(&second));
+    println$("tag-match: ", describe(Code::First), " ", describe(second), " ", member(flag), " ", quiet(*second));
 }

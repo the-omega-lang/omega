@@ -21,7 +21,7 @@ exposed unreachable_here : i32 = 1;
 @cond(any(equals(target_os, "linux"), equals(target_os, "macos")))
 hosted_label() => *str { return "hosted"; }
 
-@cond(in(target_arch, &["x86_64", "aarch64", "riscv64"]))
+@cond(in(target_arch, *["x86_64", "aarch64", "riscv64"]))
 width_label() => *str { return "wide"; }
 
 @cond(equals(target_pointer_width, 64))

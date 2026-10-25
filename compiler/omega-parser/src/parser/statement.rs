@@ -12,7 +12,7 @@ use crate::parser::expression::{
     parse_statement_leading_expression,
 };
 use crate::parser::macro_syntax::parse_macro_invocation;
-use crate::parser::{Parser, contextual, recovery};
+use crate::parser::{Parser, contextual, legacy, recovery};
 
 /// Whether a fresh statement can begin at the current token. Recovery uses it
 /// so a resynchronization point is a plausible statement start rather than any
@@ -51,6 +51,7 @@ pub(crate) fn starts_statement(p: &Parser) -> bool {
                 | TokenKind::Dollar
                 | TokenKind::Eq
                 | TokenKind::Dot
+                | TokenKind::DotStar
                 | TokenKind::LBracket
                 | TokenKind::ColonColon
         )
@@ -297,7 +298,11 @@ fn parse_for(p: &mut Parser) -> Option<Statement> {
 }
 
 fn is_for_in_lookahead(p: &Parser) -> bool {
-    let offset = usize::from(p.at_contextual(contextual::MUT));
+    for_in_binding_at(p, 0)
+        || ((p.check(&TokenKind::Caret) || legacy::mut_at(p, 0)) && for_in_binding_at(p, 1))
+}
+
+fn for_in_binding_at(p: &Parser, offset: usize) -> bool {
     matches!(p.peek_at(offset), TokenKind::Ident(_))
         && (p.at_contextual_at(offset + 1, contextual::IN)
             || for_in_annotation_follows(p, offset + 1))
@@ -322,7 +327,8 @@ fn for_in_annotation_follows(p: &Parser, colon_offset: usize) -> bool {
 }
 
 fn parse_for_in(p: &mut Parser) -> Option<ForInStmt> {
-    let mutable = p.eat_contextual(contextual::MUT);
+    let mutable = p.eat(&TokenKind::Caret)
+        || legacy::eat_mut_before(p, |p, offset| for_in_binding_at(p, offset));
     let TokenKind::Ident(binding) = p.peek().clone() else {
         unreachable!("is_for_in_lookahead already confirmed this token is an identifier");
     };

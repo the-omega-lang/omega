@@ -26,10 +26,10 @@ error: expected a name, found keyword 'match'
   = help: choose a different name
 
 error: expected a name, found keyword 'loop'
-  --> tests/t82_keyword_as_name/t82_keyword_as_name.omg:12:9
+  --> tests/t82_keyword_as_name/t82_keyword_as_name.omg:12:6
    |
-12 |     mut loop : i32 = 1;
-   |         ^^^^ `loop` is a reserved keyword
+12 |     ^loop : i32 = 1;
+   |      ^^^^ `loop` is a reserved keyword
    |
    = note: a reserved keyword cannot name a binding, parameter, field, or item
    = help: choose a different name

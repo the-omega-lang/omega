@@ -131,13 +131,14 @@ pub fn parse_function_definition(
     let (self_param, params) = crate::parser::parse_param_list(p);
     p.expect(&TokenKind::RParen, "')'");
     p.expect(&TokenKind::FatArrow, "'=>'");
-    // The whole declared type, not just its last token -- `=> *mut Node<T>`
+    // The whole declared type, not just its last token -- `=> ^Node<T>`
     // must underline all of it, not the `T`.
     let return_type_start = p.peek_span();
     let return_type = crate::parser::r#type::parse_type(p)?;
     let return_type_span = return_type_start.to(p.last_span());
     let signature_span = name_span.to(return_type_span);
     let codeblock = if body_policy == BodyPolicy::MayOmit && p.eat(&TokenKind::Semi) {
+        crate::parser::reject_mutable_params(p, &params, "a function declaration without a body");
         None
     } else {
         Some(parse_codeblock(p)?)

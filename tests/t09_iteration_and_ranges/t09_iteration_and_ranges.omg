@@ -11,7 +11,7 @@ struct CountUp {
 }
 
 meet Iterator<i32> for CountUp {
-	next(*mut self) => Option<i32> {
+	next(^self) => Option<i32> {
 		if self.current >= self.limit {
 			Option<i32>::None
 		} else {
@@ -24,10 +24,10 @@ meet Iterator<i32> for CountUp {
 
 main() => void {
 	# --- range expressions: exclusive end, inclusive end -------------------
-	mut a_sum := 0;
+	^a_sum := 0;
 	for v in 1..<5 { a_sum += v; }
 
-	mut b_sum := 0;
+	^b_sum := 0;
 	for v in 1..=5 { b_sum += v; }
 
 	println$("range-exclusive-inclusive: ", a_sum, " ", b_sum);
@@ -35,37 +35,37 @@ main() => void {
 	# --- a range is a storable, copyable value, not just loop syntax -------
 	stored: Range<i32> = 1..<4;
 	copy := stored;
-	mut stored_sum := 0;
+	^stored_sum := 0;
 	for v in copy { stored_sum += v; }
 	println$("range-value-copy: ", stored_sum, " ", stored.start, " ", stored.end, " ", stored.inclusive);
 
 	# --- an inclusive range terminates at the maximum without overflow ------
-	mut near_max_hits := 0;
+	^near_max_hits := 0;
 	for v in 2147483645..=2147483647 { near_max_hits += 1; }
 	println$("range-max-no-overflow: ", near_max_hits);
 
 	# --- char ranges: Successor skips the UTF-16 surrogate interval --------
-	mut boundary_hits := 0;
+	^boundary_hits := 0;
 	for c in '\u{D7FE}'..='\u{E001}' { boundary_hits += 1; }
 	println$("char-range-surrogate: ", boundary_hits);
 
-	# --- `for ... in` grammar: plain, `mut`, and explicitly typed bindings --
-	mut plain_sum := 0;
+	# --- `for ... in` grammar: plain, `^`, and explicitly typed bindings ----
+	^plain_sum := 0;
 	for x in 0..<3 { plain_sum += x; }
 
-	mut mutated_sum := 0;
-	for mut x in 0..<3 {
+	^mutated_sum := 0;
+	for ^x in 0..<3 {
 		x += 10;
 		mutated_sum += x;
 	}
 
-	mut typed_sum: i64 = 0;
+	^typed_sum: i64 = 0;
 	for x : i64 in 0i64..<3i64 { typed_sum += x; }
 
 	println$("for-in-bindings: ", plain_sum, " ", mutated_sum, " ", typed_sum);
 
 	# --- break / continue against a protocol-driven loop --------------------
-	mut collected := 0;
+	^collected := 0;
 	for x in 0..<10 {
 		if x % 2 == 0 { continue; }
 		if x > 6 { break; }
@@ -74,8 +74,8 @@ main() => void {
 	println$("break-continue-loop: ", collected);
 
 	# --- a type conforming only to Iterator<T> is itself the cursor --------
-	mut counter := CountUp { current = 0; limit = 4; };
-	mut total := 0;
+	^counter := CountUp { current = 0; limit = 4; };
+	^total := 0;
 	for x in counter { total += x; }
 	println$("iterator-conform-cursor: ", total);
 }

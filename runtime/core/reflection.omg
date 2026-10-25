@@ -154,12 +154,12 @@ meet Eq for TypeInfo {
 
 same_type(a: *TypeInfo, b: *TypeInfo) => bool {
     if a == b { return true; }
-    Eq::equals(*a, *b)
+    Eq::equals(a.*, b.*)
 }
 
 same_types(a: *[]*TypeInfo, b: *[]*TypeInfo) => bool {
     if a.length != b.length { return false; }
-    for mut i := 0; i < a.length; ++i {
+    for ^i := 0; i < a.length; ++i {
         if !same_type(a[i], b[i]) { return false; }
     }
     true
@@ -167,7 +167,7 @@ same_types(a: *[]*TypeInfo, b: *[]*TypeInfo) => bool {
 
 same_path(a: *[]*str, b: *[]*str) => bool {
     if a.length != b.length { return false; }
-    for mut i := 0; i < a.length; ++i {
+    for ^i := 0; i < a.length; ++i {
         if !Eq::equals(a[i], b[i]) { return false; }
     }
     true
@@ -175,8 +175,8 @@ same_path(a: *[]*str, b: *[]*str) => bool {
 
 same_generic_args(a: *[]GenericArg, b: *[]GenericArg) => bool {
     if a.length != b.length { return false; }
-    for mut i := 0; i < a.length; ++i {
-        if !same_generic_arg(&a[i], &b[i]) { return false; }
+    for ^i := 0; i < a.length; ++i {
+        if !same_generic_arg(*a[i], *b[i]) { return false; }
     }
     true
 }
@@ -198,7 +198,7 @@ same_generic_arg(a: *GenericArg, b: *GenericArg) => bool {
 
 same_specs(a: *[]SpecInfo, b: *[]SpecInfo) => bool {
     if a.length != b.length { return false; }
-    for mut i := 0; i < a.length; ++i {
+    for ^i := 0; i < a.length; ++i {
         if !Eq::equals(a[i].name, b[i].name)
             || !same_path(a[i].path, b[i].path)
             || !same_generic_args(a[i].generic_args, b[i].generic_args) {
@@ -210,7 +210,7 @@ same_specs(a: *[]SpecInfo, b: *[]SpecInfo) => bool {
 
 same_members(a: *[]VariantInfo, b: *[]VariantInfo) => bool {
     if a.length != b.length { return false; }
-    for mut i := 0; i < a.length; ++i {
+    for ^i := 0; i < a.length; ++i {
         if !same_type(a[i].fields[0].type, b[i].fields[0].type) { return false; }
     }
     true

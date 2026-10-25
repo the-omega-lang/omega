@@ -138,7 +138,7 @@ impl<'r> Analyzer<'r> {
         // refinement is kept and `accepts` handles it.
         //
         // Deliberately not in `analyze_place`: an assignment target and
-        // `&mut` need the anonymous root, or a mutable alias into the payload
+        // `^place` need the anonymous root, or a mutable alias into the payload
         // could outlive the proof that the payload holds that member.
         if let Some((index, member)) = r#type.refined_anonymous_member()
             && !expected.is_some_and(|expected| expected.accepts(&r#type))

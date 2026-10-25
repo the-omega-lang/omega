@@ -363,7 +363,7 @@ match value {
 
 The binding's storage does not change. It still holds the full anonymous enum,
 so refinement never changes size, alignment, or ABI, and whole-value operations
-— widening back to the anonymous enum, or taking `&mut` — use the anonymous
+— widening back to the anonymous enum, or taking `^` — use the anonymous
 enum type. Exactly as for a named enum's variant refinement, the narrowed
 binding is not itself an assignment target while the proof holds; see
 [`bindings-and-mutability.md`](bindings-and-mutability.md).

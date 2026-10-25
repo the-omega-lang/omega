@@ -11,6 +11,6 @@ not_inlinable : i32 = 2;
 not_laid_out := 3;
 
 @naked
-mut not_naked : i32 = 4;
+^not_naked : i32 = 4;
 
 main() => void {}

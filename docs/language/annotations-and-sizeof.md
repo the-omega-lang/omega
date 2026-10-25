@@ -116,7 +116,7 @@ exposed buffer_bytes : usize = 256;
 @cond(not(def::small_build))
 exposed buffer_bytes : usize = 65536;
 
-@cond(all(target_freestanding, in(target_arch, &["thumbv7em", "riscv32"])))
+@cond(all(target_freestanding, in(target_arch, *["thumbv7em", "riscv32"])))
 exposed reset_handler() => never { ... }
 ```
 
@@ -162,10 +162,10 @@ One configuration applies to every source one invocation reads, including extern
 | `any(condition, ...)` | zero or more boolean operands; empty `any()` is false |
 | `equals(value, value)` | exactly two comparable values; inequality is `not(equals(...))` |
 | `less`, `less_equal`, `greater`, `greater_equal` | exactly two numbers of the same family |
-| `in(value, &[value, ...])` | a value and a literal list; an empty list is false |
+| `in(value, *[value, ...])` | a value and a literal list; an empty list is false |
 | `default(def::name, literal)` | the definition's value if it was supplied, otherwise the literal |
 
-Every operator except `default` yields a boolean, so a call is also usable as a comparison or membership operand. `default` yields whichever of its operands it selects, so it is usable wherever a value is, and as a condition when that value is a boolean. Its first operand must be `def::name` and its second a literal, and the two must be the same kind of value; that kind check is made whether or not the definition was supplied. `&[...]` is a membership-list spelling with no allocation, address, or slice meaning; there is no other list spelling, no indexing, no nested list, and no list-valued definition. Unknown operator names are errors.
+Every operator except `default` yields a boolean, so a call is also usable as a comparison or membership operand. `default` yields whichever of its operands it selects, so it is usable wherever a value is, and as a condition when that value is a boolean. Its first operand must be `def::name` and its second a literal, and the two must be the same kind of value; that kind check is made whether or not the definition was supplied. `*[...]` is a membership-list spelling with no allocation, address, or slice meaning; there is no other list spelling, no indexing, no nested list, and no list-valued definition. Unknown operator names are errors.
 
 ### Absence, and where it means false
 
@@ -353,7 +353,7 @@ An **Omega-declared** item is hidden by default. A hidden symbol still links acr
 A **`foreign`** item is the opposite, and needs no annotation to be so. Declaring an item `foreign` is already the statement that its symbol is looked up in, or defined for, something outside this compilation, so it defaults to crossing images just as it defaults to the exact name written in source:
 
 ```omega
-shared foreign(c) malloc(size: usize) => *mut u8;   # resolved from libc; no annotation needed
+shared foreign(c) malloc(size: usize) => ^u8;   # resolved from libc; no annotation needed
 ```
 
 `export = disabled` is what a `foreign` item writes when the opposite is true -- when the symbol it names really is resolved inside this image, and marking it hidden should be enforced.
@@ -366,7 +366,7 @@ On a bodyless declaration, visibility describes the symbol being *referred to* r
 
 ### On a module-level storage binding
 
-A module-level binding that owns storage -- `name : T;`, `name : T = value;`, or `name := value;`, with or without `mut` and under any visibility -- accepts `@symbol` to name the symbol of that storage:
+A module-level binding that owns storage -- `name : T;`, `name : T = value;`, or `name := value;`, with or without `^` and under any visibility -- accepts `@symbol` to name the symbol of that storage:
 
 ```omega
 @symbol(name = "unmangled_symbol_with_default_value")

@@ -13,7 +13,7 @@ struct Point<T> {
         Point<T> { x = 0; y = 0; }
     }
 
-    exposed translate(*mut self, dx: T, dy: T) => void {
+    exposed translate(^self, dx: T, dy: T) => void {
         self.x += dx;
         self.y += dy;
     }

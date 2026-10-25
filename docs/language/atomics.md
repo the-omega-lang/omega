@@ -130,18 +130,18 @@ For each width, a platform provides:
 
 ```omega
 load(location: *u32, order: AtomicLoadOrdering) => u32;
-store(location: *mut u32, value: u32, order: AtomicStoreOrdering) => void;
-exchange(location: *mut u32, value: u32, order: AtomicRmwOrdering) => u32;
-compare_exchange(location: *mut u32, expected: u32, desired: u32,
+store(location: ^u32, value: u32, order: AtomicStoreOrdering) => void;
+exchange(location: ^u32, value: u32, order: AtomicRmwOrdering) => u32;
+compare_exchange(location: ^u32, expected: u32, desired: u32,
                  success: AtomicRmwOrdering, failure: AtomicLoadOrdering) => Result<u32, u32>;
 compare_exchange_weak(...) => Result<u32, u32>;
-fetch_add / fetch_sub / fetch_and / fetch_or / fetch_xor(location: *mut u32, value: u32, order: AtomicRmwOrdering) => u32;
-fetch_min_unsigned / fetch_max_unsigned(location: *mut u32, value: u32, order: AtomicRmwOrdering) => u32;
-fetch_min_signed / fetch_max_signed(location: *mut i32, value: i32, order: AtomicRmwOrdering) => i32;
+fetch_add / fetch_sub / fetch_and / fetch_or / fetch_xor(location: ^u32, value: u32, order: AtomicRmwOrdering) => u32;
+fetch_min_unsigned / fetch_max_unsigned(location: ^u32, value: u32, order: AtomicRmwOrdering) => u32;
+fetch_min_signed / fetch_max_signed(location: ^i32, value: i32, order: AtomicRmwOrdering) => i32;
 ```
 
 Only `load` takes an immutable pointer. Every operation that can modify the
-location takes `*mut`, so an atomic call is never a way to write through an
+location takes `^`, so an atomic call is never a way to write through an
 immutable binding: a caller that wants operation-level atomicity on plain
 storage provides mutable storage for it.
 

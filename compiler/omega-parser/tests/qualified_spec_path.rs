@@ -86,7 +86,7 @@ fn a_plain_cast_is_still_a_cast_not_a_path() {
 #[test]
 fn a_cast_whose_target_type_is_generic_is_still_a_cast() {
     assert!(matches!(
-        expression_statement("f() => void { <*mut Node<T>>p }"),
+        expression_statement("f() => void { <^Node<T>>p }"),
         Expression::Cast(_)
     ));
 }

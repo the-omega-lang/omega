@@ -13,12 +13,12 @@ struct Countdown {
 
 meet MakesIter<i32> for i32 {
     make(*self) => Countdown {
-        Countdown { left = *self; }
+        Countdown { left = self.*; }
     }
 }
 
 meet Iterator<i32> for Countdown {
-    next(*mut self) => Option<i32> {
+    next(^self) => Option<i32> {
         if self.left == 0 {
             return Option<i32>::none();
         }
@@ -57,12 +57,12 @@ meet Pong for Paddle {
 
 main() => void {
     start : i32 = 3;
-    mut total := 0;
-    for value in <i32 : MakesIter<i32>>::make(&start) {
+    ^total := 0;
+    for value in <i32 : MakesIter<i32>>::make(*start) {
         total += value;
     }
     ball := Ball { hits = 0; };
-    paddle := <Ball : Ping>::ping(&ball);
-    back := <Paddle : Pong>::pong(&paddle);
+    paddle := <Ball : Ping>::ping(*ball);
+    back := <Paddle : Pong>::pong(*paddle);
     println$("order: ", total, " ", back.hits);
 }
